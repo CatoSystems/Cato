@@ -185,8 +185,7 @@ fn parse_params(params: &[Expr]) -> Result<Vec<(String, Ty)>, String> {
                 }
             }
         }
-        out.push((name.clone(), Ty::I64));
-        i += 1;
+        return Err(format!("function parameter '{}' must have a type annotation (param :- ty)", name));
     }
     Ok(out)
 }
@@ -299,7 +298,7 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     };
                     let a = lower(&items[1], env, ctx)?;
                     let b = lower(&items[2], env, ctx)?;
-                    Ok(promote_bin(op, a, b, env))
+                    Ok(promote_bin(op, a, b, env, ctx))
                 }
                 "if" => Err("if is not supported in the slice".into()),
                 _ => {
@@ -314,14 +313,14 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     }
 }
 
-fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env) -> HExpr {
-    let f64_result = ty_of(&a, env) == Ty::F64 || ty_of(&b, env) == Ty::F64;
-    let a = if f64_result && ty_of(&a, env) != Ty::F64 {
+fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> HExpr {
+    let f64_result = ty_of(&a, env, ctx) == Ty::F64 || ty_of(&b, env, ctx) == Ty::F64;
+    let a = if f64_result && ty_of(&a, env, ctx) != Ty::F64 {
         HExpr::ConvF64(Box::new(a))
     } else {
         a
     };
-    let b = if f64_result && ty_of(&b, env) != Ty::F64 {
+    let b = if f64_result && ty_of(&b, env, ctx) != Ty::F64 {
         HExpr::ConvF64(Box::new(b))
     } else {
         b
@@ -329,13 +328,13 @@ fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env) -> HExpr {
     HExpr::Bin(op, Box::new(a), Box::new(b))
 }
 
-fn ty_of(e: &HExpr, env: &Env) -> Ty {
+fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
     match e {
         HExpr::ConstI64(_) => Ty::I64,
         HExpr::ConstF64(_) => Ty::F64,
         HExpr::Var(s) => env.get(s).copied().unwrap_or(Ty::I64),
         HExpr::Bin(_, a, b) => {
-            if ty_of(a, env) == Ty::F64 || ty_of(b, env) == Ty::F64 {
+            if ty_of(a, env, ctx) == Ty::F64 || ty_of(b, env, ctx) == Ty::F64 {
                 Ty::F64
             } else {
                 Ty::I64
@@ -352,9 +351,13 @@ fn ty_of(e: &HExpr, env: &Env) -> Ty {
                 if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 }
             }
         },
-        HExpr::Call(_, _) => Ty::I64,
-        HExpr::Let(_, b) => ty_of(b, env),
-        HExpr::Seq(v) => v.last().map(|x| ty_of(x, env)).unwrap_or(Ty::I64),
+        HExpr::Call(name, _) => ctx
+            .raw_by_name
+            .get(name)
+            .map(|r| r.ret)
+            .unwrap_or(Ty::I64),
+        HExpr::Let(_, b) => ty_of(b, env, ctx),
+        HExpr::Seq(v) => v.last().map(|x| ty_of(x, env, ctx)).unwrap_or(Ty::I64),
     }
 }
 
@@ -373,7 +376,7 @@ fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             return Err("let binding name must be a symbol".into());
         };
         let value = lower(&binds[i + 1], &mut child, ctx)?;
-        let t = ty_of(&value, &child);
+        let t = ty_of(&value, &child, ctx);
         child.insert(name.clone(), t);
         resolved.push((name.clone(), value, t));
         i += 2;
@@ -412,7 +415,7 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             let acc = param_name(&params[0])?;
             let el = param_name(&params[1])?;
             let init = lower(&items[2], env, ctx)?;
-            let init_ty = ty_of(&init, env);
+            let init_ty = ty_of(&init, env, ctx);
             let src = lower(&items[3], env, ctx)?;
             let mut child = env.clone();
             child.insert(acc.clone(), init_ty);

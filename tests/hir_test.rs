@@ -12,7 +12,7 @@ fn build_one(name: &str, src: &str) -> HExpr {
 
 #[test]
 fn builds_literal_and_binary_expr() {
-    let body = build_one("f", "(defn f [x] (+ x 1))");
+    let body = build_one("f", "(defn f [x :- i64] (+ x 1))");
     assert_eq!(
         body,
         HExpr::Bin(
@@ -24,10 +24,21 @@ fn builds_literal_and_binary_expr() {
 }
 
 #[test]
+fn requires_typed_params() {
+    let exprs = read_all("(defn f [x] (+ x 1))").unwrap();
+    let err = build(&exprs).unwrap_err();
+    assert!(
+        err.contains("must have a type annotation"),
+        "expected typed-param error, got: {}",
+        err
+    );
+}
+
+#[test]
 fn builds_reduce_closure() {
     let body = build_one(
         "ss",
-        "(defn ss [xs mu] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
+        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
     );
     match body {
         HExpr::Reduce(r) => match *r {
@@ -50,8 +61,8 @@ fn builds_reduce_closure() {
 fn builds_pipeline_reduce_from_chain() {
     let body = build_one(
         "fused",
-        "(defn square [x] (* x x))
-         (defn fused [xs] (reduce + 0 (map square (filter even? xs))))",
+        "(defn square [x :- i64] (* x x))
+         (defn fused [xs :- vec] (reduce + 0 (map square (filter even? xs))))",
     );
     match body {
         HExpr::Reduce(r) => match *r {

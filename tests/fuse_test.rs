@@ -13,8 +13,8 @@ fn fused_map_filter(name: &str, src: &str) -> HExpr {
 fn fuses_pipeline_keeps_single_reduce() {
     let h = fused_map_filter(
         "fused",
-        "(defn square [x] (* x x))
-         (defn fused [xs] (reduce + 0 (map square (filter even? xs))))",
+        "(defn square [x :- i64] (* x x))
+         (defn fused [xs :- vec] (reduce + 0 (map square (filter even? xs))))",
     );
     assert!(matches!(h, HExpr::Reduce(_)));
 }
@@ -23,7 +23,7 @@ fn fuses_pipeline_keeps_single_reduce() {
 fn fuses_closure_reduce() {
     let h = fused_map_filter(
         "ss",
-        "(defn ss [xs mu] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
+        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
     );
     assert!(matches!(h, HExpr::Reduce(_)));
 }
@@ -35,7 +35,7 @@ fn rejects_lazy_non_var_source() {
     // miscompile.
     let h = fused_map_filter(
         "bad",
-        "(defn square [x] (* x x))
+        "(defn square [x :- i64] (* x x))
          (defn bad [] (reduce + 0 (map square (vec-i64 1 2 3))))",
     );
     let _ = h;
@@ -45,8 +45,8 @@ fn rejects_lazy_non_var_source() {
 fn pipeline_keeps_maps_in_inner_first_order() {
     let h = fused_map_filter(
         "p",
-        "(defn square [x] (* x x))
-         (defn p [xs] (reduce + 0 (map square (map (fn [x] (f64 x)) xs))))",
+        "(defn square [x :- i64] (* x x))
+         (defn p [xs :- vec] (reduce + 0 (map square (map (fn [x] (f64 x)) xs))))",
     );
     if let HExpr::Reduce(r) = h {
         if let HReduce::Pipeline { maps, .. } = *r {

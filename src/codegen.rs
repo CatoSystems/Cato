@@ -114,9 +114,11 @@ fn loop_free_vars(reduce: &HReduce) -> (Ty, VarSet) {
             bv.insert_expr(init);
             for m in maps {
                 bv.insert_expr(&m.body);
+                bv.remove(&m.el);
             }
             for fl in filters {
                 bv.insert_expr(&fl.body);
+                bv.remove(&fl.el);
             }
             bv.remove(&src_var);
             let t = if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 };
@@ -287,6 +289,14 @@ impl FnCtx {
     fn line(&mut self, s: &str) {
         self.lines.push(s.to_string());
     }
+    fn clone_with_lines(&self, lines: Vec<String>) -> Self {
+        FnCtx {
+            counter: self.counter,
+            lines,
+            scalar: self.scalar.clone(),
+            vecs: self.vecs.clone(),
+        }
+    }
 }
 
 fn mangle(name: &str) -> String {
@@ -294,8 +304,20 @@ fn mangle(name: &str) -> String {
 }
 
 fn llvm_f64(v: f64) -> String {
-    // LLVM decimal FP literals accept Rust's {:e} (e.g. "2.5e0", "1e0").
-    format!("{:e}", v)
+    // LLVM decimal FP constants need an explicit decimal point before 'e'
+    // (Rust's {:e} renders "0e0", which LLVM reads as an integer constant).
+    let s = format!("{:e}", v);
+    if let Some(pos) = s.find('e') {
+        if s[..pos].contains('.') {
+            s
+        } else {
+            format!("{}.0{}", &s[..pos], &s[pos..])
+        }
+    } else if s.contains('.') {
+        s
+    } else {
+        format!("{}.0", s)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -351,25 +373,38 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     c.line("loop.pre:");
     c.line("br label %loop");
 
+    // Register defined in the loop body that carries the accumulator to the
+    // next iteration (and into `ret`). Set by each branch below.
+    let carried: String;
+    let carried_block: &str;
+
     match &spec.reduce {
         HReduce::Closure { body, .. } => {
+            // Compute the loop-carried accumulator value first (its register
+            // name becomes the phi's back-edge operand), then emit the block.
+            let mut scratch = c.clone_with_lines(Vec::new());
+            scratch.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
+            scratch.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let val = if spec.acc_ty == Ty::F64 {
+                emit_float(body, &mut scratch, mdl, sigs)
+            } else {
+                emit_int(body, &mut scratch, mdl, sigs)
+            };
+            c.counter = scratch.counter;
             c.line("");
             c.line("loop:");
             c.line("  %i = phi i64 [ 0, %loop.pre ], [ %i.next, %loop ]");
             c.line(&format!(
-                "  %acc = phi {} [ {}, %loop.pre ], [ %acc.next, %loop ]",
-                acc_ll, init_lit
+                "  %acc = phi {} [ {}, %loop.pre ], [ {}, %loop ]",
+                acc_ll, init_lit, val
             ));
             c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
             c.line("  %x = load i64, ptr %p, align 8");
             c.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
             c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
-            let val = if spec.acc_ty == Ty::F64 {
-                emit_float(body, &mut c, mdl, sigs)
-            } else {
-                emit_int(body, &mut c, mdl, sigs)
-            };
-            c.line(&format!("  %acc.next = {} {}", acc_ll, val));
+            c.lines.extend(scratch.lines);
+            carried = val;
+            carried_block = "%loop";
             c.line("  %i.next = add i64 %i, 1");
             let t_cond = c.temp();
             c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
@@ -396,6 +431,8 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
                 let combined = combine_step(*combine, "%x", "%acc", spec.acc_ty, &mut c);
                 c.line(&format!("  %acc.next = {}", combined));
+                carried = "%acc.next".to_string();
+                carried_block = "%loop";
                 c.line("  %i.next = add i64 %i, 1");
                 let t_cond = c.temp();
                 c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
@@ -446,6 +483,8 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                     acc_ll
                 ));
                 c.line("  %i.next = add i64 %i, 1");
+                carried = "%acc.merge".to_string();
+                carried_block = "%merge";
                 let t_cond = c.temp();
                 c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
                 c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
@@ -455,24 +494,10 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
 
     c.line("");
     c.line("ret:");
-    let (back_reg, back_block) = if matches!(
-        &spec.reduce,
-        HReduce::Closure { .. }
-    ) ||
-        matches!(
-            &spec.reduce,
-            HReduce::Pipeline { maps, filters, .. }
-                if maps.is_empty() && filters.is_empty()
-        )
-    {
-        ("%acc.next".to_string(), "%loop".to_string())
-    } else {
-        ("%acc.merge".to_string(), "%merge".to_string())
-    };
     let t_ret = c.temp();
     c.line(&format!(
         "  {} = phi {} [ {}, %entry ], [ {}, {} ]",
-        t_ret, acc_ll, init_lit, back_reg, back_block
+        t_ret, acc_ll, init_lit, carried, carried_block
     ));
     c.line(&format!("  ret {} {}", acc_ll, t_ret));
 
@@ -516,8 +541,8 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
     for (pname, pty) in &defn.params {
         match pty {
             Ty::VecI64 => {
-                let d = format!("%{}.data", mangle(pname));
-                let l = format!("%{}.len", mangle(pname));
+                let d = format!("%{}_data", mangle(pname));
+                let l = format!("%{}_len", mangle(pname));
                 c.vecs.insert(pname.clone(), (d.clone(), l.clone()));
                 params.push(format!("ptr noalias nocapture readonly {}", d));
                 params.push(format!("i64 {}", l));
@@ -637,8 +662,11 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         HExpr::Call(name, args) => {
             if name == "even?" {
                 let v = emit_int(&args[0], c, mdl, sigs);
+                let p = c.temp();
+                c.line(&format!("  {} = and i64 {}, 1", p, v));
+                // `even?` is true when the low bit is clear, so invert `and`.
                 let t = c.temp();
-                c.line(&format!("  {} = and i64 {}, 1", t, v));
+                c.line(&format!("  {} = xor i64 {}, 1", t, p));
                 t
             } else {
                 call_user(name, args, c, mdl, sigs)
@@ -791,8 +819,8 @@ fn call_user(
         match ty {
             Ty::VecI64 => {
                 let (d, l) = vec_arg(expr, c, mdl);
-                ll_args.push(d);
-                ll_args.push(l);
+                ll_args.push(format!("ptr {}", d));
+                ll_args.push(format!("i64 {}", l));
             }
             Ty::F64 => {
                 let v = emit_float(expr, c, mdl, sigs);
