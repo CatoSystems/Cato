@@ -1,0 +1,19 @@
+; slice.cato — vertical slice reference program
+
+(defn square [x] (* x x))
+
+(defn sum-of-squares [xs mu]
+  (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))
+
+(defn fused [xs]
+  (reduce + 0 (map square (filter even? xs))))
+
+(defn variance [xs]
+  (let [n  (count xs)
+        mu (/ (reduce + 0 xs) (f64 n))
+        ss (sum-of-squares xs mu)]
+    (/ ss (f64 (- n 1)))))
+
+(defn main []
+  (print-f64 (variance (vec-i64 1 2 3 4 5)))
+  (print-i64 (fused (vec-i64 1 2 3 4 5))))
