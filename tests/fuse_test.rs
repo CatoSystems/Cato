@@ -1,4 +1,4 @@
-use cato::fuse::fuse;
+use cato::fuse::check;
 use cato::hir::*;
 use cato::reader::read_all;
 
@@ -6,7 +6,7 @@ fn fused_map_filter(name: &str, src: &str) -> HExpr {
     let exprs = read_all(src).unwrap();
     let fns = cato::hir::build(&exprs).unwrap();
     let defn = fns.iter().find(|d| d.name == name).expect("fn found");
-    fuse(&defn.body).clone()
+    check(&defn.body).clone()
 }
 
 #[test]

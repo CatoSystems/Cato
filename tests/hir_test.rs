@@ -96,3 +96,52 @@ fn builds_vec_literal_and_print_call() {
     };
     assert_eq!(inner, "variance");
 }
+
+fn build_err(src: &str) -> String {
+    let exprs = read_all(src).unwrap();
+    build(&exprs).unwrap_err()
+}
+
+#[test]
+fn rejects_reduce_with_too_few_args() {
+    let err = build_err("(defn f [xs :- vec] (reduce + 0))");
+    assert!(err.contains("reduce expects"), "got: {}", err);
+}
+
+#[test]
+fn rejects_map_with_too_few_args() {
+    let err = build_err("(defn f [xs :- vec] (reduce + 0 (map square xs)))");
+    assert!(err.contains("unknown"), "unresolved square should error: {}", err);
+}
+
+#[test]
+fn rejects_arity_one_builtin_without_args() {
+    let err = build_err("(defn f [xs :- vec] (count))");
+    assert!(err.contains("count expects"), "got: {}", err);
+}
+
+#[test]
+fn rejects_bad_binary_op_arity() {
+    let err = build_err("(defn f [x :- i64] (+ x))");
+    assert!(err.contains("binary op"), "got: {}", err);
+}
+
+#[test]
+fn builds_multi_type_let_sequence() {
+    let body = build_one(
+        "g",
+        "(defn g [xs :- vec] :- f64
+           (let [n  (count xs)
+                 d  (f64 n)]
+             (+ d 0.5)))",
+    );
+    match body {
+        HExpr::Let(binds, inner) => {
+            assert_eq!(binds.len(), 2);
+            let HExpr::Bin(BinOp::Add, _, _) = *inner else {
+                panic!("expected f64 add body after both bindings")
+            };
+        }
+        _ => panic!("expected let"),
+    }
+}

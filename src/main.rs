@@ -11,7 +11,7 @@ fn main() {
         .unwrap_or_else(|e| { eprintln!("cato: semantic error: {}", e); std::process::exit(2); });
     let fused: Vec<cato::hir::Defn> = fns
         .into_iter()
-        .map(|mut d| { let b = cato::fuse::fuse(&d.body); d.body = b; d })
+        .map(|mut d| { let b = cato::fuse::check(&d.body); d.body = b; d })
         .collect();
     let ir = cato::codegen::emit_module(&fused);
     match out {
@@ -27,8 +27,12 @@ fn parse_args(args: &[String]) -> (String, Option<String>) {
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "-o" => { out = args.get(i + 1).cloned(); i += 2; }
-            "--emit-llvm" => { i += 1; }
+            "-o" => {
+                match args.get(i + 1) {
+                    Some(p) if !p.starts_with('-') => { out = Some(p.clone()); i += 2; }
+                    _ => { eprintln!("cato: -o requires a filename argument"); std::process::exit(2); }
+                }
+            }
             "--help" | "-h" => { usage(); std::process::exit(0); }
             s if s.starts_with('-') => { eprintln!("cato: unknown flag {}", s); std::process::exit(2); }
             s => { file = Some(s.to_string()); i += 1; }
@@ -42,5 +46,5 @@ fn parse_args(args: &[String]) -> (String, Option<String>) {
 }
 
 fn usage() {
-    eprintln!("cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll]");
+    eprintln!("cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll]\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.");
 }

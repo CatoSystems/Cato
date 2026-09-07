@@ -349,7 +349,7 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     c.line("entry:");
     let t_isempty = c.temp();
     c.line(&format!("  {} = icmp eq i64 %len, 0", t_isempty));
-    c.line(&format!("  br i1 {}, label %ret, label %loop.pre", t_isempty));
+    c.line(&format!("  br i1 {}, label %ret, label %loop", t_isempty));
 
     // Element / accumulator bindings shared by all stages.
     let el = match &spec.reduce {
@@ -368,10 +368,6 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         HReduce::Closure { acc, .. } => acc.clone(),
         _ => "acc".to_string(),
     };
-
-    c.line("");
-    c.line("loop.pre:");
-    c.line("br label %loop");
 
     // Register defined in the loop body that carries the accumulator to the
     // next iteration (and into `ret`). Set by each branch below.
@@ -393,9 +389,9 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             c.counter = scratch.counter;
             c.line("");
             c.line("loop:");
-            c.line("  %i = phi i64 [ 0, %loop.pre ], [ %i.next, %loop ]");
+            c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]");
             c.line(&format!(
-                "  %acc = phi {} [ {}, %loop.pre ], [ {}, %loop ]",
+                "  %acc = phi {} [ {}, %entry ], [ {}, %loop ]",
                 acc_ll, init_lit, val
             ));
             c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
@@ -420,9 +416,9 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             if !has_maps && !has_filters {
                 c.line("");
                 c.line("loop:");
-                c.line("  %i = phi i64 [ 0, %loop.pre ], [ %i.next, %loop ]");
+                c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]");
                 c.line(&format!(
-                    "  %acc = phi {} [ {}, %loop.pre ], [ %acc.next, %loop ]",
+                    "  %acc = phi {} [ {}, %entry ], [ %acc.next, %loop ]",
                     acc_ll, init_lit
                 ));
                 c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
@@ -440,9 +436,9 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             } else {
                 c.line("");
                 c.line("loop:");
-                c.line("  %i = phi i64 [ 0, %loop.pre ], [ %i.next, %merge ]");
+                c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %merge ]");
                 c.line(&format!(
-                    "  %acc = phi {} [ {}, %loop.pre ], [ %acc.merge, %merge ]",
+                    "  %acc = phi {} [ {}, %entry ], [ %acc.merge, %merge ]",
                     acc_ll, init_lit
                 ));
                 c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");

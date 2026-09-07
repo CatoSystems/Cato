@@ -79,22 +79,21 @@ struct RawDefn {
 }
 
 struct Ctx<'a> {
-    raw_by_name: &'a HashMap<String, RawDefn>,
+    raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
 }
 
 pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {
-    // Pass 1: parse every defn into a raw (un-lowered) form so map/filter and
-    // calls can resolve any function regardless of declaration order.
-    let mut raw_by_name = HashMap::new();
-    for form in prog {
-        let raw = parse_raw(form)?;
-        raw_by_name.insert(raw.name.clone(), raw);
-    }
+    // Pass 1: parse every defn into a raw (un-lowered) form without lowering,
+    // so map/filter and calls can resolve any function regardless of order.
+    let raws: Vec<RawDefn> = prog.iter().map(parse_raw).collect::<Result<_, _>>()?;
+    let raw_by_name: HashMap<&str, &RawDefn> = raws
+        .iter()
+        .map(|r| (r.name.as_str(), r))
+        .collect();
     let ctx = Ctx { raw_by_name: &raw_by_name };
 
     let mut out = Vec::new();
-    for form in prog {
-        let raw = parse_raw(form)?;
+    for raw in &raws {
         let mut env = Env::new();
         for (pname, pty) in &raw.params {
             env.insert(pname.clone(), *pty);
@@ -261,10 +260,16 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     head
                 )),
                 "f64" => {
+                    if items.len() != 2 {
+                        return Err("f64 expects exactly 1 argument".into());
+                    }
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::ConvF64(Box::new(inner)))
                 }
                 "count" => {
+                    if items.len() != 2 {
+                        return Err("count expects exactly 1 argument".into());
+                    }
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Count(Box::new(inner)))
                 }
@@ -279,10 +284,16 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     Ok(HExpr::VecLit(vs))
                 }
                 "print-f64" => {
+                    if items.len() != 2 {
+                        return Err("print-f64 expects exactly 1 argument".into());
+                    }
                     let a = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Call("print-f64".into(), vec![a]))
                 }
                 "print-i64" => {
+                    if items.len() != 2 {
+                        return Err("print-i64 expects exactly 1 argument".into());
+                    }
                     let a = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Call("print-i64".into(), vec![a]))
                 }
@@ -353,7 +364,7 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         },
         HExpr::Call(name, _) => ctx
             .raw_by_name
-            .get(name)
+            .get(name.as_str())
             .map(|r| r.ret)
             .unwrap_or(Ty::I64),
         HExpr::Let(_, b) => ty_of(b, env, ctx),
@@ -386,6 +397,12 @@ fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
 }
 
 fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() < 4 {
+        return Err(format!(
+            "reduce expects (reduce <op|fn> <init> <src>), got {} arguments",
+            items.len().saturating_sub(1)
+        ));
+    }
     let head = &items[1];
     match head {
         Expr::LitSym(op) if matches!(op.as_str(), "+" | "-" | "*" | "/") => {
@@ -409,9 +426,15 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             let Expr::List(fnitems) = head else {
                 return Err("reduce expects a combine op or (fn ...)".into());
             };
+            if fnitems.len() < 3 {
+                return Err("reduce fn expects (fn [acc el] <body>)".into());
+            }
             let Expr::Vector(params) = &fnitems[1] else {
                 return Err("reduce fn params".into());
             };
+            if params.len() < 2 {
+                return Err("reduce fn must bind exactly [acc el]".into());
+            }
             let acc = param_name(&params[0])?;
             let el = param_name(&params[1])?;
             let init = lower(&items[2], env, ctx)?;
@@ -454,12 +477,18 @@ fn pipeline_src(
         return Ok((lower(src, env, ctx)?, Vec::new(), Vec::new()));
     };
     if head == "map" {
+        if items.len() < 3 {
+            return Err("map expects (map <fn> <src>)".into());
+        }
         let (inner, mut maps, filters) = pipeline_src(&items[2], env, ctx)?;
         let (el, body) = lambda_spec(&items[1], env, ctx)?;
         maps.push(MapSpec { el, body });
         // maps is inner-first; push keeps it inner-first.
         Ok((inner, maps, filters))
     } else if head == "filter" {
+        if items.len() < 3 {
+            return Err("filter expects (filter <fn> <src>)".into());
+        }
         let (inner, maps, mut filters) = pipeline_src(&items[2], env, ctx)?;
         let (el, body) = lambda_spec(&items[1], env, ctx)?;
         filters.push(FilterSpec { el, body });
@@ -479,9 +508,15 @@ fn lambda_spec(f: &Expr, env: &Env, ctx: &Ctx) -> Result<(String, HExpr), String
             if h != "fn" {
                 return Err("map/filter arg must be (fn ...)".into());
             }
+            if items.len() < 3 {
+                return Err("fn expects (fn [el] <body>)".into());
+            }
             let Expr::Vector(params) = &items[1] else {
                 return Err("fn params".into());
             };
+            if params.is_empty() {
+                return Err("fn must bind an element param".into());
+            }
             let el = param_name(&params[0])?;
             let mut child = env.clone();
             child.insert(el.clone(), Ty::I64);

@@ -73,6 +73,18 @@ fn emits_loop_with_even_filter_and_square_map() {
 }
 
 #[test]
+fn even_predicate_inverts_low_bit() {
+    // `even?` must be true when the low bit is clear: and %x,1 then xor 1.
+    let ir = emit(
+        "(defn square [x :- i64] :- i64 (* x x))
+         (defn fused [xs :- vec] :- i64
+           (reduce + 0 (map square (filter even? xs))))",
+    );
+    assert!(ir.contains("and i64"));
+    assert!(ir.contains("xor i64"));
+}
+
+#[test]
 fn emits_vec_const_global_for_literal() {
     let ir = emit("(defn main [] (print-i64 0))");
     // If main uses vec-i64 a global is minted; for this simple main
