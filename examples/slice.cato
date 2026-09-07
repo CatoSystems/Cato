@@ -1,14 +1,17 @@
 ; slice.cato — vertical slice reference program
+;
+; Types are opt-in annotations (spec §2): `param :- ty` and `] :- ret`.
+; `vec` denotes (Vector i64).
 
-(defn square [x] (* x x))
+(defn square [x :- i64] :- i64 (* x x))
 
-(defn sum-of-squares [xs mu]
+(defn sum-of-squares [xs :- vec mu :- f64] :- f64
   (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))
 
-(defn fused [xs]
+(defn fused [xs :- vec] :- i64
   (reduce + 0 (map square (filter even? xs))))
 
-(defn variance [xs]
+(defn variance [xs :- vec] :- f64
   (let [n  (count xs)
         mu (/ (reduce + 0 xs) (f64 n))
         ss (sum-of-squares xs mu)]
