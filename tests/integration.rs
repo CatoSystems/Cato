@@ -61,3 +61,44 @@ fn compiles_slice_to_expected_output() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(stdout, "2.5\n20\n");
 }
+
+fn compile_and_run(src_name: &str, src: &str) -> String {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src_path = manifest.join("target").join(src_name);
+    std::fs::write(&src_path, src).expect("write source");
+    let out_ll = manifest.join("target").join(format!("{}.ll", src_name));
+    let rt = manifest.join("runtime/runtime.c");
+    let exe = manifest.join("target").join(format!("{}_bin", src_name));
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src_path).arg("-o").arg(&out_ll)
+        .status().expect("cato run");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang link failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    assert!(out.status.success(), "binary failed");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+#[test]
+fn compiles_normalize_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/normalize.cato")).unwrap();
+    assert_eq!(compile_and_run("normalize", &src), "0.75\n");
+}
+
+#[test]
+fn compiles_count_even_below_to_expected_output() {
+    let src = r#"
+(defn count-even-below [xs :- vec n :- i64] :- i64
+  (reduce (fn [acc x] (if (and (even? x) (< x n)) (+ acc 1) acc)) 0 xs))
+(defn main []
+  (print-i64 (count-even-below (vec-i64 1 2 3 4 5 6) 6)))
+"#;
+    assert_eq!(compile_and_run("count_even_below", &src), "2\n");
+}

@@ -1,0 +1,16 @@
+; normalize.cato — spec §5 normalize example, written with the ->> macro.
+;
+; (->> xs (map f) (map g) (reduce r 0.0)) expands to
+; (reduce r 0.0 (map g (map f xs))), which stream-fuses into ONE loop.
+
+(defn clamp-x [x :- f64 lo :- f64 hi :- f64] :- f64
+  (min (max x lo) hi))
+
+(defn normalize [xs :- vec xsrng :- f64] :- f64
+  (->> xs
+       (map (fn [x] (/ (- (f64 x) xsrng) xsrng)))
+       (map (fn [x] (clamp-x x -1.0 1.0)))
+       (reduce (fn [acc x] (max acc (abs x))) 0.0)))
+
+(defn main []
+  (print-f64 (normalize (vec-i64 2 4 6) 8.0)))
