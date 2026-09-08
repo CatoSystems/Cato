@@ -30,10 +30,17 @@ pub fn emit_module(fns: &[Defn]) -> String {
                 HExpr::Reduce(r) => (**r).clone(),
                 _ => unreachable!(),
             };
-            loops.push(make_loop_spec(&mangle(&d.name), reduce));
+            loops.push(make_loop_spec(&mangle(&d.name), reduce, &d.params));
         } else {
-            let body = rewrite_body(&d.body, &mangle(&d.name), &mut idmap, &mut loops, &mut sigs)
-                .unwrap_or_else(|e| panic!("codegen: {}", e));
+            let body = rewrite_body(
+                &d.body,
+                &mangle(&d.name),
+                &d.params,
+                &mut idmap,
+                &mut loops,
+                &mut sigs,
+            )
+            .unwrap_or_else(|e| panic!("codegen: {}", e));
             let mut nd = d.clone();
             nd.body = body;
             plain.push(nd);
@@ -82,9 +89,20 @@ struct LoopSpec {
     reduce: HReduce,
 }
 
-fn make_loop_spec(helper: &str, reduce: HReduce) -> LoopSpec {
+fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, Ty)]) -> LoopSpec {
     let (acc_ty, mut free) = loop_free_vars(&reduce);
-    let mut caps: Vec<(String, Ty)> = free.vars.drain(..).map(|v| (v, Ty::F64)).collect();
+    let mut caps: Vec<(String, Ty)> = free
+        .vars
+        .drain(..)
+        .map(|v| {
+            let t = params
+                .iter()
+                .find(|(n, _)| *n == v)
+                .map(|(_, t)| *t)
+                .unwrap_or(Ty::F64);
+            (v, t)
+        })
+        .collect();
     caps.sort_by(|a, b| a.0.cmp(&b.0));
     LoopSpec {
         helper: helper.to_string(),
@@ -125,11 +143,26 @@ fn loop_free_vars(reduce: &HReduce) -> (Ty, VarSet) {
             (t, bv)
         }
         HReduce::Closure {
-            init, src, acc, el, body, ..
+            init,
+            src,
+            acc,
+            el,
+            body,
+            maps,
+            filters,
+            ..
         } => {
             let mut bv = VarSet::new();
             bv.insert_expr(init);
             bv.insert_expr(src);
+            for m in maps {
+                bv.insert_expr(&m.body);
+                bv.remove(&m.el);
+            }
+            for fl in filters {
+                bv.insert_expr(&fl.body);
+                bv.remove(&fl.el);
+            }
             bv.insert_expr(body);
             bv.remove(&src_var);
             bv.remove(acc);
@@ -153,6 +186,7 @@ fn acc_ret_is_f64(r: &HReduce) -> bool {
 fn rewrite_body(
     h: &HExpr,
     fnprefix: &str,
+    params: &[(String, Ty)],
     idmap: &mut HashMap<String, usize>,
     loops: &mut Vec<LoopSpec>,
     sigs: &mut HashMap<String, (Ty, Vec<Ty>)>,
@@ -164,49 +198,53 @@ fn rewrite_body(
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::Bin(op, a, b) => HExpr::Bin(
             op.clone(),
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
         HExpr::ConvF64(e) => HExpr::ConvF64(Box::new(rewrite_body(
-            e, fnprefix, idmap, loops, sigs,
+            e, fnprefix, params, idmap, loops, sigs,
         )?)),
-        HExpr::Count(e) => HExpr::Count(Box::new(rewrite_body(e, fnprefix, idmap, loops, sigs)?)),
+        HExpr::Count(e) => {
+            HExpr::Count(Box::new(rewrite_body(e, fnprefix, params, idmap, loops, sigs)?))
+        }
         HExpr::If(c, t, e, ty) => HExpr::If(
-            Box::new(rewrite_body(c, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(t, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(e, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(c, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(t, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(e, fnprefix, params, idmap, loops, sigs)?),
             *ty,
         ),
         HExpr::And(a, b) => HExpr::And(
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
         HExpr::Or(a, b) => HExpr::Or(
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
-        HExpr::Not(v) => HExpr::Not(Box::new(rewrite_body(v, fnprefix, idmap, loops, sigs)?)),
+        HExpr::Not(v) => HExpr::Not(Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?)),
         HExpr::Cmp(op, a, b, f) => HExpr::Cmp(
             op.clone(),
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *f,
         ),
-        HExpr::Abs(v, t) => HExpr::Abs(Box::new(rewrite_body(v, fnprefix, idmap, loops, sigs)?), *t),
+        HExpr::Abs(v, t) => {
+            HExpr::Abs(Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?), *t)
+        }
         HExpr::Min(a, b, t) => HExpr::Min(
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *t,
         ),
         HExpr::Max(a, b, t) => HExpr::Max(
-            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
-            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *t,
         ),
         HExpr::Call(name, args) => HExpr::Call(
             name.clone(),
             args.iter()
-                .map(|a| rewrite_body(a, fnprefix, idmap, loops, sigs))
+                .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         HExpr::Let(binds, body) => HExpr::Let(
@@ -215,16 +253,16 @@ fn rewrite_body(
                 .map(|(n, e, t)| {
                     Ok((
                         n.clone(),
-                        rewrite_body(e, fnprefix, idmap, loops, sigs)?,
+                        rewrite_body(e, fnprefix, params, idmap, loops, sigs)?,
                         *t,
                     ))
                 })
                 .collect::<Result<Vec<_>, String>>()?,
-            Box::new(rewrite_body(body, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
         ),
         HExpr::Seq(vs) => HExpr::Seq(
             vs.iter()
-                .map(|v| rewrite_body(v, fnprefix, idmap, loops, sigs))
+                .map(|v| rewrite_body(v, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         HExpr::Reduce(r) => {
@@ -240,7 +278,7 @@ fn rewrite_body(
 
             let ret_f64 = acc_ret_is_f64(r);
             let ret_ty = if ret_f64 { Ty::F64 } else { Ty::I64 };
-            let spec = make_loop_spec(&helper, (**r).clone());
+            let spec = make_loop_spec(&helper, (**r).clone(), params);
             // Signature: src vec + captures, ret = loop accumulator type.
             let mut arg_tys = vec![Ty::VecI64];
             for (_, t) in &spec.caps {
@@ -299,6 +337,8 @@ impl Mdl {
 
 struct FnCtx {
     counter: usize,
+    blk: usize,
+    cur: String,
     lines: Vec<String>,
     scalar: HashMap<String, (String, Ty)>,
     vecs: HashMap<String, (String, String)>,
@@ -308,6 +348,8 @@ impl FnCtx {
     fn new() -> Self {
         FnCtx {
             counter: 0,
+            blk: 0,
+            cur: String::new(),
             lines: Vec::new(),
             scalar: HashMap::new(),
             vecs: HashMap::new(),
@@ -318,12 +360,24 @@ impl FnCtx {
         self.counter += 1;
         format!("%t{}", n)
     }
+    fn block_name(&mut self) -> String {
+        let n = self.blk;
+        self.blk += 1;
+        format!("b{}", n)
+    }
+    fn open(&mut self, label: &str) -> String {
+        let l = label.to_string();
+        self.cur = l.clone();
+        l
+    }
     fn line(&mut self, s: &str) {
         self.lines.push(s.to_string());
     }
     fn clone_with_lines(&self, lines: Vec<String>) -> Self {
         FnCtx {
             counter: self.counter,
+            blk: self.blk,
+            cur: self.cur.clone(),
             lines,
             scalar: self.scalar.clone(),
             vecs: self.vecs.clone(),
@@ -374,11 +428,18 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         "i64 %len".to_string(),
     ];
     for (n, t) in &spec.caps {
-        let ty = if *t == Ty::F64 { "double" } else { "i64" };
+        let ty = if *t == Ty::F64 {
+            "double"
+        } else if *t == Ty::Bool {
+            "i1"
+        } else {
+            "i64"
+        };
         params.push(format!("{} %{}", ty, mangle(n)));
     }
 
     c.line("entry:");
+    c.open("entry");
     let t_isempty = c.temp();
     c.line(&format!("  {} = icmp eq i64 %len, 0", t_isempty));
     c.line(&format!("  br i1 {}, label %ret, label %loop", t_isempty));
@@ -406,11 +467,21 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     let carried: String;
     let carried_block: &str;
 
+    let (filters, maps) = match &spec.reduce {
+        HReduce::Closure { maps, filters, .. } | HReduce::Pipeline { maps, filters, .. } => {
+            (filters, maps)
+        }
+    };
+
     match &spec.reduce {
-        HReduce::Closure { body, .. } => {
+        // Single-block closure: plain body, no stages, no control flow.
+        HReduce::Closure { body, .. }
+            if maps.is_empty() && filters.is_empty() && !has_ctl(body) =>
+        {
             // Compute the loop-carried accumulator value first (its register
             // name becomes the phi's back-edge operand), then emit the block.
             let mut scratch = c.clone_with_lines(Vec::new());
+            scratch.cur = "%loop".to_string();
             scratch.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
             scratch.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
             let val = if spec.acc_ty == Ty::F64 {
@@ -421,6 +492,7 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             c.counter = scratch.counter;
             c.line("");
             c.line("loop:");
+            c.open("loop");
             c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]");
             c.line(&format!(
                 "  %acc = phi {} [ {}, %entry ], [ {}, %loop ]",
@@ -438,90 +510,107 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
             c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
         }
-        HReduce::Pipeline {
-            combine, init, maps, filters, ..
-        } => {
-            let _ = init;
-            let has_maps = !maps.is_empty();
-            let has_filters = !filters.is_empty();
+        // Single-block pipeline combine: no stages, a binop combine can't fork.
+        HReduce::Pipeline { combine, .. } if maps.is_empty() && filters.is_empty() => {
+            let _ = combine;
+            c.line("");
+            c.line("loop:");
+            c.open("loop");
+            c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]");
+            c.line(&format!(
+                "  %acc = phi {} [ {}, %entry ], [ %acc.next, %loop ]",
+                acc_ll, init_lit
+            ));
+            c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
+            c.line("  %x = load i64, ptr %p, align 8");
+            c.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
+            c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let combined = combine_step(*combine, "%x", "%acc", spec.acc_ty, &mut c);
+            c.line(&format!("  %acc.next = {}", combined));
+            carried = "%acc.next".to_string();
+            carried_block = "%loop";
+            c.line("  %i.next = add i64 %i, 1");
+            let t_cond = c.temp();
+            c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
+            c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
+        }
+        // Structured apply/skip/merge: any maps, filters, or control flow.
+        _ => {
+            c.line("");
+            c.line("loop:");
+            c.open("loop");
+            c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %merge ]");
+            c.line(&format!(
+                "  %acc = phi {} [ {}, %entry ], [ %acc.merge, %merge ]",
+                acc_ll, init_lit
+            ));
+            c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
+            c.line("  %x = load i64, ptr %p, align 8");
 
-            if !has_maps && !has_filters {
-                c.line("");
-                c.line("loop:");
-                c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %loop ]");
-                c.line(&format!(
-                    "  %acc = phi {} [ {}, %entry ], [ %acc.next, %loop ]",
-                    acc_ll, init_lit
-                ));
-                c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
-                c.line("  %x = load i64, ptr %p, align 8");
-                c.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
-                c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
-                let combined = combine_step(*combine, "%x", "%acc", spec.acc_ty, &mut c);
-                c.line(&format!("  %acc.next = {}", combined));
-                carried = "%acc.next".to_string();
-                carried_block = "%loop";
-                c.line("  %i.next = add i64 %i, 1");
-                let t_cond = c.temp();
-                c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
-                c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
+            if !filters.is_empty() {
+                for fl in filters {
+                    c.scalar.insert(fl.el.clone(), ("%x".to_string(), Ty::I64));
+                    let pv = emit_bool(&fl.body, &mut c, mdl, sigs);
+                    let t_keep = c.temp();
+                    c.line(&format!("  {} = icmp ne i1 {}, 0", t_keep, pv));
+                    c.line(&format!("  br i1 {}, label %apply, label %skip", t_keep));
+                }
             } else {
-                c.line("");
-                c.line("loop:");
-                c.line("  %i = phi i64 [ 0, %entry ], [ %i.next, %merge ]");
-                c.line(&format!(
-                    "  %acc = phi {} [ {}, %entry ], [ %acc.merge, %merge ]",
-                    acc_ll, init_lit
-                ));
-                c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
-                c.line("  %x = load i64, ptr %p, align 8");
-
-                if has_filters {
-                    for fl in filters {
-                        c.scalar.insert(fl.el.clone(), ("%x".to_string(), Ty::I64));
-                        let pv = emit_int(&fl.body, &mut c, mdl, sigs);
-                        let t_keep = c.temp();
-                        c.line(&format!("  {} = icmp ne i64 {}, 0", t_keep, pv));
-                        c.line(&format!("  br i1 {}, label %apply, label %skip", t_keep));
-                    }
-                } else {
-                    c.line("  br label %apply");
-                }
-
-                c.line("");
-                c.line("apply:");
-                let mut val = "%x".to_string();
-                for m in maps {
-                    c.scalar.insert(m.el.clone(), (val.clone(), Ty::I64));
-                    val = emit_int(&m.body, &mut c, mdl, sigs);
-                }
-                c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
-                let combined = combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
-                c.line(&format!("  %acc2 = {}", combined));
-                c.line("  br label %merge");
-
-                c.line("");
-                c.line("skip:");
-                c.line("  br label %merge");
-
-                c.line("");
-                c.line("merge:");
-                c.line(&format!(
-                    "  %acc.merge = phi {} [ %acc2, %apply ], [ %acc, %skip ]",
-                    acc_ll
-                ));
-                c.line("  %i.next = add i64 %i, 1");
-                carried = "%acc.merge".to_string();
-                carried_block = "%merge";
-                let t_cond = c.temp();
-                c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
-                c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
+                c.line("  br label %apply");
             }
+
+            c.line("");
+            c.line("apply:");
+            c.open("apply");
+            let mut val = "%x".to_string();
+            let mut val_ty = Ty::I64;
+            for m in maps {
+                c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
+                val = emit_typed(&m.body, m.res_ty, &mut c, mdl, sigs);
+                val_ty = m.res_ty;
+            }
+            c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let r = match &spec.reduce {
+                HReduce::Closure { body, .. } => {
+                    c.scalar.insert(el.clone(), (val.clone(), val_ty));
+                    emit_typed(body, spec.acc_ty, &mut c, mdl, sigs)
+                }
+                HReduce::Pipeline { combine, .. } => {
+                    let t = c.temp();
+                    let combined =
+                        combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
+                    c.line(&format!("  {} = {}", t, combined));
+                    t
+                }
+            };
+            let r = pin_value(acc_ll, &r, &mut c);
+            let apply_pred = c.cur.clone();
+            c.line("  br label %merge");
+
+            c.line("");
+            c.line("skip:");
+            c.open("skip");
+            c.line("  br label %merge");
+
+            c.line("");
+            c.line("merge:");
+            c.open("merge");
+            c.line(&format!(
+                "  %acc.merge = phi {} [ {}, %{} ], [ %acc, %skip ]",
+                acc_ll, r, apply_pred
+            ));
+            c.line("  %i.next = add i64 %i, 1");
+            carried = "%acc.merge".to_string();
+            carried_block = "%merge";
+            let t_cond = c.temp();
+            c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
+            c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
         }
     }
 
     c.line("");
     c.line("ret:");
+    c.open("ret");
     let t_ret = c.temp();
     c.line(&format!(
         "  {} = phi {} [ {}, %entry ], [ {}, {} ]",
@@ -585,23 +674,30 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::I64));
                 params.push(format!("i64 {}", r));
             }
-            Ty::Bool => panic!("codegen: bool params land in the next task"),
+            Ty::Bool => {
+                let r = format!("%{}", mangle(pname));
+                c.scalar.insert(pname.clone(), (r.clone(), Ty::Bool));
+                params.push(format!("i1 {}", r));
+            }
         }
     }
 
     c.line("entry:");
+    c.open("entry");
     if defn.name == "main" {
         for form in seq_forms(&defn.body) {
             emit_stmt(&form, &mut c, mdl, sigs);
         }
     } else {
         let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
-        let ret_ll = if defn.ret == Ty::F64 { "double" } else { "i64" };
+        let ret_ll = if defn.ret == Ty::Bool { "i1" } else if defn.ret == Ty::F64 { "double" } else { "i64" };
         c.line(&format!("  ret {} {}", ret_ll, val));
     }
 
     let ret_ll = if defn.name == "main" {
         "i32".to_string()
+    } else if defn.ret == Ty::Bool {
+        "i1".to_string()
     } else if defn.ret == Ty::F64 {
         "double".to_string()
     } else {
@@ -627,10 +723,11 @@ fn seq_forms(b: &HExpr) -> Vec<HExpr> {
 }
 
 fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>, ret: Ty) -> String {
-    if ret == Ty::F64 {
-        emit_float(e, c, mdl, sigs)
-    } else {
-        emit_int(e, c, mdl, sigs)
+    match ret {
+        Ty::F64 => emit_float(e, c, mdl, sigs),
+        Ty::Bool => emit_bool(e, c, mdl, sigs),
+        Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::VecI64 => panic!("codegen: cannot return a vector"),
     }
 }
 
@@ -653,6 +750,196 @@ fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty
 // ---------------------------------------------------------------------------
 // Expression emission
 // ---------------------------------------------------------------------------
+
+/// Does this expression (or a stage / closure body) fork into basic blocks?
+fn has_ctl(e: &HExpr) -> bool {
+    match e {
+        HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) => true,
+        HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
+        HExpr::Call(_, args) => args.iter().any(has_ctl),
+        HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
+        HExpr::Seq(vs) => vs.iter().any(has_ctl),
+        HExpr::Cmp(..) => false,
+        HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => false,
+        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
+        HExpr::Reduce(r) => match &**r {
+            HReduce::Pipeline { init, maps, filters, src, .. } => {
+                has_ctl(init)
+                    || has_ctl(src)
+                    || maps.iter().any(|m| has_ctl(&m.body))
+                    || filters.iter().any(|f| has_ctl(&f.body))
+            }
+            HReduce::Closure { init, src, body, maps, filters, .. } => {
+                has_ctl(init)
+                    || has_ctl(src)
+                    || has_ctl(body)
+                    || maps.iter().any(|m| has_ctl(&m.body))
+                    || filters.iter().any(|f| has_ctl(&f.body))
+            }
+        },
+    }
+}
+
+/// Pin a bare literal into a virtual register before a `br`/`phi`.
+fn pin_value(ll_ty: &str, r: &str, c: &mut FnCtx) -> String {
+    if r.starts_with('%') {
+        return r.to_string();
+    }
+    let t = c.temp();
+    if ll_ty == "double" {
+        c.line(&format!("  {} = fadd double {}, 0.000000e+00", t, r));
+    } else {
+        c.line(&format!("  {} = add i64 {}, 0", t, r));
+    }
+    t
+}
+
+fn emit_typed(
+    e: &HExpr,
+    ty: Ty,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match ty {
+        Ty::F64 => emit_float(e, c, mdl, sigs),
+        Ty::Bool => emit_bool(e, c, mdl, sigs),
+        Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::VecI64 => panic!("codegen: control flow cannot produce a vector"),
+    }
+}
+
+fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+    match e {
+        HExpr::Cmp(op, a, b, is_f64) => {
+            if *is_f64 {
+                let av = emit_float(a, c, mdl, sigs);
+                let bv = emit_float(b, c, mdl, sigs);
+                let op = match op {
+                    CmpOp::Eq => "oeq",
+                    CmpOp::Ne => "one",
+                    CmpOp::Lt => "olt",
+                    CmpOp::Gt => "ogt",
+                    CmpOp::Le => "ole",
+                    CmpOp::Ge => "oge",
+                };
+                let t = c.temp();
+                c.line(&format!("  {} = fcmp {} double {}, {}", t, op, av, bv));
+                t
+            } else {
+                let av = emit_int(a, c, mdl, sigs);
+                let bv = emit_int(b, c, mdl, sigs);
+                let op = match op {
+                    CmpOp::Eq => "eq",
+                    CmpOp::Ne => "ne",
+                    CmpOp::Lt => "slt",
+                    CmpOp::Gt => "sgt",
+                    CmpOp::Le => "sle",
+                    CmpOp::Ge => "sge",
+                };
+                let t = c.temp();
+                c.line(&format!("  {} = icmp {} i64 {}, {}", t, op, av, bv));
+                t
+            }
+        }
+        HExpr::And(a, b) => {
+            let la = emit_bool(a, c, mdl, sigs);
+            let parent = c.cur.clone();
+            let rhs = c.block_name();
+            let merged = c.block_name();
+            c.line(&format!("  br i1 {}, label %{}, label %{}", la, rhs, merged));
+            let lbl = c.open(&rhs);
+            c.line(&format!("{}:", lbl));
+            let rb = emit_bool(b, c, mdl, sigs);
+            let bp = c.cur.clone();
+            c.line(&format!("  br label %{}", merged));
+            let lbl = c.open(&merged);
+            c.line(&format!("{}:", lbl));
+            let res = c.temp();
+            c.line(&format!(
+                "  {} = phi i1 [ false, %{} ], [ {}, %{} ]",
+                res, parent, rb, bp
+            ));
+            res
+        }
+        HExpr::Or(a, b) => {
+            let la = emit_bool(a, c, mdl, sigs);
+            let parent = c.cur.clone();
+            let rhs = c.block_name();
+            let merged = c.block_name();
+            c.line(&format!("  br i1 {}, label %{}, label %{}", la, merged, rhs));
+            let lbl = c.open(&rhs);
+            c.line(&format!("{}:", lbl));
+            let rb = emit_bool(b, c, mdl, sigs);
+            let bp = c.cur.clone();
+            c.line(&format!("  br label %{}", merged));
+            let lbl = c.open(&merged);
+            c.line(&format!("{}:", lbl));
+            let res = c.temp();
+            c.line(&format!(
+                "  {} = phi i1 [ true, %{} ], [ {}, %{} ]",
+                res, parent, rb, bp
+            ));
+            res
+        }
+        HExpr::Not(v) => {
+            let iv = emit_bool(v, c, mdl, sigs);
+            let t = c.temp();
+            c.line(&format!("  {} = xor i1 {}, true", t, iv));
+            t
+        }
+        HExpr::Var(v) => {
+            let (r, _) = c.scalar.get(v).unwrap_or_else(|| panic!("codegen: unknown bool var {}", v));
+            r.clone()
+        }
+        HExpr::If(cond, then, els, Ty::Bool) => emit_if_node(cond, then, els, Ty::Bool, c, mdl, sigs),
+        HExpr::Call(name, args) if name == "even?" => {
+            let v = emit_int(&args[0], c, mdl, sigs);
+            let p = c.temp();
+            c.line(&format!("  {} = and i64 {}, 1", p, v));
+            let t = c.temp();
+            c.line(&format!("  {} = icmp eq i64 {}, 0", t, p));
+            t
+        }
+        other => panic!("codegen: expected a boolean expression, got {:?}", other),
+    }
+}
+
+fn emit_if_node(
+    cond: &HExpr,
+    then: &HExpr,
+    els: &HExpr,
+    ty: Ty,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let lc = emit_bool(cond, c, mdl, sigs);
+    let bt = c.block_name();
+    let be = c.block_name();
+    let bm = c.block_name();
+    c.line(&format!("  br i1 {}, label %{}, label %{}", lc, bt, be));
+    let lbl = c.open(&bt);
+    c.line(&format!("{}:", lbl));
+    let tv = emit_typed(then, ty, c, mdl, sigs);
+    let tp = c.cur.clone();
+    c.line(&format!("  br label %{}", bm));
+    let lbl = c.open(&be);
+    c.line(&format!("{}:", lbl));
+    let ev = emit_typed(els, ty, c, mdl, sigs);
+    let ep = c.cur.clone();
+    c.line(&format!("  br label %{}", bm));
+    let lbl = c.open(&bm);
+    c.line(&format!("{}:", lbl));
+    let res = c.temp();
+    let lty = if ty == Ty::F64 { "double" } else if ty == Ty::Bool { "i1" } else { "i64" };
+    c.line(&format!(
+        "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+        res, lty, tv, tp, ev, ep
+    ));
+    res
+}
 
 fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
@@ -688,19 +975,7 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             t
         }
         HExpr::ConvF64(_) => panic!("codegen: ConvF64 in i64 context"),
-        HExpr::Call(name, args) => {
-            if name == "even?" {
-                let v = emit_int(&args[0], c, mdl, sigs);
-                let p = c.temp();
-                c.line(&format!("  {} = and i64 {}, 1", p, v));
-                // `even?` is true when the low bit is clear, so invert `and`.
-                let t = c.temp();
-                c.line(&format!("  {} = xor i64 {}, 1", t, p));
-                t
-            } else {
-                call_user(name, args, c, mdl, sigs)
-            }
-        }
+        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
         HExpr::Let(binds, body) => {
             emit_let(binds, c, mdl, sigs);
             emit_int(body, c, mdl, sigs)
@@ -711,14 +986,38 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             }
             "0".to_string()
         }
-        HExpr::If(..)
-        | HExpr::And(..)
-        | HExpr::Or(..)
-        | HExpr::Not(..)
-        | HExpr::Cmp(..)
-        | HExpr::Abs(..)
-        | HExpr::Min(..)
-        | HExpr::Max(..) => panic!("codegen: control-flow emission lands in the next task"),
+        HExpr::If(cond, then, els, t) => emit_if_node(cond, then, els, *t, c, mdl, sigs),
+        HExpr::Abs(e, _) => {
+            let v = emit_int(e, c, mdl, sigs);
+            let neg = c.temp();
+            c.line(&format!("  {} = sub i64 0, {}", neg, v));
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i64 {}, 0", lt, v));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, neg, v));
+            t
+        }
+        HExpr::Min(a, b, _) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i64 {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
+            t
+        }
+        HExpr::Max(a, b, _) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp sgt i64 {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
+            t
+        }
+        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..) => {
+            panic!("codegen: bool expression in i64 context")
+        }
         HExpr::ConstF64(v) => panic!("codegen: ConstF64 {} in i64 context", v),
         HExpr::VecLit(_) => panic!("codegen: vec literal in i64 context"),
     }
@@ -775,6 +1074,35 @@ fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (T
             c.line(&format!("  {} = sitofp i64 {} to double", t, v));
             t
         }
+        HExpr::If(cond, then, els, t) => emit_if_node(cond, then, els, *t, c, mdl, sigs),
+        HExpr::Abs(e, _) => {
+            let v = emit_float(e, c, mdl, sigs);
+            let neg = c.temp();
+            c.line(&format!("  {} = fneg double {}", neg, v));
+            let lt = c.temp();
+            c.line(&format!("  {} = fcmp olt double {}, 0.000000e+00", lt, v));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, neg, v));
+            t
+        }
+        HExpr::Min(a, b, _) => {
+            let av = emit_float(a, c, mdl, sigs);
+            let bv = emit_float(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = fcmp olt double {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, av, bv));
+            t
+        }
+        HExpr::Max(a, b, _) => {
+            let av = emit_float(a, c, mdl, sigs);
+            let bv = emit_float(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = fcmp ogt double {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, av, bv));
+            t
+        }
         other => panic!("codegen: unsupported node in f64 context: {:?}", other),
     }
 }
@@ -785,6 +1113,10 @@ fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &
             Ty::F64 => {
                 let v = emit_float(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::F64));
+            }
+            Ty::Bool => {
+                let v = emit_bool(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::Bool));
             }
             Ty::VecI64 => materialize_vec_lit(value, name, c, mdl),
             _ => {
@@ -865,12 +1197,21 @@ fn call_user(
             }
             Ty::I64 => {
                 let v = emit_int(expr, c, mdl, sigs);
-                ll_args.push(v);
+                ll_args.push(format!("i64 {}", v));
             }
-            Ty::Bool => panic!("codegen: bool args land in the next task"),
+            Ty::Bool => {
+                let v = emit_bool(expr, c, mdl, sigs);
+                ll_args.push(format!("i1 {}", v));
+            }
         }
     }
-    let ret_ll = if *ret_ty == Ty::F64 { "double" } else { "i64" };
+    let ret_ll = if *ret_ty == Ty::Bool {
+        "i1"
+    } else if *ret_ty == Ty::F64 {
+        "double"
+    } else {
+        "i64"
+    };
     let t = c.temp();
     c.line(&format!(
         "  {} = call {} @{}({})",
@@ -949,10 +1290,21 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 }
             }
             HReduce::Closure {
-                init, src, body, ..
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
             } => {
                 collect_vars(init, f);
                 collect_vars(src, f);
+                for m in maps {
+                    collect_vars(&m.body, f);
+                }
+                for fl in filters {
+                    collect_vars(&fl.body, f);
+                }
                 collect_vars(body, f);
             }
         },

@@ -65,23 +65,23 @@ fn emits_loop_with_even_filter_and_square_map() {
          (defn fused [xs :- vec] :- i64
            (reduce + 0 (map square (filter even? xs))))",
     );
-    // loop body has and + icmp ne for even? predicate
+    // loop body has and + icmp eq for even? predicate (now bool)
     assert!(ir.contains("and i64"));
-    assert!(ir.contains("icmp ne i64"));
+    assert!(ir.contains("icmp eq i64"));
     // map square body: mul i64
     assert!(ir.contains("mul i64"));
 }
 
 #[test]
-fn even_predicate_inverts_low_bit() {
-    // `even?` must be true when the low bit is clear: and %x,1 then xor 1.
+fn even_predicate_reads_low_bit_set() {
+    // `even?` is true when the low bit is clear: and %x,1 then icmp eq 0 (i1).
     let ir = emit(
         "(defn square [x :- i64] :- i64 (* x x))
          (defn fused [xs :- vec] :- i64
            (reduce + 0 (map square (filter even? xs))))",
     );
     assert!(ir.contains("and i64"));
-    assert!(ir.contains("xor i64"));
+    assert!(ir.contains("icmp eq i64"));
 }
 
 #[test]
@@ -103,4 +103,68 @@ fn emits_variadic_let_chaining() {
     );
     // just smoke-test: compile to IR without panicking
     assert!(ir.contains("define double @foo("));
+}
+
+#[test]
+fn if_emits_phi_merge() {
+    let ir = emit("(defn f [x :- i64 n :- i64] :- i64 (if (< x n) x n))");
+    assert!(ir.contains("icmp slt i64"));
+    assert!(ir.contains("phi i64"));
+}
+
+#[test]
+fn and_emits_short_circuit_phi() {
+    let ir = emit(
+        "(defn count-even-below [xs :- vec n :- i64] :- i64
+           (reduce (fn [acc x] (if (and (even? x) (< x n)) (+ acc 1) acc)) 0 xs))",
+    );
+    assert!(ir.contains("phi i1"));
+    assert!(ir.contains("icmp slt i64"));
+}
+
+#[test]
+fn f64_map_stage_converts_element_once() {
+    let ir = emit(
+        "(defn clamp-x [x :- f64 lo :- f64 hi :- f64] :- f64 (min (max x lo) hi))
+         (defn normalize [xs :- vec xsrng :- f64] :- f64
+           (reduce (fn [acc x] (max acc (abs x))) 0.0
+             (map (fn [x] (clamp-x x -1.0 1.0))
+               (map (fn [x] (/ (- (f64 x) xsrng) xsrng)) xs))))",
+    );
+    assert!(ir.contains("sitofp"));
+    assert!(ir.contains("fdiv double"));
+    assert!(ir.contains("fsub double"));
+}
+
+#[test]
+fn filter_branches_on_i1() {
+    let ir = emit(
+        "(defn count-even-below [xs :- vec n :- i64] :- i64
+           (reduce (fn [acc x] (if (< x n) (+ acc 1) acc)) 0 xs))",
+    );
+    assert!(ir.contains("br i1"));
+}
+
+#[test]
+fn capture_is_typed_from_param() {
+    // n is a loop capture and must carry as i64 (from the param), not double.
+    let ir = emit(
+        "(defn count-even-below [xs :- vec n :- i64] :- i64
+           (reduce (fn [acc x] (+ acc (* x n))) 0 xs))",
+    );
+    assert!(ir.contains("i64 %n"));
+    assert!(!ir.contains("double %n"));
+}
+
+#[test]
+fn f64_comparison_uses_fcmp() {
+    let ir = emit("(defn f [a :- f64 b :- f64] :- bool (< a b))");
+    assert!(ir.contains("fcmp olt double"));
+}
+
+#[test]
+fn min_max_use_select() {
+    let ir = emit("(defn f [a :- i64 b :- i64] :- i64 (min a b))");
+    assert!(ir.contains("icmp slt i64"));
+    assert!(ir.contains("select i1"));
 }
