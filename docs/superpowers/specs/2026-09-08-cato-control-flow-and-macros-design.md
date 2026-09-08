@@ -119,12 +119,36 @@ pub enum HExpr {
     And(Box<HExpr>, Box<HExpr>),
     Or(Box<HExpr>, Box<HExpr>),
     Not(Box<HExpr>),
-    Cmp(CmpOp, Box<HExpr>, Box<HExpr>),
-    Abs(Box<HExpr>),
-    Min(Box<HExpr>, Box<HExpr>),
-    Max(Box<HExpr>, Box<HExpr>),
+    Cmp(CmpOp, Box<HExpr>, Box<HExpr>, bool), // …, f64-promoted flag
+    Abs(Box<HExpr>, Ty),                       // operand, result type
+    Min(Box<HExpr>, Box<HExpr>, Ty),
+    Max(Box<HExpr>, Box<HExpr>, Ty),
 }
 ```
+
+`Cmp` carries an explicit `bool` "compare as f64" flag and `Abs`/`Min`/`Max`
+carry their result `Ty`, so codegen never has to re-infer operand types.
+
+**`HReduce::Closure` gains pipeline stages.** Today `lower_reduce` only peels
+`map`/`filter` chains when the reduce head is a symbol op (`(reduce + 0 (map …))`);
+a closure reduce whose source is a `(map …)`/`(filter …)` chain is rejected.
+That is exactly the shape the threading-macro'd `normalize` chain expands to
+(`(reduce (fn …) 0.0 (map f2 (map f1 xs)))`), so it must be supported:
+
+```rust
+pub enum HReduce {
+    Pipeline { combine: BinOp, init: HExpr, maps: Vec<MapSpec>, filters: Vec<FilterSpec>, src: Box<HExpr> },
+    Closure {
+        init: HExpr, src: Box<HExpr>,
+        acc: String, el: String, body: HExpr,
+        maps: Vec<MapSpec>, filters: Vec<FilterSpec>, // empty for a plain closure
+    },
+}
+```
+
+A pipeline-backed closure fuses into the single loop: filters run on the raw
+element, the map chain runs, then the **closure body** (with `acc`/`el` bound to
+the accumulator and the final mapped value) replaces the op `combine`.
 
 `MapSpec` / `FilterSpec` gain exact element and result types:
 
@@ -230,8 +254,10 @@ New:
   the last map stage's output must match the accumulator type (guaranteed by HIR
   stage typing).
 - Closure reduces (`HReduce::Closure`) already choose `emit_float`/`emit_int` by
-  the init type; a boolean `if` inside an `i64` closure body emits via the new
-  `emit_int` `If` path (e.g. `count-even-below`).
+  the init type. A pipeline-backed closure (maps/filters non-empty) emits the
+  chain then runs the closure body as the combine — `acc`/`el` bound as today —
+  instead of `combine_step`. A boolean `if` inside an `i64` closure body emits
+  via the new `emit_int` `If` path (e.g. `count-even-below`).
 
 ### 6.6 Pattern updates required
 
@@ -301,6 +327,8 @@ reduce. **Expected output:** `2` (evens below 6: 2 and 4).
 - `parse_ty("bool")`.
 - `MapSpec.el_ty`/`res_ty` set correctly through an f64 map chain (stage 1
   `el_ty=i64`/`res_ty=f64`, stage 2 `el_ty=f64`).
+- A closure reduce over a `(map …)`/`(filter …)` source lowers to a
+  pipeline-backed `HReduce::Closure` (maps/filters non-empty).
 
 ### 8.3 `tests/codegen_test.rs` additions & updates
 
