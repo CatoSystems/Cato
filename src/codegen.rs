@@ -171,6 +171,38 @@ fn rewrite_body(
             e, fnprefix, idmap, loops, sigs,
         )?)),
         HExpr::Count(e) => HExpr::Count(Box::new(rewrite_body(e, fnprefix, idmap, loops, sigs)?)),
+        HExpr::If(c, t, e, ty) => HExpr::If(
+            Box::new(rewrite_body(c, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(t, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(e, fnprefix, idmap, loops, sigs)?),
+            *ty,
+        ),
+        HExpr::And(a, b) => HExpr::And(
+            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+        ),
+        HExpr::Or(a, b) => HExpr::Or(
+            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+        ),
+        HExpr::Not(v) => HExpr::Not(Box::new(rewrite_body(v, fnprefix, idmap, loops, sigs)?)),
+        HExpr::Cmp(op, a, b, f) => HExpr::Cmp(
+            op.clone(),
+            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            *f,
+        ),
+        HExpr::Abs(v, t) => HExpr::Abs(Box::new(rewrite_body(v, fnprefix, idmap, loops, sigs)?), *t),
+        HExpr::Min(a, b, t) => HExpr::Min(
+            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            *t,
+        ),
+        HExpr::Max(a, b, t) => HExpr::Max(
+            Box::new(rewrite_body(a, fnprefix, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, idmap, loops, sigs)?),
+            *t,
+        ),
         HExpr::Call(name, args) => HExpr::Call(
             name.clone(),
             args.iter()
@@ -553,6 +585,7 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::I64));
                 params.push(format!("i64 {}", r));
             }
+            Ty::Bool => panic!("codegen: bool params land in the next task"),
         }
     }
 
@@ -678,6 +711,14 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             }
             "0".to_string()
         }
+        HExpr::If(..)
+        | HExpr::And(..)
+        | HExpr::Or(..)
+        | HExpr::Not(..)
+        | HExpr::Cmp(..)
+        | HExpr::Abs(..)
+        | HExpr::Min(..)
+        | HExpr::Max(..) => panic!("codegen: control-flow emission lands in the next task"),
         HExpr::ConstF64(v) => panic!("codegen: ConstF64 {} in i64 context", v),
         HExpr::VecLit(_) => panic!("codegen: vec literal in i64 context"),
     }
@@ -826,6 +867,7 @@ fn call_user(
                 let v = emit_int(expr, c, mdl, sigs);
                 ll_args.push(v);
             }
+            Ty::Bool => panic!("codegen: bool args land in the next task"),
         }
     }
     let ret_ll = if *ret_ty == Ty::F64 { "double" } else { "i64" };
@@ -874,6 +916,25 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
         }
         HExpr::ConvF64(e) => collect_vars(e, f),
         HExpr::Count(e) => collect_vars(e, f),
+        HExpr::If(c, t, e, _) => {
+            collect_vars(c, f);
+            collect_vars(t, f);
+            collect_vars(e, f);
+        }
+        HExpr::And(a, b) | HExpr::Or(a, b) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HExpr::Not(v) => collect_vars(v, f),
+        HExpr::Cmp(_, a, b, _) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HExpr::Abs(v, _) => collect_vars(v, f),
+        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline {
                 init, maps, filters, src, ..

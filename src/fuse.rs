@@ -33,6 +33,21 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
+        HExpr::If(c, t, e, ty) => HExpr::If(
+            Box::new(check(c)),
+            Box::new(check(t)),
+            Box::new(check(e)),
+            *ty,
+        ),
+        HExpr::And(a, b) => HExpr::And(Box::new(check(a)), Box::new(check(b))),
+        HExpr::Or(a, b) => HExpr::Or(Box::new(check(a)), Box::new(check(b))),
+        HExpr::Not(v) => HExpr::Not(Box::new(check(v))),
+        HExpr::Cmp(op, a, b, f) => {
+            HExpr::Cmp(op.clone(), Box::new(check(a)), Box::new(check(b)), *f)
+        }
+        HExpr::Abs(v, t) => HExpr::Abs(Box::new(check(v)), *t),
+        HExpr::Min(a, b, t) => HExpr::Min(Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
     }
 }
 

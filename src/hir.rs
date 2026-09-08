@@ -6,6 +6,17 @@ pub enum Ty {
     I64,
     F64,
     VecI64,
+    Bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CmpOp {
+    Eq,
+    Ne,
+    Lt,
+    Gt,
+    Le,
+    Ge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,6 +40,14 @@ pub enum HExpr {
     Call(String, Vec<HExpr>),
     Let(Vec<(String, HExpr, Ty)>, Box<HExpr>),
     Seq(Vec<HExpr>),
+    If(Box<HExpr>, Box<HExpr>, Box<HExpr>, Ty),
+    And(Box<HExpr>, Box<HExpr>),
+    Or(Box<HExpr>, Box<HExpr>),
+    Not(Box<HExpr>),
+    Cmp(CmpOp, Box<HExpr>, Box<HExpr>, bool),
+    Abs(Box<HExpr>, Ty),
+    Min(Box<HExpr>, Box<HExpr>, Ty),
+    Max(Box<HExpr>, Box<HExpr>, Ty),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,6 +65,8 @@ pub enum HReduce {
         acc: String,
         el: String,
         body: HExpr,
+        maps: Vec<MapSpec>,
+        filters: Vec<FilterSpec>,
     },
 }
 
@@ -53,12 +74,15 @@ pub enum HReduce {
 pub struct MapSpec {
     pub el: String,
     pub body: HExpr,
+    pub el_ty: Ty,
+    pub res_ty: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterSpec {
     pub el: String,
     pub body: HExpr,
+    pub el_ty: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -194,6 +218,7 @@ fn parse_ty(s: &str) -> Result<Ty, String> {
         "i64" => Ok(Ty::I64),
         "f64" => Ok(Ty::F64),
         "vec" => Ok(Ty::VecI64),
+        "bool" => Ok(Ty::Bool),
         other => Err(format!("unknown type annotation '{}'", other)),
     }
 }
@@ -266,6 +291,12 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::ConvF64(Box::new(inner)))
                 }
+                "if" => lower_if(items, env, ctx),
+                "and" | "or" => lower_and_or(head, items, env, ctx),
+                "not" => lower_not(items, env, ctx),
+                "=" | "/=" | "<" | ">" | "<=" | ">=" => lower_cmp(head, items, env, ctx),
+                "abs" => lower_abs(items, env, ctx),
+                "min" | "max" => lower_min_max(head, items, env, ctx),
                 "count" => {
                     if items.len() != 2 {
                         return Err("count expects exactly 1 argument".into());
@@ -311,7 +342,6 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     let b = lower(&items[2], env, ctx)?;
                     Ok(promote_bin(op, a, b, env, ctx))
                 }
-                "if" => Err("if is not supported in the slice".into()),
                 _ => {
                     let mut args = Vec::new();
                     for it in &items[1..] {
@@ -324,19 +354,138 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     }
 }
 
+fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
+    if want && cur != Ty::F64 {
+        HExpr::ConvF64(Box::new(e))
+    } else {
+        e
+    }
+}
+
+fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> (HExpr, HExpr) {
+    let at = ty_of(&a, env, ctx);
+    let bt = ty_of(&b, env, ctx);
+    let f = at == Ty::F64 || bt == Ty::F64;
+    (coerce_f64(a, at, f), coerce_f64(b, bt, f))
+}
+
 fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> HExpr {
-    let f64_result = ty_of(&a, env, ctx) == Ty::F64 || ty_of(&b, env, ctx) == Ty::F64;
-    let a = if f64_result && ty_of(&a, env, ctx) != Ty::F64 {
-        HExpr::ConvF64(Box::new(a))
-    } else {
-        a
-    };
-    let b = if f64_result && ty_of(&b, env, ctx) != Ty::F64 {
-        HExpr::ConvF64(Box::new(b))
-    } else {
-        b
-    };
+    let (a, b) = promote_pair(a, b, env, ctx);
     HExpr::Bin(op, Box::new(a), Box::new(b))
+}
+
+fn lower_if(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 4 {
+        return Err("if expects (if cond then else)".into());
+    }
+    let cond = lower(&items[1], env, ctx)?;
+    if ty_of(&cond, env, ctx) != Ty::Bool {
+        return Err("if condition must be boolean".into());
+    }
+    let then = lower(&items[2], env, ctx)?;
+    let els = lower(&items[3], env, ctx)?;
+    let tt = ty_of(&then, env, ctx);
+    let et = ty_of(&els, env, ctx);
+    if tt != et && tt != Ty::F64 && et != Ty::F64 {
+        return Err(format!(
+            "if branches must be the same type, got {:?} and {:?}",
+            tt, et
+        ));
+    }
+    let t = if tt == Ty::F64 || et == Ty::F64 {
+        Ty::F64
+    } else {
+        tt
+    };
+    Ok(HExpr::If(
+        Box::new(cond),
+        Box::new(coerce_f64(then, tt, t == Ty::F64)),
+        Box::new(coerce_f64(els, et, t == Ty::F64)),
+        t,
+    ))
+}
+
+fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 3 {
+        return Err(format!("comparison {} expects 2 operands", op));
+    }
+    let op = match op {
+        "=" => CmpOp::Eq,
+        "/=" => CmpOp::Ne,
+        "<" => CmpOp::Lt,
+        ">" => CmpOp::Gt,
+        "<=" => CmpOp::Le,
+        ">=" => CmpOp::Ge,
+        _ => unreachable!(),
+    };
+    let (a, b) = promote_pair(
+        lower(&items[1], env, ctx)?,
+        lower(&items[2], env, ctx)?,
+        env,
+        ctx,
+    );
+    let is_f64 = ty_of(&a, env, ctx) == Ty::F64;
+    Ok(HExpr::Cmp(op, Box::new(a), Box::new(b), is_f64))
+}
+
+fn lower_and_or(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 3 {
+        return Err(format!("{} expects 2 operands", kind));
+    }
+    let a = lower(&items[1], env, ctx)?;
+    let b = lower(&items[2], env, ctx)?;
+    if ty_of(&a, env, ctx) != Ty::Bool || ty_of(&b, env, ctx) != Ty::Bool {
+        return Err(format!("{} expects boolean operands", kind));
+    }
+    Ok(if kind == "and" {
+        HExpr::And(Box::new(a), Box::new(b))
+    } else {
+        HExpr::Or(Box::new(a), Box::new(b))
+    })
+}
+
+fn lower_not(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 2 {
+        return Err("not expects 1 operand".into());
+    }
+    let e = lower(&items[1], env, ctx)?;
+    if ty_of(&e, env, ctx) != Ty::Bool {
+        return Err("not expects a boolean operand".into());
+    }
+    Ok(HExpr::Not(Box::new(e)))
+}
+
+fn lower_abs(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 2 {
+        return Err("abs expects 1 operand".into());
+    }
+    let e = lower(&items[1], env, ctx)?;
+    let t = ty_of(&e, env, ctx);
+    if t != Ty::I64 && t != Ty::F64 {
+        return Err("abs expects an i64 or f64 operand".into());
+    }
+    Ok(HExpr::Abs(Box::new(e), t))
+}
+
+fn lower_min_max(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 3 {
+        return Err(format!("{} expects 2 operands", kind));
+    }
+    let (a, b) = promote_pair(
+        lower(&items[1], env, ctx)?,
+        lower(&items[2], env, ctx)?,
+        env,
+        ctx,
+    );
+    let t = ty_of(&a, env, ctx);
+    if t != Ty::I64 && t != Ty::F64 {
+        return Err(format!("{} expects i64/f64 operands", kind));
+    }
+    Ok(if kind == "min" {
+        HExpr::Min(Box::new(a), Box::new(b), t)
+    } else {
+        HExpr::Max(Box::new(a), Box::new(b), t)
+    })
 }
 
 fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
@@ -362,6 +511,7 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
                 if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 }
             }
         },
+        HExpr::Call(name, _) if name == "even?" => Ty::Bool,
         HExpr::Call(name, _) => ctx
             .raw_by_name
             .get(name.as_str())
@@ -369,6 +519,9 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
             .unwrap_or(Ty::I64),
         HExpr::Let(_, b) => ty_of(b, env, ctx),
         HExpr::Seq(v) => v.last().map(|x| ty_of(x, env, ctx)).unwrap_or(Ty::I64),
+        HExpr::If(_, _, _, t) => *t,
+        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(_) | HExpr::Cmp(..) => Ty::Bool,
+        HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
     }
 }
 
@@ -439,10 +592,11 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             let el = param_name(&params[1])?;
             let init = lower(&items[2], env, ctx)?;
             let init_ty = ty_of(&init, env, ctx);
-            let src = lower(&items[3], env, ctx)?;
+            let (src, maps, filters) = pipeline_src(&items[3], env, ctx)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
             let mut child = env.clone();
             child.insert(acc.clone(), init_ty);
-            child.insert(el.clone(), Ty::I64);
+            child.insert(el.clone(), el_ty);
             let body = lower(&fnitems[2], &child, ctx)?;
             Ok(HExpr::Reduce(Box::new(HReduce::Closure {
                 init,
@@ -450,6 +604,8 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 acc,
                 el,
                 body,
+                maps,
+                filters,
             })))
         }
     }
@@ -481,8 +637,14 @@ fn pipeline_src(
             return Err("map expects (map <fn> <src>)".into());
         }
         let (inner, mut maps, filters) = pipeline_src(&items[2], env, ctx)?;
-        let (el, body) = lambda_spec(&items[1], env, ctx)?;
-        maps.push(MapSpec { el, body });
+        let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+        let (el, body, res_ty) = lambda_spec(&items[1], el_ty, env, ctx)?;
+        maps.push(MapSpec {
+            el,
+            body,
+            el_ty,
+            res_ty,
+        });
         // maps is inner-first; push keeps it inner-first.
         Ok((inner, maps, filters))
     } else if head == "filter" {
@@ -490,15 +652,24 @@ fn pipeline_src(
             return Err("filter expects (filter <fn> <src>)".into());
         }
         let (inner, maps, mut filters) = pipeline_src(&items[2], env, ctx)?;
-        let (el, body) = lambda_spec(&items[1], env, ctx)?;
-        filters.push(FilterSpec { el, body });
+        let (el, body, _) = lambda_spec(&items[1], Ty::I64, env, ctx)?;
+        filters.push(FilterSpec {
+            el,
+            body,
+            el_ty: Ty::I64,
+        });
         Ok((inner, maps, filters))
     } else {
         Ok((lower(src, env, ctx)?, Vec::new(), Vec::new()))
     }
 }
 
-fn lambda_spec(f: &Expr, env: &Env, ctx: &Ctx) -> Result<(String, HExpr), String> {
+fn lambda_spec(
+    f: &Expr,
+    el_ty: Ty,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<(String, HExpr, Ty), String> {
     match f {
         Expr::List(items) => {
             // Inline (fn [el] body)
@@ -519,20 +690,27 @@ fn lambda_spec(f: &Expr, env: &Env, ctx: &Ctx) -> Result<(String, HExpr), String
             }
             let el = param_name(&params[0])?;
             let mut child = env.clone();
-            child.insert(el.clone(), Ty::I64);
+            child.insert(el.clone(), el_ty);
             let body = lower(&items[2], &child, ctx)?;
-            Ok((el, body))
+            let res_ty = ty_of(&body, &child, ctx);
+            Ok((el, body, res_ty))
         }
-        Expr::LitSym(name) => resolve_function_ref(name, env, ctx),
+        Expr::LitSym(name) => resolve_function_ref(name, el_ty, env, ctx),
         _ => Err("map/filter arg must be a function".into()),
     }
 }
 
-fn resolve_function_ref(name: &str, env: &Env, ctx: &Ctx) -> Result<(String, HExpr), String> {
+fn resolve_function_ref(
+    name: &str,
+    el_ty: Ty,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<(String, HExpr, Ty), String> {
     if name == "even?" {
         return Ok((
             "x".to_string(),
             HExpr::Call("even?".to_string(), vec![HExpr::Var("x".to_string())]),
+            Ty::Bool,
         ));
     }
     match ctx.raw_by_name.get(name) {
@@ -542,14 +720,14 @@ fn resolve_function_ref(name: &str, env: &Env, ctx: &Ctx) -> Result<(String, HEx
             }
             let el = raw.params[0].0.clone();
             let mut child = env.clone();
-            child.insert(el.clone(), Ty::I64);
+            child.insert(el.clone(), el_ty);
             let body = match &raw.body {
                 Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
                     lower_body_forms(items, &child, ctx)?
                 }
                 _ => lower(&raw.body, &child, ctx)?,
             };
-            Ok((el, body))
+            Ok((el, body, raw.ret))
         }
         None => Err(format!("unknown function in map/filter: {}", name)),
     }
