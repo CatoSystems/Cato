@@ -7,7 +7,9 @@ fn main() {
         .unwrap_or_else(|e| { eprintln!("cato: cannot read {}: {}", file, e); std::process::exit(2); });
     let parsed = cato::reader::read_all(&src)
         .unwrap_or_else(|e| { eprintln!("cato: parse error: {}", e); std::process::exit(2); });
-    let fns = cato::hir::build(&parsed)
+    let expanded = cato::expand::expand_all(&parsed)
+        .unwrap_or_else(|e| { eprintln!("cato: macro error: {}", e); std::process::exit(2); });
+    let fns = cato::hir::build(&expanded)
         .unwrap_or_else(|e| { eprintln!("cato: semantic error: {}", e); std::process::exit(2); });
     let fused: Vec<cato::hir::Defn> = fns
         .into_iter()
