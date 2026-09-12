@@ -1,0 +1,251 @@
+use super::*;
+
+
+pub(crate) fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) {
+    let HExpr::VecLit(lit) = value else {
+        panic!("codegen: can only materialize vector literal bindings")
+    };
+    let (label, len, elem) = mdl.mint_vec(lit);
+    let t_v = c.temp();
+    c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
+    c.line(&format!(
+        "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
+        label, len, len, t_v
+    ));
+    let t_lv = c.temp();
+    c.line(&format!("  {} = load %VecI64, ptr {}, align 8", t_lv, t_v));
+    let t_d = c.temp();
+    let t_l = c.temp();
+    c.line(&format!("  {} = extractvalue %VecI64 {}, 0", t_d, t_lv));
+    c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
+    c.vecs.insert(name.to_string(), (t_d, t_l, elem));
+}
+
+/// Load a growable binding's current (ptr, len) — reads the live header.
+
+pub(crate) fn grow_val(c: &mut FnCtx, name: &str) -> (String, String, Elem) {
+    let (slot, elem) = c
+        .grow
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("codegen: {} is not a growable binding", name));
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf, slot
+    ));
+    let p = c.temp();
+    c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf, slot
+    ));
+    let l = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+    (p, l, elem)
+}
+
+/// Emit a body expression in (ptr, len) vector-value position: growable
+/// bindings load their live header; lets free-stand by emitting their
+/// bindings first.
+
+pub(crate) fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String, Elem) {
+    match expr {
+        HExpr::Var(v) => {
+            if c.grow.contains_key(v) {
+                return grow_val(c, v);
+            }
+            c.vecs
+                .get(v)
+                .cloned()
+                .unwrap_or_else(|| panic!("codegen: {} is not a vector binding", v))
+        }
+        HExpr::VecLit(lit) => {
+            let (label, len, elem) = mdl.mint_vec(lit);
+            let t_v = c.temp();
+            c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
+            c.line(&format!(
+                "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
+                label, len, len, t_v
+            ));
+            let t_lv = c.temp();
+            c.line(&format!("  {} = load %VecI64, ptr {}, align 8", t_lv, t_v));
+            let t_d = c.temp();
+            let t_l = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 0", t_d, t_lv));
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
+            (t_d, t_l, elem)
+        }
+        _ => panic!("codegen: unsupported vector argument"),
+    }
+}
+
+pub(crate) fn emit_str_val(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    _sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match e {
+        HExpr::StrLit(s) => {
+            let label = mdl.mint_str(s);
+            let n = s.bytes().count() + 1;
+            let p = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds [{} x i8], ptr {}, i32 0, i32 0",
+                p, n, label
+            ));
+            p
+        }
+        HExpr::Var(v) => c
+            .scalar
+            .get(v)
+            .map(|(r, _)| r.clone())
+            .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
+        other => panic!("codegen: expected a string expression, got {:?}", other),
+    }
+}
+
+
+/// `(get vec idx [default])` — branchless bounds-checked element load. The
+/// result has the vector's element type, so this is valid in int and float
+/// contexts alike.
+pub(crate) fn emit_get(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let HExpr::Get {
+        src,
+        idx,
+        default,
+        ty,
+    } = e
+    else {
+        panic!("codegen: emit_get on non-get")
+    };
+    let (d, l, elem) = vec_arg(src, c, mdl);
+    let ll = mdl.elem_ll(elem);
+    let iv = emit_int(idx, c, mdl, sigs);
+    let inb = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
+    let safe = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        p, ll, d, safe
+    ));
+    let v = c.temp();
+    c.line(&format!("  {} = load {}, ptr {}, align 8", v, ll, p));
+    match default {
+        Some(dv) => {
+            let dvv = emit_typed(dv, *ty, c, mdl, sigs);
+            let r = c.temp();
+            c.line(&format!(
+                "  {} = select i1 {}, {} {}, {} {}",
+                r,
+                inb,
+                ll,
+                v,
+                ll,
+                dvv
+            ));
+            r
+        }
+        None if *ty == Ty::I64 => {
+            let r = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, v));
+            r
+        }
+        None => v,
+    }
+}
+
+pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) {
+    for (name, value, ty) in binds {
+        // Calls returning vectors bind as plain (read-only) vec values.
+        if let HExpr::Call(..) = value {
+            if let Ty::Vec(el) = *ty {
+                let (p, l, _) = emit_vec_call(value, c, mdl, sigs);
+                c.vecs.insert(name.clone(), (p, l, el));
+                continue;
+            }
+        }
+        // Heap-constructing values bind as growable slots.
+        match value {
+            HExpr::Conj { v, x, elem } => {
+                let slot = emit_conj(v, x, *elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *elem));
+                continue;
+            }
+            HExpr::Subvec {
+                v,
+                start,
+                end,
+                elem,
+            } => {
+                let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *elem));
+                continue;
+            }
+            HExpr::For {
+                el,
+                src,
+                elem,
+                body,
+                res_elem,
+            } => {
+                let slot = emit_for(el, src, *elem, body, *res_elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *res_elem));
+                continue;
+            }
+            HExpr::StrCat(args) => {
+                let p = emit_strcat(args, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (p, Ty::Str));
+                continue;
+            }
+            HExpr::MapLit(pairs) => {
+                let slot = emit_map_lit(pairs, c, mdl, sigs);
+                c.growm.insert(name.clone(), (slot, Ty::Map));
+                continue;
+            }
+            HExpr::MapAssoc { m, k, v } => {
+                let slot = emit_map_assoc(value, c, mdl, sigs);
+                c.growm.insert(name.clone(), (slot, Ty::Map));
+                let _ = (m, k, v);
+                continue;
+            }
+            _ => {}
+        }
+        match ty {
+            Ty::F64 => {
+                let v = emit_float(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::F64));
+            }
+            Ty::Bool => {
+                let v = emit_bool(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::Bool));
+            }
+            Ty::Str => {
+                let v = emit_str_val(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::Str));
+            }
+            Ty::I32 => {
+                let v = emit_int(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::I32));
+            }
+            Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
+            Ty::Adt(_) => {
+                let v = emit_adt(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, *ty));
+            }
+            _ => {
+                let v = emit_int(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::I64));
+            }
+        }
+    }
+}

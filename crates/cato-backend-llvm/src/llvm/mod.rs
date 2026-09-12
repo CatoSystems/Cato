@@ -1,0 +1,157 @@
+//! LLVM IR emission, split by concern: module assembly (this file), function
+//! context, loop hoisting and emission, scalar emitters, ADTs, and heap
+//! construction. All items are crate-internal; the public surface is
+//! `LlvmBackend` plus the legacy free functions re-exported by the crate root.
+
+mod comprehension;
+mod adt;
+mod analysis;
+mod calls;
+mod emit_loop;
+mod exprs;
+mod exprs_val;
+mod exprs_flow;
+mod fnctx;
+mod funcs;
+mod heap_map;
+mod heap_vec;
+mod loops_spec;
+mod rewrite;
+mod state;
+
+pub(crate) use adt::*;
+pub(crate) use comprehension::*;
+pub(crate) use analysis::*;
+pub(crate) use calls::*;
+pub(crate) use emit_loop::*;
+pub(crate) use exprs::*;
+pub(crate) use exprs_val::*;
+pub(crate) use exprs_flow::*;
+pub(crate) use fnctx::*;
+pub(crate) use funcs::*;
+pub(crate) use heap_map::*;
+pub(crate) use heap_vec::*;
+pub(crate) use loops_spec::*;
+pub(crate) use rewrite::*;
+pub(crate) use state::*;
+
+use cato_core::hir::*;
+use cato_core::{hir::AdtDef, hir::Defn, Backend};
+use std::collections::HashMap;
+
+pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
+    emit_module_fast(adts, fns, false)
+}
+
+pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
+    // Signature table: callee name -> (ret, param types). Includes declared
+    // defns and hoisted loop helpers.
+    let mut sigs: HashMap<String, (Ty, Vec<Ty>)> = HashMap::new();
+    for d in fns {
+        sigs.insert(
+            d.name.clone(),
+            (d.ret, d.params.iter().map(|(_, t)| *t).collect()),
+        );
+    }
+
+    let mut loops: Vec<LoopSpec> = Vec::new();
+    let mut idmap: HashMap<String, usize> = HashMap::new();
+    let mut plain: Vec<Defn> = Vec::new();
+    let mut mdl = Mdl::new(adts.to_vec(), fast);
+
+    for d in fns {
+        if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
+            // Top-level loop defn: the function IS the helper. (main is
+            // always emitted as a plain function so its i32 ABI is kept.)
+            let reduce = match &d.body {
+                HExpr::Reduce(r) => (**r).clone(),
+                _ => unreachable!(),
+            };
+            loops.push(make_loop_spec(&mangle(&d.name), reduce, &d.params));
+        } else {
+            let body = rewrite_body(
+                &d.body,
+                &mangle(&d.name),
+                &d.params,
+                &mut idmap,
+                &mut loops,
+                &mut sigs,
+            )
+            .unwrap_or_else(|e| panic!("codegen: {}", e));
+            let mut nd = d.clone();
+            nd.body = body;
+            plain.push(nd);
+        }
+    }
+
+    let mut output: Vec<String> = Vec::new();
+
+    output.push("; cato: generated LLVM IR (vertical slice)".to_string());
+    output.push("%VecI64 = type { ptr, i64, i64 }".to_string());
+    for adt in adts {
+        let n = adt.variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+        output.push(format!("%{} = type {{ i64, [{} x i64] }}", adt.name, n));
+    }
+    output.push(String::new());
+
+    output.push("declare void @cato_print_f64(double)".to_string());
+    output.push("declare void @cato_print_i64(i64)".to_string());
+    output.push("declare void @cato_print_string(ptr)".to_string());
+
+    for spec in &loops {
+        output.push(String::new());
+        output.push(emit_loop(spec, &mut mdl, &sigs));
+    }
+    for defn in &plain {
+        output.push(String::new());
+        if defn.is_extern {
+            output.push(emit_extern_decl(defn, &mut mdl));
+        } else {
+            output.push(emit_plain(defn, &mut mdl, &sigs));
+        }
+    }
+
+    if fast {
+        output.push(String::new());
+        output.push("!0 = distinct !{!0, !1}".to_string());
+        output.push("!1 = !{!\"llvm.loop.vectorize.enable\", i1 true}".to_string());
+    }
+
+    // Runtime-helper declares minted during emission belong at module top.
+    for d in &mdl.decls {
+        let i = output
+            .iter()
+            .position(|l| l.starts_with("declare void @cato_print_i64"))
+            .unwrap_or(0);
+        output.insert(i + 1, d.clone());
+        output.insert(i + 1, String::new());
+    }
+
+    // Vec-literal globals minted during emission belong at module top.
+    for g in mdl.globals() {
+        let i = output
+            .iter()
+            .position(|l| l.starts_with("declare void @cato_print_i64"))
+            .unwrap_or(0);
+        output.insert(i + 1, g.clone());
+        output.insert(i + 1, String::new());
+    }
+
+    output.join("\n")
+}
+
+/// The LLVM IR backend. `fast` attaches vectorization metadata to fused
+/// loops (`--fast`).
+pub struct LlvmBackend {
+    pub fast: bool,
+}
+
+impl Backend for LlvmBackend {
+    fn name(&self) -> &'static str {
+        "llvm"
+    }
+
+    fn emit(&self, program: &cato_core::Program) -> Result<String, String> {
+        Ok(emit_module_fast(&program.adts, &program.defns, self.fast))
+    }
+}
