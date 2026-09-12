@@ -401,6 +401,12 @@ fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         },
+        HExpr::Clone(inner) => {
+            HExpr::Clone(Box::new(rewrite_body(inner, fnprefix, params, idmap, loops, sigs)?))
+        }
+        HExpr::DropStmt(inner) => HExpr::DropStmt(Box::new(rewrite_body(
+            inner, fnprefix, params, idmap, loops, sigs,
+        )?)),
         HExpr::Get {
             src,
             idx,
@@ -1232,6 +1238,7 @@ fn has_ctl(e: &HExpr) -> bool {
         }
         HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
+        HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
         HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
         HExpr::Get { idx, default, .. } => {
@@ -1508,6 +1515,20 @@ fn emit_adt(
             }
             slot
         }
+        // clone: materialize a fresh slot and copy the struct by value.
+        HExpr::Clone(inner) => {
+            let v = emit_adt(inner, c, mdl, sigs);
+            let ai = adt_of(inner, c, sigs);
+            let name = mdl.adt_name(ai);
+            let slot = c.temp();
+            c.prelude
+                .push(format!("  {} = alloca {}, align 8", slot, name));
+            let lv = c.temp();
+            c.line(&format!("  {} = load {}, ptr {}, align 8", lv, name, v));
+            c.line(&format!("  store {} {}, ptr {}, align 8", name, lv, slot));
+            slot
+        }
+        HExpr::DropStmt(_) => panic!("codegen: drop produces no ADT value"),
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(..) => call_user_node(e, c, mdl, sigs),
         other => panic!("codegen: expected an ADT expression, got {:?}", other),
@@ -1728,6 +1749,8 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             "0".to_string()
         }
         HExpr::Get { ty: Ty::I64, .. } => emit_get(e, c, mdl, sigs),
+        HExpr::Clone(inner) => emit_int(inner, c, mdl, sigs),
+        HExpr::DropStmt(_) => "0".to_string(),
         HExpr::Get { ty, .. } => panic!(
             "codegen: get returning {:?} in i64 context (expected F64 context)",
             ty
@@ -1796,6 +1819,7 @@ fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (T
     match e {
         HExpr::ConstF64(v) => llvm_f64(*v),
         HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
+        HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
         HExpr::Var(v) => {
             let (r, _) = c.scalar.get(v).expect("known f64 var");
             r.clone()
@@ -2113,6 +2137,7 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {    match h {
             collect_vars(b, f);
         }
         HExpr::Abs(v, _) => collect_vars(v, f),
+        HExpr::Clone(v) | HExpr::DropStmt(v) => collect_vars(v, f),
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
             collect_vars(a, f);
             collect_vars(b, f);

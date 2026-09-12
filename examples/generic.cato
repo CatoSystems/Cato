@@ -11,9 +11,11 @@
 (defn gmax [xs :- (Vector T)] :- T
   (reduce (fn [acc x] (if (> x acc) x acc)) 0 xs))
 
-; Explicit element-typed vector annotations.
+; Explicit element-typed vector annotations. The count is bound before
+; gsum moves xs — use-after-move is a compile error.
 (defn mean [xs :- (Vector f64)] :- f64
-  (/ (gsum xs) (f64 (count xs))))
+  (let [n (count xs)]
+    (/ (gsum xs) (f64 n))))
 
 ; Element-typed fused sources: take/drop/zip over f64 vectors.
 (defn f64-window [xs :- (Vector f64) ys :- (Vector f64)] :- f64

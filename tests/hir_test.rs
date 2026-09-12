@@ -475,3 +475,85 @@ fn rejects_incompatible_generic_instantiation() {
         err
     );
 }
+
+// --- Phase 7: ownership & borrows ---
+
+const BOX_DEFTYPE: &str = "(deftype Box (Box [v :- i64]))";
+
+#[test]
+fn use_after_move_is_rejected() {
+    let err = build_err(&format!(
+        "{}\n(defn consume [b :- Box] :- i64 (match b (Box [v] v) (_ 0)))
+         (defn main []
+           (let [b (Box 1)]
+             (do (consume b) (consume b))))",
+        BOX_DEFTYPE
+    ));
+    assert!(err.contains("use of moved value b"), "got: {}", err);
+}
+
+#[test]
+fn double_move_in_one_call_is_rejected() {
+    // Distinct values are fine...
+    let ok = format!(
+        "{}\n(defn take2 [a :- Box b :- Box] :- i64 a)\n(defn main [] (take2 (Box 1) (Box 2)))",
+        BOX_DEFTYPE
+    );
+    assert!(build(&read_all(&ok).unwrap()).is_ok());
+    // ...the same binding twice is not.
+    let bad = format!(
+        "{}\n(defn take2 [a :- Box b :- Box] :- i64 a)\n(defn bad [b :- Box] :- i64 (take2 b b))",
+        BOX_DEFTYPE
+    );
+    let err = build(&read_all(&bad).unwrap()).unwrap_err();
+    assert!(err.contains("use of moved value b"), "got: {}", err);
+}
+
+#[test]
+fn shared_borrows_keep_the_value_usable() {
+    let exprs = read_all(&format!(
+        "{}\n(defn peek [b :- &Box] :- i64 (match b (Box [v] v) (_ 0)))
+         (defn main []
+           (let [b (Box 1)]
+             (do (peek b) (peek b) (print-i64 (match b (Box [v] v) (_ 0))))))",
+        BOX_DEFTYPE
+    ))
+    .unwrap();
+    assert!(build(&exprs).is_ok());
+}
+
+#[test]
+fn overlapping_exclusive_borrows_are_rejected() {
+    let exprs = read_all(&format!(
+        "{}\n(defn f [a :- &!Box b :- &!Box] :- i64 a)
+         (defn main [] (let [b (Box 1)] (f b b)))",
+        BOX_DEFTYPE
+    ))
+    .unwrap();
+    let err = build(&exprs).unwrap_err();
+    assert!(err.contains("exclusively more than once"), "got: {}", err);
+}
+
+#[test]
+fn clone_keeps_the_source_usable() {
+    let exprs = read_all(&format!(
+        "{}\n(defn consume [b :- Box] :- i64 (match b (Box [v] v) (_ 0)))
+         (defn main []
+           (let [b (Box 1)]
+             (do (consume (clone b)) (consume b))))",
+        BOX_DEFTYPE
+    ))
+    .unwrap();
+    assert!(build(&exprs).is_ok());
+}
+
+#[test]
+fn drop_ends_a_binding() {
+    let err = build_err(&format!(
+        "{}\n(defn main []
+           (let [b (Box 1)]
+             (do (drop b) (match b (Box [v] v) (_ 0)))))",
+        BOX_DEFTYPE
+    ));
+    assert!(err.contains("use of moved value b"), "got: {}", err);
+}

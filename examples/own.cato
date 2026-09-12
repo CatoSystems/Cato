@@ -1,0 +1,39 @@
+; own.cato — Phase 7 reference program: ownership & borrows.
+;
+; Non-Copy values (ADTs, vectors) move when passed by value; `&` params
+; borrow immutably and `&!` exclusively (two exclusive borrows of the same
+; binding in one call are a compile error); `clone` copies explicitly;
+; `drop` releases. All enforcement is compile-time — the emitted ABI is
+; identical, so it costs nothing at runtime.
+
+(deftype Box (Box [v :- i64]))
+
+(defn consume [b :- Box] :- i64
+  (match b (Box [v] v) (_ 0)))
+
+; shared borrow: b stays with the caller
+(defn peek [b :- &Box] :- i64
+  (match b (Box [v] v) (_ 0)))
+
+; exclusive borrows in the same call are checked for overlap
+(defn peek2 [a :- &!Box b :- &!Box] :- i64
+  (+ (match a (Box [v] v) (_ 0)) (match b (Box [v] v) (_ 0))))
+
+(defn reuse [b :- Box] :- i64
+  (let [shared (peek b)
+        copied (clone b)
+        taken  (consume b)]
+    (+ shared (+ taken (consume copied)))))
+
+; use-after-move is a compile error:
+;   (let [b (Box 1)] (do (consume b) (consume b)))   <-- rejected
+; drop ends a binding without a heap (match borrows, it doesn't move):
+(defn consume-and-drop [b :- Box] :- i64
+  (let [v (match b (Box [x] x) (_ 0))
+        _ (drop b)]
+    v))
+
+(defn main []
+  (print-i64 (reuse (Box 41)))          ; 41 + 41 + 41 = 123
+  (print-i64 (peek2 (Box 1) (Box 2)))   ; 3
+  (print-i64 (consume-and-drop (Box 7)))) ; 7

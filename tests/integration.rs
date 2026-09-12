@@ -129,3 +129,10 @@ fn compiles_generic_to_expected_output() {
         "10\n2.5\n7.25\n9\n2.5\n50\n"
     );
 }
+
+#[test]
+fn compiles_own_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/own.cato")).unwrap();
+    assert_eq!(compile_and_run("own", &src), "123\n3\n7\n");
+}

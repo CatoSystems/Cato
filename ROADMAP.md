@@ -78,22 +78,23 @@ Shipped and green on `main` (`cargo test`):
   (`gsum__i64`, `gsum__f64`), fully unboxed. Generic bodies follow the `if`
   promotion rule for f64 elements.
   Reference program: `examples/generic.cato` → `10 2.5 7.25 9 2.5 50`.
+- **Slice 7 — Ownership & borrows (enforcement layer).**
+  Non-Copy values (ADTs, vectors) move on by-value use; `&` shared and `&!`
+  exclusive borrows on params; `clone` and `drop`; flow-sensitive
+  use-after-move checking in the HIR pipeline with branch-merge soundness.
+  Compile-time only — the ABI is unchanged, so borrows cost nothing.
+  Reference program: `examples/own.cato` → `123 3 7`.
 
 Current type system: `i64`, `f64`, `bool`, vectors (`(Vector i64)` /
 `(Vector f64)`, type-parameterized), user ADTs (scalar payload fields).
 
 ## Roadmap
 
-### Phase 7 — Ownership & borrowing *(next)*
+### Phase 7b — Ownership: heap & escapes *(next)*
 
-The language's differentiator: Rust-style memory safety expressed in Clojure
-form — `&` immutable borrows, `&!` exclusive borrows, `clone`/`drop` — enforced
-at compile time with zero runtime overhead.
-
-- Borrow-check pass in the HIR pipeline; no use-after-move, no concurrent
-  exclusive borrows.
-- Frees the `noalias` story to extend to user pointers and enables heap use for
-  escaping values.
+The remaining half of Phase 7, enabled by the enforcement layer: heap
+allocation for escaping values, `noalias` extended to user pointers, runtime
+drop glue — unlocking `conj`/`subvec`/`for` (deferred from Phase 4).
 
 ### Phase 8 — Maps, sets & strings
 

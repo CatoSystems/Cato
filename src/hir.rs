@@ -91,6 +91,12 @@ pub enum HExpr {
         arms: Vec<HArm>,
         ty: Ty,
     },
+    /// `(clone x)` — an explicit copy of a non-Copy value; the source stays
+    /// usable. For ADTs this materializes a fresh stack slot.
+    Clone(Box<HExpr>),
+    /// `(drop x)` — releases a non-Copy binding (a no-op without a heap),
+    /// marking it moved: using it afterwards is a compile error.
+    DropStmt(Box<HExpr>),
     /// `(get vec idx)` / `(get vec idx default)` — runtime-bounds-checked
     /// element load, emitted branchlessly (select, no basic blocks).
     Get {
@@ -178,6 +184,8 @@ pub struct Defn {
     pub params: Vec<(String, Ty)>,
     pub ret: Ty,
     pub body: HExpr,
+    /// Borrow kind per param (same length as `params`).
+    pub borrows: Vec<Borrow>,
 }
 
 type Env = HashMap<String, Ty>;
@@ -186,6 +194,7 @@ struct RawDefn {
     name: String,
     params: Vec<(String, Ty)>,
     ret: Ty,
+    borrows: Vec<Borrow>,
     /// Type parameter names, in declaration order (indexed by `Ty::Param`).
     /// Empty for concrete defns.
     ty_params: Vec<String>,
@@ -281,10 +290,20 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
             params: raw.params.clone(),
             ret: raw.ret,
             body,
+            borrows: raw.borrows.clone(),
         });
     }
     // Monomorphized generic instantiations generated during lowering.
     out.extend(ctx.inst.borrow_mut().extra.drain(..));
+
+    // Ownership / borrow check: needs every callee's borrow kinds.
+    let sigs: HashMap<String, Vec<Borrow>> = out
+        .iter()
+        .map(|d| (d.name.clone(), d.borrows.clone()))
+        .collect();
+    for d in &out {
+        check_ownership(d, &sigs)?;
+    }
     Ok((adts, out))
 }
 
@@ -358,6 +377,213 @@ fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Ownership / borrow checking
+// ---------------------------------------------------------------------------
+
+/// Types that move: ADTs and vectors. Scalars are Copy.
+fn is_non_copy(ty: Ty) -> bool {
+    matches!(ty, Ty::Adt(_) | Ty::Vec(_))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum VState {
+    Owned,
+    Moved,
+}
+
+struct BCheck<'a> {
+    /// callee name -> per-param borrow kinds (owned by default)
+    sigs: &'a HashMap<String, Vec<Borrow>>,
+    errs: Vec<String>,
+}
+
+impl<'a> BCheck<'a> {
+    /// Borrow kinds of a callee; builtins never consume.
+    fn kinds_of(&self, name: &str, arity: usize) -> Vec<Borrow> {
+        if let Some(b) = self.sigs.get(name) {
+            return b.clone();
+        }
+        match name {
+            "count" | "even?" | "print-i64" | "print-f64" | "get" => {
+                vec![Borrow::Shared; arity]
+            }
+            "clone" | "drop" => vec![Borrow::Shared; arity],
+            _ => vec![Borrow::Owned; arity],
+        }
+    }
+
+    fn use_var(&mut self, v: &str, tys: &HashMap<String, Ty>, st: &HashMap<String, VState>) {
+        if let Some(ty) = tys.get(v) {
+            if is_non_copy(*ty) && st.get(v) == Some(&VState::Moved) {
+                self.errs.push(format!("use of moved value {}", v));
+            }
+        }
+    }
+
+    fn check(
+        &mut self,
+        e: &HExpr,
+        tys: &mut HashMap<String, Ty>,
+        st: &mut HashMap<String, VState>,
+    ) {
+        match e {
+            HExpr::Var(v) => self.use_var(v, tys, st),
+            HExpr::Clone(inner) => self.check(inner, tys, st),
+            HExpr::DropStmt(inner) => {
+                self.check(inner, tys, st);
+                if let HExpr::Var(v) = &**inner {
+                    if tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) {
+                        st.insert(v.clone(), VState::Moved);
+                    }
+                }
+            }
+            HExpr::Bin(_, a, b) | HExpr::Cmp(_, a, b, _) => {
+                self.check(a, tys, st);
+                self.check(b, tys, st);
+            }
+            HExpr::And(a, b) | HExpr::Or(a, b) => {
+                self.check(a, tys, st);
+                self.check(b, tys, st);
+            }
+            HExpr::Not(v) | HExpr::ConvF64(v) | HExpr::Abs(v, _) => self.check(v, tys, st),
+            HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
+                self.check(a, tys, st);
+                self.check(b, tys, st);
+            }
+            HExpr::Count(v) => self.check(v, tys, st),
+            HExpr::Call(name, args) => {
+                for a in args {
+                    self.check(a, tys, st);
+                }
+                let kinds = self.kinds_of(name, args.len());
+                // Exclusive borrows within one call must not overlap.
+                let mut excl_seen: Vec<String> = Vec::new();
+                for (arg, kind) in args.iter().zip(kinds.iter()) {
+                    if let HExpr::Var(v) = arg {
+                        let non_copy = tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false);
+                        if !non_copy {
+                            continue;
+                        }
+                        if *kind == Borrow::Owned {
+                            self.use_var(v, tys, st);
+                            st.insert(v.clone(), VState::Moved);
+                        } else if *kind == Borrow::Exclusive {
+                            if excl_seen.contains(v) {
+                                self.errs.push(format!(
+                                    "cannot borrow {} exclusively more than once in the same call",
+                                    v
+                                ));
+                            }
+                            self.use_var(v, tys, st);
+                            excl_seen.push(v.clone());
+                        }
+                    }
+                }
+            }
+            HExpr::Ctor { args, .. } => {
+                for a in args {
+                    self.check(a, tys, st);
+                }
+            }
+            HExpr::Match { scrut, arms, .. } => {
+                self.check(scrut, tys, st);
+                for arm in arms {
+                    let mut arm_tys = tys.clone();
+                    let mut arm_st = st.clone();
+                    for b in &arm.binders {
+                        arm_tys.insert(b.clone(), Ty::I64);
+                        arm_st.insert(b.clone(), VState::Owned);
+                    }
+                    // arm binder types: recover field types are not carried;
+                    // binders are element scalars for ADTs (scalar fields
+                    // only), so I64 is a safe stand-in for state tracking.
+                    self.check(&arm.body, &mut arm_tys, &mut arm_st);
+                    // A value moved in any arm counts as moved afterwards.
+                    for (k, v) in arm_st.iter() {
+                        if *v == VState::Moved {
+                            st.insert(k.clone(), VState::Moved);
+                        }
+                    }
+                }
+            }
+            HExpr::Get { src, idx, default, .. } => {
+                self.check(src, tys, st);
+                self.check(idx, tys, st);
+                if let Some(d) = default {
+                    self.check(d, tys, st);
+                }
+            }
+            HExpr::If(c, t, e2, _) => {
+                self.check(c, tys, st);
+                let mut t_tys = tys.clone();
+                let mut t_st = st.clone();
+                self.check(t, &mut t_tys, &mut t_st);
+                let mut e_tys = tys.clone();
+                let mut e_st = st.clone();
+                self.check(e2, &mut e_tys, &mut e_st);
+                for (k, v) in t_st.iter().chain(e_st.iter()) {
+                    if *v == VState::Moved {
+                        st.insert(k.clone(), VState::Moved);
+                    }
+                }
+            }
+            HExpr::Let(binds, body) => {
+                for (name, value, ty) in binds {
+                    self.check(value, tys, st);
+                    // Binding a non-Copy value moves it.
+                    if let HExpr::Var(v) = value {
+                        if is_non_copy(*ty) {
+                            st.insert(v.clone(), VState::Moved);
+                        }
+                    }
+                    tys.insert(name.clone(), *ty);
+                    st.insert(name.clone(), VState::Owned);
+                }
+                self.check(body, tys, st);
+            }
+            HExpr::Seq(vs) => {
+                for v in vs {
+                    self.check(v, tys, st);
+                }
+            }
+            // Fused loop stages run per iteration: captures are shared
+            // (borrowed), never moved.
+            HExpr::Reduce(_) => {}
+            HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => {}
+        }
+    }
+}
+
+/// Run the ownership check over one defn body. `sigs` maps callee names to
+/// their parameter borrow kinds.
+fn check_ownership(defn: &Defn, sigs: &HashMap<String, Vec<Borrow>>) -> Result<(), String> {
+    let mut bc = BCheck {
+        sigs,
+        errs: Vec::new(),
+    };
+    let mut tys: HashMap<String, Ty> = HashMap::new();
+    let mut st: HashMap<String, VState> = HashMap::new();
+    for ((n, t), b) in defn.params.iter().zip(defn.borrows.iter()) {
+        tys.insert(n.clone(), *t);
+        // Params taken by value start owned; borrowed params stay with the
+        // caller (and are still usable here).
+        st.insert(n.clone(), VState::Owned);
+        let _ = b;
+    }
+    bc.check(&defn.body, &mut tys, &mut st);
+    if bc.errs.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "ownership check failed in {}: {}",
+            defn.name,
+            bc.errs.join("; ")
+        ))
+    }
+}
+
 fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
         return Err("expected (defn ...)".into());
@@ -375,7 +601,7 @@ fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn,
         return Err("defn params must be a vector".into());
     };
     let mut ty_params: Vec<String> = Vec::new();
-    let params = parse_params(params, adt_by_name, &mut ty_params)?;
+    let (params, borrows) = parse_params(params, adt_by_name, &mut ty_params)?;
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
@@ -405,6 +631,7 @@ fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn,
         name: name.clone(),
         params,
         ret,
+        borrows,
         ty_params,
         body,
     })
@@ -414,8 +641,9 @@ fn parse_params(
     params: &[Expr],
     adt_by_name: &HashMap<String, u32>,
     ty_params: &mut Vec<String>,
-) -> Result<Vec<(String, Ty)>, String> {
+) -> Result<(Vec<(String, Ty)>, Vec<Borrow>), String> {
     let mut out = Vec::new();
+    let mut borrows = Vec::new();
     let mut i = 0;
     while i < params.len() {
         let Expr::LitSym(name) = &params[i] else {
@@ -424,20 +652,36 @@ fn parse_params(
         if i + 2 < params.len() {
             if let Expr::LitSym(sep) = &params[i + 1] {
                 if sep == ":-" {
-                    {
-                        out.push((
-                            name.clone(),
-                            parse_ty(&params[i + 2], adt_by_name, ty_params)?,
-                        ));
-                        i += 3;
-                        continue;
-                    }
+                    // The borrow sigil may be written on the param name
+                    // (`&x :- (Vector f64)`) or the annotation symbol
+                    // (`x :- &vec`). List annotations take the sigil from
+                    // the name position.
+                    let (name_borrow, bare) = split_borrow(name);
+                    let (ty_borrow, ty) = match &params[i + 2] {
+                        Expr::LitSym(ty_sym) => {
+                            let (b, rest) = split_borrow(ty_sym);
+                            (b, parse_ty_sym(rest, adt_by_name, ty_params)?)
+                        }
+                        other => (
+                            Borrow::Owned,
+                            parse_ty(other, adt_by_name, ty_params)?,
+                        ),
+                    };
+                    let borrow = if name_borrow != Borrow::Owned {
+                        name_borrow
+                    } else {
+                        ty_borrow
+                    };
+                    out.push((bare.to_string(), ty));
+                    borrows.push(borrow);
+                    i += 3;
+                    continue;
                 }
             }
         }
         return Err(format!("function parameter '{}' must have a type annotation (param :- ty)", name));
     }
-    Ok(out)
+    Ok((out, borrows))
 }
 
 /// Parse a type annotation expression: a builtin/ADT symbol, a type
@@ -468,6 +712,18 @@ fn parse_ty(
         }
         Expr::LitSym(s) => parse_ty_sym(s, adt_by_name, ty_params),
         _ => Err("type annotation must be a symbol or (Vector ty)".into()),
+    }
+}
+
+/// Split a leading borrow sigil off an annotation symbol: `&Shape`,
+/// `&!vec`, `&(Vector f64)`.
+fn split_borrow(s: &str) -> (Borrow, &str) {
+    if let Some(rest) = s.strip_prefix("&!") {
+        (Borrow::Exclusive, rest)
+    } else if let Some(rest) = s.strip_prefix('&') {
+        (Borrow::Shared, rest)
+    } else {
+        (Borrow::Owned, s)
     }
 }
 
@@ -630,6 +886,7 @@ fn instantiate(
                 .collect(),
             ret,
             body,
+            borrows: raw.borrows.clone(),
         });
     }
     Ok((mangled, ret))
@@ -723,6 +980,20 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
                 "get" => lower_get(items, env, ctx),
+                "clone" => {
+                    if items.len() != 2 {
+                        return Err("clone expects 1 argument".into());
+                    }
+                    let e = lower(&items[1], env, ctx)?;
+                    Ok(HExpr::Clone(Box::new(e)))
+                }
+                "drop" => {
+                    if items.len() != 2 {
+                        return Err("drop expects 1 argument".into());
+                    }
+                    let e = lower(&items[1], env, ctx)?;
+                    Ok(HExpr::DropStmt(Box::new(e)))
+                }
                 "count" => {
                     if items.len() != 2 {
                         return Err("count expects exactly 1 argument".into());
@@ -1127,6 +1398,25 @@ fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     })
 }
 
+/// How a function parameter receives a value. Enforcement is compile-time
+/// only — the ABI is identical, so borrows cost nothing at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Borrow {
+    /// Takes the value (moves it at the call site).
+    Owned,
+    /// Immutable borrow: the caller keeps the value.
+    Shared,
+    /// Exclusive borrow: the caller keeps the value, but no other borrow of
+    /// the same binding may appear in the same call.
+    Exclusive,
+}
+
+impl Borrow {
+    pub fn is_owned(self) -> bool {
+        self == Borrow::Owned
+    }
+}
+
 /// Scalar type of a vector element.
 fn elem_ty(e: Elem) -> Ty {
     match e {
@@ -1203,6 +1493,8 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Ctor { adt, .. } => Ty::Adt(*adt),
         HExpr::Match { ty, .. } => *ty,
         HExpr::Get { ty, .. } => *ty,
+        HExpr::Clone(inner) => ty_of(inner, env, ctx),
+        HExpr::DropStmt(_) => Ty::I64,
     }
 }
 
@@ -1226,7 +1518,16 @@ fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
         resolved.push((name.clone(), value, t));
         i += 2;
     }
-    let body = lower(&items[2], &child, ctx)?;
+    // Multiple body forms form an implicit sequence.
+    let body = if items.len() > 3 {
+        let mut seq = Vec::new();
+        for f in &items[2..] {
+            seq.push(lower(f, &child, ctx)?);
+        }
+        HExpr::Seq(seq)
+    } else {
+        lower(&items[2], &child, ctx)?
+    };
     Ok(HExpr::Let(resolved, Box::new(body)))
 }
 
