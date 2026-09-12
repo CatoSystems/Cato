@@ -39,7 +39,9 @@ impl Mdl {
             Ty::I32 => "i32".into(),
             Ty::F64 => "double".into(),
             Ty::Bool => "i1".into(),
-            Ty::Vec(_) | Ty::Map => panic!("codegen: aggregate type in scalar position"),
+            Ty::Vec(_) | Ty::Map | Ty::Set => {
+                panic!("codegen: aggregate type in scalar position")
+            }
             Ty::Adt(_) | Ty::Str => "ptr".into(),
             Ty::Param(_) => panic!("codegen: unresolved type parameter"),
         }
@@ -109,6 +111,7 @@ impl Mdl {
         match e {
             Elem::I64 => "i64",
             Elem::F64 => "double",
+            Elem::Str => "ptr",
             Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
         }
     }

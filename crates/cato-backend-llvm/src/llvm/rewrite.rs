@@ -221,6 +221,36 @@ pub(crate) fn rewrite_body(
             },
             ty: *ty,
         },
+        HExpr::SetLit(vs) => HExpr::SetLit(
+            vs.iter()
+                .map(|v| rewrite_body(v, fnprefix, params, idmap, loops, sigs))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        HExpr::SetConj { s, x } => HExpr::SetConj {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            x: Box::new(rewrite_body(x, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::SetDisj { s, x } => HExpr::SetDisj {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            x: Box::new(rewrite_body(x, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::SetContains { s, x } => HExpr::SetContains {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            x: Box::new(rewrite_body(x, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::Subs { s, start, end } => HExpr::Subs {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            start: Box::new(rewrite_body(start, fnprefix, params, idmap, loops, sigs)?),
+            end: Box::new(rewrite_body(end, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::Split { s, sep } => HExpr::Split {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            sep: Box::new(rewrite_body(sep, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::Join { sep, xs } => HExpr::Join {
+            sep: Box::new(rewrite_body(sep, fnprefix, params, idmap, loops, sigs)?),
+            xs: Box::new(rewrite_body(xs, fnprefix, params, idmap, loops, sigs)?),
+        },
         HExpr::Match { scrut, arms, ty } => HExpr::Match {
             scrut: Box::new(rewrite_body(scrut, fnprefix, params, idmap, loops, sigs)?),
             arms: arms

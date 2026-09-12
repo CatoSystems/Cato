@@ -107,6 +107,31 @@ impl<'a> BCheck<'a> {
                     self.check(d, tys, st);
                 }
             }
+            // Sets are immutable snapshots like maps: reading them borrows.
+            HExpr::SetLit(vs) => {
+                for v in vs {
+                    self.check(v, tys, st);
+                }
+            }
+            HExpr::SetConj { s, x }
+            | HExpr::SetDisj { s, x }
+            | HExpr::SetContains { s, x } => {
+                self.check(s, tys, st);
+                self.check(x, tys, st);
+            }
+            HExpr::Subs { s, start, end } => {
+                self.check(s, tys, st);
+                self.check(start, tys, st);
+                self.check(end, tys, st);
+            }
+            HExpr::Split { s, sep } => {
+                self.check(s, tys, st);
+                self.check(sep, tys, st);
+            }
+            HExpr::Join { sep, xs } => {
+                self.check(sep, tys, st);
+                self.check(xs, tys, st);
+            }
             HExpr::Subvec { v, start, end, .. } => {
                 self.check(v, tys, st);
                 self.check(start, tys, st);

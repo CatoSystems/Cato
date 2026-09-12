@@ -80,6 +80,32 @@ pub fn check(h: &HExpr) -> HExpr {
                 None => None,
             },
         },
+        HExpr::SetLit(vs) => HExpr::SetLit(vs.iter().map(check).collect()),
+        HExpr::SetConj { s, x } => HExpr::SetConj {
+            s: Box::new(check(s)),
+            x: Box::new(check(x)),
+        },
+        HExpr::SetDisj { s, x } => HExpr::SetDisj {
+            s: Box::new(check(s)),
+            x: Box::new(check(x)),
+        },
+        HExpr::SetContains { s, x } => HExpr::SetContains {
+            s: Box::new(check(s)),
+            x: Box::new(check(x)),
+        },
+        HExpr::Subs { s, start, end } => HExpr::Subs {
+            s: Box::new(check(s)),
+            start: Box::new(check(start)),
+            end: Box::new(check(end)),
+        },
+        HExpr::Split { s, sep } => HExpr::Split {
+            s: Box::new(check(s)),
+            sep: Box::new(check(sep)),
+        },
+        HExpr::Join { sep, xs } => HExpr::Join {
+            sep: Box::new(check(sep)),
+            xs: Box::new(check(xs)),
+        },
         HExpr::Conj { v, x, elem } => HExpr::Conj {
             v: Box::new(check(v)),
             x: Box::new(check(x)),

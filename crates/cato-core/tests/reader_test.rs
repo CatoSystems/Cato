@@ -53,3 +53,17 @@ fn reads_multiple_top_level() {
     let v = read_all("(a) (b)").unwrap();
     assert_eq!(v.len(), 2);
 }
+
+#[test]
+fn reads_set_literals() {
+    let v = read_all("#{5 3 3 1}").unwrap();
+    match &v[0] {
+        Expr::SetLit(items) => {
+            assert_eq!(items.len(), 4);
+            assert!(matches!(&items[0], Expr::LitI64(5)));
+        }
+        other => panic!("expected set literal, got {:?}", other),
+    }
+    let v = read_all("(let [s #{1 2}] s)").unwrap();
+    assert!(matches!(&v[0], Expr::List(_)));
+}

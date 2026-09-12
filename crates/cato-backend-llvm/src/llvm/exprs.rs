@@ -32,6 +32,7 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             ));
             z
         }
+        HExpr::SetContains { .. } => emit_set_contains(e, c, mdl, sigs),
         HExpr::Cmp(op, a, b, is_f64) => {
             if *is_f64 {
                 let av = emit_float(a, c, mdl, sigs);
@@ -327,8 +328,13 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
             t
         }
-        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..) => {
-            panic!("codegen: bool expression in i64 context")
+        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..)
+        | HExpr::StrCmp(..) | HExpr::CmpW(..) | HExpr::SetContains { .. } => {
+            // Bool value in i64 position: widen 0/1 (e.g. print-i64 of a test).
+            let b = emit_bool(e, c, mdl, sigs);
+            let t = c.temp();
+            c.line(&format!("  {} = zext i1 {} to i64", t, b));
+            t
         }
         HExpr::ConstF64(v) => panic!("codegen: ConstF64 {} in i64 context", v),
         HExpr::VecLit(_) => panic!("codegen: vec literal in i64 context"),
@@ -341,7 +347,6 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::Clone(inner) => emit_int(inner, c, mdl, sigs),
         HExpr::DropStmt(_) => "0".to_string(),
         HExpr::StrLit(_) => panic!("codegen: string literal in i64 context"),
-        HExpr::StrCmp(..) => panic!("codegen: string comparison in i64 context"),
         HExpr::Conj { .. } | HExpr::Subvec { .. } | HExpr::For { .. } => panic!(
             "codegen: heap vector value must be bound with let"
         ),
@@ -350,7 +355,6 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             "codegen: map value must be bound with let"
         ),
         HExpr::MapGet { .. } => emit_map_get(e, c, mdl, sigs),
-        HExpr::CmpW(..) => panic!("codegen: i32 comparison in i64 context"),
         HExpr::BinW(op, a, b, ty) => {
             let av = emit_int(a, c, mdl, sigs);
             let bv = emit_int(b, c, mdl, sigs);
@@ -385,6 +389,14 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 _ => panic!("codegen: invalid int cast"),
             }
             t
+        }
+        HExpr::SetLit(_)
+        | HExpr::SetConj { .. }
+        | HExpr::SetDisj { .. }
+        | HExpr::Subs { .. }
+        | HExpr::Split { .. }
+        | HExpr::Join { .. } => {
+            panic!("codegen: heap value must be bound with let")
         }
         HExpr::Get { ty, .. } => panic!(
             "codegen: get returning {:?} in i64 context (expected F64 context)",

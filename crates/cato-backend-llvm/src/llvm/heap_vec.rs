@@ -89,6 +89,7 @@ pub(crate) fn emit_conj(
     match elem {
         Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, tail)),
         Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, tail)),
+        Elem::Str => panic!("codegen: conj over string vectors not supported"),
         Elem::Param(_) => panic!("unresolved element"),
     }
     let slot_out = c.temp();
@@ -146,6 +147,7 @@ pub(crate) fn emit_conj(
     match elem {
         Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, gp)),
         Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, gp)),
+        Elem::Str => panic!("codegen: conj over string vectors not supported"),
         Elem::Param(_) => panic!("unresolved element"),
     }
     if freeable {
@@ -340,3 +342,99 @@ pub(crate) fn emit_strcat(
     dst
 }
 
+
+// ---------------------------------------------------------------------------
+// subs / split / join: heap string building.
+// ---------------------------------------------------------------------------
+
+/// `(subs s start end)` — a fresh heap string holding bytes [start, end)
+/// plus a NUL terminator.
+pub(crate) fn emit_subs(
+    s: &HExpr,
+    start: &HExpr,
+    end: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let sp = emit_str_val(s, c, mdl, sigs);
+    let st = emit_int(start, c, mdl, sigs);
+    let en = emit_int(end, c, mdl, sigs);
+    // len = end - start (clamped up to 0 for empty slices).
+    let diff = c.temp();
+    c.line(&format!("  {} = sub i64 {}, {}", diff, en, st));
+    let neg = c.temp();
+    c.line(&format!("  {} = icmp slt i64 {}, 0", neg, diff));
+    let len = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", len, neg, diff));
+    let one = c.temp();
+    c.line(&format!("  {} = add i64 {}, 1", one, len));
+    let np = emit_malloc(c, mdl, &one);
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+    let spoff = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+        spoff, sp, st
+    ));
+    c.line(&format!(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+        np, spoff, len
+    ));
+    // NUL terminator.
+    let tail = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+        tail, np, len
+    ));
+    c.line(&format!("  store i8 0, ptr {}, align 1", tail));
+    np
+}
+
+/// `(split s sep)` — a fresh heap vector of strings. The C runtime returns a
+/// malloc'd array of malloc'd NUL-terminated strings; the length comes back
+/// through an out-param.
+pub(crate) fn emit_split(
+    s: &HExpr,
+    sep: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> (String, String) {
+    mdl.ensure_decl("declare ptr @cato_str_split(ptr, ptr, ptr)");
+    let sp = emit_str_val(s, c, mdl, sigs);
+    let sepp = emit_str_val(sep, c, mdl, sigs);
+    let out = c.temp();
+    c.prelude.push(format!("  {} = alloca i64, align 8", out));
+    let arr = c.temp();
+    c.line(&format!(
+        "  {} = call ptr @cato_str_split(ptr {}, ptr {}, ptr {})",
+        arr, sp, sepp, out
+    ));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr {}, i64 0",
+        lf, out
+    ));
+    let l = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+    (arr, l)
+}
+
+/// `(join sep xs)` — a fresh heap string joining a (Vector str) with sep.
+pub(crate) fn emit_join(
+    sep: &HExpr,
+    xs: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    mdl.ensure_decl("declare ptr @cato_str_join(ptr, i64, ptr)");
+    let sepp = emit_str_val(sep, c, mdl, sigs);
+    let (d, l, _) = vec_arg(xs, c, mdl);
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = call ptr @cato_str_join(ptr {}, i64 {}, ptr {})",
+        p, d, l, sepp
+    ));
+    p
+}

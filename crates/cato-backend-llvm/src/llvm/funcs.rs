@@ -38,6 +38,7 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 params.push(format!("ptr {}", r));
             }
             Ty::Map => panic!("codegen: map params not supported (maps are local values)"),
+            Ty::Set => panic!("codegen: set params not supported (sets are local values)"),
             Ty::Param(_) => panic!("codegen: unresolved type parameter in params"),
             Ty::Adt(i) => {
                 // By-value boundary: the incoming struct is copied into an
@@ -149,6 +150,7 @@ pub(crate) fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
             Ty::Bool => params.push("i1".to_string()),
             Ty::Str => params.push("ptr".to_string()),
             Ty::Map => panic!("codegen: map params not supported"),
+            Ty::Set => panic!("codegen: set params not supported"),
             Ty::Adt(_) | Ty::Param(_) => {
                 panic!("codegen: extern params must be scalars, strings or vectors")
             }
@@ -187,6 +189,7 @@ pub(crate) fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashM
         Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) => panic!("codegen: cannot return a vector"),
         Ty::Map => panic!("codegen: cannot return a map (maps are local values)"),
+        Ty::Set => panic!("codegen: cannot return a set (sets are local values)"),
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
 }
@@ -225,7 +228,9 @@ pub(crate) fn emit_typed(
         Ty::I32 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
-        Ty::Vec(_) | Ty::Map => panic!("codegen: control flow cannot produce an aggregate"),
+        Ty::Vec(_) | Ty::Map | Ty::Set => {
+            panic!("codegen: control flow cannot produce an aggregate")
+        }
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
 }

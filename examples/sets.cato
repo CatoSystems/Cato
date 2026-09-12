@@ -1,0 +1,23 @@
+; sets.cato — Phase 11 reference program: sets & string building.
+;
+; #{...} literals, conj/disj/contains?/count over immutable i64 sets,
+; and (subs)/(split)/(join) heap string building.
+
+(defn main []
+  (let [s #{5 3 3 1}
+        s2 (conj s 2)
+        s3 (disj s2 5)
+        parts (split "a,b,c" ",")
+        joined (join "-" parts)
+        piece (subs joined 2 4)]
+    (do
+      (print-i64 (count s))          ; 3  (dup 3 collapsed, sorted)
+      (print-i64 (contains? s 3))    ; 1
+      (print-i64 (contains? s 9))    ; 0
+      (print-i64 (count s3))         ; 3  (conj 2 adds, disj 5 removes)
+      (print-i64 (contains? s3 5))   ; 0
+      (print-i64 (contains? s3 2))   ; 1
+      (print-i64 (count parts))      ; 3
+      (print-string (get parts 1))   ; b
+      (print-string joined)          ; a-b-c
+      (print-string piece))))        ; b-

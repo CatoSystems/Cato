@@ -186,6 +186,7 @@ pub(crate) fn elem_ty(e: Elem) -> Ty {
     match e {
         Elem::I64 => Ty::I64,
         Elem::F64 => Ty::F64,
+        Elem::Str => Ty::Str,
         Elem::Param(_) => panic!("unresolved element type parameter"),
     }
 }

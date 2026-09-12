@@ -55,6 +55,7 @@ pub(crate) fn emit_for(
     match res_elem {
         Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", val, w)),
         Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", val, w)),
+        Elem::Str => panic!("codegen: for over strings not supported"),
         Elem::Param(_) => panic!("unresolved element"),
     }
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));

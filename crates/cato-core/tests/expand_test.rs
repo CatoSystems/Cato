@@ -15,6 +15,10 @@ fn pp(e: &Expr) -> String {
                 .collect();
             format!("{{{}}}", inner.join(", "))
         }
+        Expr::SetLit(items) => {
+            let inner: Vec<String> = items.iter().map(pp).collect();
+            format!("#{{{}}}", inner.join(" "))
+        }
         Expr::List(items) | Expr::Vector(items) => {
             let inner: Vec<String> = items.iter().map(pp).collect();
             let (o, c) = if matches!(e, Expr::List(_)) { ("(", ")") } else { ("[", "]") };

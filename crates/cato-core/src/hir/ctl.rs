@@ -29,6 +29,13 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
                 || has_ctl(key)
                 || default.as_deref().map(has_ctl).unwrap_or(false)
         }
+        HExpr::SetLit(vs) => vs.iter().any(has_ctl),
+        HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
+            has_ctl(s) || has_ctl(x)
+        }
+        HExpr::Subs { s, start, end } => has_ctl(s) || has_ctl(start) || has_ctl(end),
+        HExpr::Split { s, sep } => has_ctl(s) || has_ctl(sep),
+        HExpr::Join { sep, xs } => has_ctl(sep) || has_ctl(xs),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),

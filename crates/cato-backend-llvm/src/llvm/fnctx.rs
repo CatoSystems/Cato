@@ -81,6 +81,7 @@ pub(crate) fn elem_ty_of(e: Elem) -> Ty {
     match e {
         Elem::I64 => Ty::I64,
         Elem::F64 => Ty::F64,
+        Elem::Str => Ty::Str,
         Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
     }
 }

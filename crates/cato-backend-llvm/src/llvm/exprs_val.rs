@@ -85,7 +85,7 @@ pub(crate) fn emit_str_val(
     e: &HExpr,
     c: &mut FnCtx,
     mdl: &mut Mdl,
-    _sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     match e {
         HExpr::StrLit(s) => {
@@ -103,6 +103,49 @@ pub(crate) fn emit_str_val(
             .get(v)
             .map(|(r, _)| r.clone())
             .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
+        HExpr::Subs { s, start, end } => {
+            let p = emit_subs(s, start, end, c, mdl, sigs);
+            p
+        }
+        HExpr::Join { sep, xs } => emit_join(sep, xs, c, mdl, sigs),
+        HExpr::Get {
+            src,
+            idx,
+            default,
+            ty: Ty::Str,
+        } => {
+            // Element load from a (Vector str): bounds-checked, null (or the
+            // default string) out of range.
+            let (d, l, _) = vec_arg(src, c, mdl);
+            let iv = emit_int(idx, c, mdl, sigs);
+            let inb = c.temp();
+            c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
+            let safe = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+            let p = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds ptr, ptr {}, i64 {}",
+                p, d, safe
+            ));
+            let v = c.temp();
+            c.line(&format!("  {} = load ptr, ptr {}, align 8", v, p));
+            match default {
+                Some(dv) => {
+                    let dvp = emit_str_val(dv, c, mdl, sigs);
+                    let r = c.temp();
+                    c.line(&format!(
+                        "  {} = select i1 {}, ptr {}, ptr {}",
+                        r, inb, v, dvp
+                    ));
+                    r
+                }
+                None => {
+                    let r = c.temp();
+                    c.line(&format!("  {} = select i1 {}, ptr {}, ptr null", r, inb, v));
+                    r
+                }
+            }
+        }
         other => panic!("codegen: expected a string expression, got {:?}", other),
     }
 }
@@ -216,6 +259,31 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let slot = emit_map_assoc(value, c, mdl, sigs);
                 c.growm.insert(name.clone(), (slot, Ty::Map));
                 let _ = (m, k, v);
+                continue;
+            }
+            HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } => {
+                let slot = match value {
+                    HExpr::SetLit(vs) => emit_set_lit(vs, c, mdl, sigs),
+                    HExpr::SetConj { .. } => emit_set_conj(value, c, mdl, sigs),
+                    HExpr::SetDisj { .. } => emit_set_disj(value, c, mdl, sigs),
+                    _ => unreachable!(),
+                };
+                c.growm.insert(name.clone(), (slot, Ty::Set));
+                continue;
+            }
+            HExpr::Subs { s, start, end } => {
+                let p = emit_subs(s, start, end, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (p, Ty::Str));
+                continue;
+            }
+            HExpr::Split { s, sep } => {
+                let (arr, l) = emit_split(s, sep, c, mdl, sigs);
+                c.vecs.insert(name.clone(), (arr, l, Elem::Str));
+                continue;
+            }
+            HExpr::Join { sep, xs } => {
+                let p = emit_join(sep, xs, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (p, Ty::Str));
                 continue;
             }
             _ => {}

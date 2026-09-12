@@ -67,6 +67,7 @@ pub(crate) fn call_user(
             }
             Ty::Param(_) => panic!("codegen: unresolved type parameter in call args"),
             Ty::Map => panic!("codegen: map call args not supported"),
+            Ty::Set => panic!("codegen: set call args not supported"),
             Ty::Str => {
                 let v = emit_str_val(expr, c, mdl, sigs);
                 ll_args.push(format!("ptr {}", v));

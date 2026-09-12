@@ -18,6 +18,9 @@ pub enum Ty {
     /// i64-keyed map of i64 values: a sorted flat array of 16-byte pairs on
     /// the heap (immutable snapshots; assoc copies).
     Map,
+    /// i64 set: a sorted flat array of i64 on the heap (immutable
+    /// snapshots; conj/disj copy).
+    Set,
     /// User-defined ADT, indexed into the program's `AdtDef` table.
     Adt(u32),
     /// Type parameter in a generic defn's annotations, indexed into the
@@ -30,6 +33,8 @@ pub enum Ty {
 pub enum Elem {
     I64,
     F64,
+    /// `(Vector str)` — an array of heap string pointers.
+    Str,
     /// `(Vector T)` in a generic template.
     Param(u32),
 }
@@ -109,6 +114,40 @@ pub enum HExpr {
     ICast(Box<HExpr>, Ty),
     /// `{k v ...}` — a map literal; constant keys are sorted at compile time.
     MapLit(Vec<(HExpr, HExpr)>),
+    /// `#{x ...}` — a set literal; constant elements are sorted and deduped
+    /// at compile time.
+    SetLit(Vec<HExpr>),
+    /// `(conj s x)` on a set — a fresh set with x added (dedup).
+    SetConj {
+        s: Box<HExpr>,
+        x: Box<HExpr>,
+    },
+    /// `(disj s x)` — a fresh set without x.
+    SetDisj {
+        s: Box<HExpr>,
+        x: Box<HExpr>,
+    },
+    /// `(contains? s x)` — membership test.
+    SetContains {
+        s: Box<HExpr>,
+        x: Box<HExpr>,
+    },
+    /// `(subs s start end)` — a fresh heap string holding the byte range.
+    Subs {
+        s: Box<HExpr>,
+        start: Box<HExpr>,
+        end: Box<HExpr>,
+    },
+    /// `(split s sep)` — a fresh heap vector of strings.
+    Split {
+        s: Box<HExpr>,
+        sep: Box<HExpr>,
+    },
+    /// `(join sep xs)` — a fresh heap string joining a (Vector str).
+    Join {
+        sep: Box<HExpr>,
+        xs: Box<HExpr>,
+    },
     /// `(get m k [default])` on a map: last match wins (assoc replaces).
     MapGet {
         src: Box<HExpr>,

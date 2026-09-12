@@ -26,6 +26,24 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
             });
             Ok(HExpr::MapLit(out))
         }
+        Expr::SetLit(items) => {
+            // Constant elements only, like map literals; sorted + deduped.
+            let mut vs = Vec::new();
+            for it in items {
+                match it {
+                    Expr::LitI64(v) => vs.push(*v),
+                    other => {
+                        return Err(format!(
+                            "set literal elements must be i64 literals, got {:?}",
+                            other
+                        ))
+                    }
+                }
+            }
+            vs.sort_unstable();
+            vs.dedup();
+            Ok(HExpr::SetLit(vs.into_iter().map(HExpr::ConstI64).collect()))
+        }
         Expr::Vector(items) => {
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
                 Ok(HExpr::VecLit(VLit::I64(vec_lit_i64(items))))
@@ -91,6 +109,87 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
                 "get" => lower_get(items, env, ctx),
+                "contains?" => {
+                    if items.len() != 3 {
+                        return Err("contains? expects (contains? <set> <x>)".into());
+                    }
+                    let s = lower(&items[1], env, ctx)?;
+                    if ty_of(&s, env, ctx) != Ty::Set {
+                        return Err("contains? source must be a set".into());
+                    }
+                    let x = lower(&items[2], env, ctx)?;
+                    if ty_of(&x, env, ctx) != Ty::I64 {
+                        return Err("contains? membership key must be i64".into());
+                    }
+                    Ok(HExpr::SetContains {
+                        s: Box::new(s),
+                        x: Box::new(x),
+                    })
+                }
+                "disj" => {
+                    if items.len() != 3 {
+                        return Err("disj expects (disj <set> <x>)".into());
+                    }
+                    let s = lower(&items[1], env, ctx)?;
+                    if ty_of(&s, env, ctx) != Ty::Set {
+                        return Err("disj source must be a set".into());
+                    }
+                    let x = lower(&items[2], env, ctx)?;
+                    if ty_of(&x, env, ctx) != Ty::I64 {
+                        return Err("disj element must be i64".into());
+                    }
+                    Ok(HExpr::SetDisj {
+                        s: Box::new(s),
+                        x: Box::new(x),
+                    })
+                }
+                "subs" => {
+                    if items.len() != 4 {
+                        return Err("subs expects (subs <s> <start> <end>)".into());
+                    }
+                    let s = lower(&items[1], env, ctx)?;
+                    if ty_of(&s, env, ctx) != Ty::Str {
+                        return Err("subs source must be a string".into());
+                    }
+                    let start = lower(&items[2], env, ctx)?;
+                    let end = lower(&items[3], env, ctx)?;
+                    Ok(HExpr::Subs {
+                        s: Box::new(s),
+                        start: Box::new(start),
+                        end: Box::new(end),
+                    })
+                }
+                "split" => {
+                    if items.len() != 3 {
+                        return Err("split expects (split <s> <sep>)".into());
+                    }
+                    let s = lower(&items[1], env, ctx)?;
+                    let sep = lower(&items[2], env, ctx)?;
+                    if ty_of(&s, env, ctx) != Ty::Str || ty_of(&sep, env, ctx) != Ty::Str {
+                        return Err("split arguments must be strings".into());
+                    }
+                    Ok(HExpr::Split {
+                        s: Box::new(s),
+                        sep: Box::new(sep),
+                    })
+                }
+                "join" => {
+                    if items.len() != 3 {
+                        return Err("join expects (join <sep> <strs>)".into());
+                    }
+                    let sep = lower(&items[1], env, ctx)?;
+                    if ty_of(&sep, env, ctx) != Ty::Str {
+                        return Err("join separator must be a string".into());
+                    }
+                    let xs = lower(&items[2], env, ctx)?;
+                    if ty_of(&xs, env, ctx) != Ty::Vec(Elem::Str) {
+                        return Err("join source must be a (Vector str)".into());
+                    }
+                    Ok(HExpr::Join {
+                        sep: Box::new(sep),
+                        xs: Box::new(xs),
+                    })
+                }
                 "assoc" => {
                     if items.len() != 4 {
                         return Err("assoc expects (assoc <map> <key> <value>)".into());
@@ -118,6 +217,17 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                         return Err("conj expects (conj <vec> <x>)".into());
                     }
                     let v = lower(&items[1], env, ctx)?;
+                    // Sets conj too: (conj s x) adds x (dedup at runtime).
+                    if ty_of(&v, env, ctx) == Ty::Set {
+                        let x = lower(&items[2], env, ctx)?;
+                        if ty_of(&x, env, ctx) != Ty::I64 {
+                            return Err("conj element must be i64 for sets".into());
+                        }
+                        return Ok(HExpr::SetConj {
+                            s: Box::new(v),
+                            x: Box::new(x),
+                        });
+                    }
                     let elem = match ty_of(&v, env, ctx) {
                         Ty::Vec(e) => e,
                         other => return Err(format!("conj source must be a vector, got {:?}", other)),
@@ -420,6 +530,12 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::MapLit(_) => Ty::Map,
         HExpr::MapAssoc { .. } => Ty::Map,
         HExpr::MapGet { .. } => Ty::I64,
+        HExpr::SetLit(_) => Ty::Set,
+        HExpr::SetConj { .. } | HExpr::SetDisj { .. } => Ty::Set,
+        HExpr::SetContains { .. } => Ty::Bool,
+        HExpr::Subs { .. } => Ty::Str,
+        HExpr::Split { .. } => Ty::Vec(Elem::Str),
+        HExpr::Join { .. } => Ty::Str,
         HExpr::StrCmp(..) => Ty::Bool,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,

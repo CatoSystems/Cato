@@ -249,6 +249,7 @@ pub(crate) fn parse_ty(
             let el = match &items[1] {
                 Expr::LitSym(s) if s == "i64" => Elem::I64,
                 Expr::LitSym(s) if s == "f64" => Elem::F64,
+                Expr::LitSym(s) if s == "str" => Elem::Str,
                 Expr::LitSym(p) => Elem::Param(register_ty_param(p, ty_params)),
                 _ => return Err("Vector element type must be i64, f64 or a type parameter".into()),
             };

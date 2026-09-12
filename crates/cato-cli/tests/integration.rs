@@ -194,3 +194,52 @@ fn explain_rejects_unknown_code() {
         .expect("run binary");
     assert!(!out.status.success());
 }
+
+// Phase 11: sets & string building, end-to-end.
+#[test]
+fn compiles_sets_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../examples/sets.cato");
+    let out_ll = manifest.join("../../target/sets.ll");
+    let rt = manifest.join("../../runtime/runtime.c");
+    let exe = manifest.join("../../target/sets_bin");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).arg("-o").arg(&out_ll)
+        .status().expect("cato run");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang link failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout,
+        "3\n1\n0\n3\n0\n1\n3\nb\na-b-c\nb-\n",
+        "sets.cato output"
+    );
+}
+
+#[test]
+fn subs_split_join_edge_cases() {
+    let out = compile_and_run(
+        "strings2.cato",
+        r#"(defn main []
+  (let [parts (split "x,,y" ",")
+        one (split "abc" ",")
+        j (join "" one)]
+    (do
+      (print-i64 (count parts))      ; 3 (empty middle part kept)
+      (print-string (get parts 1))   ; (empty)
+      (print-i64 (count one))        ; 1
+      (print-string j)               ; abc
+      (print-string (subs "hello" 1 4))  ; ell
+      (print-string (subs "hi" 1 1)) ; (empty)
+      (print-string (get parts 9 "?"))))) ; ? (out of bounds default)
+"#,
+    );
+    assert_eq!(out, "3\n\n1\nabc\nell\n\n?\n");
+}

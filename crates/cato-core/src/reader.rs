@@ -45,6 +45,12 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 stack.push(Vec::new());
                 i += 1;
             }
+            '#' if bytes.get(i + 1) == Some(&b'{') => {
+                kind_stack.push('#');
+                start_stack.push(i);
+                stack.push(Vec::new());
+                i += 2;
+            }
             ')' | ']' | '}' => {
                 let expected = match c {
                     ')' => '(',
@@ -52,11 +58,20 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     _ => '{',
                 };
                 let here = Span { lo: i, hi: i + 1 };
-                if kind_stack.pop() != Some(expected) {
+                let kind = kind_stack.pop();
+                // `#{...}` sets close with '}' but carry their own kind.
+                let is_set = kind == Some('#');
+                if kind != Some(expected) && !(is_set && c == '}') {
                     return Err(rerr(format!("unbalanced delimiter '{}'", c), here));
                 }
                 let open = start_stack.pop().unwrap();
                 let items = stack.pop().unwrap();
+                if is_set {
+                    let node = Expr::SetLit(items);
+                    push_node(node, Span { lo: open, hi: i + 1 }, &mut stack, &mut top, &mut spans);
+                    i += 1;
+                    continue;
+                }
                 if expected == '{' {
                     if items.len() % 2 != 0 {
                         return Err(rerr(

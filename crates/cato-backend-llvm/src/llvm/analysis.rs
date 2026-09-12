@@ -31,6 +31,13 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
                 || has_ctl(key)
                 || default.as_deref().map(has_ctl).unwrap_or(false)
         }
+        HExpr::SetLit(vs) => vs.iter().any(has_ctl),
+        HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
+            has_ctl(s) || has_ctl(x)
+        }
+        HExpr::Subs { s, start, end } => has_ctl(s) || has_ctl(start) || has_ctl(end),
+        HExpr::Split { s, sep } => has_ctl(s) || has_ctl(sep),
+        HExpr::Join { sep, xs } => has_ctl(sep) || has_ctl(xs),
         HExpr::Conj { .. } => true, // growth branches
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true, // fill loop
@@ -184,6 +191,28 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             if let Some(d) = default {
                 collect_vars(d, f);
             }
+        }
+        HExpr::SetLit(vs) => {
+            for v in vs {
+                collect_vars(v, f);
+            }
+        }
+        HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
+            collect_vars(s, f);
+            collect_vars(x, f);
+        }
+        HExpr::Subs { s, start, end } => {
+            collect_vars(s, f);
+            collect_vars(start, f);
+            collect_vars(end, f);
+        }
+        HExpr::Split { s, sep } => {
+            collect_vars(s, f);
+            collect_vars(sep, f);
+        }
+        HExpr::Join { sep, xs } => {
+            collect_vars(sep, f);
+            collect_vars(xs, f);
         }
         HExpr::Conj { v, x, .. } => {
             collect_vars(v, f);

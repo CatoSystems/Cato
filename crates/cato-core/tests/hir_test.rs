@@ -665,3 +665,53 @@ fn maps_reject_non_i64_keys_and_values() {
     let err = build_err("(defn f [] :- i64 (get {1 \"v\"} 1))");
     assert!(err.contains("map values must be i64"), "got: {}", err);
 }
+
+#[test]
+fn set_literals_sort_and_dedupe() {
+    let exprs = read_all("(defn main [] :- i64 0)").unwrap();
+    let fns = build(&exprs).unwrap();
+    let _ = fns;
+    let exprs = read_all(
+        "(defn main [] :- i64 (count #{3 3 1 2 1}))",
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    let body = &fns[0].body;
+    match body {
+        HExpr::Count(inner) => match &**inner {
+            HExpr::SetLit(vs) => {
+                let vals: Vec<i64> = vs
+                    .iter()
+                    .map(|v| match v {
+                        HExpr::ConstI64(c) => *c,
+                        _ => panic!("non-const"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![1, 2, 3]);
+            }
+            other => panic!("expected set literal, got {:?}", other),
+        },
+        other => panic!("expected count, got {:?}", other),
+    }
+}
+
+#[test]
+fn set_ops_lower_to_set_nodes() {
+    let exprs = read_all(
+        "(defn main [] :- i64
+           (let [s #{1 2}
+                 a (conj s 3)
+                 b (disj a 1)]
+             (contains? b 2)))",
+    )
+    .unwrap();
+    assert!(build(&exprs).is_ok());
+}
+
+#[test]
+fn set_ops_require_sets() {
+    assert!(build(&read_all("(defn main [] :- bool (contains? (vec-i64 1) 1))").unwrap()).is_err());
+    assert!(build(&read_all("(defn main [] :- bool (disj 3 1))").unwrap()).is_err());
+    assert!(build(&read_all("(defn main [] :- str (subs 3 0 1))").unwrap()).is_err());
+    assert!(build(&read_all("(defn main [] :- str (join 3 (vec-i64 1)))").unwrap()).is_err());
+}

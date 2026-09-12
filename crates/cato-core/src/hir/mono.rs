@@ -29,6 +29,7 @@ pub(crate) fn ty_suffix(ty: Ty) -> Option<&'static str> {
         Ty::Bool => Some("bool"),
         Ty::Vec(Elem::I64) => Some("vec_i64"),
         Ty::Vec(Elem::F64) => Some("vec_f64"),
+        Ty::Vec(Elem::Str) => Some("vec_str"),
         _ => None,
     }
 }
@@ -49,6 +50,7 @@ pub(crate) fn unify(pat: Ty, actual: Ty, subs: &mut [Option<Ty>]) -> Option<()> 
             let a = match el {
                 Elem::I64 => Ty::I64,
                 Elem::F64 => Ty::F64,
+                Elem::Str => Ty::Str,
                 Elem::Param(_) => return None,
             };
             match subs.get_mut(i as usize)? {
