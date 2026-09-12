@@ -6,4 +6,6 @@ pub enum Expr {
     LitSym(String),
     List(Vec<Expr>),
     Vector(Vec<Expr>),
+    /// `{k1 v1 k2 v2 ...}` map literal with alternating key/value forms.
+    MapLit(Vec<(Expr, Expr)>),
 }

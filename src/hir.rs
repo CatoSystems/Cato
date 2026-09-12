@@ -11,6 +11,9 @@ pub enum Ty {
     Bool,
     /// Immutable string slice (static constant data; no heap).
     Str,
+    /// i64-keyed map of i64 values: a sorted flat array of 16-byte pairs on
+    /// the heap (immutable snapshots; assoc copies).
+    Map,
     /// User-defined ADT, indexed into the program's `AdtDef` table.
     Adt(u32),
     /// Type parameter in a generic defn's annotations, indexed into the
@@ -93,6 +96,20 @@ pub enum HExpr {
         elem: Elem,
         body: Box<HExpr>,
         res_elem: Elem,
+    },
+    /// `{k v ...}` — a map literal; constant keys are sorted at compile time.
+    MapLit(Vec<(HExpr, HExpr)>),
+    /// `(get m k [default])` on a map: last match wins (assoc replaces).
+    MapGet {
+        src: Box<HExpr>,
+        key: Box<HExpr>,
+        default: Option<Box<HExpr>>,
+    },
+    /// `(assoc m k v)` — a fresh map with the binding added/replaced.
+    MapAssoc {
+        m: Box<HExpr>,
+        k: Box<HExpr>,
+        v: Box<HExpr>,
     },
     /// `(str a b ...)` — a fresh heap string concatenation.
     StrCat(Vec<HExpr>),
@@ -543,6 +560,24 @@ impl<'a> BCheck<'a> {
                     self.check(a, tys, st);
                 }
             }
+            HExpr::MapLit(pairs) => {
+                for (k, v) in pairs {
+                    self.check(k, tys, st);
+                    self.check(v, tys, st);
+                }
+            }
+            HExpr::MapAssoc { m, k, v } => {
+                self.check(m, tys, st);
+                self.check(k, tys, st);
+                self.check(v, tys, st);
+            }
+            HExpr::MapGet { src, key, default } => {
+                self.check(src, tys, st);
+                self.check(key, tys, st);
+                if let Some(d) = default {
+                    self.check(d, tys, st);
+                }
+            }
             HExpr::Subvec { v, start, end, .. } => {
                 self.check(v, tys, st);
                 self.check(start, tys, st);
@@ -869,6 +904,7 @@ fn parse_ty_sym(
         "vec" => Ok(VEC_I64),
         "bool" => Ok(Ty::Bool),
         "str" | "string" => Ok(Ty::Str),
+        "map" => Ok(Ty::Map),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
             None => Ok(Ty::Param(register_ty_param(other, ty_params))),
@@ -1066,6 +1102,26 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
         Expr::LitStr(s) => Ok(HExpr::StrLit(s.clone())),
         Expr::LitSym(s) => Ok(HExpr::Var(s.to_string())),
+        Expr::MapLit(pairs) => {
+            let mut out = Vec::new();
+            for (k, v) in pairs {
+                let ke = lower(k, env, ctx)?;
+                if ty_of(&ke, env, ctx) != Ty::I64 {
+                    return Err("map keys must be i64".into());
+                }
+                let ve = lower(v, env, ctx)?;
+                if ty_of(&ve, env, ctx) != Ty::I64 {
+                    return Err("map values must be i64".into());
+                }
+                out.push((ke, ve));
+            }
+            // Sort by key at compile time; duplicate keys: last wins.
+            out.sort_by_key(|(k, _)| match k {
+                HExpr::ConstI64(c) => *c,
+                _ => i64::MAX,
+            });
+            Ok(HExpr::MapLit(out))
+        }
         Expr::Vector(items) => {
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
                 Ok(HExpr::VecLit(VLit::I64(vec_lit_i64(items))))
@@ -1113,6 +1169,28 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
                 "get" => lower_get(items, env, ctx),
+                "assoc" => {
+                    if items.len() != 4 {
+                        return Err("assoc expects (assoc <map> <key> <value>)".into());
+                    }
+                    let m = lower(&items[1], env, ctx)?;
+                    if ty_of(&m, env, ctx) != Ty::Map {
+                        return Err("assoc source must be a map".into());
+                    }
+                    let k = lower(&items[2], env, ctx)?;
+                    if ty_of(&k, env, ctx) != Ty::I64 {
+                        return Err("map keys must be i64".into());
+                    }
+                    let v = lower(&items[3], env, ctx)?;
+                    if ty_of(&v, env, ctx) != Ty::I64 {
+                        return Err("map values must be i64".into());
+                    }
+                    Ok(HExpr::MapAssoc {
+                        m: Box::new(m),
+                        k: Box::new(k),
+                        v: Box::new(v),
+                    })
+                }
                 "conj" => {
                     if items.len() != 3 {
                         return Err("conj expects (conj <vec> <x>)".into());
@@ -1686,7 +1764,20 @@ fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     let src = lower(&items[1], env, ctx)?;
     let ty = match ty_of(&src, env, ctx) {
         Ty::Vec(e) => elem_ty(e),
-        other => return Err(format!("get source must be a vector, got {:?}", other)),
+        Ty::Map => {
+            // Map lookup: (get m k [default]) yields i64.
+            let key = lower(&items[2], env, ctx)?;
+            let default = match items.get(3) {
+                Some(d) => Some(Box::new(lower(d, env, ctx)?)),
+                None => None,
+            };
+            return Ok(HExpr::MapGet {
+                src: Box::new(src),
+                key: Box::new(key),
+                default,
+            });
+        }
+        other => return Err(format!("get source must be a vector or map, got {:?}", other)),
     };
     let idx = lower(&items[2], env, ctx)?;
     let default = match items.get(3) {
@@ -1740,6 +1831,13 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true,
         HExpr::StrCat(args) => args.iter().any(has_ctl),
+        HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
+        HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
+        HExpr::MapGet { src, key, default } => {
+            has_ctl(src)
+                || has_ctl(key)
+                || default.as_deref().map(has_ctl).unwrap_or(false)
+        }
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
@@ -1815,6 +1913,9 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } => Ty::Vec(*elem),
         HExpr::For { res_elem, .. } => Ty::Vec(*res_elem),
         HExpr::StrCat(_) => Ty::Str,
+        HExpr::MapLit(_) => Ty::Map,
+        HExpr::MapAssoc { .. } => Ty::Map,
+        HExpr::MapGet { .. } => Ty::I64,
         HExpr::StrCmp(..) => Ty::Bool,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,

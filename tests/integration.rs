@@ -156,3 +156,13 @@ fn compiles_heap_to_expected_output() {
         "3\n8\n30\n4\n10\nheapalloc\n9\n3\n9\n"
     );
 }
+
+#[test]
+fn compiles_maps_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/maps.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("maps", &src),
+        "20\n3\n99\n99\n20\n3\n70\n4\n0\n-1\n"
+    );
+}

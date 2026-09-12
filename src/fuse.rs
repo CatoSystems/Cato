@@ -50,6 +50,29 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
         HExpr::StrCat(args) => HExpr::StrCat(args.iter().map(check).collect()),
+        HExpr::MapLit(pairs) => HExpr::MapLit(
+            pairs
+                .iter()
+                .map(|(k, v)| (check(k), check(v)))
+                .collect(),
+        ),
+        HExpr::MapAssoc { m, k, v } => HExpr::MapAssoc {
+            m: Box::new(check(m)),
+            k: Box::new(check(k)),
+            v: Box::new(check(v)),
+        },
+        HExpr::MapGet {
+            src,
+            key,
+            default,
+        } => HExpr::MapGet {
+            src: Box::new(check(src)),
+            key: Box::new(check(key)),
+            default: match default {
+                Some(d) => Some(Box::new(check(&d))),
+                None => None,
+            },
+        },
         HExpr::Conj { v, x, elem } => HExpr::Conj {
             v: Box::new(check(v)),
             x: Box::new(check(x)),

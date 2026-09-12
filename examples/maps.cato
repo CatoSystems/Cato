@@ -1,0 +1,21 @@
+; maps.cato — Phase 8b reference program: maps.
+;
+; Maps are i64-keyed snapshots: flat arrays of (key, value) pairs on the
+; heap. Literals sort at compile time; assoc copies and appends (get's
+; last-match scan gives replace semantics); the original is never mutated.
+
+(defn main []
+  (let [m {1 10 2 20 3 30}]
+    (print-i64 (get m 2))            ; 20
+    (print-i64 (count m))            ; 3
+    (print-i64 (get m 9 99))         ; 99 (default)
+    (let [m2 (assoc m 2 99)]
+      (print-i64 (get m2 2))         ; 99 (assoc replaces)
+      (print-i64 (get m 2))          ; 20 (original snapshot unchanged)
+      (print-i64 (count m2)))        ; 3
+    (let [m3 (assoc m 7 70)]
+      (print-i64 (get m3 7))         ; 70 (new key)
+      (print-i64 (count m3)))        ; 4
+    (let [empty {}]
+      (print-i64 (count empty))      ; 0
+      (print-i64 (get empty 1 -1))))) ; -1 (default on empty)

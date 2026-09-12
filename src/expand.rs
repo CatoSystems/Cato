@@ -35,6 +35,14 @@ fn expand_form(e: &Expr) -> Result<Expr, String> {
             let items: Vec<Expr> = items.iter().map(expand_form).collect::<Result<_, _>>()?;
             Ok(Expr::Vector(items))
         }
+        Expr::MapLit(pairs) => {
+            let mut pairs2: Vec<(Expr, Expr)> = Vec::new();
+            for (k, v) in pairs {
+                pairs2.push((expand_form(k)?, expand_form(v)?));
+            }
+            let pairs = pairs2;
+            Ok(Expr::MapLit(pairs))
+        }
         other => Ok(other.clone()),
     }
 }

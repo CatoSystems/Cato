@@ -643,3 +643,25 @@ fn for_requires_control_flow_free_body() {
     );
     assert!(err.contains("control-flow-free"), "got: {}", err);
 }
+
+// --- Phase 8b: maps ---
+
+#[test]
+fn map_literals_sort_keys_at_compile_time() {
+    let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1))");
+    let HExpr::MapGet { src, .. } = body else { panic!("mapget") };
+    let HExpr::MapLit(pairs) = &*src else { panic!("maplit") };
+    let keys: Vec<i64> = pairs
+        .iter()
+        .map(|(k, _)| if let HExpr::ConstI64(c) = k { *c } else { panic!() })
+        .collect();
+    assert_eq!(keys, vec![1, 3]);
+}
+
+#[test]
+fn maps_reject_non_i64_keys_and_values() {
+    let err = build_err("(defn f [] :- i64 (get {\"a\" 1} \"a\"))");
+    assert!(err.contains("map keys must be i64"), "got: {}", err);
+    let err = build_err("(defn f [] :- i64 (get {1 \"v\"} 1))");
+    assert!(err.contains("map values must be i64"), "got: {}", err);
+}

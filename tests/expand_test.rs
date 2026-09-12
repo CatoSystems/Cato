@@ -8,6 +8,13 @@ fn pp(e: &Expr) -> String {
         Expr::LitF64(v) => format!("{}", v),
         Expr::LitStr(s) => format!("{:?}", s),
         Expr::LitSym(s) => s.clone(),
+        Expr::MapLit(pairs) => {
+            let inner: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{} {}", pp(k), pp(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
         Expr::List(items) | Expr::Vector(items) => {
             let inner: Vec<String> = items.iter().map(pp).collect();
             let (o, c) = if matches!(e, Expr::List(_)) { ("(", ")") } else { ("[", "]") };
@@ -152,4 +159,26 @@ fn expands_macros_inside_deftype_variants_are_untouched() {
     assert_eq!(out.len(), 2);
     assert_eq!(pp(&out[0]), "(deftype S (Mk [x :- i64]))");
     assert_eq!(pp(&out[1]), "(defn f [x :- i64] (if (> x 1) (do 1) 0))");
+}
+
+fn pp_map(e: &Expr) -> String {
+    match e {
+        Expr::MapLit(pairs) => {
+            let inner: Vec<String> = pairs
+                .iter()
+                .map(|(k, v)| format!("{} {}", pp(k), pp(v)))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        other => pp(other),
+    }
+}
+
+#[test]
+fn reader_and_printer_handle_map_literals() {
+    let out = read_all("{1 2 3 4}").unwrap();
+    assert!(matches!(&out[0], Expr::MapLit(_)));
+    assert_eq!(pp_map(&out[0]), "{1 2, 3 4}");
+    let err = read_all("{1 2 3}").unwrap_err();
+    assert!(err.contains("key/value pairs"), "got: {}", err);
 }

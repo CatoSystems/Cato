@@ -17,17 +17,37 @@ pub fn read_all(input: &str) -> Result<Vec<Expr>, String> {
                     i += 1;
                 }
             }
-            '(' | '[' => {
+            '(' | '[' | '{' => {
                 kind_stack.push(c);
                 stack.push(Vec::new());
                 i += 1;
             }
-            ')' | ']' => {
-                let expected = if c == ')' { '(' } else { '[' };
+            ')' | ']' | '}' => {
+                let expected = match c {
+                    ')' => '(',
+                    ']' => '[',
+                    _ => '{',
+                };
                 if kind_stack.pop() != Some(expected) {
                     return Err(format!("unbalanced delimiter '{}'", c));
                 }
                 let items = stack.pop().unwrap();
+                if expected == '{' {
+                    if items.len() % 2 != 0 {
+                        return Err("map literal must have key/value pairs".into());
+                    }
+                    let pairs: Vec<(Expr, Expr)> = items
+                        .chunks(2)
+                        .map(|p| (p[0].clone(), p[1].clone()))
+                        .collect();
+                    let node = Expr::MapLit(pairs);
+                    match stack.last_mut() {
+                        Some(par) => par.push(node),
+                        None => top.push(node),
+                    }
+                    i += 1;
+                    continue;
+                }
                 let node = if c == ')' {
                     Expr::List(items)
                 } else {
@@ -58,7 +78,7 @@ pub fn read_all(input: &str) -> Result<Vec<Expr>, String> {
             }
             _ => {
                 let start = i;
-                while i < bytes.len() && !" \t\n\r()[];\"".contains(bytes[i] as char) {
+                while i < bytes.len() && !" \t\n\r()[]{};\"".contains(bytes[i] as char) {
                     i += 1;
                 }
                 let token = &input[start..i];
