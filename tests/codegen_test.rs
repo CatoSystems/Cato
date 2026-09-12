@@ -251,3 +251,35 @@ fn get_is_branchless_bounds_checked_load() {
     assert!(ir.contains("select i1"), "{}", ir);
     assert!(ir.contains("getelementptr inbounds i64, ptr"), "{}", ir);
 }
+
+// --- Phase 6: element-typed codegen ---
+
+#[test]
+fn f64_vectors_load_doubles_in_fused_loops() {
+    let src = "(defn f [xs :- (Vector f64)] :- f64
+                 (reduce (fn [acc x] (+ acc x)) 0.0 xs))";
+    let exprs = read_all(src).unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = emit_module(&[], &fns);
+    assert!(
+        ir.contains("getelementptr inbounds double, ptr %data, i64"),
+        "{}",
+        ir
+    );
+    assert!(ir.contains("load double, ptr"), "{}", ir);
+    assert!(ir.contains("phi double"), "{}", ir);
+}
+
+#[test]
+fn vec_f64_literals_mint_double_globals() {
+    let src = "(defn f [xs :- (Vector f64)] :- f64 (reduce + 0.0 xs))
+               (defn main [] (print-f64 (f (vec-f64 1.5 2.5))))";
+    let exprs = read_all(src).unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = emit_module(&[], &fns);
+    assert!(
+        ir.contains("private constant [2 x double] [double 1.5"),
+        "{}",
+        ir
+    );
+}

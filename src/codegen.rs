@@ -91,7 +91,34 @@ struct LoopSpec {
     helper: String,
     acc_ty: Ty, // I64 or F64, from the init literal
     caps: Vec<(String, Ty)>,
+    /// Element type of each base vector, in call-site argument order.
+    base_elems: Vec<Elem>,
     reduce: HReduce,
+}
+
+/// Element type of each base vector of a loop source (argument order).
+fn source_base_elems(src: &HSource, params: &[(String, Ty)]) -> Vec<Elem> {
+    match src {
+        HSource::Var(v) => vec![params
+            .iter()
+            .find(|(n, _)| n == v)
+            .map(|(_, t)| match t {
+                Ty::Vec(e) => *e,
+                _ => Elem::I64,
+            })
+            .unwrap_or(Elem::I64)],
+        HSource::Lit(vl) => vec![match vl {
+            VLit::I64(_) => Elem::I64,
+            VLit::F64(_) => Elem::F64,
+        }],
+        HSource::Zip(a, b) => {
+            let mut out = source_base_elems(a, params);
+            out.extend(source_base_elems(b, params));
+            out
+        }
+        HSource::Range(..) => Vec::new(),
+        HSource::Take(_, inner) | HSource::Drop(_, inner) => source_base_elems(inner, params),
+    }
 }
 
 fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, Ty)]) -> LoopSpec {
@@ -109,10 +136,12 @@ fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, Ty)]) -> Loo
         })
         .collect();
     caps.sort_by(|a, b| a.0.cmp(&b.0));
+    let base_elems = source_base_elems(reduce_src(&reduce), params);
     LoopSpec {
         helper: helper.to_string(),
         acc_ty,
         caps,
+        base_elems,
         reduce,
     }
 }
@@ -222,7 +251,7 @@ fn loop_free_vars(reduce: &HReduce) -> (Ty, VarSet) {
             bv.remove(e2);
         }
     }
-    let t = if matches!(reduce_init(reduce), Some(HExpr::ConstF64(_))) {
+    let t = if reduce_init(reduce).map(init_is_f64).unwrap_or(false) {
         Ty::F64
     } else {
         Ty::I64
@@ -236,11 +265,19 @@ fn reduce_init(r: &HReduce) -> Option<&HExpr> {
     }
 }
 
+/// An f64 accumulator: an f64 init literal or a promoted int init
+/// (`ConvF64` wrapper inserted by HIR when elements are f64).
 fn acc_ret_is_f64(r: &HReduce) -> bool {
     match r {
-        HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => {
-            matches!(init, HExpr::ConstF64(_))
-        }
+        HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => init_is_f64(init),
+    }
+}
+
+fn init_is_f64(init: &HExpr) -> bool {
+    match init {
+        HExpr::ConstF64(_) => true,
+        HExpr::ConvF64(_) => true,
+        _ => false,
     }
 }
 
@@ -340,7 +377,7 @@ fn rewrite_body(
             let base_args = source_base_args(reduce_src(r));
             let mut arg_tys: Vec<Ty> = Vec::new();
             for _ in &base_args {
-                arg_tys.push(Ty::VecI64);
+                arg_tys.push(VEC_I64);
             }
             for (_, t) in &spec.caps {
                 arg_tys.push(*t);
@@ -364,7 +401,12 @@ fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         },
-        HExpr::Get { src, idx, default } => HExpr::Get {
+        HExpr::Get {
+            src,
+            idx,
+            default,
+            ty,
+        } => HExpr::Get {
             src: Box::new(rewrite_body(src, fnprefix, params, idmap, loops, sigs)?),
             idx: Box::new(rewrite_body(idx, fnprefix, params, idmap, loops, sigs)?),
             default: match default {
@@ -373,6 +415,7 @@ fn rewrite_body(
                 )?)),
                 None => None,
             },
+            ty: *ty,
         },
         HExpr::Match { scrut, arms, ty } => HExpr::Match {
             scrut: Box::new(rewrite_body(scrut, fnprefix, params, idmap, loops, sigs)?),
@@ -420,22 +463,55 @@ impl Mdl {
             Ty::I64 => "i64".into(),
             Ty::F64 => "double".into(),
             Ty::Bool => "i1".into(),
-            Ty::VecI64 => panic!("codegen: vector type in scalar position"),
+            Ty::Vec(_) => panic!("codegen: vector type in scalar position"),
             Ty::Adt(_) => "ptr".into(),
+            Ty::Param(_) => panic!("codegen: unresolved type parameter"),
         }
     }
-    fn mint_vec(&mut self, lit: &[i64]) -> (String, String) {
+    fn mint_vec(&mut self, lit: &VLit) -> (String, String, Elem) {
         let id = self.counter;
         self.counter += 1;
         let label = format!("@g_vec_{}", id);
-        let items: Vec<String> = lit.iter().map(|v| format!("i64 {}", v)).collect();
-        self.vec_globals.push(format!(
-            "{} = private constant [{} x i64] [{}]",
-            label,
-            lit.len(),
-            items.join(", ")
-        ));
-        (label, lit.len().to_string())
+        match lit {
+            VLit::I64(vs) => {
+                let items: Vec<String> = vs.iter().map(|v| format!("i64 {}", v)).collect();
+                self.vec_globals.push(format!(
+                    "{} = private constant [{} x i64] [{}]",
+                    label,
+                    vs.len(),
+                    items.join(", ")
+                ));
+            }
+            VLit::F64(vs) => {
+                let items: Vec<String> = vs
+                    .iter()
+                    .map(|v| format!("double {}", llvm_f64(*v)))
+                    .collect();
+                self.vec_globals.push(format!(
+                    "{} = private constant [{} x double] [{}]",
+                    label,
+                    vs.len(),
+                    items.join(", ")
+                ));
+            }
+        }
+        let elem = match lit {
+            VLit::I64(_) => Elem::I64,
+            VLit::F64(_) => Elem::F64,
+        };
+        let len = match lit {
+            VLit::I64(vs) => vs.len(),
+            VLit::F64(vs) => vs.len(),
+        };
+        (label, len.to_string(), elem)
+    }
+    /// LLVM type of a vector element.
+    fn elem_ll(&self, e: Elem) -> &'static str {
+        match e {
+            Elem::I64 => "i64",
+            Elem::F64 => "double",
+            Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
+        }
     }
     fn globals(&self) -> &[String] {
         &self.vec_globals
@@ -454,7 +530,7 @@ struct FnCtx {
     /// Allocas hoisted to the function entry prelude (loop-safe ADT slots).
     prelude: Vec<String>,
     scalar: HashMap<String, (String, Ty)>,
-    vecs: HashMap<String, (String, String)>,
+    vecs: HashMap<String, (String, String, Elem)>,
 }
 
 impl FnCtx {
@@ -513,6 +589,15 @@ impl FnCtx {
     }
 }
 
+/// Scalar type of a concrete vector element.
+fn elem_ty_of(e: Elem) -> Ty {
+    match e {
+        Elem::I64 => Ty::I64,
+        Elem::F64 => Ty::F64,
+        Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
+    }
+}
+
 fn mangle(name: &str) -> String {
     name.replace('-', "_")
 }
@@ -563,19 +648,6 @@ fn unwrap_source(src: &HSource) -> (Vec<(&HExpr, bool)>, &HSource) {
     }
 }
 
-/// Bind a stage element name to the raw i64 element register, converting to
-/// f64 when the stage reads f64 elements (a `map` stage's output fed to a
-/// following `filter`).
-fn bind_elem(c: &mut FnCtx, name: &str, ty: Ty, raw: &str) {
-    if ty == Ty::F64 {
-        let t = c.temp();
-        c.line(&format!("  {} = bitcast i64 {} to double", t, raw));
-        c.scalar.insert(name.to_string(), (t, Ty::F64));
-    } else {
-        c.scalar.insert(name.to_string(), (raw.to_string(), ty));
-    }
-}
-
 fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     let mut c = FnCtx::new();
     let mut adt_caps: Vec<(String, u32)> = Vec::new();
@@ -601,19 +673,19 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     // captures. `range` bases contribute no parameters (their bounds are
     // ordinary captures evaluated in the entry block).
     let mut params: Vec<String> = Vec::new();
-    match base {
-        HSource::Var(_) | HSource::Lit(_) => {
+    match (base, spec.base_elems.len()) {
+        (HSource::Var(_) | HSource::Lit(_), 1) => {
             params.push("ptr noalias nocapture readonly %data".to_string());
             params.push("i64 %len".to_string());
         }
-        HSource::Zip(..) => {
+        (HSource::Zip(..), 2) => {
             params.push("ptr noalias nocapture readonly %dataA".to_string());
             params.push("i64 %lenA".to_string());
             params.push("ptr noalias nocapture readonly %dataB".to_string());
             params.push("i64 %lenB".to_string());
         }
-        HSource::Range(..) => {}
-        _ => unreachable!("base source"),
+        (HSource::Range(..), _) => {}
+        _ => unreachable!("base source / element count"),
     }
     for (n, t) in &spec.caps {
         let ll = match t {
@@ -732,43 +804,64 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         c: &mut FnCtx,
         base: &HSource,
         start_v: &str,
-    ) -> (String, Option<String>) {
+        elems: &[Elem],
+        mdl: &Mdl,
+    ) -> (String, Ty, Option<(String, Ty)>) {
+        let ll = |e: Elem| mdl.elem_ll(e);
         match base {
             HSource::Var(_) | HSource::Lit(_) => {
+                let e = elems.first().copied().unwrap_or(Elem::I64);
                 let pidx = c.temp();
                 c.line(&format!("  {} = add i64 {}, %i", pidx, start_v));
                 let p = c.temp();
                 c.line(&format!(
-                    "  {} = getelementptr inbounds i64, ptr %data, i64 {}",
-                    p, pidx
+                    "  {} = getelementptr inbounds {}, ptr %data, i64 {}",
+                    p,
+                    ll(e),
+                    pidx
                 ));
                 let x = c.temp();
-                c.line(&format!("  {} = load i64, ptr {}, align 8", x, p));
-                (x, None)
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align 8",
+                    x,
+                    ll(e),
+                    p
+                ));
+                (x, elem_ty_of(e), None)
             }
             HSource::Zip(..) => {
+                let ea = elems.first().copied().unwrap_or(Elem::I64);
+                let eb = elems.get(1).copied().unwrap_or(Elem::I64);
                 let pidx = c.temp();
                 c.line(&format!("  {} = add i64 {}, %i", pidx, start_v));
                 let pa = c.temp();
                 c.line(&format!(
-                    "  {} = getelementptr inbounds i64, ptr %dataA, i64 {}",
-                    pa, pidx
+                    "  {} = getelementptr inbounds {}, ptr %dataA, i64 {}",
+                    pa,
+                    ll(ea),
+                    pidx
                 ));
                 let xa = c.temp();
-                c.line(&format!("  {} = load i64, ptr {}, align 8", xa, pa));
+                c.line(&format!("  {} = load {}, ptr {}, align 8", xa, ll(ea), pa));
                 let pb = c.temp();
                 c.line(&format!(
-                    "  {} = getelementptr inbounds i64, ptr %dataB, i64 {}",
-                    pb, pidx
+                    "  {} = getelementptr inbounds {}, ptr %dataB, i64 {}",
+                    pb,
+                    ll(eb),
+                    pidx
                 ));
                 let xb = c.temp();
-                c.line(&format!("  {} = load i64, ptr {}, align 8", xb, pb));
-                (xa, Some(xb))
+                c.line(&format!("  {} = load {}, ptr {}, align 8", xb, ll(eb), pb));
+                (
+                    xa,
+                    elem_ty_of(ea),
+                    Some((xb, elem_ty_of(eb))),
+                )
             }
             HSource::Range(..) => {
                 let x = c.temp();
                 c.line(&format!("  {} = add i64 {}, %i", x, start_v));
-                (x, None)
+                (x, Ty::I64, None)
             }
             _ => unreachable!("base source"),
         }
@@ -783,10 +876,10 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             // name becomes the phi's back-edge operand), then emit the block.
             let mut scratch = c.clone_with_lines(Vec::new());
             scratch.cur = "%loop".to_string();
-            let (xv, x2v) = elem_loads(&mut scratch, base, &start_v);
-            scratch.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
-            if let (Some(name), Some(reg)) = (&el2, &x2v) {
-                scratch.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            let (xv, xty, x2v) = elem_loads(&mut scratch, base, &start_v, &spec.base_elems, mdl);
+            scratch.scalar.insert(el.clone(), (xv.clone(), xty));
+            if let (Some(name), Some((reg, ty))) = (&el2, &x2v) {
+                scratch.scalar.insert(name.clone(), (reg.clone(), *ty));
             }
             scratch
                 .scalar
@@ -805,10 +898,10 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ {}, %loop ]",
                 acc_ll, init_lit, val
             ));
-            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
-            c.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
-            if let (Some(name), Some(reg)) = (&el2, &x2v) {
-                c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            let (xv, xty, x2v) = elem_loads(&mut c, base, &start_v, &spec.base_elems, mdl);
+            c.scalar.insert(el.clone(), (xv.clone(), xty));
+            if let (Some(name), Some((reg, ty))) = (&el2, &x2v) {
+                c.scalar.insert(name.clone(), (reg.clone(), *ty));
             }
             c.scalar
                 .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
@@ -831,10 +924,10 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ %acc.next, %loop ]",
                 acc_ll, init_lit
             ));
-            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
-            c.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
-            if let (Some(name), Some(reg)) = (&el2, &x2v) {
-                c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            let (xv, xty, x2v) = elem_loads(&mut c, base, &start_v, &spec.base_elems, mdl);
+            c.scalar.insert(el.clone(), (xv.clone(), xty));
+            if let (Some(name), Some((reg, ty))) = (&el2, &x2v) {
+                c.scalar.insert(name.clone(), (reg.clone(), *ty));
             }
             c.scalar
                 .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
@@ -857,13 +950,13 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ %acc.merge, %merge ]",
                 acc_ll, init_lit
             ));
-            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
+            let (xv, xty, x2v) = elem_loads(&mut c, base, &start_v, &spec.base_elems, mdl);
 
             if !filters.is_empty() {
                 for fl in filters {
-                    bind_elem(&mut c, &fl.el, fl.el_ty, &xv);
-                    if let (Some(name), Some(reg)) = (&fl.el2, &x2v) {
-                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+                    c.scalar.insert(fl.el.clone(), (xv.clone(), fl.el_ty));
+                    if let (Some(name), Some((reg, ty))) = (&fl.el2, &x2v) {
+                        c.scalar.insert(name.clone(), (reg.clone(), *ty));
                     }
                     let pv = emit_bool(&fl.body, &mut c, mdl, sigs);
                     let t_keep = c.temp();
@@ -878,25 +971,11 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             c.line("apply:");
             c.open("apply");
             let mut val = xv.clone();
-            let mut val_ty = Ty::I64;
-            for (k, m) in maps.iter().enumerate() {
-                if k == 0 {
-                    // First stage reads the raw element (an f64 source needs
-                    // a bitcast; later stages read the previous stage's
-                    // already-typed result).
-                    if m.el_ty == Ty::F64 {
-                        bind_elem(&mut c, &m.el, m.el_ty, &val);
-                    } else {
-                        c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
-                    }
-                    if let (Some(name), Some(reg)) = (&m.el2, &x2v) {
-                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
-                    }
-                } else {
-                    c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
-                    if let Some(name) = &m.el2 {
-                        let _ = name;
-                    }
+            let mut val_ty = xty;
+            for m in maps.iter() {
+                c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
+                if let (Some(name), Some((reg, ty))) = (&m.el2, &x2v) {
+                    c.scalar.insert(name.clone(), (reg.clone(), *ty));
                 }
                 val = emit_typed(&m.body, m.res_ty, &mut c, mdl, sigs);
                 val_ty = m.res_ty;
@@ -906,8 +985,8 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             let r = match &spec.reduce {
                 HReduce::Closure { body, .. } => {
                     c.scalar.insert(el.clone(), (val.clone(), val_ty));
-                    if let (Some(name), Some(reg)) = (&el2, &x2v) {
-                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+                    if let (Some(name), Some((reg, ty))) = (&el2, &x2v) {
+                        c.scalar.insert(name.clone(), (reg.clone(), *ty));
                     }
                     emit_typed(body, spec.acc_ty, &mut c, mdl, sigs)
                 }
@@ -968,6 +1047,10 @@ fn loop_init(r: &HReduce) -> f64 {
         HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => match init {
             HExpr::ConstF64(v) => *v,
             HExpr::ConstI64(v) => *v as f64,
+            HExpr::ConvF64(inner) => match &**inner {
+                HExpr::ConstI64(v) => *v as f64,
+                _ => 0.0,
+            },
             _ => 0.0,
         },
     }
@@ -993,10 +1076,10 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
     let mut params = Vec::new();
     for (pname, pty) in &defn.params {
         match pty {
-            Ty::VecI64 => {
+            Ty::Vec(e) => {
                 let d = format!("%{}_data", mangle(pname));
                 let l = format!("%{}_len", mangle(pname));
-                c.vecs.insert(pname.clone(), (d.clone(), l.clone()));
+                c.vecs.insert(pname.clone(), (d.clone(), l.clone(), *e));
                 params.push(format!("ptr noalias nocapture readonly {}", d));
                 params.push(format!("i64 {}", l));
             }
@@ -1015,6 +1098,7 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::Bool));
                 params.push(format!("i1 {}", r));
             }
+            Ty::Param(_) => panic!("codegen: unresolved type parameter in params"),
             Ty::Adt(i) => {
                 // By-value boundary: the incoming struct is copied into an
                 // entry slot; all internal uses go through the ptr.
@@ -1100,7 +1184,8 @@ fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, 
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
-        Ty::VecI64 => panic!("codegen: cannot return a vector"),
+        Ty::Vec(_) => panic!("codegen: cannot return a vector"),
+        Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
 }
 
@@ -1203,7 +1288,8 @@ fn emit_typed(
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
-        Ty::VecI64 => panic!("codegen: control flow cannot produce a vector"),
+        Ty::Vec(_) => panic!("codegen: control flow cannot produce a vector"),
+        Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
 }
 
@@ -1560,7 +1646,7 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 r.clone()
             } else {
                 // vector var used in length context
-                let (_, l) = c.vecs.get(v).expect("known var");
+                let (_, l, _) = c.vecs.get(v).expect("known var");
                 l.clone()
             }
         }
@@ -1568,7 +1654,7 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             let HExpr::Var(s) = &**v else {
                 panic!("codegen: count of non-var")
             };
-            let (_, l) = c.vecs.get(s).expect("count of vector var");
+            let (_, l, _) = c.vecs.get(s).expect("count of vector var");
             l.clone()
         }
         HExpr::Bin(op, a, b) => {
@@ -1641,44 +1727,75 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             emit_adt(e, c, mdl, sigs);
             "0".to_string()
         }
-        HExpr::Get { src, idx, default } => {
-            let (d, l) = vec_arg(src, c, mdl);
-            let iv = emit_int(idx, c, mdl, sigs);
-            let inb = c.temp();
-            c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
-            let safe = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
-            let p = c.temp();
-            c.line(&format!(
-                "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
-                p, d, safe
-            ));
-            let v = c.temp();
-            c.line(&format!("  {} = load i64, ptr {}, align 8", v, p));
-            match default {
-                Some(dv) => {
-                    let dvv = emit_int(dv, c, mdl, sigs);
-                    let r = c.temp();
-                    c.line(&format!(
-                        "  {} = select i1 {}, i64 {}, i64 {}",
-                        r, inb, v, dvv
-                    ));
-                    r
-                }
-                None => {
-                    let r = c.temp();
-                    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, v));
-                    r
-                }
-            }
-        }
+        HExpr::Get { ty: Ty::I64, .. } => emit_get(e, c, mdl, sigs),
+        HExpr::Get { ty, .. } => panic!(
+            "codegen: get returning {:?} in i64 context (expected F64 context)",
+            ty
+        ),
     }
     .to_string()
+}
+
+/// `(get vec idx [default])` — branchless bounds-checked element load. The
+/// result has the vector's element type, so this is valid in int and float
+/// contexts alike.
+fn emit_get(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let HExpr::Get {
+        src,
+        idx,
+        default,
+        ty,
+    } = e
+    else {
+        panic!("codegen: emit_get on non-get")
+    };
+    let (d, l, elem) = vec_arg(src, c, mdl);
+    let ll = mdl.elem_ll(elem);
+    let iv = emit_int(idx, c, mdl, sigs);
+    let inb = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
+    let safe = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        p, ll, d, safe
+    ));
+    let v = c.temp();
+    c.line(&format!("  {} = load {}, ptr {}, align 8", v, ll, p));
+    match default {
+        Some(dv) => {
+            let dvv = emit_typed(dv, *ty, c, mdl, sigs);
+            let r = c.temp();
+            c.line(&format!(
+                "  {} = select i1 {}, {} {}, {} {}",
+                r,
+                inb,
+                ll,
+                v,
+                ll,
+                dvv
+            ));
+            r
+        }
+        None if *ty == Ty::I64 => {
+            let r = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, v));
+            r
+        }
+        None => v,
+    }
 }
 
 fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
         HExpr::ConstF64(v) => llvm_f64(*v),
+        HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Var(v) => {
             let (r, _) = c.scalar.get(v).expect("known f64 var");
             r.clone()
@@ -1775,7 +1892,7 @@ fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &
                 let v = emit_bool(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::Bool));
             }
-            Ty::VecI64 => materialize_vec_lit(value, name, c, mdl),
+            Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, *ty));
@@ -1792,7 +1909,7 @@ fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) 
     let HExpr::VecLit(lit) = value else {
         panic!("codegen: can only materialize vector literal bindings")
     };
-    let (label, len) = mdl.mint_vec(lit);
+    let (label, len, elem) = mdl.mint_vec(lit);
     let t_v = c.temp();
     c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
     c.line(&format!(
@@ -1805,10 +1922,10 @@ fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) 
     let t_l = c.temp();
     c.line(&format!("  {} = extractvalue %VecI64 {}, 0", t_d, t_lv));
     c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
-    c.vecs.insert(name.to_string(), (t_d, t_l));
+    c.vecs.insert(name.to_string(), (t_d, t_l, elem));
 }
 
-fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String) {
+fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String, Elem) {
     match expr {
         HExpr::Var(v) => c
             .vecs
@@ -1816,7 +1933,7 @@ fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String) {
             .cloned()
             .unwrap_or_else(|| panic!("codegen: {} is not a vector binding", v)),
         HExpr::VecLit(lit) => {
-            let (label, len) = mdl.mint_vec(lit);
+            let (label, len, elem) = mdl.mint_vec(lit);
             let t_v = c.temp();
             c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
             c.line(&format!(
@@ -1829,7 +1946,7 @@ fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String) {
             let t_l = c.temp();
             c.line(&format!("  {} = extractvalue %VecI64 {}, 0", t_d, t_lv));
             c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
-            (t_d, t_l)
+            (t_d, t_l, elem)
         }
         _ => panic!("codegen: unsupported vector argument"),
     }
@@ -1858,8 +1975,8 @@ fn call_user(
     let mut ll_args = Vec::new();
     for (expr, ty) in args.iter().zip(arg_tys.iter()) {
         match ty {
-            Ty::VecI64 => {
-                let (d, l) = vec_arg(expr, c, mdl);
+            Ty::Vec(_) => {
+                let (d, l, _) = vec_arg(expr, c, mdl);
                 ll_args.push(format!("ptr {}", d));
                 ll_args.push(format!("i64 {}", l));
             }
@@ -1875,6 +1992,7 @@ fn call_user(
                 let v = emit_bool(expr, c, mdl, sigs);
                 ll_args.push(format!("i1 {}", v));
             }
+            Ty::Param(_) => panic!("codegen: unresolved type parameter in call args"),
             Ty::Adt(i) => {
                 // By-value boundary: load the caller's slot into the arg.
                 let v = emit_adt(expr, c, mdl, sigs);

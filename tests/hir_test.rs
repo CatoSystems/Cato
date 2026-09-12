@@ -404,7 +404,10 @@ fn builds_take_drop_zip_range_sources() {
 
     let HExpr::Reduce(r) = get("k") else { panic!("k reduce") };
     let HReduce::Pipeline { src, .. } = *r else { panic!("k pipeline") };
-    assert!(matches!(src, HSource::Lit(ref vs) if vs == &vec![1, 2, 3]));
+    assert!(matches!(
+        src,
+        HSource::Lit(VLit::I64(ref vs)) if vs == &vec![1, 2, 3]
+    ));
 }
 
 #[test]
@@ -423,4 +426,52 @@ fn zip_closure_binds_two_elements() {
 fn builds_get_with_default() {
     let body = build_one("f", "(defn f [xs :- vec] :- i64 (get xs 2 9))");
     assert!(matches!(body, HExpr::Get { default: Some(_), .. }));
+}
+
+// --- Phase 6: monomorphization ---
+
+#[test]
+fn instantiates_generic_per_call_site_type() {
+    let exprs = read_all(
+        "(defn gsum [xs :- (Vector T)] :- T (reduce (fn [acc x] (+ acc x)) 0 xs))
+         (defn main []
+           (print-i64 (gsum (vec-i64 1 2)))
+           (print-f64 (gsum (vec-f64 1.0 2.0))))",
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    let names: Vec<&str> = fns.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"gsum__i64"), "{:?}", names);
+    assert!(names.contains(&"gsum__f64"), "{:?}", names);
+    let f = fns.iter().find(|d| d.name == "gsum__f64").unwrap();
+    assert_eq!(f.ret, Ty::F64);
+    assert_eq!(f.params[0].1, Ty::Vec(Elem::F64));
+}
+
+#[test]
+fn explicit_vector_f64_annotation_types() {
+    let exprs = read_all("(defn f [xs :- (Vector f64)] :- f64 (count xs))").unwrap();
+    let fns = build(&exprs).unwrap();
+    assert_eq!(fns[0].params[0].1, Ty::Vec(Elem::F64));
+    assert_eq!(fns[0].ret, Ty::F64);
+}
+
+#[test]
+fn get_on_f64_vector_is_f64() {
+    let body = build_one("f", "(defn f [xs :- (Vector f64)] :- f64 (get xs 0 1.0))");
+    let HExpr::Get { ty, .. } = body else { panic!("get") };
+    assert_eq!(ty, Ty::F64);
+}
+
+#[test]
+fn rejects_incompatible_generic_instantiation() {
+    let err = build_err(
+        "(defn gsum [xs :- (Vector T)] :- T (reduce (fn [acc x] (+ acc x)) 0 xs))
+         (defn f [x :- i64] :- i64 (gsum x))",
+    );
+    assert!(
+        err.contains("cannot instantiate") || err.contains("expects"),
+        "got: {}",
+        err
+    );
 }

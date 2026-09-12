@@ -119,3 +119,13 @@ fn compiles_collections_to_expected_output() {
         "35\n9\n140\n64\n42\n3\n5\n10\n30\n"
     );
 }
+
+#[test]
+fn compiles_generic_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/generic.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("generic", &src),
+        "10\n2.5\n7.25\n9\n2.5\n50\n"
+    );
+}

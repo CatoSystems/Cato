@@ -70,23 +70,21 @@ Shipped and green on `main` (`cargo test`):
   `expand.rs` with no codegen changes. `conj`/`subvec`/`for` are deferred
   until vector materialization (Phase 7 heap story).
   Reference program: `examples/collections.cato` → `35 9 140 64 42 3 5 10 30`.
+- **Slice 6 — Monomorphization.**
+  `(Vector f64)` element-typed vectors in annotations, literals and fused
+  loops (double GEP/loads, still `inbounds` + `align 8`); generic `defn`s
+  with type parameters (`(defn gsum [xs :- (Vector T)] :- T ...)`) unified
+  against call-site types and instantiated once per concrete type
+  (`gsum__i64`, `gsum__f64`), fully unboxed. Generic bodies follow the `if`
+  promotion rule for f64 elements.
+  Reference program: `examples/generic.cato` → `10 2.5 7.25 9 2.5 50`.
 
-Current type system: `i64`, `f64`, `bool`, `vec` (`VecI64`), user ADTs
-(scalar payload fields).
+Current type system: `i64`, `f64`, `bool`, vectors (`(Vector i64)` /
+`(Vector f64)`, type-parameterized), user ADTs (scalar payload fields).
 
 ## Roadmap
 
-### Phase 6 — Polymorphism & monomorphization *(next)*
-
-Generalize `(Vector T)` and parameterize over element types.
-
-- `Ty` carries element types; generic `defn`s are instantiated per concrete
-  call-site type, eliminating boxed dispatch.
-- Unlocks ADT fields holding vectors and generic collection code.
-- Expect longer compile times by design (aggressive monomorphization is the
-  chosen trade for zero-cost runtime).
-
-### Phase 7 — Ownership & borrowing
+### Phase 7 — Ownership & borrowing *(next)*
 
 The language's differentiator: Rust-style memory safety expressed in Clojure
 form — `&` immutable borrows, `&!` exclusive borrows, `clone`/`drop` — enforced

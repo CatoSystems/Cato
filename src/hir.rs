@@ -1,15 +1,38 @@
 use crate::ast::Expr;
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
     I64,
     F64,
-    VecI64,
+    /// Vector with an element type: `(Vector i64)`, `(Vector f64)`.
+    Vec(Elem),
     Bool,
     /// User-defined ADT, indexed into the program's `AdtDef` table.
     Adt(u32),
+    /// Type parameter in a generic defn's annotations, indexed into the
+    /// defn's `ty_params` list. Never survives monomorphization.
+    Param(u32),
 }
+
+/// Vector element types of the monomorphization slice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elem {
+    I64,
+    F64,
+    /// `(Vector T)` in a generic template.
+    Param(u32),
+}
+
+impl Elem {
+    pub fn is_param(self) -> bool {
+        matches!(self, Elem::Param(_))
+    }
+}
+
+pub const VEC_I64: Ty = Ty::Vec(Elem::I64);
+pub const VEC_F64: Ty = Ty::Vec(Elem::F64);
 
 /// A user-defined algebraic data type: variants with scalar (or other-ADT)
 /// payload fields, in declaration order (the order is the runtime tag).
@@ -45,7 +68,7 @@ pub enum HExpr {
     Bin(BinOp, Box<HExpr>, Box<HExpr>),
     ConvF64(Box<HExpr>),
     Count(Box<HExpr>),
-    VecLit(Vec<i64>),
+    VecLit(VLit),
     Reduce(Box<HReduce>),
     Call(String, Vec<HExpr>),
     Let(Vec<(String, HExpr, Ty)>, Box<HExpr>),
@@ -74,7 +97,15 @@ pub enum HExpr {
         src: Box<HExpr>,
         idx: Box<HExpr>,
         default: Option<Box<HExpr>>,
+        ty: Ty,
     },
+}
+
+/// Typed vector literal contents (element type lives in `Ty::Vec`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VLit {
+    I64(Vec<i64>),
+    F64(Vec<f64>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,8 +144,8 @@ pub enum HReduce {
 #[derive(Debug, Clone, PartialEq)]
 pub enum HSource {
     Var(String),
-    /// An inline `(vec-i64 ...)` / vector literal as the loop base.
-    Lit(Vec<i64>),
+    /// An inline `(vec-i64 ...)` / `(vec-f64 ...)` literal as the loop base.
+    Lit(VLit),
     Range(Box<HExpr>, Box<HExpr>),
     Zip(Box<HSource>, Box<HSource>),
     Take(Box<HExpr>, Box<HSource>),
@@ -126,6 +157,7 @@ pub struct MapSpec {
     pub el: String,
     /// Second element binding when the stage reads a `Zip` source.
     pub el2: Option<String>,
+    pub el2_ty: Ty,
     pub body: HExpr,
     pub el_ty: Ty,
     pub res_ty: Ty,
@@ -135,6 +167,7 @@ pub struct MapSpec {
 pub struct FilterSpec {
     pub el: String,
     pub el2: Option<String>,
+    pub el2_ty: Ty,
     pub body: HExpr,
     pub el_ty: Ty,
 }
@@ -153,12 +186,25 @@ struct RawDefn {
     name: String,
     params: Vec<(String, Ty)>,
     ret: Ty,
+    /// Type parameter names, in declaration order (indexed by `Ty::Param`).
+    /// Empty for concrete defns.
+    ty_params: Vec<String>,
     body: Expr,
+}
+
+/// Monomorphization state shared across lowering: instantiated generics are
+/// specialized once per concrete call-site type and appended to the program.
+#[derive(Default)]
+struct InstState {
+    /// mangled name -> instantiated return type (also the instantiation key)
+    cache: HashMap<String, Ty>,
+    extra: Vec<Defn>,
 }
 
 struct Ctx<'a> {
     raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
     adts: &'a [AdtDef],
+    inst: RefCell<InstState>,
 }
 
 impl<'a> Ctx<'a> {
@@ -211,10 +257,15 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
     let ctx = Ctx {
         raw_by_name: &raw_by_name,
         adts: &adts,
+        inst: RefCell::new(InstState::default()),
     };
 
     let mut out = Vec::new();
     for raw in &raws {
+        // Generic defns are templates: they are lowered per instantiation.
+        if !raw.ty_params.is_empty() {
+            continue;
+        }
         let mut env = Env::new();
         for (pname, pty) in &raw.params {
             env.insert(pname.clone(), *pty);
@@ -232,6 +283,8 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
             body,
         });
     }
+    // Monomorphized generic instantiations generated during lowering.
+    out.extend(ctx.inst.borrow_mut().extra.drain(..));
     Ok((adts, out))
 }
 
@@ -295,6 +348,16 @@ fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
     })
 }
 
+/// Lower a raw defn body (an implicit `do` when it holds multiple forms).
+fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    match body {
+        Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
+            lower_body_forms(items, env, ctx)
+        }
+        _ => lower(body, env, ctx),
+    }
+}
+
 fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
         return Err("expected (defn ...)".into());
@@ -311,16 +374,15 @@ fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn,
     let Expr::Vector(params) = &items[2] else {
         return Err("defn params must be a vector".into());
     };
-    let params = parse_params(params, adt_by_name)?;
+    let mut ty_params: Vec<String> = Vec::new();
+    let params = parse_params(params, adt_by_name, &mut ty_params)?;
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                if let Expr::LitSym(ty) = &items[body_start + 1] {
-                    ret = parse_ty(ty, adt_by_name)?;
-                }
+                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params)?;
                 body_start += 2;
             }
         }
@@ -343,11 +405,16 @@ fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn,
         name: name.clone(),
         params,
         ret,
+        ty_params,
         body,
     })
 }
 
-fn parse_params(params: &[Expr], adt_by_name: &HashMap<String, u32>) -> Result<Vec<(String, Ty)>, String> {
+fn parse_params(
+    params: &[Expr],
+    adt_by_name: &HashMap<String, u32>,
+    ty_params: &mut Vec<String>,
+) -> Result<Vec<(String, Ty)>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < params.len() {
@@ -357,8 +424,11 @@ fn parse_params(params: &[Expr], adt_by_name: &HashMap<String, u32>) -> Result<V
         if i + 2 < params.len() {
             if let Expr::LitSym(sep) = &params[i + 1] {
                 if sep == ":-" {
-                    if let Expr::LitSym(ty) = &params[i + 2] {
-                        out.push((name.clone(), parse_ty(ty, adt_by_name)?));
+                    {
+                        out.push((
+                            name.clone(),
+                            parse_ty(&params[i + 2], adt_by_name, ty_params)?,
+                        ));
                         i += 3;
                         continue;
                     }
@@ -370,17 +440,199 @@ fn parse_params(params: &[Expr], adt_by_name: &HashMap<String, u32>) -> Result<V
     Ok(out)
 }
 
-fn parse_ty(s: &str, adt_by_name: &HashMap<String, u32>) -> Result<Ty, String> {
+/// Parse a type annotation expression: a builtin/ADT symbol, a type
+/// parameter name, or `(Vector i64|f64|T)`.
+fn parse_ty(
+    e: &Expr,
+    adt_by_name: &HashMap<String, u32>,
+    ty_params: &mut Vec<String>,
+) -> Result<Ty, String> {
+    match e {
+        Expr::List(items) => {
+            let Some(Expr::LitSym(h)) = items.first() else {
+                return Err("type annotation must be a symbol or (Vector ty)".into());
+            };
+            if h != "Vector" || items.len() != 2 {
+                return Err(format!(
+                    "unsupported type annotation (expected (Vector ty), got {} elements)",
+                    items.len() - 1
+                ));
+            }
+            let el = match &items[1] {
+                Expr::LitSym(s) if s == "i64" => Elem::I64,
+                Expr::LitSym(s) if s == "f64" => Elem::F64,
+                Expr::LitSym(p) => Elem::Param(register_ty_param(p, ty_params)),
+                _ => return Err("Vector element type must be i64, f64 or a type parameter".into()),
+            };
+            Ok(Ty::Vec(el))
+        }
+        Expr::LitSym(s) => parse_ty_sym(s, adt_by_name, ty_params),
+        _ => Err("type annotation must be a symbol or (Vector ty)".into()),
+    }
+}
+
+fn parse_ty_sym(
+    s: &str,
+    adt_by_name: &HashMap<String, u32>,
+    ty_params: &mut Vec<String>,
+) -> Result<Ty, String> {
     match s {
         "i64" => Ok(Ty::I64),
         "f64" => Ok(Ty::F64),
-        "vec" => Ok(Ty::VecI64),
+        "vec" => Ok(VEC_I64),
         "bool" => Ok(Ty::Bool),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
-            None => Err(format!("unknown type annotation '{}'", other)),
+            None => Ok(Ty::Param(register_ty_param(other, ty_params))),
         },
     }
+}
+
+fn register_ty_param(name: &str, ty_params: &mut Vec<String>) -> u32 {
+    if let Some(i) = ty_params.iter().position(|p| p == name) {
+        return i as u32;
+    }
+    ty_params.push(name.to_string());
+    (ty_params.len() - 1) as u32
+}
+
+/// Substitute type parameters with concrete types.
+fn subst_ty(ty: Ty, subs: &[Option<Ty>]) -> Ty {
+    match ty {
+        Ty::Param(i) => subs
+            .get(i as usize)
+            .copied()
+            .flatten()
+            .unwrap_or(Ty::I64),
+        Ty::Vec(e) => Ty::Vec(match e {
+            // `(Vector T)`: T was bound to the element type at unification.
+            Elem::Param(i) => match subs.get(i as usize).copied().flatten() {
+                Some(Ty::I64) => Elem::I64,
+                Some(Ty::F64) => Elem::F64,
+                Some(Ty::Vec(el)) => el,
+                _ => Elem::I64,
+            },
+            other => other,
+        }),
+        other => other,
+    }
+}
+
+/// LLVM-safe suffix for an instantiation's type arguments.
+fn ty_suffix(ty: Ty) -> Option<&'static str> {
+    match ty {
+        Ty::I64 => Some("i64"),
+        Ty::F64 => Some("f64"),
+        Ty::Bool => Some("bool"),
+        Ty::Vec(Elem::I64) => Some("vec_i64"),
+        Ty::Vec(Elem::F64) => Some("vec_f64"),
+        _ => None,
+    }
+}
+
+/// Unify a declared (possibly generic) type against a concrete one, binding
+/// type parameters. Fails (None) when incompatible or unresolved.
+fn unify(pat: Ty, actual: Ty, subs: &mut [Option<Ty>]) -> Option<()> {
+    match (pat, actual) {
+        (Ty::Param(i), _) => {
+            match subs.get_mut(i as usize)? {
+                Some(bound) if *bound != actual => return None,
+                slot => *slot = Some(actual),
+            }
+            Some(())
+        }
+        // `(Vector T)` binds T to the element type, not the vector type.
+        (Ty::Vec(Elem::Param(i)), Ty::Vec(el)) => {
+            let a = match el {
+                Elem::I64 => Ty::I64,
+                Elem::F64 => Ty::F64,
+                Elem::Param(_) => return None,
+            };
+            match subs.get_mut(i as usize)? {
+                Some(bound) if *bound != a => return None,
+                slot => *slot = Some(a),
+            }
+            Some(())
+        }
+        (Ty::Vec(Elem::Param(_)), _) => None,
+        (a, b) if a == b => Some(()),
+        _ => None,
+    }
+}
+
+/// Resolve an instantiation of a (possibly generic) callee for the given
+/// concrete argument types. Returns the (mangled) callee name and its
+/// concrete return type. Non-generic callees pass through untouched.
+fn instantiate(
+    name: &str,
+    arg_tys: &[Ty],
+    ctx: &Ctx,
+) -> Result<(String, Ty), String> {
+    let raw = match ctx.raw_by_name.get(name) {
+        Some(r) => r,
+        None => return Err(format!("unknown function {}", name)),
+    };
+    if raw.ty_params.is_empty() {
+        return Ok((name.to_string(), raw.ret));
+    }
+    if raw.params.len() != arg_tys.len() {
+        return Err(format!(
+            "function {} expects {} argument(s), got {}",
+            name,
+            raw.params.len(),
+            arg_tys.len()
+        ));
+    }
+    let mut subs: Vec<Option<Ty>> = vec![None; raw.ty_params.len()];
+    for ((_, pat), actual) in raw.params.iter().zip(arg_tys.iter()) {
+        if unify(*pat, *actual, &mut subs).is_none() {
+            return Err(format!(
+                "cannot instantiate {} with argument types {:?}",
+                name, arg_tys
+            ));
+        }
+    }
+    let ty_args: Vec<Ty> = raw
+        .ty_params
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            subs.get(i).copied().flatten().ok_or_else(|| {
+                format!("cannot infer type parameter {} of {}", p, name)
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let mangled = format!(
+        "{}__{}",
+        name,
+        ty_args
+            .iter()
+            .map(|t| ty_suffix(*t).unwrap_or("??"))
+            .collect::<Vec<_>>()
+            .join("_")
+    );
+    let ret = subst_ty(raw.ret, &subs);
+    let already = ctx.inst.borrow().cache.contains_key(&mangled);
+    if !already {
+        // Insert before lowering so recursive calls resolve to this name.
+        ctx.inst.borrow_mut().cache.insert(mangled.clone(), ret);
+        let mut env = Env::new();
+        for (pname, pty) in &raw.params {
+            env.insert(pname.clone(), subst_ty(*pty, &subs));
+        }
+        let body = lower_body_expr(&raw.body, &env, ctx)?;
+        ctx.inst.borrow_mut().extra.push(Defn {
+            name: mangled.clone(),
+            params: raw
+                .params
+                .iter()
+                .map(|(n, t)| (n.clone(), subst_ty(*t, &subs)))
+                .collect(),
+            ret,
+            body,
+        });
+    }
+    Ok((mangled, ret))
 }
 
 /// Payload fields are scalars-only in the ADT cut (nested ADTs by value need
@@ -426,13 +678,11 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
         Expr::LitSym(s) => Ok(HExpr::Var(s.to_string())),
         Expr::Vector(items) => {
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
-                let vs = items
-                    .iter()
-                    .map(|e| if let Expr::LitI64(v) = e { *v } else { unreachable!() })
-                    .collect();
-                Ok(HExpr::VecLit(vs))
+                Ok(HExpr::VecLit(VLit::I64(vec_lit_i64(items))))
+            } else if items.iter().all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) {
+                Ok(HExpr::VecLit(VLit::F64(vec_lit_f64(items))))
             } else {
-                Err("vector literal not supported (use (vec-i64 ...))".into())
+                Err("vector literal not supported (use (vec-i64 ...) / (vec-f64 ...))".into())
             }
         }
         Expr::List(items) => {
@@ -488,7 +738,22 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                             _ => return Err("vec-i64 elements must be i64 literals".into()),
                         }
                     }
-                    Ok(HExpr::VecLit(vs))
+                    Ok(HExpr::VecLit(VLit::I64(vs)))
+                }
+                "vec-f64" => {
+                    let mut vs = Vec::new();
+                    for it in &items[1..] {
+                        match it {
+                            Expr::LitF64(v) => vs.push(*v),
+                            Expr::LitI64(v) => vs.push(*v as f64),
+                            _ => {
+                                return Err(
+                                    "vec-f64 elements must be numeric literals".into()
+                                )
+                            }
+                        }
+                    }
+                    Ok(HExpr::VecLit(VLit::F64(vs)))
                 }
                 "print-f64" => {
                     if items.len() != 2 {
@@ -549,6 +814,15 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     let mut args = Vec::new();
                     for it in &items[1..] {
                         args.push(lower(it, env, ctx)?);
+                    }
+                    // Generic callees are instantiated per call-site type.
+                    if let Some(raw) = ctx.raw_by_name.get(head.as_str()) {
+                        if !raw.ty_params.is_empty() {
+                            let arg_tys: Vec<Ty> =
+                                args.iter().map(|a| ty_of(a, env, ctx)).collect();
+                            let (mangled, _) = instantiate(head, &arg_tys, ctx)?;
+                            return Ok(HExpr::Call(mangled, args));
+                        }
                     }
                     Ok(HExpr::Call(head.clone(), args))
                 }
@@ -836,9 +1110,10 @@ fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
         return Err("get expects (get <vec> <idx>) or (get <vec> <idx> <default>)".into());
     }
     let src = lower(&items[1], env, ctx)?;
-    if ty_of(&src, env, ctx) != Ty::VecI64 {
-        return Err("get source must be a vector".into());
-    }
+    let ty = match ty_of(&src, env, ctx) {
+        Ty::Vec(e) => elem_ty(e),
+        other => return Err(format!("get source must be a vector, got {:?}", other)),
+    };
     let idx = lower(&items[2], env, ctx)?;
     let default = match items.get(3) {
         Some(d) => Some(Box::new(lower(d, env, ctx)?)),
@@ -848,7 +1123,35 @@ fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
         src: Box::new(src),
         idx: Box::new(idx),
         default,
+        ty,
     })
+}
+
+/// Scalar type of a vector element.
+fn elem_ty(e: Elem) -> Ty {
+    match e {
+        Elem::I64 => Ty::I64,
+        Elem::F64 => Ty::F64,
+        Elem::Param(_) => panic!("unresolved element type parameter"),
+    }
+}
+
+fn vec_lit_i64(items: &[Expr]) -> Vec<i64> {
+    items
+        .iter()
+        .map(|e| if let Expr::LitI64(v) = e { *v } else { unreachable!() })
+        .collect()
+}
+
+fn vec_lit_f64(items: &[Expr]) -> Vec<f64> {
+    items
+        .iter()
+        .map(|e| match e {
+            Expr::LitI64(v) => *v as f64,
+            Expr::LitF64(v) => *v,
+            _ => unreachable!(),
+        })
+        .collect()
 }
 
 fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
@@ -865,7 +1168,10 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         }
         HExpr::ConvF64(_) => Ty::F64,
         HExpr::Count(_) => Ty::I64,
-        HExpr::VecLit(_) => Ty::VecI64,
+        HExpr::VecLit(vl) => Ty::Vec(match vl {
+            VLit::I64(_) => Elem::I64,
+            VLit::F64(_) => Elem::F64,
+        }),
         HExpr::Reduce(r) => match &**r {
             HReduce::Closure { init, .. } => {
                 if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 }
@@ -875,11 +1181,20 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
             }
         },
         HExpr::Call(name, _) if name == "even?" => Ty::Bool,
-        HExpr::Call(name, _) => ctx
-            .raw_by_name
-            .get(name.as_str())
-            .map(|r| r.ret)
-            .unwrap_or(Ty::I64),
+        HExpr::Call(name, _) => {
+            if let Some(raw) = ctx.raw_by_name.get(name.as_str()) {
+                if raw.ty_params.is_empty() {
+                    return raw.ret;
+                }
+            }
+            // Monomorphized instantiation: the ret was recorded at lowering.
+            ctx.inst
+                .borrow()
+                .cache
+                .get(name)
+                .copied()
+                .unwrap_or(Ty::I64)
+        }
         HExpr::Let(_, b) => ty_of(b, env, ctx),
         HExpr::Seq(v) => v.last().map(|x| ty_of(x, env, ctx)).unwrap_or(Ty::I64),
         HExpr::If(_, _, _, t) => *t,
@@ -887,7 +1202,7 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
         HExpr::Ctor { adt, .. } => Ty::Adt(*adt),
         HExpr::Match { ty, .. } => *ty,
-        HExpr::Get { .. } => Ty::I64,
+        HExpr::Get { ty, .. } => *ty,
     }
 }
 
@@ -915,6 +1230,15 @@ fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     Ok(HExpr::Let(resolved, Box::new(body)))
 }
 
+/// Reduce accumulators follow the same promotion rule as `if` branches:
+/// f64 elements force an f64 accumulator (int literals promote directly).
+fn promote_init(init: HExpr) -> HExpr {
+    match init {
+        HExpr::ConstI64(v) => HExpr::ConstF64(v as f64),
+        other => HExpr::ConvF64(Box::new(other)),
+    }
+}
+
 fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     if items.len() < 4 {
         return Err(format!(
@@ -933,6 +1257,14 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             };
             let init = lower(&items[2], env, ctx)?;
             let (src, maps, filters) = pipeline_src(&items[3], env, ctx)?;
+            // f64 stage results force an f64 accumulator (mirrors `if`).
+            let (src_el, _) = source_elem_tys(&src, env)?;
+            let stage_ty = maps.last().map(|m| m.res_ty).unwrap_or(src_el);
+            let init = if stage_ty == Ty::F64 && ty_of(&init, env, ctx) == Ty::I64 {
+                promote_init(init)
+            } else {
+                init
+            };
             Ok(HExpr::Reduce(Box::new(HReduce::Pipeline {
                 combine,
                 init,
@@ -951,8 +1283,8 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             let Expr::Vector(params) = &fnitems[1] else {
                 return Err("reduce fn params".into());
             };
-            let init = lower(&items[2], env, ctx)?;
-            let init_ty = ty_of(&init, env, ctx);
+            let mut init = lower(&items[2], env, ctx)?;
+            let mut init_ty = ty_of(&init, env, ctx);
             let (src, maps, filters) = pipeline_src(&items[3], env, ctx)?;
             let zip = matches!(src, HSource::Zip(..));
             let arity = if zip { 3 } else { 2 };
@@ -969,14 +1301,28 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             } else {
                 None
             };
-            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+            let (src_el, src_el2) = source_elem_tys(&src, env)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(src_el);
+            let el2_ty = maps.last().map(|_| Ty::I64).unwrap_or(src_el2);
+            // f64 elements force an f64 accumulator (mirrors `if`); int
+            // inits promote and int bodies coerce.
+            if el_ty == Ty::F64 && init_ty == Ty::I64 {
+                init_ty = Ty::F64;
+                init = promote_init(init);
+            }
             let mut child = env.clone();
             child.insert(acc.clone(), init_ty);
             child.insert(el.clone(), el_ty);
             if let Some(e2) = &el2 {
-                child.insert(e2.clone(), Ty::I64);
+                child.insert(e2.clone(), el2_ty);
             }
-            let body = lower(&fnitems[2], &child, ctx)?;
+            let mut body = lower(&fnitems[2], &child, ctx)?;
+            if init_ty == Ty::F64 {
+                let body_ty = ty_of(&body, &child, ctx);
+                if body_ty == Ty::I64 {
+                    body = coerce_f64(body, body_ty, true);
+                }
+            }
             Ok(HExpr::Reduce(Box::new(HReduce::Closure {
                 init,
                 src,
@@ -1020,12 +1366,15 @@ fn pipeline_src(
                 return Err("map expects (map <fn> <src>)".into());
             }
             let (inner, mut maps, filters) = pipeline_src(&items[2], env, ctx)?;
-            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+            let (src_el, src_el2) = source_elem_tys(&inner, env)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(src_el);
+            let el2_ty = maps.last().map(|_| Ty::I64).unwrap_or(src_el2);
             let zip = matches!(inner, HSource::Zip(..));
-            let (el, el2, body, res_ty) = lambda_spec(&items[1], zip, el_ty, env, ctx)?;
+            let (el, el2, body, res_ty) = lambda_spec(&items[1], zip, el_ty, el2_ty, env, ctx)?;
             maps.push(MapSpec {
                 el,
                 el2,
+                el2_ty,
                 body,
                 el_ty,
                 res_ty,
@@ -1037,12 +1386,15 @@ fn pipeline_src(
                 return Err("filter expects (filter <fn> <src>)".into());
             }
             let (inner, maps, mut filters) = pipeline_src(&items[2], env, ctx)?;
-            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+            let (src_el, src_el2) = source_elem_tys(&inner, env)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(src_el);
+            let el2_ty = maps.last().map(|_| Ty::I64).unwrap_or(src_el2);
             let zip = matches!(inner, HSource::Zip(..));
-            let (el, el2, body, _) = lambda_spec(&items[1], zip, el_ty, env, ctx)?;
+            let (el, el2, body, _) = lambda_spec(&items[1], zip, el_ty, el2_ty, env, ctx)?;
             filters.push(FilterSpec {
                 el,
                 el2,
+                el2_ty,
                 body,
                 el_ty,
             });
@@ -1100,13 +1452,19 @@ fn expr_to_source(src: &Expr, env: &Env, ctx: &Ctx) -> Result<HSource, String> {
     match src {
         Expr::LitSym(v) => Ok(HSource::Var(v.clone())),
         Expr::Vector(items) if items.iter().all(|e| matches!(e, Expr::LitI64(_))) => {
-            Ok(HSource::Lit(vec_lit_values(items)))
+            Ok(HSource::Lit(VLit::I64(vec_lit_i64(items))))
         }
         Expr::List(items)
             if matches!(items.first(), Some(Expr::LitSym(h)) if h == "vec-i64")
                 && items[1..].iter().all(|e| matches!(e, Expr::LitI64(_))) =>
         {
-            Ok(HSource::Lit(vec_lit_values(&items[1..])))
+            Ok(HSource::Lit(VLit::I64(vec_lit_i64(&items[1..]))))
+        }
+        Expr::List(items)
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "vec-f64")
+                && items[1..].iter().all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) =>
+        {
+            Ok(HSource::Lit(VLit::F64(vec_lit_f64(&items[1..]))))
         }
         _ => {
             let _ = lower(src, env, ctx);
@@ -1115,11 +1473,24 @@ fn expr_to_source(src: &Expr, env: &Env, ctx: &Ctx) -> Result<HSource, String> {
     }
 }
 
-fn vec_lit_values(items: &[Expr]) -> Vec<i64> {
-    items
-        .iter()
-        .map(|e| if let Expr::LitI64(v) = e { *v } else { unreachable!() })
-        .collect()
+/// Element type(s) a loop source yields: (first, second) — the second is
+/// `Ty::I64` (unused) for non-zip sources.
+fn source_elem_tys(src: &HSource, env: &Env) -> Result<(Ty, Ty), String> {
+    match src {
+        HSource::Var(v) => match env.get(v) {
+            Some(Ty::Vec(Elem::I64)) => Ok((Ty::I64, Ty::I64)),
+            Some(Ty::Vec(Elem::F64)) => Ok((Ty::F64, Ty::F64)),
+            Some(other) => Err(format!("loop source {} is not a vector ({:?})", v, other)),
+            None => Err(format!("unknown loop source {}", v)),
+        },
+        HSource::Lit(vl) => Ok(match vl {
+            VLit::I64(_) => (Ty::I64, Ty::I64),
+            VLit::F64(_) => (Ty::F64, Ty::F64),
+        }),
+        HSource::Range(..) => Ok((Ty::I64, Ty::I64)),
+        HSource::Zip(a, b) => Ok((source_elem_tys(a, env)?.0, source_elem_tys(b, env)?.0)),
+        HSource::Take(_, inner) | HSource::Drop(_, inner) => source_elem_tys(inner, env),
+    }
 }
 
 fn vec_source_arg(src: &Expr, _env: &Env, _ctx: &Ctx) -> Result<HSource, String> {
@@ -1133,6 +1504,7 @@ fn lambda_spec(
     f: &Expr,
     zip: bool,
     el_ty: Ty,
+    el2_ty: Ty,
     env: &Env,
     ctx: &Ctx,
 ) -> Result<(String, Option<String>, HExpr, Ty), String> {
@@ -1167,13 +1539,13 @@ fn lambda_spec(
             let mut child = env.clone();
             child.insert(el.clone(), el_ty);
             if let Some(e2) = &el2 {
-                child.insert(e2.clone(), Ty::I64);
+                child.insert(e2.clone(), el2_ty);
             }
             let body = lower(&items[2], &child, ctx)?;
             let res_ty = ty_of(&body, &child, ctx);
             Ok((el, el2, body, res_ty))
         }
-        Expr::LitSym(name) => resolve_function_ref(name, zip, el_ty, env, ctx),
+        Expr::LitSym(name) => resolve_function_ref(name, zip, el_ty, el2_ty, env, ctx),
         _ => Err("map/filter arg must be a function".into()),
     }
 }
@@ -1182,6 +1554,7 @@ fn resolve_function_ref(
     name: &str,
     zip: bool,
     el_ty: Ty,
+    el2_ty: Ty,
     env: &Env,
     ctx: &Ctx,
 ) -> Result<(String, Option<String>, HExpr, Ty), String> {
@@ -1196,34 +1569,64 @@ fn resolve_function_ref(
             Ty::Bool,
         ));
     }
-    match ctx.raw_by_name.get(name) {
-        Some(raw) => {
-            let arity = if zip { 2 } else { 1 };
-            if raw.params.len() != arity {
-                return Err(format!(
-                    "function {} used in map/filter must have {} param(s)",
-                    name, arity
-                ));
-            }
-            let el = raw.params[0].0.clone();
-            let el2 = if zip {
-                Some(raw.params[1].0.clone())
-            } else {
-                None
-            };
-            let mut child = env.clone();
-            child.insert(el.clone(), el_ty);
-            if let Some(e2) = &el2 {
-                child.insert(e2.clone(), Ty::I64);
-            }
-            let body = match &raw.body {
-                Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
-                    lower_body_forms(items, &child, ctx)?
-                }
-                _ => lower(&raw.body, &child, ctx)?,
-            };
-            Ok((el, el2, body, raw.ret))
-        }
-        None => Err(format!("unknown function in map/filter: {}", name)),
+    let raw = ctx
+        .raw_by_name
+        .get(name)
+        .ok_or_else(|| format!("unknown function in map/filter: {}", name))?;
+    let arity = if zip { 2 } else { 1 };
+    if raw.params.len() != arity {
+        return Err(format!(
+            "function {} used in map/filter must have {} param(s)",
+            name, arity
+        ));
     }
+    // Generic functions used as stage functions are resolved against the
+    // element type; their declared return type is substituted accordingly.
+    let subs = if raw.ty_params.is_empty() {
+        Vec::new()
+    } else {
+        let mut subs: Vec<Option<Ty>> = vec![None; raw.ty_params.len()];
+        // The stage function's params are element patterns: unify the
+        // vector element with `(Vector T)`-shaped params, scalars directly.
+        for (i, (_, pat)) in raw.params.iter().enumerate() {
+            let actual = match i {
+                0 => el_ty,
+                _ => el2_ty,
+            };
+            let actual = match pat {
+                Ty::Vec(_) => Ty::Vec(match actual {
+                    Ty::I64 => Elem::I64,
+                    Ty::F64 => Elem::F64,
+                    other => {
+                        return Err(format!(
+                            "cannot use {} over {:?} elements in map/filter",
+                            name, other
+                        ))
+                    }
+                }),
+                _ => actual,
+            };
+            unify(*pat, actual, &mut subs)
+                .ok_or_else(|| format!("cannot use {} over {:?} elements", name, actual))?;
+        }
+        subs
+    };
+    let el = raw.params[0].0.clone();
+    let el2 = if zip {
+        Some(raw.params[1].0.clone())
+    } else {
+        None
+    };
+    let mut child = env.clone();
+    child.insert(el.clone(), el_ty);
+    if let Some(e2) = &el2 {
+        child.insert(e2.clone(), el2_ty);
+    }
+    let body = lower_body_expr(&raw.body, &child, ctx)?;
+    let ret = if subs.is_empty() {
+        raw.ret
+    } else {
+        subst_ty(raw.ret, &subs)
+    };
+    Ok((el, el2, body, ret))
 }

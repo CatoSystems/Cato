@@ -1,0 +1,28 @@
+; generic.cato — Phase 6 reference program: monomorphization.
+;
+; Generic defns are instantiated once per concrete call-site type; each
+; instantiation is a fully unboxed, fused specialization (see the four
+; @gsum/@gmax defines in the emitted IR).
+
+; T is inferred from the argument's element type and used as the result.
+(defn gsum [xs :- (Vector T)] :- T
+  (reduce (fn [acc x] (+ acc x)) 0 xs))
+
+(defn gmax [xs :- (Vector T)] :- T
+  (reduce (fn [acc x] (if (> x acc) x acc)) 0 xs))
+
+; Explicit element-typed vector annotations.
+(defn mean [xs :- (Vector f64)] :- f64
+  (/ (gsum xs) (f64 (count xs))))
+
+; Element-typed fused sources: take/drop/zip over f64 vectors.
+(defn f64-window [xs :- (Vector f64) ys :- (Vector f64)] :- f64
+  (reduce + 0.0 (take 2 (map (fn [a b] (* a b)) (zip xs ys)))))
+
+(defn main []
+  (print-i64 (gsum (vec-i64 1 2 3 4)))        ; 10
+  (print-f64 (mean (vec-f64 1.0 2.0 3.0 4.0))) ; 2.5
+  (print-f64 (gmax (vec-f64 1.5 7.25 3.0)))   ; 7.25
+  (print-i64 (gmax (vec-i64 5 9 2)))          ; 9
+  (print-f64 (get (vec-f64 1.5 2.5) 1))       ; 2.5
+  (print-f64 (f64-window (vec-f64 1.0 2.0 3.0) (vec-f64 10.0 20.0 30.0)))) ; 1*10+2*20 = 50

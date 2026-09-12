@@ -48,13 +48,19 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Abs(v, t) => HExpr::Abs(Box::new(check(v)), *t),
         HExpr::Min(a, b, t) => HExpr::Min(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
-        HExpr::Get { src, idx, default } => HExpr::Get {
+        HExpr::Get {
+            src,
+            idx,
+            default,
+            ty,
+        } => HExpr::Get {
             src: Box::new(check(src)),
             idx: Box::new(check(idx)),
             default: match default {
                 Some(d) => Some(Box::new(check(&d))),
                 None => None,
             },
+            ty: *ty,
         },
         HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
             adt: *adt,
