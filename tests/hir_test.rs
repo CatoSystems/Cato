@@ -592,3 +592,54 @@ fn externs_may_not_have_bodies_or_generics() {
     let err = build_err("(extern bad [xs :- (Vector T)] :- i64)");
     assert!(err.contains("concrete types"), "got: {}", err);
 }
+
+// --- Phase 7b: heap construction ---
+
+#[test]
+fn conj_subvec_str_on_literals_fold_at_compile_time() {
+    let body = build_one("f", "(defn f [] :- i64 (count (conj (vec-i64 1 2) 3)))");
+    // The whole conj folds into a literal; count reads its static length.
+    assert!(matches!(body, HExpr::Count(_)));
+    let exprs = read_all(
+        "(defn f [] :- i64 (count (subvec (vec-i64 1 2 3 4 5) 1 4)))"
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    // subvec of a literal with constant bounds folds to a literal of 3.
+    let ir = cato::codegen::emit_module(&[], &fns);
+    assert!(ir.contains("[3 x i64]"), "{}", ir);
+    let exprs = read_all("(defn f [] :- i64 (count (str \"foo\" \"bar\")))").unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = cato::codegen::emit_module(&[], &fns);
+    // "foobar" is a single 7-byte constant (6 chars + NUL).
+    assert!(ir.contains("[7 x i8]"), "{}", ir);
+}
+
+#[test]
+fn conj_moves_its_source() {
+    let err = build_err(
+        "(defn main []
+           (let [v (vec-i64 1 2)]
+             (do (conj v 3) (print-i64 (count v)))))",
+    );
+    // conj consumes the buffer (in-place growth); using v afterwards is a
+    // use-after-move... count borrows, so this is allowed; a conj of a moved
+    // value is not.
+    let _ = err;
+    let exprs = read_all(
+        "(defn main []
+           (let [v (vec-i64 1 2)]
+             (do (conj v 3) (conj v 4))))",
+    )
+    .unwrap();
+    let err = build(&exprs).unwrap_err();
+    assert!(err.contains("use of moved value v"), "got: {}", err);
+}
+
+#[test]
+fn for_requires_control_flow_free_body() {
+    let err = build_err(
+        "(defn main [] (let [w (for [x (vec-i64 1 2)] (if (> x 1) x 0))] 0))"
+    );
+    assert!(err.contains("control-flow-free"), "got: {}", err);
+}

@@ -323,3 +323,32 @@ fn fast_flag_attaches_vectorize_metadata() {
     assert!(fast.contains("llvm.loop.vectorize.enable"), "{}", fast);
     assert!(fast.contains("!llvm.loop !0"), "{}", fast);
 }
+
+// --- Phase 7b: heap codegen ---
+
+#[test]
+fn runtime_conj_grows_with_capacity_and_in_place_append() {
+    let src = "(defn main []
+                 (let [v (vec-i64 1 2)
+                       w (conj v 3)]
+                   (print-i64 (count w))))";
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    // Static source forces the copy path with 2x capacity headroom.
+    assert!(ir.contains("call ptr @malloc(i64"), "{}", ir);
+    assert!(ir.contains("llvm.memcpy"), "{}", ir);
+    // The header {ptr, len, cap} is maintained through the spare field.
+    assert!(ir.contains("store i64 3, ptr"), "{}", ir);
+}
+
+#[test]
+fn vector_returning_functions_pass_the_struct_by_value() {
+    let src = "(defn grow [v :- vec x :- i64] :- vec (let [w (conj v x)] w))
+               (defn main [] (let [w (grow (vec-i64 1) 2)] (print-i64 (count w))))";
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    assert!(ir.contains("define %VecI64 @grow("), "{}", ir);
+    assert!(ir.contains("call %VecI64 @grow("), "{}", ir);
+}

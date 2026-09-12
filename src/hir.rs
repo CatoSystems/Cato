@@ -73,6 +73,29 @@ pub enum HExpr {
     VecLit(VLit),
     /// A string literal; codegen mints a private `[N x i8]` constant.
     StrLit(String),
+    /// `(conj v x)` — a fresh heap vector with x appended (v is copied).
+    Conj {
+        v: Box<HExpr>,
+        x: Box<HExpr>,
+        elem: Elem,
+    },
+    /// `(subvec v start end)` — a fresh heap slice copy, bounds-clamped.
+    Subvec {
+        v: Box<HExpr>,
+        start: Box<HExpr>,
+        end: Box<HExpr>,
+        elem: Elem,
+    },
+    /// `(for [x src] body)` — a fresh heap vector of the body results.
+    For {
+        el: String,
+        src: Box<HExpr>,
+        elem: Elem,
+        body: Box<HExpr>,
+        res_elem: Elem,
+    },
+    /// `(str a b ...)` — a fresh heap string concatenation.
+    StrCat(Vec<HExpr>),
     /// `(= s1 s2)` on strings: content comparison via the runtime.
     /// The bool is the expected polarity (true for `=`).
     StrCmp(bool, Box<HExpr>, Box<HExpr>),
@@ -515,6 +538,28 @@ impl<'a> BCheck<'a> {
         match e {
             HExpr::Var(v) => self.use_var(v, tys, st),
             HExpr::StrLit(_) | HExpr::StrCmp(..) => {}
+            HExpr::StrCat(args) => {
+                for a in args {
+                    self.check(a, tys, st);
+                }
+            }
+            HExpr::Subvec { v, start, end, .. } => {
+                self.check(v, tys, st);
+                self.check(start, tys, st);
+                self.check(end, tys, st);
+            }
+            HExpr::For { .. } => {} // per-iteration: captures are borrows
+            HExpr::Conj { v, x, .. } => {
+                self.check(v, tys, st);
+                // In-place growth requires exclusive ownership: conj moves.
+                if let HExpr::Var(name) = &**v {
+                    if tys.get(name).map(|t| is_non_copy(*t)).unwrap_or(false) {
+                        self.use_var(name, tys, st);
+                        st.insert(name.clone(), VState::Moved);
+                    }
+                }
+                self.check(x, tys, st);
+            }
             HExpr::Clone(inner) => self.check(inner, tys, st),
             HExpr::DropStmt(inner) => {
                 self.check(inner, tys, st);
@@ -1068,6 +1113,160 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
                 "get" => lower_get(items, env, ctx),
+                "conj" => {
+                    if items.len() != 3 {
+                        return Err("conj expects (conj <vec> <x>)".into());
+                    }
+                    let v = lower(&items[1], env, ctx)?;
+                    let elem = match ty_of(&v, env, ctx) {
+                        Ty::Vec(e) => e,
+                        other => return Err(format!("conj source must be a vector, got {:?}", other)),
+                    };
+                    let x = lower(&items[2], env, ctx)?;
+                    // Fold: conj on a literal vector with a constant element
+                    // is a new static literal — zero runtime cost.
+                    if let (HExpr::VecLit(vl), xc) = (&v, &x) {
+                        match (vl, xc) {
+                            (VLit::I64(vs), HExpr::ConstI64(c)) => {
+                                let mut n = vs.clone();
+                                n.push(*c);
+                                return Ok(HExpr::VecLit(VLit::I64(n)));
+                            }
+                            (VLit::F64(vs), HExpr::ConstF64(c)) => {
+                                let mut n = vs.clone();
+                                n.push(*c);
+                                return Ok(HExpr::VecLit(VLit::F64(n)));
+                            }
+                            (VLit::I64(vs), HExpr::ConstF64(c)) => {
+                                let mut n = vs.iter().map(|i| *i as f64).collect::<Vec<_>>();
+                                n.push(*c);
+                                return Ok(HExpr::VecLit(VLit::F64(n)));
+                            }
+                            _ => {}
+                        }
+                    }
+                    let xt = ty_of(&x, env, ctx);
+                    let want = elem_ty(elem);
+                    if xt != want && !(want == Ty::F64 && xt == Ty::I64) {
+                        return Err(format!("conj element expects {:?}, got {:?}", want, xt));
+                    }
+                    let x = if want == Ty::F64 && xt == Ty::I64 {
+                        HExpr::ConvF64(Box::new(x))
+                    } else {
+                        x
+                    };
+                    Ok(HExpr::Conj {
+                        v: Box::new(v),
+                        x: Box::new(x),
+                        elem,
+                    })
+                }
+                "subvec" => {
+                    if items.len() != 4 {
+                        return Err("subvec expects (subvec <vec> <start> <end>)".into());
+                    }
+                    let v = lower(&items[1], env, ctx)?;
+                    let elem = match ty_of(&v, env, ctx) {
+                        Ty::Vec(e) => e,
+                        other => return Err(format!("subvec source must be a vector, got {:?}", other)),
+                    };
+                    let start = lower(&items[2], env, ctx)?;
+                    let end = lower(&items[3], env, ctx)?;
+                    // Fold: subvec of a literal with constant bounds.
+                    if let (HExpr::VecLit(vl), HExpr::ConstI64(s), HExpr::ConstI64(e)) =
+                        (&v, &start, &end)
+                    {
+                        let lo = (*s).max(0) as usize;
+                        let hi = (*e).max(0) as usize;
+                        match vl {
+                            VLit::I64(vs) => {
+                                let hi = hi.min(vs.len());
+                                let lo = lo.min(hi);
+                                return Ok(HExpr::VecLit(VLit::I64(vs[lo..hi].to_vec())));
+                            }
+                            VLit::F64(vs) => {
+                                let hi = hi.min(vs.len());
+                                let lo = lo.min(hi);
+                                return Ok(HExpr::VecLit(VLit::F64(vs[lo..hi].to_vec())));
+                            }
+                        }
+                    }
+                    Ok(HExpr::Subvec {
+                        v: Box::new(v),
+                        start: Box::new(start),
+                        end: Box::new(end),
+                        elem,
+                    })
+                }
+                "for" => {
+                    if items.len() != 3 {
+                        return Err("for expects (for [x src] <body>)".into());
+                    }
+                    let binding = match &items[1] {
+                        Expr::Vector(b) if b.len() == 2 => b.clone(),
+                        _ => return Err("for binding must be a 2-element vector [x src]".into()),
+                    };
+                    let Expr::LitSym(el) = &binding[0] else {
+                        return Err("for binder must be a symbol".into());
+                    };
+                    let src = lower(&binding[1], env, ctx)?;
+                    let elem = match ty_of(&src, env, ctx) {
+                        Ty::Vec(e) => e,
+                        other => return Err(format!("for source must be a vector, got {:?}", other)),
+                    };
+                    let mut child = env.clone();
+                    child.insert(el.clone(), elem_ty(elem));
+                    let body = lower(&items[2], &child, ctx)?;
+                    // The fill loop is single-block: the body must not fork.
+                    if has_ctl(&body) {
+                        return Err("for body must be control-flow-free (no if/and/or/match)".into());
+                    }
+                    let res_elem = match ty_of(&body, &child, ctx) {
+                        Ty::I64 => Elem::I64,
+                        Ty::F64 => Elem::F64,
+                        other => {
+                            return Err(format!(
+                                "for body must produce i64 or f64 elements, got {:?}",
+                                other
+                            ))
+                        }
+                    };
+                    Ok(HExpr::For {
+                        el: el.clone(),
+                        src: Box::new(src),
+                        elem,
+                        body: Box::new(body),
+                        res_elem,
+                    })
+                }
+                "str" => {
+                    if items.len() < 2 {
+                        return Err("str expects at least one string argument".into());
+                    }
+                    let mut args = Vec::new();
+                    for it in &items[1..] {
+                        let a = lower(it, env, ctx)?;
+                        if ty_of(&a, env, ctx) != Ty::Str {
+                            return Err("str arguments must be strings".into());
+                        }
+                        args.push(a);
+                    }
+                    // Fold: concatenating literals is a new literal.
+                    if args.iter().all(|a| matches!(a, HExpr::StrLit(_))) {
+                        let joined: String = args
+                            .iter()
+                            .map(|a| {
+                                if let HExpr::StrLit(s) = a {
+                                    s.clone()
+                                } else {
+                                    unreachable!()
+                                }
+                            })
+                            .collect();
+                        return Ok(HExpr::StrLit(joined));
+                    }
+                    Ok(HExpr::StrCat(args))
+                }
                 "clone" => {
                     if items.len() != 2 {
                         return Err("clone expects 1 argument".into());
@@ -1521,6 +1720,56 @@ impl Borrow {
     }
 }
 
+/// Does this expression fork into basic blocks? (codegen-consistent)
+fn has_ctl(e: &HExpr) -> bool {
+    match e {
+        HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Match { .. } => {
+            true
+        }
+        HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
+        HExpr::Call(_, args) => args.iter().any(has_ctl),
+        HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
+        HExpr::Get { idx, default, .. } => {
+            has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
+        }
+        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
+        HExpr::Cmp(..) | HExpr::StrCmp(..) | HExpr::Var(_) | HExpr::ConstI64(_)
+        | HExpr::ConstF64(_) | HExpr::VecLit(_) | HExpr::StrLit(_) => false,
+        HExpr::Conj { .. } => true,
+        HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
+        HExpr::For { .. } => true,
+        HExpr::StrCat(args) => args.iter().any(has_ctl),
+        HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
+        HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
+        HExpr::Seq(vs) => vs.iter().any(has_ctl),
+        HExpr::Reduce(r) => match &**r {
+            HReduce::Pipeline { init, maps, filters, src, .. } => {
+                has_ctl(init)
+                    || has_ctl_source(src)
+                    || maps.iter().any(|m| has_ctl(&m.body))
+                    || filters.iter().any(|f| has_ctl(&f.body))
+            }
+            HReduce::Closure { init, src, body, maps, filters, .. } => {
+                has_ctl(init)
+                    || has_ctl_source(src)
+                    || has_ctl(body)
+                    || maps.iter().any(|m| has_ctl(&m.body))
+                    || filters.iter().any(|f| has_ctl(&f.body))
+            }
+        },
+    }
+}
+
+fn has_ctl_source(src: &HSource) -> bool {
+    match src {
+        HSource::Var(_) | HSource::Lit(_) => false,
+        HSource::Range(a, b) => has_ctl(a) || has_ctl(b),
+        HSource::Zip(a, b) => has_ctl_source(a) || has_ctl_source(b),
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => has_ctl(n) || has_ctl_source(inner),
+    }
+}
+
 /// Scalar type of a vector element.
 fn elem_ty(e: Elem) -> Ty {
     match e {
@@ -1563,6 +1812,9 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::ConvF64(_) => Ty::F64,
         HExpr::Count(_) => Ty::I64,
         HExpr::StrLit(_) => Ty::Str,
+        HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } => Ty::Vec(*elem),
+        HExpr::For { res_elem, .. } => Ty::Vec(*res_elem),
+        HExpr::StrCat(_) => Ty::Str,
         HExpr::StrCmp(..) => Ty::Bool,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,

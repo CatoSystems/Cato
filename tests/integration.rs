@@ -146,3 +146,13 @@ fn compiles_strings_to_expected_output() {
         "hello, cato\n4\n1\n2\n0\n10\n"
     );
 }
+
+#[test]
+fn compiles_heap_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/heap.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("heap", &src),
+        "3\n8\n30\n4\n10\nheapalloc\n9\n3\n9\n"
+    );
+}

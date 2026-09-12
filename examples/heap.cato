@@ -1,0 +1,34 @@
+; heap.cato — Phase 7b reference program: owned heap vectors & strings.
+;
+; Allocation strategy (fold + in-place growth):
+;   - conj/subvec/str on literal data fold at compile time into new static
+;     constants — zero runtime cost.
+;   - conj on an owned runtime vector appends IN PLACE when capacity allows
+;     (amortized O(1)); on growth the buffer doubles and the old buffer is
+;     freed. Safe because the Phase 7 move checker guarantees single
+;     ownership — conj consumes its source.
+;   - str concat and for comprehensions do one allocation per result.
+
+(defn squares-under [n :- i64] :- i64
+  (let [sq (for [x (vec-i64 1 2 3 4)] (* x x))]
+    (reduce + 0 sq)))
+
+(defn grow-to [v :- (Vector T) x :- T y :- T] :- (Vector T)
+  (let [a (conj v x)
+        b (conj a y)]
+    b))
+
+(defn main []
+  (print-i64 (count (conj (vec-i64 1 2) 3)))   ; folded: 3
+  (print-i64 (count (str "cato" "llvm")))      ; folded: 8
+  (print-i64 (squares-under 5))                ; 1+4+9+16 = 30
+  (let [v (vec-i64 1 2)
+        w (grow-to v 3 4)]                     ; in-place + one growth
+    (print-i64 (count w))                      ; 4
+    (print-i64 (reduce + 0 w)))                ; 10
+  (let [s (str "heap" (str "alloc"))]
+    (print-string s)                           ; heapalloc
+    (print-i64 (count s)))                     ; 9
+  (let [sub (subvec (vec-i64 1 2 3 4 5) 1 4)]
+    (print-i64 (count sub))                    ; 3
+    (print-i64 (reduce + 0 sub))))             ; 2+3+4 = 9

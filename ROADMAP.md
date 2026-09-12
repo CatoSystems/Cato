@@ -109,13 +109,13 @@ Current type system: `i64`, `f64`, `bool`, `str`, vectors (`(Vector i64)` /
 - `(parallel loop)` / auto-parallelization across threads — needs a thread
   pool and a provably disjoint write set.
 
-### Phase 7b — Ownership: heap & escapes *(next)*
+### Phase 8b — Maps & sets *(next)*
 
-The remaining half of Phase 7, enabled by the enforcement layer: heap
-allocation for escaping values, `noalias` extended to user pointers, runtime
-drop glue — unlocking `conj`/`subvec`/`for` (deferred from Phase 4).
+- Flat-map HAMT (flat contiguous struct for small maps), bit-packed integer
+  sets — built on the Phase 7b heap allocator.
+- Literal syntax for `{}` / `#{}`, `assoc`/`disj`.
 
-### Phase 8b — Maps, sets & string building *(pending heap)*
+### Phase 9b — Width types *(pending)*
 
 - Flat-map HAMT (with a flat contiguous struct for ≤8 entries), bit-packed
   integer sets — `assoc`/`conj` need the heap.

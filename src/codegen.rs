@@ -429,6 +429,40 @@ fn rewrite_body(
                 .collect::<Result<Vec<_>, _>>()?,
         },
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
+        HExpr::StrCat(args) => HExpr::StrCat(
+            args.iter()
+                .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        HExpr::Conj { v, x, elem } => HExpr::Conj {
+            v: Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?),
+            x: Box::new(rewrite_body(x, fnprefix, params, idmap, loops, sigs)?),
+            elem: *elem,
+        },
+        HExpr::Subvec {
+            v,
+            start,
+            end,
+            elem,
+        } => HExpr::Subvec {
+            v: Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?),
+            start: Box::new(rewrite_body(start, fnprefix, params, idmap, loops, sigs)?),
+            end: Box::new(rewrite_body(end, fnprefix, params, idmap, loops, sigs)?),
+            elem: *elem,
+        },
+        HExpr::For {
+            el,
+            src,
+            elem,
+            body,
+            res_elem,
+        } => HExpr::For {
+            el: el.clone(),
+            src: Box::new(rewrite_body(src, fnprefix, params, idmap, loops, sigs)?),
+            elem: *elem,
+            body: Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
+            res_elem: *res_elem,
+        },
         HExpr::StrCmp(p, a, b) => HExpr::StrCmp(
             *p,
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
@@ -576,6 +610,10 @@ impl Mdl {
         ));
         label
     }
+    /// Lazy declare of a libc helper used by heap construction.
+    fn ensure_decl(&mut self, line: &str) {
+        self.declare(line.to_string());
+    }
     /// LLVM type of a vector element.
     fn elem_ll(&self, e: Elem) -> &'static str {
         match e {
@@ -602,6 +640,9 @@ struct FnCtx {
     prelude: Vec<String>,
     scalar: HashMap<String, (String, Ty)>,
     vecs: HashMap<String, (String, String, Elem)>,
+    /// Growable heap bindings: name -> alloca slot holding
+    /// `%VecI64 { ptr, len, cap }` (in-place conj mutates through it).
+    grow: HashMap<String, (String, Elem)>,
 }
 
 impl FnCtx {
@@ -614,6 +655,7 @@ impl FnCtx {
             prelude: Vec::new(),
             scalar: HashMap::new(),
             vecs: HashMap::new(),
+            grow: HashMap::new(),
         }
     }
     fn temp(&mut self) -> String {
@@ -643,6 +685,7 @@ impl FnCtx {
             prelude: self.prelude.clone(),
             scalar: self.scalar.clone(),
             vecs: self.vecs.clone(),
+            grow: self.grow.clone(),
         }
     }
     /// Splice hoisted entry allocas directly after the `entry:` label.
@@ -1210,6 +1253,22 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
         for form in seq_forms(&defn.body) {
             emit_stmt(&form, &mut c, mdl, sigs);
         }
+    } else if let Ty::Vec(e) = defn.ret {
+        // Vector return: the %VecI64 struct goes back by value.
+        let (p, l, _) = emit_vec_pair(&defn.body, &mut c, mdl, sigs);
+        let _ = e;
+        let s0 = c.temp();
+        c.line(&format!(
+            "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+            s0, p
+        ));
+        let s1 = c.temp();
+        c.line(&format!(
+            "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+            s1, s0, l
+        ));
+        let _ = e;
+        c.line(&format!("  ret %VecI64 {}", s1));
     } else {
         let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
         if let Ty::Adt(i) = defn.ret {
@@ -1242,6 +1301,8 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
         "double".to_string()
     } else if let Ty::Adt(i) = defn.ret {
         mdl.adt_name(i)
+    } else if matches!(defn.ret, Ty::Vec(_)) {
+        "%VecI64".to_string()
     } else {
         "i64".to_string()
     };
@@ -1355,6 +1416,10 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::StrLit(_) => false,
         HExpr::StrCmp(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::StrCat(args) => args.iter().any(has_ctl),
+        HExpr::Conj { .. } => true, // growth branches
+        HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
+        HExpr::For { .. } => true, // fill loop
         HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
@@ -1833,7 +1898,10 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         }
         HExpr::Count(v) => match &**v {
             HExpr::Var(s) => {
-                if let Some((_, l, _)) = c.vecs.get(s) {
+                if c.grow.contains_key(s) {
+                    let (_, l, _) = grow_val(c, s);
+                    l
+                } else if let Some((_, l, _)) = c.vecs.get(s) {
                     l.clone()
                 } else {
                     let (r, ty) = c
@@ -1857,6 +1925,10 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 let t = c.temp();
                 c.line(&format!("  {} = call i64 @strlen(ptr {})", t, p));
                 t
+            }
+            HExpr::VecLit(_) => {
+                let (_, l, _) = vec_arg(v, c, mdl);
+                l
             }
             other => panic!("codegen: count of {:?}", other),
         },
@@ -1915,6 +1987,10 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         HExpr::DropStmt(_) => "0".to_string(),
         HExpr::StrLit(_) => panic!("codegen: string literal in i64 context"),
         HExpr::StrCmp(..) => panic!("codegen: string comparison in i64 context"),
+        HExpr::Conj { .. } | HExpr::Subvec { .. } | HExpr::For { .. } => panic!(
+            "codegen: heap vector value must be bound with let"
+        ),
+        HExpr::StrCat(_) => panic!("codegen: str result must be bound with let"),
         HExpr::Get { ty, .. } => panic!(
             "codegen: get returning {:?} in i64 context (expected F64 context)",
             ty
@@ -1949,6 +2025,450 @@ fn emit_str_val(
             .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
         other => panic!("codegen: expected a string expression, got {:?}", other),
     }
+}
+
+
+// ---------------------------------------------------------------------------
+// Heap construction: conj (in-place growth), subvec, str, for
+// ---------------------------------------------------------------------------
+
+/// Allocate `n` bytes via libc malloc (declared lazily).
+fn emit_malloc(c: &mut FnCtx, mdl: &mut Mdl, nbytes: &str) -> String {
+    mdl.ensure_decl("declare ptr @malloc(i64)");
+    let p = c.temp();
+    c.line(&format!("  {} = call ptr @malloc(i64 {})", p, nbytes));
+    p
+}
+
+/// Emit `(conj v x)`: in-place append when the owned buffer has capacity,
+/// geometric growth (2x, free the old buffer) otherwise. Static sources are
+/// always copied on first conj (their data is read-only). Returns the
+/// growable slot; callers must register it with `c.grow`.
+fn emit_conj(
+    v: &HExpr,
+    x: &HExpr,
+    elem: Elem,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let ll = mdl.elem_ll(elem);
+    // Source header: live loads for growable bindings; static sources get
+    // capacity == length (their data is read-only, forcing the copy path).
+    // Only growable (heap) sources may be freed after the copy.
+    let mut freeable = false;
+    let (ptr, len, cap) = match v {
+        HExpr::Var(name) => {
+            if let Some((slot, _)) = c.grow.get(name) {
+                freeable = true;
+                let slot = slot.clone();
+                let pf = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                    pf, slot
+                ));
+                let p = c.temp();
+                c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+                let lf = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+                    lf, slot
+                ));
+                let l = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+                let cf = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+                    cf, slot
+                ));
+                let cp = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", cp, cf));
+                (p, l, cp)
+            } else {
+                let (p, l, _) = vec_arg(v, c, mdl);
+                (p, l.clone(), l)
+            }
+        }
+        _ => {
+            let (p, l, _) = vec_arg(v, c, mdl);
+            (p, l.clone(), l)
+        }
+    };
+
+    // The appended value, in the buffer's element type.
+    let xv = emit_typed(x, elem_ty_of(elem), c, mdl, sigs);
+    let one = c.temp();
+    c.line(&format!("  {} = add i64 {}, 1", one, len));
+
+    // Fast path when len < cap; grow otherwise.
+    let has_room = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", has_room, len, cap));
+    let bfast = c.block_name();
+    let bgrow = c.block_name();
+    let bmerge = c.block_name();
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        has_room, bfast, bgrow
+    ));
+
+    let lbl = c.open(&bfast);
+    c.line(&format!("{}:", lbl));
+    // The in-place append: store the element at the tail, then bump len.
+    let tail = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        tail, ll, ptr, len
+    ));
+    match elem {
+        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, tail)),
+        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, tail)),
+        Elem::Param(_) => panic!("unresolved element"),
+    }
+    let slot_out = c.temp();
+    c.prelude.push(format!(
+        "  {} = alloca %VecI64, align 8",
+        slot_out
+    ));
+    let pf2 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf2, slot_out
+    ));
+    c.line(&format!("  store ptr {}, ptr {}, align 8", ptr, pf2));
+    let lf2 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf2, slot_out
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", one, lf2));
+    let cf2 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+        cf2, slot_out
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", cap, cf2));
+    c.line(&format!("  br label %{}", bmerge));
+
+    let lbl = c.open(&bgrow);
+    c.line(&format!("{}:", lbl));
+    // newcap = max(2*cap, len+1); copy old data; append; free the old buffer.
+    let dbl = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 2", dbl, cap));
+    let ge = c.temp();
+    c.line(&format!("  {} = icmp uge i64 {}, {}", ge, dbl, one));
+    let newcap = c.temp();
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 {}",
+        newcap, ge, dbl, one
+    ));
+    let nbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 8", nbytes, newcap));
+    let np = emit_malloc(c, mdl, &nbytes);
+    let cbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 8", cbytes, len));
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+    c.line(&format!(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+        np, ptr, cbytes
+    ));
+    let gp = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        gp, ll, np, len
+    ));
+    match elem {
+        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, gp)),
+        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, gp)),
+        Elem::Param(_) => panic!("unresolved element"),
+    }
+    if freeable {
+        mdl.ensure_decl("declare void @free(ptr)");
+        c.line(&format!("  call void @free(ptr {})", ptr));
+    }
+    let pf3 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf3, slot_out
+    ));
+    c.line(&format!("  store ptr {}, ptr {}, align 8", np, pf3));
+    let lf3 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf3, slot_out
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", one, lf3));
+    let cf3 = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+        cf3, slot_out
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", newcap, cf3));
+    c.line(&format!("  br label %{}", bmerge));
+
+    let lbl = c.open(&bmerge);
+    c.line(&format!("{}:", lbl));
+    slot_out
+}
+
+
+/// Emit `(subvec v start end)`: a fresh heap copy of the clamped slice.
+/// Branchless: bounds are clamped with selects. Returns the growable slot.
+#[allow(clippy::too_many_arguments)]
+fn emit_subvec(
+    v: &HExpr,
+    start: &HExpr,
+    end: &HExpr,
+    elem: Elem,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let ll = mdl.elem_ll(elem);
+    let (ptr, len, _) = vec_arg(v, c, mdl);
+    let sv = emit_int(start, c, mdl, sigs);
+    let ev = emit_int(end, c, mdl, sigs);
+    // s' = max(0, start); e' = min(max(0, end), len); n = max(0, e'-s')
+    let s0 = c.temp();
+    c.line(&format!("  {} = icmp slt i64 {}, 0", s0, sv));
+    let s1 = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", s1, s0, sv));
+    let e0 = c.temp();
+    c.line(&format!("  {} = icmp slt i64 {}, 0", e0, ev));
+    let e1 = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", e1, e0, ev));
+    let e2 = c.temp();
+    c.line(&format!("  {} = icmp ugt i64 {}, {}", e2, e1, len));
+    let e3 = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", e3, e2, len, e1));
+    let d = c.temp();
+    c.line(&format!("  {} = sub i64 {}, {}", d, e3, s1));
+    let neg = c.temp();
+    c.line(&format!("  {} = icmp slt i64 {}, 0", neg, d));
+    let n = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", n, neg, d));
+    let nbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 8", nbytes, n));
+    let np = emit_malloc(c, mdl, &nbytes);
+    let sbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 8", sbytes, s1));
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+    c.line(&format!(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+        np, ptr, sbytes
+    ));
+    // New growable header {np, n, n}.
+    let slot = c.temp();
+    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf, slot
+    ));
+    c.line(&format!("  store ptr {}, ptr {}, align 8", np, pf));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf, slot
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", n, lf));
+    let cf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+        cf, slot
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", n, cf));
+    let _ = ll;
+    slot
+}
+
+/// Emit `(str a b ...)`: one malloc, memcpy of each part, NUL terminator.
+/// Branchless. Returns the result ptr (a `Ty::Str` value).
+fn emit_strcat(
+    args: &[HExpr],
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    mdl.ensure_decl("declare i64 @strlen(ptr)");
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+    // Gather each part's (ptr, len) — literal lengths are static.
+    let mut parts: Vec<(String, String)> = Vec::new();
+    for a in args {
+        match a {
+            HExpr::StrLit(s) => {
+                let p = emit_str_val(a, c, mdl, sigs);
+                let l = c.temp();
+                c.line(&format!("  {} = add i64 {}, 0", l, s.bytes().count()));
+                parts.push((p, l));
+            }
+            _ => {
+                let p = emit_str_val(a, c, mdl, sigs);
+                let l = c.temp();
+                c.line(&format!("  {} = call i64 @strlen(ptr {})", l, p));
+                parts.push((p, l));
+            }
+        }
+    }
+    // total = sum(len) + 1
+    let mut total: Option<String> = None;
+    for (_, l) in &parts {
+        match &total {
+            None => {
+                let t = c.temp();
+                c.line(&format!("  {} = add i64 {}, 0", t, l));
+                total = Some(t);
+            }
+            Some(acc) => {
+                let t = c.temp();
+                c.line(&format!("  {} = add i64 {}, {}", t, acc, l));
+                total = Some(t);
+            }
+        }
+    }
+    let total = total.unwrap_or_else(|| {
+        let t = c.temp();
+        c.line(&format!("  {} = add i64 0, 0", t));
+        t
+    });
+    let nb = c.temp();
+    c.line(&format!("  {} = add i64 {}, 1", nb, total));
+    let dst = emit_malloc(c, mdl, &nb);
+    // Copy each part at its running offset; NUL-terminate.
+    let mut off: Option<String> = None;
+    for (p, l) in &parts {
+        let dst_at = match &off {
+            None => dst.clone(),
+            Some(o) => {
+                let t = c.temp();
+                c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", t, dst, o));
+                t
+            }
+        };
+        c.line(&format!(
+            "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+            dst_at, p, l
+        ));
+        match &off {
+            None => {
+                let t = c.temp();
+                c.line(&format!("  {} = add i64 {}, 0", t, l));
+                off = Some(t);
+            }
+            Some(acc) => {
+                let t = c.temp();
+                c.line(&format!("  {} = add i64 {}, {}", t, acc, l));
+                off = Some(t);
+            }
+        }
+    }
+    let end_at = match &off {
+        None => dst.clone(),
+        Some(o) => {
+            let t = c.temp();
+            c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", t, dst, o));
+            t
+        }
+    };
+    c.line(&format!("  store i8 0, ptr {}", end_at));
+    dst
+}
+
+/// Emit `(for [x src] body)`: a fill loop over a fresh heap buffer.
+/// The body must be control-flow-free (checked in HIR). Returns the
+/// growable slot.
+#[allow(clippy::too_many_arguments)]
+fn emit_for(
+    el: &str,
+    src: &HExpr,
+    elem: Elem,
+    body: &HExpr,
+    res_elem: Elem,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let (ptr, len, _) = vec_arg(src, c, mdl);
+    let rll = mdl.elem_ll(res_elem);
+    let ll = mdl.elem_ll(elem);
+    let nbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 8", nbytes, len));
+    let res = emit_malloc(c, mdl, &nbytes);
+
+    let bloop = c.block_name();
+    let bexit = c.block_name();
+    let is_empty = c.temp();
+    let pre = c.cur.clone();
+    c.line(&format!("  {} = icmp eq i64 {}, 0", is_empty, len));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        is_empty, bexit, bloop
+    ));
+
+    let ivar = c.temp();
+    let pvar = c.temp();
+    let xvar = c.temp();
+    let lbl = c.open(&bloop);
+    c.line(&format!("{}:", lbl));
+    c.line(&format!(
+        "  {} = phi i64 [ 0, %{} ], [ %i.next, %{} ]",
+        ivar, pre, bloop
+    ));
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        pvar, ll, ptr, ivar
+    ));
+    c.line(&format!(
+        "  {} = load {}, ptr {}, align 8",
+        xvar, ll, pvar
+    ));
+    c.scalar.insert(el.to_string(), (xvar, elem_ty_of(elem)));
+    let val = emit_typed(body, elem_ty_of(res_elem), c, mdl, sigs);
+    let w = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        w, rll, res, ivar
+    ));
+    match res_elem {
+        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", val, w)),
+        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", val, w)),
+        Elem::Param(_) => panic!("unresolved element"),
+    }
+    c.line(&format!("  %i.next = add i64 {}, 1", ivar));
+    let cond = c.temp();
+    c.line(&format!("  {} = icmp ult i64 %i.next, {}", cond, len));
+    if mdl.fast {
+        c.line(&format!(
+            "  br i1 {}, label %{}, label %{}, !llvm.loop !0",
+            cond, bloop, bexit
+        ));
+    } else {
+        c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+    }
+
+    let lbl = c.open(&bexit);
+    c.line(&format!("{}:", lbl));
+    // Result header {res, len, len}.
+    let slot = c.temp();
+    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf, slot
+    ));
+    c.line(&format!("  store ptr {}, ptr {}, align 8", res, pf));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf, slot
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", len, lf));
+    let cf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+        cf, slot
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", len, cf));
+    slot
 }
 
 /// `(get vec idx [default])` — branchless bounds-checked element load. The
@@ -2099,6 +2619,49 @@ fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (T
 
 fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) {
     for (name, value, ty) in binds {
+        // Calls returning vectors bind as plain (read-only) vec values.
+        if let HExpr::Call(..) = value {
+            if let Ty::Vec(el) = *ty {
+                let (p, l, _) = emit_vec_call(value, c, mdl, sigs);
+                c.vecs.insert(name.clone(), (p, l, el));
+                continue;
+            }
+        }
+        // Heap-constructing values bind as growable slots.
+        match value {
+            HExpr::Conj { v, x, elem } => {
+                let slot = emit_conj(v, x, *elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *elem));
+                continue;
+            }
+            HExpr::Subvec {
+                v,
+                start,
+                end,
+                elem,
+            } => {
+                let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *elem));
+                continue;
+            }
+            HExpr::For {
+                el,
+                src,
+                elem,
+                body,
+                res_elem,
+            } => {
+                let slot = emit_for(el, src, *elem, body, *res_elem, c, mdl, sigs);
+                c.grow.insert(name.clone(), (slot, *res_elem));
+                continue;
+            }
+            HExpr::StrCat(args) => {
+                let p = emit_strcat(args, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (p, Ty::Str));
+                continue;
+            }
+            _ => {}
+        }
         match ty {
             Ty::F64 => {
                 let v = emit_float(value, c, mdl, sigs);
@@ -2107,6 +2670,10 @@ fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &
             Ty::Bool => {
                 let v = emit_bool(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::Bool));
+            }
+            Ty::Str => {
+                let v = emit_str_val(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::Str));
             }
             Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
             Ty::Adt(_) => {
@@ -2141,13 +2708,97 @@ fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) 
     c.vecs.insert(name.to_string(), (t_d, t_l, elem));
 }
 
+/// Load a growable binding's current (ptr, len) — reads the live header.
+fn grow_val(c: &mut FnCtx, name: &str) -> (String, String, Elem) {
+    let (slot, elem) = c
+        .grow
+        .get(name)
+        .cloned()
+        .unwrap_or_else(|| panic!("codegen: {} is not a growable binding", name));
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf, slot
+    ));
+    let p = c.temp();
+    c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf, slot
+    ));
+    let l = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+    (p, l, elem)
+}
+
+/// Emit a body expression in (ptr, len) vector-value position: growable
+/// bindings load their live header; lets free-stand by emitting their
+/// bindings first.
+fn emit_vec_pair(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> (String, String, Elem) {
+    match e {
+        HExpr::Var(v) => {
+            if c.grow.contains_key(v) {
+                grow_val(c, v)
+            } else {
+                vec_arg(e, c, mdl)
+            }
+        }
+        HExpr::VecLit(_) => vec_arg(e, c, mdl),
+        HExpr::Call(..) => emit_vec_call(e, c, mdl, sigs),
+        HExpr::Let(binds, body) => {
+            emit_let(binds, c, mdl, sigs);
+            emit_vec_pair(body, c, mdl, sigs)
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_vec_pair(vs.last().unwrap(), c, mdl, sigs)
+        }
+        other => panic!("codegen: unsupported vector value {:?}", other),
+    }
+}
+
+/// Emit a call returning a vector; yields (ptr, len, elem) by extracting
+/// the returned `%VecI64` struct.
+fn emit_vec_call(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> (String, String, Elem) {
+    let HExpr::Call(name, args) = e else {
+        panic!("codegen: emit_vec_call on non-call")
+    };
+    let elem = match sigs.get(name).map(|(r, _)| *r) {
+        Some(Ty::Vec(el)) => el,
+        other => panic!("codegen: call {} does not return a vector ({:?})", name, other),
+    };
+    let st = call_user(name, args, c, mdl, sigs);
+    let p = c.temp();
+    c.line(&format!("  {} = extractvalue %VecI64 {}, 0", p, st));
+    let l = c.temp();
+    c.line(&format!("  {} = extractvalue %VecI64 {}, 1", l, st));
+    (p, l, elem)
+}
+
 fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String, Elem) {
     match expr {
-        HExpr::Var(v) => c
-            .vecs
-            .get(v)
-            .cloned()
-            .unwrap_or_else(|| panic!("codegen: {} is not a vector binding", v)),
+        HExpr::Var(v) => {
+            if c.grow.contains_key(v) {
+                return grow_val(c, v);
+            }
+            c.vecs
+                .get(v)
+                .cloned()
+                .unwrap_or_else(|| panic!("codegen: {} is not a vector binding", v))
+        }
         HExpr::VecLit(lit) => {
             let (label, len, elem) = mdl.mint_vec(lit);
             let t_v = c.temp();
@@ -2236,6 +2887,8 @@ fn call_user(
         mdl.adt_name(i)
     } else if *ret_ty == Ty::Str {
         "ptr".to_string()
+    } else if matches!(ret_ty, Ty::Vec(_)) {
+        "%VecI64".to_string()
     } else {
         "i64".to_string()
     };
@@ -2399,6 +3052,29 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
         HExpr::StrCmp(_, a, b) => {
             collect_vars(a, f);
             collect_vars(b, f);
+        }
+        HExpr::StrCat(args) => {
+            for a in args {
+                collect_vars(a, f);
+            }
+        }
+        HExpr::Conj { v, x, .. } => {
+            collect_vars(v, f);
+            collect_vars(x, f);
+        }
+        HExpr::Subvec {
+            v,
+            start,
+            end,
+            ..
+        } => {
+            collect_vars(v, f);
+            collect_vars(start, f);
+            collect_vars(end, f);
+        }
+        HExpr::For { src, body, .. } => {
+            collect_vars(src, f);
+            collect_vars(body, f);
         }
         HExpr::Ctor { args, .. } => {
             for a in args {
