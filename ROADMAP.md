@@ -2,141 +2,177 @@
 
 **Cato** is a statically-typed, compiled systems language with Clojure's surface
 syntax: S-expressions, threading macros, immutable-first functional style —
-compiling to native machine code via direct LLVM IR emission, with unboxed
-types, stream fusion, and (eventually) Rust-like ownership semantics. No GC, no
-boxing, no runtime.
+compiling to native machine code with unboxed types, stream fusion, and
+Rust-like ownership semantics. No GC, no boxing.
 
 This roadmap expresses where the language is going and the order in which the
-pieces land. Every phase follows the same method: an architectural design
-spec in `docs/superpowers/specs/`, a task-by-task implementation plan in
-`docs/superpowers/plans/`, and a vertical slice that ships with tests plus a
-compiled-and-run reference program.
+pieces land. Every phase follows the same method: a design spec in
+`docs/superpowers/specs/`, task-by-task TDD commits that end green
+(`cargo build` + `cargo test`), and an end-to-end reference program
+(`.cato` → IR → `clang` → run).
 
 ## Design Principles
 
 | Principle | How Cato Delivers It |
 |---|---|
-| **Clojure ergonomics** | S-expression syntax, literals, threading macros (`->`/`->>`), Lisp macros |
-| **Systems-level performance** | Direct LLVM IR emission, monomorphization, no GC |
+| **Clojure ergonomics** | S-expression syntax, literals, threading macros, Lisp macros |
+| **Systems-level performance** | LLVM IR emission, monomorphization, no GC |
 | **Memory safety without runtime cost** | Compile-time ownership/borrowing, zero runtime overhead |
 | **Zero-allocation functional code** | Stream fusion fuses `map`/`filter`/`reduce` into a single allocation-free loop |
 | **Honest slices** | Everything new is proven end-to-end (`.cato` → `.ll` → `clang` → run) before the next slice starts |
 
-## Compiler Pipeline
+## Architecture
 
 ```
-.cato source
-  → Reader            src/reader.rs   S-expressions → AST
-  → Macro expansion   src/expand.rs   -> / ->> (and later: when, if-let, for, ...)
-  → HIR build         src/hir.rs      fully concrete, typed AST
-  → Stream fusion     src/fuse.rs     validates the single-loop fusion invariant
-  → LLVM emission     src/codegen.rs  .ll with noalias / inbounds / align 8
-  → clang             native binary
+crates/
+  cato-core/            backend-agnostic frontend: reader → expand → HIR
+                        (typing, monomorphization, ownership check) → fusion
+                        exposes Program { adts, defns } + the Backend trait
+  cato-backend-llvm/    LLVM IR emitter (LlvmBackend): tagged-union ADTs,
+                        fused single-loop pipelines, vectorization metadata
+  cato-cli/             the `cato` binary: flags, --backend dispatch
+runtime/runtime.c       C runtime helpers shared by every backend
 ```
 
-The vector-data pointer in every fused loop is `noalias nocapture readonly`,
-GEPs are `inbounds`, loads are `align 8` — this is what lets LLVM vectorize and
-auto-parallelize the language's pure loops.
+New backends add a crate implementing `cato_core::Backend` plus a dispatch
+line — see `docs/ARCHITECTURE.md`.
 
-## Status
+## Status — shipped and green
 
-Shipped and green on `main` (`cargo test`):
+All reference programs in `examples/` run with exact expected output;
+117 tests on `main`.
 
-- **Slice 1 — Minimal vertical slice.** Reader, HIR builder, fusion check, LLVM
-  emitter; typed `defn`, `let`, arithmetic over i64/f64, `(vec-i64 ...)`,
-  `count`, fused `map`/`filter`/`reduce` emitting a single loop, `print-*`,
-  CLI + runtime. Reference program: `examples/slice.cato`.
-- **Slice 2 — Control flow, comparisons & threading macros.**
-  `bool` type; `= /= < > <= >=`; `if`/`and`/`or`/`not` as phi-exact merges;
-  `abs`/`min`/`max`; `->`/`->>` macro-expansion stage; typed pipeline stages
-  (f64 `sitofp` map stages, i1 filter predicates); loop captures typed from
-  function params; `even?` produces `i1`.
-  Reference programs: `examples/normalize.cato` → `0.75`, `count-even-below` → `2`.
-- **Slice 3 — Algebraic data types: `deftype` + `match`.**
-  `(deftype Shape (Circle [radius :- f64]) ...)`; variant constructors
-  resolved at call sites; `match` with exhaustive coverage checking and `_`
-  wildcard; tagged-union LLVM representation `{ i64, [N x i64] }` with
-  `bitcast`-based `f64` fields and entry-hoisted (loop-safe) constructor
-  allocas; arm results merge via phi — scalars by value, ADT results as ptr
-  phi (option→option transforms); ADTs cross function boundaries by value
-  (no dangling stack pointers, no boxing).
-  Reference program: `examples/shape.cato` → `19.635`, `12`, `16`, `4`.
-- **Slice 4 — Collection API (fused core) + macros beyond threading.**
-  `get` (bounds-checked, branchless); `range`, `take`, `drop`, `zip` and
-  inline vector literals as **fused loop sources** — take/drop compile to
-  branchless start/count arithmetic, zip binds two element variables, all in
-  the same single loop with zero allocation. `when`/`when-not`/`cond`/
-  `if-let`/`when-let`/`if-not`/`doseq` and variadic `and`/`or` desugar in
-  `expand.rs` with no codegen changes. `conj`/`subvec`/`for` are deferred
-  until vector materialization (Phase 7 heap story).
-  Reference program: `examples/collections.cato` → `35 9 140 64 42 3 5 10 30`.
-- **Slice 6 — Monomorphization.**
-  `(Vector f64)` element-typed vectors in annotations, literals and fused
-  loops (double GEP/loads, still `inbounds` + `align 8`); generic `defn`s
-  with type parameters (`(defn gsum [xs :- (Vector T)] :- T ...)`) unified
-  against call-site types and instantiated once per concrete type
-  (`gsum__i64`, `gsum__f64`), fully unboxed. Generic bodies follow the `if`
-  promotion rule for f64 elements.
-  Reference program: `examples/generic.cato` → `10 2.5 7.25 9 2.5 50`.
-- **Slice 7 — Ownership & borrows (enforcement layer).**
-  Non-Copy values (ADTs, vectors) move on by-value use; `&` shared and `&!`
-  exclusive borrows on params; `clone` and `drop`; flow-sensitive
-  use-after-move checking in the HIR pipeline with branch-merge soundness.
-  Compile-time only — the ABI is unchanged, so borrows cost nothing.
-  Reference program: `examples/own.cato` → `123 3 7`.
-- **Slice 8 — Strings.**
-  `"..."` literals as static NUL-terminated `[N x i8]` constants (zero
-  allocation); `Ty::Str` is Copy; content equality via `strcmp`, `count` via
-  `strlen`, `print-string`; ordering/arithmetic on strings rejected.
-  Reference program: `examples/strings.cato` → `hello, cato 4 1 2 0 10`.
-- **Slice 9 — FFI + auto-SIMD.**
-  `(extern name [x :- f64 s :- str] :- i64)` declares C symbols emitted as
-  LLVM `declare`s — direct calls, no marshaling, params as shared borrows.
-  `cato --fast` attaches `llvm.loop.vectorize.enable` metadata to every
-  fused loop backedge so LLVM auto-vectorizes the language's pure loops;
-  lazy deduplicated declares keep the runtime symbol namespace clean.
-  Reference program: `examples/ffi.cato` → `3.5 4 524800`.
+- **Frontend & fusion.** Reader; macros (`->`/`->>`, `when`, `when-not`,
+  `cond`, `if-let`, `when-let`, `if-not`, `doseq`, variadic `and`/`or`);
+  typed HIR; fusion check. Fused single-loop sources: vector variables,
+  literals, `range`, `zip`, `take`/`drop`, `map`/`filter`. Reference:
+  `slice.cato`, `normalize.cato`, `collections.cato`.
+- **Types.** `i64`, `i32` (closed width, explicit casts), `f64`, `bool`,
+  `str` (static constants, `strcmp`/`strlen`), `(Vector i64)` / `(Vector f64)`
+  with generic `(Vector T)` monomorphization, user ADTs (`deftype` +
+  exhaustive `match`, tagged unions), maps (`{k v}`, immutable snapshots,
+  `get`/`assoc`/`count`). Reference: `shape.cato`, `generic.cato`,
+  `widths.cato`, `strings.cato`, `maps.cato`.
+- **Ownership.** Moves for non-Copy values, `&` shared / `&!` exclusive
+  borrows, `clone`/`drop`, flow-sensitive use-after-move checking —
+  compile-time only, zero runtime overhead. Reference: `own.cato`.
+- **Heap.** Owned growable vectors (`{ptr, len, cap}`, in-place `conj` with
+  amortized O(1) append), `subvec`, `for` comprehensions, `(str ...)`
+  concatenation, vector-returning functions. Reference: `heap.cato`.
+- **FFI & SIMD.** `(extern ...)` C declarations (direct calls, no
+  marshaling); `--fast` attaches vectorization metadata to fused loops.
+  Reference: `ffi.cato`.
 
-Current type system: `i64`, `i32`, `f64`, `bool`, `str`, vectors
-(`(Vector i64)` / `(Vector f64)`, type-parameterized), maps, user ADTs
-(scalar payload fields).
+## Next steps
 
-## Roadmap
+### Phase 10 — Diagnostics with source spans *(next)*
 
-### Phase 9b — Width types & parallel loops *(pending)*
+Errors are strings today; make them precise and testable. Small phase, big
+quality multiplier for everything after it.
 
-- `i8/i16/i32/f32/u*/usize` — parameterize the arithmetic emitters over
-  integer widths.
-- `(parallel loop)` / auto-parallelization across threads — needs a thread
-  pool and a provably disjoint write set.
+- Reader produces byte spans; `Expr` (and then HIR nodes) carries them
+  through macro expansion.
+- HIR errors (`use of moved value x`, non-exhaustive match, width mixing,
+  arity) report `file:line:col` with a caret snippet.
+- `errors/` suite: negative programs with expected diagnostics asserted in
+  tests; `--explain N` docs for the common codes.
 
-### Phase 9c — Remaining widths & parallel loops *(next)*
+### Phase 11 — Sets & string building
 
-- `i8/i16/f32/u*/usize` — the i32 slice established the BinW/ICast pattern;
-  remaining widths are mechanical repetitions.
-- `(parallel loop)` / auto-parallelization across threads — needs a thread
-  pool and a provably disjoint write set.
+Completes the collection story on top of the Phase 7b heap.
 
-### Phase 7b — Ownership: heap & escapes
+- `#{1 2 3}` set literals; bit-packed integer sets for dense keys with a
+  flat fallback; `conj`/`disj`/`contains?`/`count`.
+- `(subs s start end)` CoW slices, `(split s sep)` / `(join sep xs)`
+  producing heap vectors of strings.
+- Reference: `examples/sets.cato`.
 
-- Flat-map HAMT (with a flat contiguous struct for ≤8 entries), bit-packed
-  integer sets — `assoc`/`conj` need the heap.
-- Literal syntax for `{}` / `#{}`, `(str ...)` concatenation, CoW slices.
+### Phase 12 — Remaining widths
 
-### Phase 9 — FFI, width types & the runtime
+The i32 slice established the `BinW`/`CmpW`/`ICast` pattern; the rest is
+repetition plus one design decision per family.
 
-The systems-programming endgame.
+- `i8`, `i16`, `f32`, `u8/u16/u32/u64/usize` — unsigned comparison opcodes
+  (`icmp ult` family) and the signedness split are the real design work.
+- Width-generic literals `(u8 255)` and literal inference rules.
+- Reference: `examples/widths2.cato`.
 
-- `(ffi extern "name" ...)` declarations — direct C calls, no marshaling.
-- `i8`/`i16`/`i32`/`f32`/`u*` widths and `usize`.
-- Auto-SIMD and auto-parallelization of pure fused loops (`(parallel loop)`,
-  `--fast`).
+### Phase 13 — Heap lifetimes: scope-exit frees & drop glue
 
-## Working Method
+Closes the interim "allocations live until process exit" contract.
 
-- Each phase is a design spec, an implementation plan, and TDD'd commits that
-  end green (`cargo build` + `cargo test`) with an end-to-end reference program.
-- Backward compatibility: reference programs from earlier phases keep their
-  exact output (e.g. `slice.cato` must always print `2.5` then `20`).
+- Last-use analysis in HIR (the move checker already tracks binding states —
+  extend it to derive free points); frees at binding scope exit.
+- Drop glue for ADTs holding vectors/strings/maps.
+- `noalias` extended to user-owned pointers once uniqueness is proven.
+- Unblocks allocation inside loops (today only scalar loop bodies are
+  allowed) and in-place mutation for later phases.
+
+### Phase 14 — First-class closures
+
+Lambdas today exist only inline in `map`/`filter`/`reduce`. Generalize.
+
+- Closures as values: capture environments and a calling convention, with
+  the ownership interaction made explicit (captured-by-move vs by-borrow).
+- `(fn ...)` usable anywhere an expression is; higher-order user functions.
+- Fused pipelines keep working: statically resolvable stage functions stay
+  defunctionalized; dynamic closures hit the calling-convention path.
+- Reference: `examples/closures.cato`.
+
+### Phase 15 — HAMT maps & transients
+
+Upgrade the flat map slice to Clojure-grade persistent structures.
+
+- Hash-array-mapped trie with structural sharing; the flat ≤N-entry map
+  remains the small-case representation (it is the shipping behavior today).
+- `transient`/`persistent!`-style batch mutation, safe under ownership;
+  `into`; an iteration protocol shared with vectors.
+- Bit-packed sets migrate onto the same trie for sparse keys.
+
+### Phase 16 — Multi-backend: the interpreter
+
+Prove the `Backend` trait with a second implementation and gain a tool.
+
+- Tree-walking interpreter backend (`cato-backend-interp`) implementing
+  `Backend::emit` as direct execution — same `Program`, same test suite.
+- Doubles as a test oracle: differential testing interpreter-vs-LLVM across
+  all of `examples/`, plus a `cato run` script mode.
+- No LLVM dependency: fast, portable, and much better debugging.
+
+### Phase 17 — Cranelift backend
+
+A second native-code backend without the LLVM toolchain dependency.
+
+- `cato-backend-cranelift` lowering HIR through Cranelift IR; faster
+  compiles and smaller binaries. LLVM remains the optimizing default.
+- Backend parity suite: one table of programs × backends × expected output.
+
+### Phase 18 — Parallel loops
+
+The systems endgame for the fusion story.
+
+- `(parallel loop)` and auto-parallelization of provably disjoint fused
+  loops (reduce requires an associativity check; map/filter/write are
+  disjoint by index) over a small runtime thread pool.
+- `--threads N`; loop-carried dependency rejection with clear diagnostics.
+- Loops LLVM already vectorizes get chunked across cores.
+
+### Phase 19 — Language & tooling base
+
+The ergonomic floor for real programs.
+
+- Modules/namespaces (`(ns ...)`, `require`), multi-file compilation.
+- A REPL (cheap once the interpreter backend exists) and a basic LSP.
+- Pattern-matching upgrades: destructuring in `let`/`for`/`match`, guards,
+  `_` inside binder positions.
+
+## Working method
+
+- Each phase: design spec in `docs/superpowers/specs/`, TDD'd commits ending
+  green (`cargo build` + `cargo test`), and an end-to-end reference program.
+- Backward compatibility: reference programs from all earlier phases keep
+  their exact output (e.g. `slice.cato` always prints `2.5` then `20`).
 - Every loop keeps `noalias`/`inbounds`/`align 8` emission; numbers stay
   unboxed; nothing regresses to heap-allocated intermediates.
+- Backend work requires parity: interpreter/Cranelift/LLVM must agree on the
+  whole `examples/` suite.
