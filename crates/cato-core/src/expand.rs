@@ -1,4 +1,4 @@
-use crate::ast::Expr;
+use crate::ast::{Expr, Span};
 
 /// Rewrite macro forms into core forms, bottom-up.
 ///
@@ -21,6 +21,15 @@ use crate::ast::Expr;
 /// `(and a b c...)` / `(or a b c...)` → nested binary forms.
 pub fn expand_all(prog: &[Expr]) -> Result<Vec<Expr>, String> {
     prog.iter().map(expand_form).collect()
+}
+
+/// Expand with per-top-level-form spans: an expansion error is attributed to
+/// the form it occurred in.
+pub fn expand_all_located(prog: &[Expr], spans: &[Span]) -> Result<Vec<Expr>, String> {
+    prog.iter()
+        .zip(spans)
+        .map(|(e, s)| expand_form(e).map_err(|m| crate::diagnostics::locate(*s, &m)))
+        .collect()
 }
 
 fn expand_form(e: &Expr) -> Result<Expr, String> {

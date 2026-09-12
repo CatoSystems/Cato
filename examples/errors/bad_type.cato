@@ -1,0 +1,2 @@
+;; E202: conj on a scalar instead of a vector.
+(defn main [] :- i64 (conj 3 1))

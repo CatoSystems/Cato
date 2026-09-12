@@ -294,7 +294,7 @@ mod parse;
 mod pipeline;
 mod stagefn;
 
-pub use build::build_program;
+pub use build::{build_program, build_program_located};
 pub(crate) use ctl::*;
 pub(crate) use forms::*;
 pub(crate) use lower::*;

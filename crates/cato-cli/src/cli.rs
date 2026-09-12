@@ -14,6 +14,7 @@ pub fn parse_args(args: &[String]) -> Cli {
     let mut out = None;
     let mut fast = false;
     let mut backend = "llvm".to_string();
+    let mut explain = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -31,6 +32,16 @@ pub fn parse_args(args: &[String]) -> Cli {
                 fast = true;
                 i += 1;
             }
+            "--explain" => match args.get(i + 1) {
+                Some(c) => {
+                    explain = Some(c.clone());
+                    i += 2;
+                }
+                None => {
+                    eprintln!("cato: --explain requires a code (e.g. --explain E301)");
+                    std::process::exit(2);
+                }
+            },
             "--backend" => match args.get(i + 1) {
                 Some(b) => {
                     backend = b.clone();
@@ -55,6 +66,22 @@ pub fn parse_args(args: &[String]) -> Cli {
             }
         }
     }
+    if let Some(code) = explain {
+        match cato_core::diagnostics::explain(&code) {
+            Some(doc) => {
+                println!("{}: {}", code, doc);
+                std::process::exit(0);
+            }
+            None => {
+                eprintln!(
+                    "cato: unknown diagnostic code {} (known: {})",
+                    code,
+                    cato_core::diagnostics::all_codes().collect::<Vec<_>>().join(" ")
+                );
+                std::process::exit(2);
+            }
+        }
+    }
     match file {
         Some(f) if Path::new(&f).exists() => Cli {
             file: f,
@@ -75,6 +102,6 @@ pub fn parse_args(args: &[String]) -> Cli {
 
 fn usage() {
     eprintln!(
-        "cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll] [--fast] [--backend llvm]\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.\n--fast attaches vectorization metadata to fused loops (auto-SIMD).\n\nBackends: llvm (default)."
+        "cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll] [--fast] [--backend llvm]\n  cato --explain E301\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.\n--fast attaches vectorization metadata to fused loops (auto-SIMD).\n--explain prints long-form documentation for a diagnostic code.\n\nBackends: llvm (default)."
     );
 }

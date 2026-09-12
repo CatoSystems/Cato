@@ -3,7 +3,7 @@
 
 mod cli;
 
-use cato_core::{compile_to_program, Backend};
+use cato_core::{compile_named, Backend};
 use cato_llvm::LlvmBackend;
 
 fn main() {
@@ -14,7 +14,7 @@ fn main() {
         std::process::exit(2);
     });
     let program =
-        compile_to_program(&src).unwrap_or_else(|e| { eprintln!("cato: {}", e); std::process::exit(2); });
+        compile_named(&cli.file, &src).unwrap_or_else(|e| { eprintln!("cato: {}", e); std::process::exit(2); });
     let result = match cli.backend.as_str() {
         "llvm" => LlvmBackend { fast: cli.fast }.emit(&program),
         other => {

@@ -1,3 +1,20 @@
+/// A byte-offset range into the source text (`lo` inclusive, `hi` exclusive).
+/// The zero span means "unknown" — diagnostics render without a location.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Span {
+    pub lo: usize,
+    pub hi: usize,
+}
+
+impl Span {
+    pub fn join(self, other: Span) -> Span {
+        Span {
+            lo: self.lo.min(other.lo),
+            hi: self.hi.max(other.hi),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     LitI64(i64),

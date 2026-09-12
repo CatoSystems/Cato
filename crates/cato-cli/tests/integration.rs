@@ -173,3 +173,24 @@ fn compiles_widths_to_expected_output() {
     let src = std::fs::read_to_string(manifest.join("../../examples/widths.cato")).unwrap();
     assert_eq!(compile_and_run("widths", &src), "7\n30\n10\n42\n");
 }
+
+#[test]
+fn explain_prints_diagnostic_docs() {
+    let out = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .args(["--explain", "E301"])
+        .output()
+        .expect("run binary");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("E301"), "got: {}", stdout);
+    assert!(stdout.contains("moved"), "got: {}", stdout);
+}
+
+#[test]
+fn explain_rejects_unknown_code() {
+    let out = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .args(["--explain", "E999"])
+        .output()
+        .expect("run binary");
+    assert!(!out.status.success());
+}

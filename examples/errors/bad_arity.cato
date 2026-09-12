@@ -1,0 +1,2 @@
+;; E201: the + builtin takes exactly two operands.
+(defn main [] :- i64 (+ 1))

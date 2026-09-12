@@ -1,0 +1,5 @@
+;; E301: a moved vector binding is used again.
+(defn first-of [xs :- (Vector i64)] :- i64 (get xs 0))
+(defn bad [xs :- (Vector i64)] :- i64
+  (+ (first-of xs) (first-of xs)))
+(defn main [] :- i64 0)

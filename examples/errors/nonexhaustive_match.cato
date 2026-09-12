@@ -1,0 +1,8 @@
+;; E401: match over a Shape ADT without the Circle variant or a wildcard.
+(deftype Shape
+  (Rect [w :- i64 h :- i64])
+  (Circle [r :- i64]))
+(defn area [s :- Shape] :- i64
+  (match s
+    (Rect [w h] (* w h))))
+(defn main [] :- i64 0)
