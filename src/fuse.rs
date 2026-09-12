@@ -50,6 +50,13 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
         HExpr::StrCat(args) => HExpr::StrCat(args.iter().map(check).collect()),
+        HExpr::BinW(op, a, b, t) => {
+            HExpr::BinW(op.clone(), Box::new(check(a)), Box::new(check(b)), *t)
+        }
+        HExpr::CmpW(op, a, b) => {
+            HExpr::CmpW(op.clone(), Box::new(check(a)), Box::new(check(b)))
+        }
+        HExpr::ICast(inner, t) => HExpr::ICast(Box::new(check(inner)), *t),
         HExpr::MapLit(pairs) => HExpr::MapLit(
             pairs
                 .iter()

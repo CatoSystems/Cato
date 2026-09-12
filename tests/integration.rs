@@ -166,3 +166,10 @@ fn compiles_maps_to_expected_output() {
         "20\n3\n99\n99\n20\n3\n70\n4\n0\n-1\n"
     );
 }
+
+#[test]
+fn compiles_widths_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/widths.cato")).unwrap();
+    assert_eq!(compile_and_run("widths", &src), "7\n30\n10\n42\n");
+}

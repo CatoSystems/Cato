@@ -429,6 +429,21 @@ fn rewrite_body(
                 .collect::<Result<Vec<_>, _>>()?,
         },
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
+        HExpr::BinW(op, a, b, t) => HExpr::BinW(
+            op.clone(),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
+            *t,
+        ),
+        HExpr::CmpW(op, a, b) => HExpr::CmpW(
+            op.clone(),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
+        ),
+        HExpr::ICast(inner, t) => HExpr::ICast(
+            Box::new(rewrite_body(inner, fnprefix, params, idmap, loops, sigs)?),
+            *t,
+        ),
         HExpr::MapLit(pairs) => HExpr::MapLit(
             pairs
                 .iter()
@@ -573,6 +588,7 @@ impl Mdl {
     fn ll_ty(&self, t: Ty) -> String {
         match t {
             Ty::I64 => "i64".into(),
+            Ty::I32 => "i32".into(),
             Ty::F64 => "double".into(),
             Ty::Bool => "i1".into(),
             Ty::Vec(_) | Ty::Map => panic!("codegen: aggregate type in scalar position"),
@@ -1247,6 +1263,11 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::I64));
                 params.push(format!("i64 {}", r));
             }
+            Ty::I32 => {
+                let r = format!("%{}", mangle(pname));
+                c.scalar.insert(pname.clone(), (r.clone(), Ty::I32));
+                params.push(format!("i32 {}", r));
+            }
             Ty::Bool => {
                 let r = format!("%{}", mangle(pname));
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::Bool));
@@ -1317,6 +1338,8 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 "i1"
             } else if defn.ret == Ty::F64 {
                 "double"
+            } else if defn.ret == Ty::I32 {
+                "i32"
             } else {
                 "i64"
             };
@@ -1334,6 +1357,8 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
         mdl.adt_name(i)
     } else if matches!(defn.ret, Ty::Vec(_)) {
         "%VecI64".to_string()
+    } else if defn.ret == Ty::I32 {
+        "i32".to_string()
     } else {
         "i64".to_string()
     };
@@ -1361,6 +1386,7 @@ fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
             }
             Ty::F64 => params.push("double".to_string()),
             Ty::I64 => params.push("i64".to_string()),
+            Ty::I32 => params.push("i32".to_string()),
             Ty::Bool => params.push("i1".to_string()),
             Ty::Str => params.push("ptr".to_string()),
             Ty::Map => panic!("codegen: map params not supported"),
@@ -1397,6 +1423,7 @@ fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, 
         Ty::F64 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::I32 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) => panic!("codegen: cannot return a vector"),
@@ -1449,6 +1476,9 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::StrLit(_) => false,
         HExpr::StrCmp(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
+        HExpr::CmpW(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::ICast(inner, _) => has_ctl(inner),
         HExpr::StrCat(args) => args.iter().any(has_ctl),
         HExpr::MapLit(pairs) => pairs
             .iter()
@@ -1519,6 +1549,7 @@ fn emit_typed(
         Ty::F64 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::I32 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) | Ty::Map => panic!("codegen: control flow cannot produce an aggregate"),
@@ -1528,6 +1559,21 @@ fn emit_typed(
 
 fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
+        HExpr::CmpW(op, a, b) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let op = match op {
+                CmpOp::Eq => "eq",
+                CmpOp::Ne => "ne",
+                CmpOp::Lt => "slt",
+                CmpOp::Gt => "sgt",
+                CmpOp::Le => "sle",
+                CmpOp::Ge => "sge",
+            };
+            let t = c.temp();
+            c.line(&format!("  {} = icmp {} i32 {}, {}", t, op, av, bv));
+            t
+        }
         HExpr::StrCmp(eq, a, b) => {
             let av = emit_str_val(a, c, mdl, sigs);
             let bv = emit_str_val(b, c, mdl, sigs);
@@ -1999,6 +2045,34 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             "0".to_string()
         }
         HExpr::If(cond, then, els, t) => emit_if_node(cond, then, els, *t, c, mdl, sigs),
+        HExpr::Abs(e, Ty::I32) => {
+            let v = emit_int(e, c, mdl, sigs);
+            let neg = c.temp();
+            c.line(&format!("  {} = sub i32 0, {}", neg, v));
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i32 {}, 0", lt, v));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, neg, v));
+            t
+        }
+        HExpr::Min(a, b, Ty::I32) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i32 {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, av, bv));
+            t
+        }
+        HExpr::Max(a, b, Ty::I32) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp sgt i32 {}, {}", lt, av, bv));
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, av, bv));
+            t
+        }
         HExpr::Abs(e, _) => {
             let v = emit_int(e, c, mdl, sigs);
             let neg = c.temp();
@@ -2050,6 +2124,42 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             "codegen: map value must be bound with let"
         ),
         HExpr::MapGet { .. } => emit_map_get(e, c, mdl, sigs),
+        HExpr::CmpW(..) => panic!("codegen: i32 comparison in i64 context"),
+        HExpr::BinW(op, a, b, ty) => {
+            let av = emit_int(a, c, mdl, sigs);
+            let bv = emit_int(b, c, mdl, sigs);
+            let op = match op {
+                BinOp::Add => "add",
+                BinOp::Sub => "sub",
+                BinOp::Mul => "mul",
+                BinOp::Div => "sdiv",
+            };
+            let ll = if *ty == Ty::I32 { "i32" } else { "i64" };
+            let t = c.temp();
+            c.line(&format!("  {} = {} {} {}, {}", t, op, ll, av, bv));
+            t
+        }
+        HExpr::ICast(inner, target) => {
+            let iv = emit_int(inner, c, mdl, sigs);
+            let t = c.temp();
+            // i64 -> i32 truncates; i32 -> i64 sign-extends.
+            match (*target, static_int_width(inner, c, sigs)) {
+                (Ty::I32, Ty::I64) => {
+                    c.line(&format!("  {} = trunc i64 {} to i32", t, iv))
+                }
+                (Ty::I64, Ty::I32) => {
+                    c.line(&format!("  {} = sext i32 {} to i64", t, iv))
+                }
+                (Ty::I32, Ty::I32) => {
+                    c.line(&format!("  {} = add i32 {}, 0", t, iv))
+                }
+                (Ty::I64, Ty::I64) => {
+                    c.line(&format!("  {} = add i64 {}, 0", t, iv))
+                }
+                _ => panic!("codegen: invalid int cast"),
+            }
+            t
+        }
         HExpr::Get { ty, .. } => panic!(
             "codegen: get returning {:?} in i64 context (expected F64 context)",
             ty
@@ -3106,6 +3216,10 @@ fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &
                 let v = emit_str_val(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::Str));
             }
+            Ty::I32 => {
+                let v = emit_int(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::I32));
+            }
             Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
@@ -3193,6 +3307,26 @@ fn emit_vec_pair(
             emit_vec_pair(vs.last().unwrap(), c, mdl, sigs)
         }
         other => panic!("codegen: unsupported vector value {:?}", other),
+    }
+}
+
+/// Static width of an i64/i32 expression (for cast selection).
+fn static_int_width(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> Ty {
+    match e {
+        HExpr::ConstI64(_) => Ty::I64,
+        HExpr::ICast(_, t) => *t,
+        HExpr::BinW(.., t) => *t,
+        HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
+        HExpr::Var(v) => c
+            .scalar
+            .get(v)
+            .map(|(_, t)| *t)
+            .unwrap_or(Ty::I64),
+        HExpr::Call(name, _) => sigs
+            .get(name)
+            .map(|(r, _)| *r)
+            .unwrap_or(Ty::I64),
+        _ => Ty::I64,
     }
 }
 
@@ -3286,6 +3420,10 @@ fn call_user(
                 let v = emit_int(expr, c, mdl, sigs);
                 ll_args.push(format!("i64 {}", v));
             }
+            Ty::I32 => {
+                let v = emit_int(expr, c, mdl, sigs);
+                ll_args.push(format!("i32 {}", v));
+            }
             Ty::Bool => {
                 let v = emit_bool(expr, c, mdl, sigs);
                 ll_args.push(format!("i1 {}", v));
@@ -3321,6 +3459,8 @@ fn call_user(
         "ptr".to_string()
     } else if matches!(ret_ty, Ty::Vec(_)) {
         "%VecI64".to_string()
+    } else if *ret_ty == Ty::I32 {
+        "i32".to_string()
     } else {
         "i64".to_string()
     };
@@ -3490,6 +3630,15 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(a, f);
             }
         }
+        HExpr::BinW(_, a, b, _) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HExpr::CmpW(_, a, b) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HExpr::ICast(inner, _) => collect_vars(inner, f),
         HExpr::MapLit(pairs) => {
             for (k, v) in pairs {
                 collect_vars(k, f);

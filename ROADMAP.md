@@ -97,8 +97,9 @@ Shipped and green on `main` (`cargo test`):
   lazy deduplicated declares keep the runtime symbol namespace clean.
   Reference program: `examples/ffi.cato` → `3.5 4 524800`.
 
-Current type system: `i64`, `f64`, `bool`, `str`, vectors (`(Vector i64)` /
-`(Vector f64)`, type-parameterized), user ADTs (scalar payload fields).
+Current type system: `i64`, `i32`, `f64`, `bool`, `str`, vectors
+(`(Vector i64)` / `(Vector f64)`, type-parameterized), maps, user ADTs
+(scalar payload fields).
 
 ## Roadmap
 
@@ -109,11 +110,12 @@ Current type system: `i64`, `f64`, `bool`, `str`, vectors (`(Vector i64)` /
 - `(parallel loop)` / auto-parallelization across threads — needs a thread
   pool and a provably disjoint write set.
 
-### Phase 9b — Width types *(next)*
+### Phase 9c — Remaining widths & parallel loops *(next)*
 
-- `i8/i16/i32/f32/u*/usize` — parameterize the arithmetic emitters over
-  integer widths.
-- Sets (`#{...}` bit-packed) and `(parallel loop)` threading.
+- `i8/i16/f32/u*/usize` — the i32 slice established the BinW/ICast pattern;
+  remaining widths are mechanical repetitions.
+- `(parallel loop)` / auto-parallelization across threads — needs a thread
+  pool and a provably disjoint write set.
 
 ### Phase 7b — Ownership: heap & escapes
 

@@ -5,6 +5,8 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ty {
     I64,
+    /// 32-bit signed integer (narrow width slice).
+    I32,
     F64,
     /// Vector with an element type: `(Vector i64)`, `(Vector f64)`.
     Vec(Elem),
@@ -97,6 +99,12 @@ pub enum HExpr {
         body: Box<HExpr>,
         res_elem: Elem,
     },
+    /// i32 arithmetic: `(+ a b)` over i32 operands (wrapping).
+    BinW(BinOp, Box<HExpr>, Box<HExpr>, Ty),
+    /// i32 comparisons.
+    CmpW(CmpOp, Box<HExpr>, Box<HExpr>),
+    /// `(i32 e)` / `(i64 e)` — explicit widening/narrowing casts.
+    ICast(Box<HExpr>, Ty),
     /// `{k v ...}` — a map literal; constant keys are sorted at compile time.
     MapLit(Vec<(HExpr, HExpr)>),
     /// `(get m k [default])` on a map: last match wins (assoc replaces).
@@ -560,6 +568,15 @@ impl<'a> BCheck<'a> {
                     self.check(a, tys, st);
                 }
             }
+            HExpr::BinW(_, a, b, _) => {
+                self.check(a, tys, st);
+                self.check(b, tys, st);
+            }
+            HExpr::CmpW(_, a, b) => {
+                self.check(a, tys, st);
+                self.check(b, tys, st);
+            }
+            HExpr::ICast(inner, _) => self.check(inner, tys, st),
             HExpr::MapLit(pairs) => {
                 for (k, v) in pairs {
                     self.check(k, tys, st);
@@ -900,6 +917,7 @@ fn parse_ty_sym(
 ) -> Result<Ty, String> {
     match s {
         "i64" => Ok(Ty::I64),
+        "i32" => Ok(Ty::I32),
         "f64" => Ok(Ty::F64),
         "vec" => Ok(VEC_I64),
         "bool" => Ok(Ty::Bool),
@@ -1066,6 +1084,7 @@ fn instantiate(
 fn parse_scalar_ty(s: &str) -> Result<Ty, String> {
     match s {
         "i64" => Ok(Ty::I64),
+        "i32" => Ok(Ty::I32),
         "f64" => Ok(Ty::F64),
         "bool" => Ok(Ty::Bool),
         other => Err(format!(
@@ -1160,6 +1179,24 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     }
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::ConvF64(Box::new(inner)))
+                }
+                "i32" | "i64" => {
+                    if items.len() != 2 {
+                        return Err(format!("{} expects exactly 1 argument", head));
+                    }
+                    let inner = lower(&items[1], env, ctx)?;
+                    let target = if head == "i32" { Ty::I32 } else { Ty::I64 };
+                    let src_ty = ty_of(&inner, env, ctx);
+                    if src_ty == target {
+                        return Ok(inner);
+                    }
+                    if !matches!(src_ty, Ty::I64 | Ty::I32) {
+                        return Err(format!(
+                            "{} cast expects an i64/i32 operand, got {:?}",
+                            head, src_ty
+                        ));
+                    }
+                    Ok(HExpr::ICast(Box::new(inner), target))
                 }
                 "if" => lower_if(items, env, ctx),
                 "and" | "or" => lower_and_or(head, items, env, ctx),
@@ -1488,12 +1525,24 @@ fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExp
     if matches!(at, Ty::Adt(_) | Ty::Str) || matches!(bt, Ty::Adt(_) | Ty::Str) {
         return Err("ADT and string values cannot be used in arithmetic".into());
     }
+    // i32 is a closed width: both operands must be i32 (cast explicitly).
+    if at == Ty::I32 && bt == Ty::I32 {
+        return Ok((a, b));
+    }
+    if at == Ty::I32 || bt == Ty::I32 {
+        return Err(
+            "cannot mix i32 with other widths — cast with (i64 e) or (i32 e)".into(),
+        );
+    }
     let f = at == Ty::F64 || bt == Ty::F64;
     Ok((coerce_f64(a, at, f), coerce_f64(b, bt, f)))
 }
 
 fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     let (a, b) = promote_pair(a, b, env, ctx)?;
+    if ty_of(&a, env, ctx) == Ty::I32 {
+        return Ok(HExpr::BinW(op, Box::new(a), Box::new(b), Ty::I32));
+    }
     Ok(HExpr::Bin(op, Box::new(a), Box::new(b)))
 }
 
@@ -1555,6 +1604,12 @@ fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, St
             Box::new(b),
         ));
     }
+    if ty_of(&a, env, ctx) == Ty::I32 && ty_of(&b, env, ctx) == Ty::I32 {
+        return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b)));
+    }
+    if ty_of(&a, env, ctx) == Ty::I32 || ty_of(&b, env, ctx) == Ty::I32 {
+        return Err("cannot compare mixed widths — cast with (i64 e) or (i32 e)".into());
+    }
     let (a, b) = promote_pair(a, b, env, ctx)?;
     let is_f64 = ty_of(&a, env, ctx) == Ty::F64;
     Ok(HExpr::Cmp(op, Box::new(a), Box::new(b), is_f64))
@@ -1593,8 +1648,8 @@ fn lower_abs(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     }
     let e = lower(&items[1], env, ctx)?;
     let t = ty_of(&e, env, ctx);
-    if t != Ty::I64 && t != Ty::F64 {
-        return Err("abs expects an i64 or f64 operand".into());
+    if t != Ty::I64 && t != Ty::F64 && t != Ty::I32 {
+        return Err("abs expects an i64, i32 or f64 operand".into());
     }
     Ok(HExpr::Abs(Box::new(e), t))
 }
@@ -1603,15 +1658,12 @@ fn lower_min_max(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HEx
     if items.len() != 3 {
         return Err(format!("{} expects 2 operands", kind));
     }
-    let (a, b) = promote_pair(
-        lower(&items[1], env, ctx)?,
-        lower(&items[2], env, ctx)?,
-        env,
-        ctx,
-    )?;
+    let a = lower(&items[1], env, ctx)?;
+    let b = lower(&items[2], env, ctx)?;
+    let (a, b) = promote_pair(a, b, env, ctx)?;
     let t = ty_of(&a, env, ctx);
-    if t != Ty::I64 && t != Ty::F64 {
-        return Err(format!("{} expects i64/f64 operands", kind));
+    if t != Ty::I64 && t != Ty::F64 && t != Ty::I32 {
+        return Err(format!("{} expects i64/i32/f64 operands", kind));
     }
     Ok(if kind == "min" {
         HExpr::Min(Box::new(a), Box::new(b), t)
@@ -1831,6 +1883,9 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true,
         HExpr::StrCat(args) => args.iter().any(has_ctl),
+        HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
+        HExpr::CmpW(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::ICast(inner, _) => has_ctl(inner),
         HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
         HExpr::MapGet { src, key, default } => {
@@ -1913,6 +1968,9 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } => Ty::Vec(*elem),
         HExpr::For { res_elem, .. } => Ty::Vec(*res_elem),
         HExpr::StrCat(_) => Ty::Str,
+        HExpr::BinW(.., t) => *t,
+        HExpr::CmpW(..) => Ty::Bool,
+        HExpr::ICast(_, t) => *t,
         HExpr::MapLit(_) => Ty::Map,
         HExpr::MapAssoc { .. } => Ty::Map,
         HExpr::MapGet { .. } => Ty::I64,
