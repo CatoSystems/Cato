@@ -283,3 +283,17 @@ fn vec_f64_literals_mint_double_globals() {
         ir
     );
 }
+
+// --- Phase 8: string codegen ---
+
+#[test]
+fn string_literals_mint_i8_globals_and_use_strcmp() {
+    let src = "(defn f [s :- str] :- bool (= s \"cato\"))
+               (defn main [] (do (print-string \"hello\") 0))";
+    let exprs = read_all(src).unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = emit_module(&[], &fns);
+    assert!(ir.contains("private unnamed_addr constant [5 x i8]"), "{}", ir);
+    assert!(ir.contains("call i32 @strcmp("), "{}", ir);
+    assert!(ir.contains("call void @cato_print_string("), "{}", ir);
+}

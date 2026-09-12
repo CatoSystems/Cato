@@ -1,0 +1,18 @@
+; strings.cato — Phase 8 reference program: strings.
+;
+; String literals are static `[N x i8]` constants — no heap, no allocation.
+; Equality compares content via strcmp; count is strlen. Strings are Copy
+; (immutable static data), so `&str` borrows pass pointers for free.
+
+(defn classify [s :- &str] :- i64
+  (cond (= s "cato") 1
+        (= s "llvm") 2
+        0))
+
+(defn main []
+  (print-string "hello, cato")
+  (print-i64 (count "cato"))            ; 4
+  (print-i64 (classify "cato"))         ; 1
+  (print-i64 (classify "llvm"))         ; 2
+  (print-i64 (classify "rust"))         ; 0
+  (print-i64 (if (= "cat" "cat") 10 20))) ; 10

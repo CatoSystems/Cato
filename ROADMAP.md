@@ -84,8 +84,13 @@ Shipped and green on `main` (`cargo test`):
   use-after-move checking in the HIR pipeline with branch-merge soundness.
   Compile-time only — the ABI is unchanged, so borrows cost nothing.
   Reference program: `examples/own.cato` → `123 3 7`.
+- **Slice 8 — Strings.**
+  `"..."` literals as static NUL-terminated `[N x i8]` constants (zero
+  allocation); `Ty::Str` is Copy; content equality via `strcmp`, `count` via
+  `strlen`, `print-string`; ordering/arithmetic on strings rejected.
+  Reference program: `examples/strings.cato` → `hello, cato 4 1 2 0 10`.
 
-Current type system: `i64`, `f64`, `bool`, vectors (`(Vector i64)` /
+Current type system: `i64`, `f64`, `bool`, `str`, vectors (`(Vector i64)` /
 `(Vector f64)`, type-parameterized), user ADTs (scalar payload fields).
 
 ## Roadmap
@@ -96,13 +101,11 @@ The remaining half of Phase 7, enabled by the enforcement layer: heap
 allocation for escaping values, `noalias` extended to user pointers, runtime
 drop glue — unlocking `conj`/`subvec`/`for` (deferred from Phase 4).
 
-### Phase 8 — Maps, sets & strings
-
-High-value data types for real programs.
+### Phase 8b — Maps, sets & string building *(pending heap)*
 
 - Flat-map HAMT (with a flat contiguous struct for ≤8 entries), bit-packed
-  integer sets, copy-on-write strings.
-- Literal syntax for `{}` / `#{}` / `"..."`.
+  integer sets — `assoc`/`conj` need the heap.
+- Literal syntax for `{}` / `#{}`, `(str ...)` concatenation, CoW slices.
 
 ### Phase 9 — FFI, width types & the runtime
 

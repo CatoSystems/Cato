@@ -136,3 +136,13 @@ fn compiles_own_to_expected_output() {
     let src = std::fs::read_to_string(manifest.join("examples/own.cato")).unwrap();
     assert_eq!(compile_and_run("own", &src), "123\n3\n7\n");
 }
+
+#[test]
+fn compiles_strings_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/strings.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("strings", &src),
+        "hello, cato\n4\n1\n2\n0\n10\n"
+    );
+}

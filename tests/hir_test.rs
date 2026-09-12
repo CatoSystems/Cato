@@ -557,3 +557,21 @@ fn drop_ends_a_binding() {
     ));
     assert!(err.contains("use of moved value b"), "got: {}", err);
 }
+
+// --- Phase 8: strings ---
+
+#[test]
+fn string_literals_and_equality() {
+    let body = build_one("f", "(defn f [s :- str] :- bool (= s \"cato\"))");
+    assert!(matches!(body, HExpr::StrCmp(true, _, _)));
+    let body = build_one("f", "(defn f [s :- str] :- bool (/= s \"cato\"))");
+    assert!(matches!(body, HExpr::StrCmp(false, _, _)));
+}
+
+#[test]
+fn strings_reject_arithmetic_and_ordering() {
+    let err = build_err("(defn f [s :- str] :- str (+ s s))");
+    assert!(err.contains("cannot be used in arithmetic"), "got: {}", err);
+    let err = build_err("(defn f [a :- str b :- str] :- bool (< a b))");
+    assert!(err.contains("strings support only"), "got: {}", err);
+}

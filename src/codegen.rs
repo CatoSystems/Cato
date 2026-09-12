@@ -59,6 +59,9 @@ pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     output.push(String::new());
     output.push("declare void @cato_print_f64(double)".to_string());
     output.push("declare void @cato_print_i64(i64)".to_string());
+    output.push("declare void @cato_print_string(ptr)".to_string());
+    output.push("declare i64 @strlen(ptr)".to_string());
+    output.push("declare i32 @strcmp(ptr, ptr)".to_string());
     output.push(String::new());
 
     for spec in &loops {
@@ -401,6 +404,12 @@ fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         },
+        HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
+        HExpr::StrCmp(p, a, b) => HExpr::StrCmp(
+            *p,
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
+        ),
         HExpr::Clone(inner) => {
             HExpr::Clone(Box::new(rewrite_body(inner, fnprefix, params, idmap, loops, sigs)?))
         }
@@ -470,7 +479,7 @@ impl Mdl {
             Ty::F64 => "double".into(),
             Ty::Bool => "i1".into(),
             Ty::Vec(_) => panic!("codegen: vector type in scalar position"),
-            Ty::Adt(_) => "ptr".into(),
+            Ty::Adt(_) | Ty::Str => "ptr".into(),
             Ty::Param(_) => panic!("codegen: unresolved type parameter"),
         }
     }
@@ -510,6 +519,25 @@ impl Mdl {
             VLit::F64(vs) => vs.len(),
         };
         (label, len.to_string(), elem)
+    }
+    /// Mint a private NUL-terminated `[N x i8]` constant for a string
+    /// literal; returns the global label.
+    fn mint_str(&mut self, s: &str) -> String {
+        let id = self.counter;
+        self.counter += 1;
+        let label = format!("@g_str_{}", id);
+        let mut items: Vec<String> = s
+            .bytes()
+            .map(|b| format!("i8 {}", b))
+            .collect();
+        items.push("i8 0".to_string()); // NUL terminator
+        self.vec_globals.push(format!(
+            "{} = private unnamed_addr constant [{} x i8] [{}]",
+            label,
+            items.len(),
+            items.join(", ")
+        ));
+        label
     }
     /// LLVM type of a vector element.
     fn elem_ll(&self, e: Elem) -> &'static str {
@@ -1104,6 +1132,11 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::Bool));
                 params.push(format!("i1 {}", r));
             }
+            Ty::Str => {
+                let r = format!("%{}", mangle(pname));
+                c.scalar.insert(pname.clone(), (r.clone(), Ty::Str));
+                params.push(format!("ptr {}", r));
+            }
             Ty::Param(_) => panic!("codegen: unresolved type parameter in params"),
             Ty::Adt(i) => {
                 // By-value boundary: the incoming struct is copied into an
@@ -1190,6 +1223,7 @@ fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, 
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
+        Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) => panic!("codegen: cannot return a vector"),
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
@@ -1237,6 +1271,8 @@ fn has_ctl(e: &HExpr) -> bool {
             true
         }
         HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::StrLit(_) => false,
+        HExpr::StrCmp(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
@@ -1295,6 +1331,7 @@ fn emit_typed(
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
+        Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) => panic!("codegen: control flow cannot produce a vector"),
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
@@ -1302,6 +1339,20 @@ fn emit_typed(
 
 fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
+        HExpr::StrCmp(eq, a, b) => {
+            let av = emit_str_val(a, c, mdl, sigs);
+            let bv = emit_str_val(b, c, mdl, sigs);
+            let t = c.temp();
+            c.line(&format!("  {} = call i32 @strcmp(ptr {}, ptr {})", t, av, bv));
+            let z = c.temp();
+            c.line(&format!(
+                "  {} = icmp {} i32 {}, 0",
+                z,
+                if *eq { "eq" } else { "ne" },
+                t
+            ));
+            z
+        }
         HExpr::Cmp(op, a, b, is_f64) => {
             if *is_f64 {
                 let av = emit_float(a, c, mdl, sigs);
@@ -1647,6 +1698,7 @@ fn emit_match_node(
     let res = c.temp();
     let lty = match ty {
         Ty::Adt(_) => "ptr".to_string(),
+        Ty::Str => "ptr".to_string(),
         t => mdl.ll_ty(*t),
     };
     let pairs: Vec<String> = vals
@@ -1671,13 +1723,6 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 l.clone()
             }
         }
-        HExpr::Count(v) => {
-            let HExpr::Var(s) = &**v else {
-                panic!("codegen: count of non-var")
-            };
-            let (_, l, _) = c.vecs.get(s).expect("count of vector var");
-            l.clone()
-        }
         HExpr::Bin(op, a, b) => {
             let av = emit_int(a, c, mdl, sigs);
             let bv = emit_int(b, c, mdl, sigs);
@@ -1698,6 +1743,38 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             c.line(&format!("  call void @cato_print_i64(i64 {})", v));
             "0".to_string()
         }
+        HExpr::Call(name, args) if name == "print-string" => {
+            let v = emit_str_val(&args[0], c, mdl, sigs);
+            c.line(&format!("  call void @cato_print_string(ptr {})", v));
+            "0".to_string()
+        }
+        HExpr::Count(v) => match &**v {
+            HExpr::Var(s) => {
+                if let Some((_, l, _)) = c.vecs.get(s) {
+                    l.clone()
+                } else {
+                    let (r, ty) = c
+                        .scalar
+                        .get(s)
+                        .cloned()
+                        .unwrap_or_else(|| panic!("codegen: count of unknown var {}", s));
+                    if ty == Ty::Str {
+                        let t = c.temp();
+                        c.line(&format!("  {} = call i64 @strlen(ptr {})", t, r));
+                        t
+                    } else {
+                        panic!("codegen: count of non-vector/non-string {}", s)
+                    }
+                }
+            }
+            HExpr::StrLit(_) => {
+                let p = emit_str_val(v, c, mdl, sigs);
+                let t = c.temp();
+                c.line(&format!("  {} = call i64 @strlen(ptr {})", t, p));
+                t
+            }
+            other => panic!("codegen: count of {:?}", other),
+        },
         HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
         HExpr::Let(binds, body) => {
             emit_let(binds, c, mdl, sigs);
@@ -1751,12 +1828,42 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         HExpr::Get { ty: Ty::I64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_int(inner, c, mdl, sigs),
         HExpr::DropStmt(_) => "0".to_string(),
+        HExpr::StrLit(_) => panic!("codegen: string literal in i64 context"),
+        HExpr::StrCmp(..) => panic!("codegen: string comparison in i64 context"),
         HExpr::Get { ty, .. } => panic!(
             "codegen: get returning {:?} in i64 context (expected F64 context)",
             ty
         ),
     }
     .to_string()
+}
+
+/// Emit an expression of string type: a `ptr` to the literal's first byte
+/// (or a string value held in a variable).
+fn emit_str_val(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    _sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match e {
+        HExpr::StrLit(s) => {
+            let label = mdl.mint_str(s);
+            let n = s.bytes().count() + 1;
+            let p = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds [{} x i8], ptr {}, i32 0, i32 0",
+                p, n, label
+            ));
+            p
+        }
+        HExpr::Var(v) => c
+            .scalar
+            .get(v)
+            .map(|(r, _)| r.clone())
+            .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
+        other => panic!("codegen: expected a string expression, got {:?}", other),
+    }
 }
 
 /// `(get vec idx [default])` — branchless bounds-checked element load. The
@@ -2017,6 +2124,10 @@ fn call_user(
                 ll_args.push(format!("i1 {}", v));
             }
             Ty::Param(_) => panic!("codegen: unresolved type parameter in call args"),
+            Ty::Str => {
+                let v = emit_str_val(expr, c, mdl, sigs);
+                ll_args.push(format!("ptr {}", v));
+            }
             Ty::Adt(i) => {
                 // By-value boundary: load the caller's slot into the arg.
                 let v = emit_adt(expr, c, mdl, sigs);
@@ -2038,6 +2149,8 @@ fn call_user(
         "double".to_string()
     } else if let Ty::Adt(i) = *ret_ty {
         mdl.adt_name(i)
+    } else if *ret_ty == Ty::Str {
+        "ptr".to_string()
     } else {
         "i64".to_string()
     };
@@ -2114,7 +2227,8 @@ impl VarSet {
     }
 }
 
-fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {    match h {
+fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
+    match h {
         HExpr::Var(v) => f(v.clone()),
         HExpr::Bin(_, a, b) => {
             collect_vars(a, f);
@@ -2196,7 +2310,11 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {    match h {
                 collect_vars(v, f);
             }
         }
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => {}
+        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) | HExpr::StrLit(_) => {}
+        HExpr::StrCmp(_, a, b) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
         HExpr::Ctor { args, .. } => {
             for a in args {
                 collect_vars(a, f);

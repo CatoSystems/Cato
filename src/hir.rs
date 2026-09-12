@@ -9,6 +9,8 @@ pub enum Ty {
     /// Vector with an element type: `(Vector i64)`, `(Vector f64)`.
     Vec(Elem),
     Bool,
+    /// Immutable string slice (static constant data; no heap).
+    Str,
     /// User-defined ADT, indexed into the program's `AdtDef` table.
     Adt(u32),
     /// Type parameter in a generic defn's annotations, indexed into the
@@ -69,6 +71,11 @@ pub enum HExpr {
     ConvF64(Box<HExpr>),
     Count(Box<HExpr>),
     VecLit(VLit),
+    /// A string literal; codegen mints a private `[N x i8]` constant.
+    StrLit(String),
+    /// `(= s1 s2)` on strings: content comparison via the runtime.
+    /// The bool is the expected polarity (true for `=`).
+    StrCmp(bool, Box<HExpr>, Box<HExpr>),
     Reduce(Box<HReduce>),
     Call(String, Vec<HExpr>),
     Let(Vec<(String, HExpr, Ty)>, Box<HExpr>),
@@ -382,7 +389,8 @@ fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
 // Ownership / borrow checking
 // ---------------------------------------------------------------------------
 
-/// Types that move: ADTs and vectors. Scalars are Copy.
+/// Types that move: ADTs and vectors. Scalars and strings (immutable static
+/// data) are Copy.
 fn is_non_copy(ty: Ty) -> bool {
     matches!(ty, Ty::Adt(_) | Ty::Vec(_))
 }
@@ -430,6 +438,7 @@ impl<'a> BCheck<'a> {
     ) {
         match e {
             HExpr::Var(v) => self.use_var(v, tys, st),
+            HExpr::StrLit(_) | HExpr::StrCmp(..) => {}
             HExpr::Clone(inner) => self.check(inner, tys, st),
             HExpr::DropStmt(inner) => {
                 self.check(inner, tys, st);
@@ -737,6 +746,7 @@ fn parse_ty_sym(
         "f64" => Ok(Ty::F64),
         "vec" => Ok(VEC_I64),
         "bool" => Ok(Ty::Bool),
+        "str" | "string" => Ok(Ty::Str),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
             None => Ok(Ty::Param(register_ty_param(other, ty_params))),
@@ -931,7 +941,7 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     match expr {
         Expr::LitI64(v) => Ok(HExpr::ConstI64(*v)),
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
-        Expr::LitStr(s) => Ok(HExpr::Call("string-literal".into(), vec![HExpr::Var(s.clone())])),
+        Expr::LitStr(s) => Ok(HExpr::StrLit(s.clone())),
         Expr::LitSym(s) => Ok(HExpr::Var(s.to_string())),
         Expr::Vector(items) => {
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
@@ -1000,6 +1010,13 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     }
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Count(Box::new(inner)))
+                }
+                "print-string" => {
+                    if items.len() != 2 {
+                        return Err("print-string expects exactly 1 argument".into());
+                    }
+                    let a = lower(&items[1], env, ctx)?;
+                    Ok(HExpr::Call("print-string".into(), vec![a]))
                 }
                 "vec-i64" => {
                     let mut vs = Vec::new();
@@ -1113,8 +1130,8 @@ fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
 fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
-    if matches!(at, Ty::Adt(_)) || matches!(bt, Ty::Adt(_)) {
-        return Err("ADT values cannot be used in arithmetic or comparisons".into());
+    if matches!(at, Ty::Adt(_) | Ty::Str) || matches!(bt, Ty::Adt(_) | Ty::Str) {
+        return Err("ADT and string values cannot be used in arithmetic".into());
     }
     let f = at == Ty::F64 || bt == Ty::F64;
     Ok((coerce_f64(a, at, f), coerce_f64(b, bt, f)))
@@ -1169,12 +1186,21 @@ fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, St
         ">=" => CmpOp::Ge,
         _ => unreachable!(),
     };
-    let (a, b) = promote_pair(
-        lower(&items[1], env, ctx)?,
-        lower(&items[2], env, ctx)?,
-        env,
-        ctx,
-    )?;
+    let a = lower(&items[1], env, ctx)?;
+    let b = lower(&items[2], env, ctx)?;
+    // String (in)equality compares content via the runtime; ordering of
+    // strings is not part of the language.
+    if ty_of(&a, env, ctx) == Ty::Str && ty_of(&b, env, ctx) == Ty::Str {
+        if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
+            return Err("strings support only = and /=".into());
+        }
+        return Ok(HExpr::StrCmp(
+            op == CmpOp::Eq,
+            Box::new(a),
+            Box::new(b),
+        ));
+    }
+    let (a, b) = promote_pair(a, b, env, ctx)?;
     let is_f64 = ty_of(&a, env, ctx) == Ty::F64;
     Ok(HExpr::Cmp(op, Box::new(a), Box::new(b), is_f64))
 }
@@ -1458,6 +1484,8 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         }
         HExpr::ConvF64(_) => Ty::F64,
         HExpr::Count(_) => Ty::I64,
+        HExpr::StrLit(_) => Ty::Str,
+        HExpr::StrCmp(..) => Ty::Bool,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,
             VLit::F64(_) => Elem::F64,

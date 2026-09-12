@@ -48,6 +48,8 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Abs(v, t) => HExpr::Abs(Box::new(check(v)), *t),
         HExpr::Min(a, b, t) => HExpr::Min(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
+        HExpr::StrCmp(p, a, b) => HExpr::StrCmp(*p, Box::new(check(a)), Box::new(check(b))),
         HExpr::Clone(e) => HExpr::Clone(Box::new(check(e))),
         HExpr::DropStmt(e) => HExpr::DropStmt(Box::new(check(e))),
         HExpr::Get {
