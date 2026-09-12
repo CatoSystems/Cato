@@ -7,6 +7,16 @@ pub enum Ty {
     F64,
     VecI64,
     Bool,
+    /// User-defined ADT, indexed into the program's `AdtDef` table.
+    Adt(u32),
+}
+
+/// A user-defined algebraic data type: variants with scalar (or other-ADT)
+/// payload fields, in declaration order (the order is the runtime tag).
+#[derive(Debug, Clone, PartialEq)]
+pub struct AdtDef {
+    pub name: String,
+    pub variants: Vec<(String, Vec<Ty>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +58,24 @@ pub enum HExpr {
     Abs(Box<HExpr>, Ty),
     Min(Box<HExpr>, Box<HExpr>, Ty),
     Max(Box<HExpr>, Box<HExpr>, Ty),
+    Ctor {
+        adt: u32,
+        variant: u32,
+        args: Vec<HExpr>,
+    },
+    Match {
+        scrut: Box<HExpr>,
+        arms: Vec<HArm>,
+        ty: Ty,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct HArm {
+    /// Variant tag; `None` is the `_` wildcard arm.
+    pub variant: Option<u32>,
+    pub binders: Vec<String>,
+    pub body: HExpr,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,17 +132,60 @@ struct RawDefn {
 
 struct Ctx<'a> {
     raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
+    adts: &'a [AdtDef],
+}
+
+impl<'a> Ctx<'a> {
+    /// Resolve a constructor name to (adt index, variant index, field types).
+    fn lookup_ctor(&self, name: &str) -> Option<(u32, u32, Vec<Ty>)> {
+        for (ai, adt) in self.adts.iter().enumerate() {
+            for (vi, (vname, fields)) in adt.variants.iter().enumerate() {
+                if vname == name {
+                    return Some((ai as u32, vi as u32, fields.clone()));
+                }
+            }
+        }
+        None
+    }
 }
 
 pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {
+    Ok(build_program(prog)?.1)
+}
+
+/// Build a full program: the ADT table (from `deftype` forms) plus every
+/// lowered `defn`.
+pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> {
+    // Pass 0: collect deftype forms into the ADT table so every defn (in any
+    // order) can refer to the types.
+    let mut adts: Vec<AdtDef> = Vec::new();
+    for form in prog {
+        if is_deftype(form) {
+            adts.push(parse_deftype(form)?);
+        }
+    }
+    let mut adt_by_name: HashMap<String, u32> = HashMap::new();
+    for (i, adt) in adts.iter().enumerate() {
+        if adt_by_name.insert(adt.name.clone(), i as u32).is_some() {
+            return Err(format!("duplicate deftype {}", adt.name));
+        }
+    }
+
     // Pass 1: parse every defn into a raw (un-lowered) form without lowering,
     // so map/filter and calls can resolve any function regardless of order.
-    let raws: Vec<RawDefn> = prog.iter().map(parse_raw).collect::<Result<_, _>>()?;
+    let raws: Vec<RawDefn> = prog
+        .iter()
+        .filter(|f| !is_deftype(f))
+        .map(|f| parse_raw(f, &adt_by_name))
+        .collect::<Result<_, _>>()?;
     let raw_by_name: HashMap<&str, &RawDefn> = raws
         .iter()
         .map(|r| (r.name.as_str(), r))
         .collect();
-    let ctx = Ctx { raw_by_name: &raw_by_name };
+    let ctx = Ctx {
+        raw_by_name: &raw_by_name,
+        adts: &adts,
+    };
 
     let mut out = Vec::new();
     for raw in &raws {
@@ -135,10 +206,70 @@ pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {
             body,
         });
     }
-    Ok(out)
+    Ok((adts, out))
 }
 
-fn parse_raw(form: &Expr) -> Result<RawDefn, String> {
+fn is_deftype(form: &Expr) -> bool {
+    matches!(
+        form,
+        Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "deftype")
+    )
+}
+
+/// (deftype Name (Variant [field :- ty ...]) ...)
+fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
+    let Expr::List(items) = form else {
+        return Err("expected (deftype ...)".into());
+    };
+    if items.len() < 2 {
+        return Err("deftype expects a name and at least one variant".into());
+    }
+    let Expr::LitSym(name) = &items[1] else {
+        return Err("deftype name must be a symbol".into());
+    };
+    let mut variants = Vec::new();
+    for v in &items[2..] {
+        let Expr::List(vitems) = v else {
+            return Err(format!("deftype {} variant must be a list", name));
+        };
+        let Some(Expr::LitSym(vname)) = vitems.first() else {
+            return Err(format!("deftype {} variant name must be a symbol", name));
+        };
+        let mut fields = Vec::new();
+        if vitems.len() > 1 {
+            let Expr::Vector(fitems) = &vitems[1] else {
+                return Err(format!("variant {} fields must be a vector", vname));
+            };
+            if vitems.len() > 2 {
+                return Err(format!("variant {} takes only a fields vector", vname));
+            }
+            let mut i = 0;
+            while i < fitems.len() {
+                let Expr::LitSym(fname) = &fitems[i] else {
+                    return Err(format!("variant {} field name must be a symbol", vname));
+                };
+                let Some(Expr::LitSym(sep)) = fitems.get(i + 1) else {
+                    return Err(format!("variant {} field {} expects (name :- ty)", vname, fname));
+                };
+                if sep != ":-" {
+                    return Err(format!("variant {} field {} expects (name :- ty)", vname, fname));
+                }
+                let Some(Expr::LitSym(ty)) = fitems.get(i + 2) else {
+                    return Err(format!("variant {} field {} expects a type", vname, fname));
+                };
+                fields.push(parse_scalar_ty(ty)?);
+                i += 3;
+            }
+        }
+        variants.push((vname.clone(), fields));
+    }
+    Ok(AdtDef {
+        name: name.clone(),
+        variants,
+    })
+}
+
+fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
         return Err("expected (defn ...)".into());
     };
@@ -154,7 +285,7 @@ fn parse_raw(form: &Expr) -> Result<RawDefn, String> {
     let Expr::Vector(params) = &items[2] else {
         return Err("defn params must be a vector".into());
     };
-    let params = parse_params(params)?;
+    let params = parse_params(params, adt_by_name)?;
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
@@ -162,7 +293,7 @@ fn parse_raw(form: &Expr) -> Result<RawDefn, String> {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
                 if let Expr::LitSym(ty) = &items[body_start + 1] {
-                    ret = parse_ty(ty)?;
+                    ret = parse_ty(ty, adt_by_name)?;
                 }
                 body_start += 2;
             }
@@ -190,7 +321,7 @@ fn parse_raw(form: &Expr) -> Result<RawDefn, String> {
     })
 }
 
-fn parse_params(params: &[Expr]) -> Result<Vec<(String, Ty)>, String> {
+fn parse_params(params: &[Expr], adt_by_name: &HashMap<String, u32>) -> Result<Vec<(String, Ty)>, String> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < params.len() {
@@ -201,7 +332,7 @@ fn parse_params(params: &[Expr]) -> Result<Vec<(String, Ty)>, String> {
             if let Expr::LitSym(sep) = &params[i + 1] {
                 if sep == ":-" {
                     if let Expr::LitSym(ty) = &params[i + 2] {
-                        out.push((name.clone(), parse_ty(ty)?));
+                        out.push((name.clone(), parse_ty(ty, adt_by_name)?));
                         i += 3;
                         continue;
                     }
@@ -213,13 +344,30 @@ fn parse_params(params: &[Expr]) -> Result<Vec<(String, Ty)>, String> {
     Ok(out)
 }
 
-fn parse_ty(s: &str) -> Result<Ty, String> {
+fn parse_ty(s: &str, adt_by_name: &HashMap<String, u32>) -> Result<Ty, String> {
     match s {
         "i64" => Ok(Ty::I64),
         "f64" => Ok(Ty::F64),
         "vec" => Ok(Ty::VecI64),
         "bool" => Ok(Ty::Bool),
-        other => Err(format!("unknown type annotation '{}'", other)),
+        other => match adt_by_name.get(other) {
+            Some(&i) => Ok(Ty::Adt(i)),
+            None => Err(format!("unknown type annotation '{}'", other)),
+        },
+    }
+}
+
+/// Payload fields are scalars-only in the ADT cut (nested ADTs by value need
+/// monomorphization/indirection, later phases).
+fn parse_scalar_ty(s: &str) -> Result<Ty, String> {
+    match s {
+        "i64" => Ok(Ty::I64),
+        "f64" => Ok(Ty::F64),
+        "bool" => Ok(Ty::Bool),
+        other => Err(format!(
+            "ADT field type must be i64, f64 or bool, got '{}'",
+            other
+        )),
     }
 }
 
@@ -297,6 +445,7 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 "=" | "/=" | "<" | ">" | "<=" | ">=" => lower_cmp(head, items, env, ctx),
                 "abs" => lower_abs(items, env, ctx),
                 "min" | "max" => lower_min_max(head, items, env, ctx),
+                "match" => lower_match(items, env, ctx),
                 "count" => {
                     if items.len() != 2 {
                         return Err("count expects exactly 1 argument".into());
@@ -340,9 +489,36 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                     };
                     let a = lower(&items[1], env, ctx)?;
                     let b = lower(&items[2], env, ctx)?;
-                    Ok(promote_bin(op, a, b, env, ctx))
+                    return promote_bin(op, a, b, env, ctx);
                 }
                 _ => {
+                    // Constructors resolve before user functions.
+                    if let Some((adt, variant, fields)) = ctx.lookup_ctor(head) {
+                        if items.len() - 1 != fields.len() {
+                            return Err(format!(
+                                "constructor {} expects {} argument(s), got {}",
+                                head,
+                                fields.len(),
+                                items.len() - 1
+                            ));
+                        }
+                        let mut args = Vec::new();
+                        for (it, fty) in items[1..].iter().zip(fields.iter()) {
+                            let a = lower(it, env, ctx)?;
+                            let at = ty_of(&a, env, ctx);
+                            if *fty == Ty::F64 && at == Ty::I64 {
+                                args.push(HExpr::ConvF64(Box::new(a)));
+                            } else if at != *fty {
+                                return Err(format!(
+                                    "constructor {} field expects {:?}, got {:?}",
+                                    head, fty, at
+                                ));
+                            } else {
+                                args.push(a);
+                            }
+                        }
+                        return Ok(HExpr::Ctor { adt, variant, args });
+                    }
                     let mut args = Vec::new();
                     for it in &items[1..] {
                         args.push(lower(it, env, ctx)?);
@@ -362,16 +538,19 @@ fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
     }
 }
 
-fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> (HExpr, HExpr) {
+fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
+    if matches!(at, Ty::Adt(_)) || matches!(bt, Ty::Adt(_)) {
+        return Err("ADT values cannot be used in arithmetic or comparisons".into());
+    }
     let f = at == Ty::F64 || bt == Ty::F64;
-    (coerce_f64(a, at, f), coerce_f64(b, bt, f))
+    Ok((coerce_f64(a, at, f), coerce_f64(b, bt, f)))
 }
 
-fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> HExpr {
-    let (a, b) = promote_pair(a, b, env, ctx);
-    HExpr::Bin(op, Box::new(a), Box::new(b))
+fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    let (a, b) = promote_pair(a, b, env, ctx)?;
+    Ok(HExpr::Bin(op, Box::new(a), Box::new(b)))
 }
 
 fn lower_if(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
@@ -423,7 +602,7 @@ fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, St
         lower(&items[2], env, ctx)?,
         env,
         ctx,
-    );
+    )?;
     let is_f64 = ty_of(&a, env, ctx) == Ty::F64;
     Ok(HExpr::Cmp(op, Box::new(a), Box::new(b), is_f64))
 }
@@ -476,7 +655,7 @@ fn lower_min_max(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HEx
         lower(&items[2], env, ctx)?,
         env,
         ctx,
-    );
+    )?;
     let t = ty_of(&a, env, ctx);
     if t != Ty::I64 && t != Ty::F64 {
         return Err(format!("{} expects i64/f64 operands", kind));
@@ -485,6 +664,143 @@ fn lower_min_max(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HEx
         HExpr::Min(Box::new(a), Box::new(b), t)
     } else {
         HExpr::Max(Box::new(a), Box::new(b), t)
+    })
+}
+
+fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() < 3 {
+        return Err("match expects a scrutinee and at least one arm".into());
+    }
+    let scrut = lower(&items[1], env, ctx)?;
+    let Ty::Adt(adt) = ty_of(&scrut, env, ctx) else {
+        return Err("match scrutinee must be an ADT value".into());
+    };
+    let adt_def = &ctx.adts[adt as usize];
+
+    let mut covered = vec![false; adt_def.variants.len()];
+    let mut wildcard = false;
+    let mut arm_tys: Vec<Ty> = Vec::new();
+    let mut arm_exprs: Vec<(Option<u32>, Vec<String>, HExpr)> = Vec::new();
+
+    for arm in &items[2..] {
+        let Expr::List(arm_items) = arm else {
+            return Err("match arm must be a list".into());
+        };
+        let Some(Expr::LitSym(head)) = arm_items.first() else {
+            return Err("match arm must start with a variant name or _".into());
+        };
+        if head == "_" {
+            if wildcard {
+                return Err("match has more than one wildcard arm".into());
+            }
+            if arm_items.len() != 2 {
+                return Err("wildcard arm expects (_ body)".into());
+            }
+            wildcard = true;
+            let body = lower(&arm_items[1], env, ctx)?;
+            arm_tys.push(ty_of(&body, env, ctx));
+            arm_exprs.push((None, Vec::new(), body));
+            continue;
+        }
+        let Some((vi, (_, fields))) = adt_def
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, (n, _))| n == head)
+            .map(|(vi, v)| (vi, v.clone()))
+        else {
+            return Err(format!(
+                "{} is not a variant of {}",
+                head, adt_def.name
+            ));
+        };
+        if covered[vi] {
+            return Err(format!("match covers {} more than once", head));
+        }
+        covered[vi] = true;
+        if arm_items.len() != 3 {
+            return Err(format!(
+                "match arm {} expects ({} [binders...] body)",
+                head, head
+            ));
+        }
+        let Expr::Vector(binders) = &arm_items[1] else {
+            return Err(format!("match arm {} binders must be a vector", head));
+        };
+        if binders.len() != fields.len() {
+            return Err(format!(
+                "variant {} has {} field(s) but the arm binds {}",
+                head,
+                fields.len(),
+                binders.len()
+            ));
+        }
+        let mut bindernames = Vec::new();
+        let mut child = env.clone();
+        for (b, fty) in binders.iter().zip(fields.iter()) {
+            let Expr::LitSym(bn) = b else {
+                return Err(format!("match arm {} binder must be a symbol", head));
+            };
+            child.insert(bn.clone(), *fty);
+            bindernames.push(bn.clone());
+        }
+            let body = lower(&arm_items[2], &child, ctx)?;
+            let bty = ty_of(&body, &child, ctx);
+            arm_tys.push(bty);
+            arm_exprs.push((Some(vi as u32), bindernames, body));
+    }
+
+    // Exhaustiveness: every variant covered, or a wildcard arm present.
+    if !wildcard {
+        let missing: Vec<&str> = adt_def
+            .variants
+            .iter()
+            .zip(covered.iter())
+            .filter(|(_, c)| !**c)
+            .map(|((n, _), _)| n.as_str())
+            .collect();
+        if !missing.is_empty() {
+            return Err(format!(
+                "match on {} does not cover: {} (add arms or a _ wildcard)",
+                adt_def.name,
+                missing.join(", ")
+            ));
+        }
+    }
+
+    // All arm bodies must agree on the result type (with the if-rule f64
+    // promotion). Coerce int arms up when any arm is f64.
+    let mut merged = arm_tys[0];
+    for t in &arm_tys[1..] {
+        if *t == Ty::F64 || merged == Ty::F64 {
+            if *t != merged && *t != Ty::I64 && merged != Ty::I64 {
+                return Err(format!(
+                    "match arm result types differ: {:?} vs {:?}",
+                    merged, t
+                ));
+            }
+            merged = Ty::F64;
+        } else if *t != merged {
+            return Err(format!(
+                "match arm result types differ: {:?} vs {:?}",
+                merged, t
+            ));
+        }
+    }
+
+    let mut h_arms = Vec::new();
+    for ((variant, binders, body), at) in arm_exprs.into_iter().zip(arm_tys.iter()) {
+        let body = coerce_f64(body, *at, merged == Ty::F64);
+        h_arms.push(HArm {
+            variant,
+            binders,
+            body,
+        });
+    }
+    Ok(HExpr::Match {
+        scrut: Box::new(scrut),
+        arms: h_arms,
+        ty: merged,
     })
 }
 
@@ -522,6 +838,8 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::If(_, _, _, t) => *t,
         HExpr::And(..) | HExpr::Or(..) | HExpr::Not(_) | HExpr::Cmp(..) => Ty::Bool,
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
+        HExpr::Ctor { adt, .. } => Ty::Adt(*adt),
+        HExpr::Match { ty, .. } => *ty,
     }
 }
 

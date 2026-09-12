@@ -48,6 +48,27 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Abs(v, t) => HExpr::Abs(Box::new(check(v)), *t),
         HExpr::Min(a, b, t) => HExpr::Min(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
+            adt: *adt,
+            variant: *variant,
+            args: args.iter().map(check).collect(),
+        },
+        HExpr::Match {
+            scrut,
+            arms,
+            ty,
+        } => HExpr::Match {
+            scrut: Box::new(check(scrut)),
+            arms: arms
+                .iter()
+                .map(|a| HArm {
+                    variant: a.variant,
+                    binders: a.binders.clone(),
+                    body: check(&a.body),
+                })
+                .collect(),
+            ty: *ty,
+        },
     }
 }
 

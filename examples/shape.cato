@@ -1,0 +1,33 @@
+; shape.cato — Phase 3 reference program: deftype + match.
+;
+; Tagged unions with exhaustive dispatch; match results merge via phi,
+; including ADT results (widen returns a Shape from every arm).
+
+(deftype Shape
+  (Circle [radius :- f64])
+  (Rect [w :- f64 h :- f64])
+  (Point []))
+
+(defn area [s :- Shape] :- f64
+  (match s
+    (Circle [r] (* 3.14159265358979 (* r r)))
+    (Rect [w h] (* w h))
+    (Point [] 0.0)))
+
+; option→option transform: every arm constructs an ADT, merged as ptr phi.
+(defn widen [s :- Shape] :- Shape
+  (match s
+    (Rect [w h] (Rect (+ w 1.0) h))
+    (_ s)))
+
+(defn classify [s :- Shape] :- i64
+  (match s
+    (Circle [r] (if (> r 2.0) 1 0))
+    (Rect [w h] (if (> w h) 2 3))
+    (Point [] 4)))
+
+(defn main []
+  (print-f64 (area (Circle 2.5)))
+  (print-f64 (area (Rect 3.0 4.0)))
+  (print-f64 (area (widen (Rect 3.0 4.0))))
+  (print-i64 (classify (Point))))

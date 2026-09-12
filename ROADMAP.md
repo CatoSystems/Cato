@@ -1,0 +1,130 @@
+# Cato Roadmap
+
+**Cato** is a statically-typed, compiled systems language with Clojure's surface
+syntax: S-expressions, threading macros, immutable-first functional style —
+compiling to native machine code via direct LLVM IR emission, with unboxed
+types, stream fusion, and (eventually) Rust-like ownership semantics. No GC, no
+boxing, no runtime.
+
+This roadmap expresses where the language is going and the order in which the
+pieces land. Every phase follows the same method: an architectural design
+spec in `docs/superpowers/specs/`, a task-by-task implementation plan in
+`docs/superpowers/plans/`, and a vertical slice that ships with tests plus a
+compiled-and-run reference program.
+
+## Design Principles
+
+| Principle | How Cato Delivers It |
+|---|---|
+| **Clojure ergonomics** | S-expression syntax, literals, threading macros (`->`/`->>`), Lisp macros |
+| **Systems-level performance** | Direct LLVM IR emission, monomorphization, no GC |
+| **Memory safety without runtime cost** | Compile-time ownership/borrowing, zero runtime overhead |
+| **Zero-allocation functional code** | Stream fusion fuses `map`/`filter`/`reduce` into a single allocation-free loop |
+| **Honest slices** | Everything new is proven end-to-end (`.cato` → `.ll` → `clang` → run) before the next slice starts |
+
+## Compiler Pipeline
+
+```
+.cato source
+  → Reader            src/reader.rs   S-expressions → AST
+  → Macro expansion   src/expand.rs   -> / ->> (and later: when, if-let, for, ...)
+  → HIR build         src/hir.rs      fully concrete, typed AST
+  → Stream fusion     src/fuse.rs     validates the single-loop fusion invariant
+  → LLVM emission     src/codegen.rs  .ll with noalias / inbounds / align 8
+  → clang             native binary
+```
+
+The vector-data pointer in every fused loop is `noalias nocapture readonly`,
+GEPs are `inbounds`, loads are `align 8` — this is what lets LLVM vectorize and
+auto-parallelize the language's pure loops.
+
+## Status
+
+Shipped and green on `main` (`cargo test`):
+
+- **Slice 1 — Minimal vertical slice.** Reader, HIR builder, fusion check, LLVM
+  emitter; typed `defn`, `let`, arithmetic over i64/f64, `(vec-i64 ...)`,
+  `count`, fused `map`/`filter`/`reduce` emitting a single loop, `print-*`,
+  CLI + runtime. Reference program: `examples/slice.cato`.
+- **Slice 2 — Control flow, comparisons & threading macros.**
+  `bool` type; `= /= < > <= >=`; `if`/`and`/`or`/`not` as phi-exact merges;
+  `abs`/`min`/`max`; `->`/`->>` macro-expansion stage; typed pipeline stages
+  (f64 `sitofp` map stages, i1 filter predicates); loop captures typed from
+  function params; `even?` produces `i1`.
+  Reference programs: `examples/normalize.cato` → `0.75`, `count-even-below` → `2`.
+- **Slice 3 — Algebraic data types: `deftype` + `match`.**
+  `(deftype Shape (Circle [radius :- f64]) ...)`; variant constructors
+  resolved at call sites; `match` with exhaustive coverage checking and `_`
+  wildcard; tagged-union LLVM representation `{ i64, [N x i64] }` with
+  `bitcast`-based `f64` fields and entry-hoisted (loop-safe) constructor
+  allocas; arm results merge via phi — scalars by value, ADT results as ptr
+  phi (option→option transforms); ADTs cross function boundaries by value
+  (no dangling stack pointers, no boxing).
+  Reference program: `examples/shape.cato` → `19.635`, `12`, `16`, `4`.
+
+Current type system: `i64`, `f64`, `bool`, `vec` (`VecI64`), user ADTs
+(scalar payload fields).
+
+## Roadmap
+
+### Phase 4 — Collection API *(next)*
+
+Richer vector programming once the core types are settled.
+
+- `get` (indexing), `conj`, `subvec`, `take`/`drop`/`zip`/`range`.
+- Vector construction beyond `vec-i64` literals.
+- Keeps the fusion invariant: `take`/`drop`/`zip`/`range` fuse into the same
+  single loop nest.
+
+### Phase 5 — Macro expansion beyond threading
+
+The `when`, `if-let`, `for`, `doseq`, `cond` family — mostly `expand.rs`
+rewrites, little or no codegen change. This is where Cato's macro power (a
+foundational language goal) starts paying off.
+
+### Phase 6 — Polymorphism & monomorphization
+
+Generalize `(Vector T)` and parameterize over element types.
+
+- `Ty` carries element types; generic `defn`s are instantiated per concrete
+  call-site type, eliminating boxed dispatch.
+- Unlocks ADT fields holding vectors and generic collection code.
+- Expect longer compile times by design (aggressive monomorphization is the
+  chosen trade for zero-cost runtime).
+
+### Phase 7 — Ownership & borrowing
+
+The language's differentiator: Rust-style memory safety expressed in Clojure
+form — `&` immutable borrows, `&!` exclusive borrows, `clone`/`drop` — enforced
+at compile time with zero runtime overhead.
+
+- Borrow-check pass in the HIR pipeline; no use-after-move, no concurrent
+  exclusive borrows.
+- Frees the `noalias` story to extend to user pointers and enables heap use for
+  escaping values.
+
+### Phase 8 — Maps, sets & strings
+
+High-value data types for real programs.
+
+- Flat-map HAMT (with a flat contiguous struct for ≤8 entries), bit-packed
+  integer sets, copy-on-write strings.
+- Literal syntax for `{}` / `#{}` / `"..."`.
+
+### Phase 9 — FFI, width types & the runtime
+
+The systems-programming endgame.
+
+- `(ffi extern "name" ...)` declarations — direct C calls, no marshaling.
+- `i8`/`i16`/`i32`/`f32`/`u*` widths and `usize`.
+- Auto-SIMD and auto-parallelization of pure fused loops (`(parallel loop)`,
+  `--fast`).
+
+## Working Method
+
+- Each phase is a design spec, an implementation plan, and TDD'd commits that
+  end green (`cargo build` + `cargo test`) with an end-to-end reference program.
+- Backward compatibility: reference programs from earlier phases keep their
+  exact output (e.g. `slice.cato` must always print `2.5` then `20`).
+- Every loop keeps `noalias`/`inbounds`/`align 8` emission; numbers stay
+  unboxed; nothing regresses to heap-allocated intermediates.

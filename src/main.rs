@@ -9,13 +9,13 @@ fn main() {
         .unwrap_or_else(|e| { eprintln!("cato: parse error: {}", e); std::process::exit(2); });
     let expanded = cato::expand::expand_all(&parsed)
         .unwrap_or_else(|e| { eprintln!("cato: macro error: {}", e); std::process::exit(2); });
-    let fns = cato::hir::build(&expanded)
+    let (adts, fns) = cato::hir::build_program(&expanded)
         .unwrap_or_else(|e| { eprintln!("cato: semantic error: {}", e); std::process::exit(2); });
     let fused: Vec<cato::hir::Defn> = fns
         .into_iter()
         .map(|mut d| { let b = cato::fuse::check(&d.body); d.body = b; d })
         .collect();
-    let ir = cato::codegen::emit_module(&fused);
+    let ir = cato::codegen::emit_module(&adts, &fused);
     match out {
         Some(p) => std::fs::write(&p, &ir)
             .unwrap_or_else(|e| { eprintln!("cato: cannot write {}: {}", p, e); std::process::exit(2); }),

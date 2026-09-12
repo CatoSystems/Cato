@@ -7,7 +7,7 @@ use std::collections::HashMap;
 /// function whose vector-data argument is declared `noalias nocapture
 /// readonly`, with `inbounds` GEPs and `align 8` loads, so LLVM can
 /// vectorize the fused loop (spec §4.7).
-pub fn emit_module(fns: &[Defn]) -> String {
+pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     // Signature table: callee name -> (ret, param types). Includes declared
     // defns and hoisted loop helpers.
     let mut sigs: HashMap<String, (Ty, Vec<Ty>)> = HashMap::new();
@@ -21,7 +21,7 @@ pub fn emit_module(fns: &[Defn]) -> String {
     let mut loops: Vec<LoopSpec> = Vec::new();
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
-    let mut mdl = Mdl::new();
+    let mut mdl = Mdl::new(adts.to_vec());
 
     for d in fns {
         if matches!(d.body, HExpr::Reduce(_)) {
@@ -51,6 +51,10 @@ pub fn emit_module(fns: &[Defn]) -> String {
 
     output.push("; cato: generated LLVM IR (vertical slice)".to_string());
     output.push("%VecI64 = type { ptr, i64, i64 }".to_string());
+    for adt in adts {
+        let n = adt.variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+        output.push(format!("%{} = type {{ i64, [{} x i64] }}", adt.name, n));
+    }
     output.push(String::new());
     output.push("declare void @cato_print_f64(double)".to_string());
     output.push("declare void @cato_print_i64(i64)".to_string());
@@ -294,6 +298,28 @@ fn rewrite_body(
             }
             HExpr::Call(helper, args)
         }
+        HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
+            adt: *adt,
+            variant: *variant,
+            args: args
+                .iter()
+                .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
+                .collect::<Result<Vec<_>, _>>()?,
+        },
+        HExpr::Match { scrut, arms, ty } => HExpr::Match {
+            scrut: Box::new(rewrite_body(scrut, fnprefix, params, idmap, loops, sigs)?),
+            arms: arms
+                .iter()
+                .map(|arm| {
+                    Ok(HArm {
+                        variant: arm.variant,
+                        binders: arm.binders.clone(),
+                        body: rewrite_body(&arm.body, fnprefix, params, idmap, loops, sigs)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            ty: *ty,
+        },
     })
 }
 
@@ -303,14 +329,31 @@ fn rewrite_body(
 
 struct Mdl {
     vec_globals: Vec<String>,
+    adts: Vec<AdtDef>,
     counter: usize,
 }
 
 impl Mdl {
-    fn new() -> Self {
+    fn new(adts: Vec<AdtDef>) -> Self {
         Mdl {
             vec_globals: Vec::new(),
+            adts,
             counter: 0,
+        }
+    }
+    fn adt_name(&self, idx: u32) -> String {
+        format!("%{}", self.adts[idx as usize].name)
+    }
+    /// LLVM scalar/pointer type for a Ty in value position. ADT values are
+    /// always `ptr` to a stack slot (the named struct is only used for
+    /// alloca/GEP), so signatures stay pointer-based — no boxing, no heap.
+    fn ll_ty(&self, t: Ty) -> String {
+        match t {
+            Ty::I64 => "i64".into(),
+            Ty::F64 => "double".into(),
+            Ty::Bool => "i1".into(),
+            Ty::VecI64 => panic!("codegen: vector type in scalar position"),
+            Ty::Adt(_) => "ptr".into(),
         }
     }
     fn mint_vec(&mut self, lit: &[i64]) -> (String, String) {
@@ -340,6 +383,8 @@ struct FnCtx {
     blk: usize,
     cur: String,
     lines: Vec<String>,
+    /// Allocas hoisted to the function entry prelude (loop-safe ADT slots).
+    prelude: Vec<String>,
     scalar: HashMap<String, (String, Ty)>,
     vecs: HashMap<String, (String, String)>,
 }
@@ -351,6 +396,7 @@ impl FnCtx {
             blk: 0,
             cur: String::new(),
             lines: Vec::new(),
+            prelude: Vec::new(),
             scalar: HashMap::new(),
             vecs: HashMap::new(),
         }
@@ -379,9 +425,23 @@ impl FnCtx {
             blk: self.blk,
             cur: self.cur.clone(),
             lines,
+            prelude: self.prelude.clone(),
             scalar: self.scalar.clone(),
             vecs: self.vecs.clone(),
         }
+    }
+    /// Splice hoisted entry allocas directly after the `entry:` label.
+    fn with_prelude(mut lines: Vec<String>, prelude: &[String]) -> Vec<String> {
+        if !prelude.is_empty() {
+            let pos = lines
+                .iter()
+                .position(|l| l == "entry:")
+                .expect("entry block");
+            for (k, p) in prelude.iter().enumerate() {
+                lines.insert(pos + 1 + k, p.clone());
+            }
+        }
+        lines
     }
 }
 
@@ -412,8 +472,13 @@ fn llvm_f64(v: f64) -> String {
 
 fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     let mut c = FnCtx::new();
+    let mut adt_caps: Vec<(String, u32)> = Vec::new();
     for (n, t) in &spec.caps {
-        c.scalar.insert(n.clone(), (format!("%{}", mangle(n)), *t));
+        if let Ty::Adt(i) = t {
+            adt_caps.push((n.clone(), *i));
+        } else {
+            c.scalar.insert(n.clone(), (format!("%{}", mangle(n)), *t));
+        }
     }
     let acc_ll = if spec.acc_ty == Ty::F64 { "double" } else { "i64" };
     let init_val = loop_init(&spec.reduce);
@@ -428,14 +493,26 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         "i64 %len".to_string(),
     ];
     for (n, t) in &spec.caps {
-        let ty = if *t == Ty::F64 {
-            "double"
-        } else if *t == Ty::Bool {
-            "i1"
-        } else {
-            "i64"
+        // ADT captures cross the boundary by value, then live in a slot.
+        let ll = match t {
+            Ty::Adt(i) => mdl.adt_name(*i),
+            other => mdl.ll_ty(*other),
         };
-        params.push(format!("{} %{}", ty, mangle(n)));
+        params.push(format!("{} %{}", ll, mangle(n)));
+    }
+    for (n, i) in &adt_caps {
+        let r = format!("%{}", mangle(n));
+        let slot = c.temp();
+        c.prelude
+            .push(format!("  {} = alloca {}, align 8", slot, mdl.adt_name(*i)));
+        c.prelude.push(format!(
+            "  store {} {}, ptr {}, align 8",
+            mdl.adt_name(*i),
+            r,
+            slot
+        ));
+        c.scalar
+            .insert(n.clone(), (slot, Ty::Adt(*i)));
     }
 
     c.line("entry:");
@@ -621,7 +698,7 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     let mut text = format!("define {} @{}(", acc_ll, spec.helper);
     text.push_str(&params.join(", "));
     text.push_str(") {\n");
-    text.push_str(&c.lines.join("\n"));
+    text.push_str(&FnCtx::with_prelude(c.lines, &c.prelude).join("\n"));
     text.push('\n');
     text.push_str("}\n");
     text
@@ -679,6 +756,22 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::Bool));
                 params.push(format!("i1 {}", r));
             }
+            Ty::Adt(i) => {
+                // By-value boundary: the incoming struct is copied into an
+                // entry slot; all internal uses go through the ptr.
+                let r = format!("%{}", mangle(pname));
+                params.push(format!("{} {}", mdl.adt_name(*i), r));
+                let slot = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca {}, align 8", slot, mdl.adt_name(*i)));
+                c.prelude.push(format!(
+                    "  store {} {}, ptr {}, align 8",
+                    mdl.adt_name(*i),
+                    r,
+                    slot
+                ));
+                c.scalar.insert(pname.clone(), (slot, *pty));
+            }
         }
     }
 
@@ -690,8 +783,26 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
         }
     } else {
         let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
-        let ret_ll = if defn.ret == Ty::Bool { "i1" } else if defn.ret == Ty::F64 { "double" } else { "i64" };
-        c.line(&format!("  ret {} {}", ret_ll, val));
+        if let Ty::Adt(i) = defn.ret {
+            // Copy the result slot out by value; a returned ptr would dangle.
+            let lv = c.temp();
+            c.line(&format!(
+                "  {} = load {}, ptr {}, align 8",
+                lv,
+                mdl.adt_name(i),
+                val
+            ));
+            c.line(&format!("  ret {} {}", mdl.adt_name(i), lv));
+        } else {
+            let ret_ll = if defn.ret == Ty::Bool {
+                "i1"
+            } else if defn.ret == Ty::F64 {
+                "double"
+            } else {
+                "i64"
+            };
+            c.line(&format!("  ret {} {}", ret_ll, val));
+        }
     }
 
     let ret_ll = if defn.name == "main" {
@@ -700,13 +811,15 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
         "i1".to_string()
     } else if defn.ret == Ty::F64 {
         "double".to_string()
+    } else if let Ty::Adt(i) = defn.ret {
+        mdl.adt_name(i)
     } else {
         "i64".to_string()
     };
     let mut text = format!("define {} @{}(", ret_ll, mangle(&defn.name));
     text.push_str(&params.join(", "));
     text.push_str(") {\n");
-    text.push_str(&c.lines.join("\n"));
+    text.push_str(&FnCtx::with_prelude(c.lines, &c.prelude).join("\n"));
     if defn.name == "main" {
         text.push('\n');
         text.push_str("  ret i32 0\n");
@@ -727,6 +840,7 @@ fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, 
         Ty::F64 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::VecI64 => panic!("codegen: cannot return a vector"),
     }
 }
@@ -754,10 +868,13 @@ fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty
 /// Does this expression (or a stage / closure body) fork into basic blocks?
 fn has_ctl(e: &HExpr) -> bool {
     match e {
-        HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) => true,
+        HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Match { .. } => {
+            true
+        }
         HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
+        HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
         HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Cmp(..) => false,
@@ -789,6 +906,8 @@ fn pin_value(ll_ty: &str, r: &str, c: &mut FnCtx) -> String {
     let t = c.temp();
     if ll_ty == "double" {
         c.line(&format!("  {} = fadd double {}, 0.000000e+00", t, r));
+    } else if ll_ty == "i1" {
+        c.line(&format!("  {} = xor i1 {}, false", t, r));
     } else {
         c.line(&format!("  {} = add i64 {}, 0", t, r));
     }
@@ -806,6 +925,7 @@ fn emit_typed(
         Ty::F64 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
         Ty::I64 => emit_int(e, c, mdl, sigs),
+        Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::VecI64 => panic!("codegen: control flow cannot produce a vector"),
     }
 }
@@ -894,6 +1014,7 @@ fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty
             r.clone()
         }
         HExpr::If(cond, then, els, Ty::Bool) => emit_if_node(cond, then, els, Ty::Bool, c, mdl, sigs),
+        HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(name, args) if name == "even?" => {
             let v = emit_int(&args[0], c, mdl, sigs);
             let p = c.temp();
@@ -933,11 +1054,223 @@ fn emit_if_node(
     let lbl = c.open(&bm);
     c.line(&format!("{}:", lbl));
     let res = c.temp();
-    let lty = if ty == Ty::F64 { "double" } else if ty == Ty::Bool { "i1" } else { "i64" };
+    let lty = match ty {
+        Ty::F64 => "double".to_string(),
+        Ty::Bool => "i1".to_string(),
+        Ty::Adt(_) => "ptr".to_string(),
+        _ => "i64".to_string(),
+    };
     c.line(&format!(
         "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
         res, lty, tv, tp, ev, ep
     ));
+    res
+}
+
+// ---------------------------------------------------------------------------
+// ADTs: constructors and match
+// ---------------------------------------------------------------------------
+
+/// Which ADT an expression of ADT type denotes (needed to read variant tags).
+fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> u32 {
+    match e {
+        HExpr::Var(v) => match c.scalar.get(v) {
+            Some((_, Ty::Adt(i))) => *i,
+            _ => panic!("codegen: {} is not an ADT binding", v),
+        },
+        HExpr::Ctor { adt, .. } => *adt,
+        HExpr::Match { ty: Ty::Adt(i), .. } => *i,
+        HExpr::Call(name, _) => match sigs.get(name) {
+            Some((Ty::Adt(i), _)) => *i,
+            _ => panic!("codegen: call {} does not return an ADT", name),
+        },
+        other => panic!("codegen: expected an ADT value, got {:?}", other),
+    }
+}
+
+/// Emit an expression of ADT type; the value is a `ptr` to a stack slot.
+fn emit_adt(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match e {
+        HExpr::Var(v) => c
+            .scalar
+            .get(v)
+            .map(|(r, _)| r.clone())
+            .unwrap_or_else(|| panic!("codegen: unknown ADT var {}", v)),
+        HExpr::Ctor { adt, variant, args } => {
+            let name = mdl.adt_name(*adt);
+            // Alloca hoisted to the entry prelude: safe inside loops, and the
+            // value is consumed within the same dynamic extent.
+            let slot = c.temp();
+            c.prelude
+                .push(format!("  {} = alloca {}, align 8", slot, name));
+            let t_tg = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 0",
+                t_tg, name, slot
+            ));
+            c.line(&format!("  store i64 {}, ptr {}, align 8", variant, t_tg));
+            let fields = mdl.adts[*adt as usize].variants[*variant as usize]
+                .1
+                .clone();
+            for (k, (arg, fty)) in args.iter().zip(fields.iter()).enumerate() {
+                let t_f = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
+                    t_f, name, slot, k
+                ));
+                match fty {
+                    Ty::I64 => {
+                        let v = emit_int(arg, c, mdl, sigs);
+                        c.line(&format!("  store i64 {}, ptr {}, align 8", v, t_f));
+                    }
+                    Ty::F64 => {
+                        let v = emit_float(arg, c, mdl, sigs);
+                        let b = c.temp();
+                        c.line(&format!("  {} = bitcast double {} to i64", b, v));
+                        c.line(&format!("  store i64 {}, ptr {}, align 8", b, t_f));
+                    }
+                    Ty::Bool => {
+                        let v = emit_bool(arg, c, mdl, sigs);
+                        let z = c.temp();
+                        c.line(&format!("  {} = zext i1 {} to i64", z, v));
+                        c.line(&format!("  store i64 {}, ptr {}, align 8", z, t_f));
+                    }
+                    other => panic!("codegen: unsupported ADT field type {:?}", other),
+                }
+            }
+            slot
+        }
+        HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
+        HExpr::Call(..) => call_user_node(e, c, mdl, sigs),
+        other => panic!("codegen: expected an ADT expression, got {:?}", other),
+    }
+}
+
+/// Emit a `match`: switch on the tag, load fields in each arm block, phi the
+/// arm results in the merge block (scalars by value, ADTs as ptr).
+fn emit_match_node(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let HExpr::Match { scrut, arms, ty } = e else {
+        panic!("codegen: emit_match_node on non-match")
+    };
+    let scrut_ptr = emit_adt(scrut, c, mdl, sigs);
+    let ai = adt_of(scrut, c, sigs);
+    let name = mdl.adt_name(ai);
+
+    let t_tg = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 0",
+        t_tg, name, scrut_ptr
+    ));
+    let t_tag = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", t_tag, t_tg));
+
+    let merged = c.block_name();
+    let fail = c.block_name();
+    let mut arm_labels: Vec<(Option<u32>, String)> = Vec::new();
+    let mut default_lbl = fail.clone();
+    for arm in arms {
+        let lbl = c.block_name();
+        if arm.variant.is_none() {
+            // The wildcard arm is the switch default.
+            default_lbl = lbl.clone();
+        }
+        arm_labels.push((arm.variant, lbl));
+    }
+    c.line(&format!("  switch i64 {}, label %{} [", t_tag, default_lbl));
+    for (variant, lbl) in &arm_labels {
+        if let Some(vi) = variant {
+            c.line(&format!("    i64 {}, label %{}", vi, lbl));
+        }
+    }
+    c.line("]");
+
+    // Default: HIR guarantees exhaustiveness.
+    let lbl = c.open(&fail);
+    c.line(&format!("{}:", lbl));
+    c.line("  unreachable");
+
+    let mut vals: Vec<String> = Vec::new();
+    let mut preds: Vec<String> = Vec::new();
+    for (arm, (_, lbl)) in arms.iter().zip(arm_labels.iter()) {
+        let l = c.open(lbl);
+        c.line(&format!("{}:", l));
+        if let Some(vi) = arm.variant {
+            let fields = mdl.adts[ai as usize].variants[vi as usize]
+                .1
+                .clone();
+            for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
+                let t_f = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
+                    t_f, name, scrut_ptr, k
+                ));
+                match fty {
+                    Ty::I64 => {
+                        let t_l = c.temp();
+                        c.line(&format!("  {} = load i64, ptr {}, align 8", t_l, t_f));
+                        c.scalar.insert(binder.clone(), (t_l, Ty::I64));
+                    }
+                    Ty::F64 => {
+                        let t_l = c.temp();
+                        c.line(&format!("  {} = load i64, ptr {}, align 8", t_l, t_f));
+                        let t_d = c.temp();
+                        c.line(&format!("  {} = bitcast i64 {} to double", t_d, t_l));
+                        c.scalar.insert(binder.clone(), (t_d, Ty::F64));
+                    }
+                    Ty::Bool => {
+                        let t_l = c.temp();
+                        c.line(&format!("  {} = load i64, ptr {}, align 8", t_l, t_f));
+                        let t_b = c.temp();
+                        c.line(&format!("  {} = trunc i64 {} to i1", t_b, t_l));
+                        c.scalar.insert(binder.clone(), (t_b, Ty::Bool));
+                    }
+                    other => panic!("codegen: unsupported ADT field type {:?}", other),
+                }
+            }
+        }
+        let v = emit_typed(&arm.body, *ty, c, mdl, sigs);
+        let v = match ty {
+            Ty::Adt(_) => v,
+            t => pin_value(
+                if *t == Ty::F64 {
+                    "double"
+                } else if *t == Ty::Bool {
+                    "i1"
+                } else {
+                    "i64"
+                },
+                &v,
+                c,
+            ),
+        };
+        vals.push(v);
+        preds.push(c.cur.clone());
+        c.line(&format!("  br label %{}", merged));
+    }
+
+    let l = c.open(&merged);
+    c.line(&format!("{}:", l));
+    let res = c.temp();
+    let lty = match ty {
+        Ty::Adt(_) => "ptr".to_string(),
+        t => mdl.ll_ty(*t),
+    };
+    let pairs: Vec<String> = vals
+        .iter()
+        .zip(preds.iter())
+        .map(|(v, p)| format!("[ {}, %{} ]", v, p))
+        .collect();
+    c.line(&format!("  {} = phi {} {}", res, lty, pairs.join(", ")));
     res
 }
 
@@ -1020,6 +1353,11 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         }
         HExpr::ConstF64(v) => panic!("codegen: ConstF64 {} in i64 context", v),
         HExpr::VecLit(_) => panic!("codegen: vec literal in i64 context"),
+        HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
+        HExpr::Ctor { .. } => {
+            emit_adt(e, c, mdl, sigs);
+            "0".to_string()
+        }
     }
     .to_string()
 }
@@ -1103,6 +1441,11 @@ fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (T
             c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, av, bv));
             t
         }
+        HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
+        HExpr::Ctor { .. } => {
+            emit_adt(e, c, mdl, sigs);
+            "0.0".to_string()
+        }
         other => panic!("codegen: unsupported node in f64 context: {:?}", other),
     }
 }
@@ -1119,6 +1462,10 @@ fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &
                 c.scalar.insert(name.clone(), (v, Ty::Bool));
             }
             Ty::VecI64 => materialize_vec_lit(value, name, c, mdl),
+            Ty::Adt(_) => {
+                let v = emit_adt(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, *ty));
+            }
             _ => {
                 let v = emit_int(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::I64));
@@ -1174,14 +1521,25 @@ fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String) {
     }
 }
 
+fn call_user_node(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match e {
+        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
+        other => panic!("codegen: expected a call, got {:?}", other),
+    }
+}
+
 fn call_user(
     name: &str,
     args: &[HExpr],
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-) -> String {
-    let (ret_ty, arg_tys) = sigs.get(name).unwrap_or_else(|| panic!("codegen: unknown call {}", name));
+) -> String {    let (ret_ty, arg_tys) = sigs.get(name).unwrap_or_else(|| panic!("codegen: unknown call {}", name));
     let arg_tys = arg_tys.clone();
     let mut ll_args = Vec::new();
     for (expr, ty) in args.iter().zip(arg_tys.iter()) {
@@ -1203,14 +1561,29 @@ fn call_user(
                 let v = emit_bool(expr, c, mdl, sigs);
                 ll_args.push(format!("i1 {}", v));
             }
+            Ty::Adt(i) => {
+                // By-value boundary: load the caller's slot into the arg.
+                let v = emit_adt(expr, c, mdl, sigs);
+                let lv = c.temp();
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align 8",
+                    lv,
+                    mdl.adt_name(*i),
+                    v
+                ));
+                ll_args.push(format!("{} {}", mdl.adt_name(*i), lv));
+            }
         }
     }
+    let adt_ret = matches!(ret_ty, Ty::Adt(_));
     let ret_ll = if *ret_ty == Ty::Bool {
-        "i1"
+        "i1".to_string()
     } else if *ret_ty == Ty::F64 {
-        "double"
+        "double".to_string()
+    } else if let Ty::Adt(i) = *ret_ty {
+        mdl.adt_name(i)
     } else {
-        "i64"
+        "i64".to_string()
     };
     let t = c.temp();
     c.line(&format!(
@@ -1220,7 +1593,25 @@ fn call_user(
         mangle(name),
         ll_args.join(", ")
     ));
-    t
+    if !adt_ret {
+        return t;
+    }
+    // ADT return: store the by-value struct into a fresh caller slot and
+    // hand out the ptr (internal representation stays ptr-based).
+    let i = match ret_ty {
+        Ty::Adt(i) => *i,
+        _ => unreachable!(),
+    };
+    let slot = c.temp();
+    c.prelude
+        .push(format!("  {} = alloca {}, align 8", slot, mdl.adt_name(i)));
+    c.line(&format!(
+        "  store {} {}, ptr {}, align 8",
+        mdl.adt_name(i),
+        t,
+        slot
+    ));
+    slot
 }
 
 // ---------------------------------------------------------------------------
@@ -1325,5 +1716,18 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             }
         }
         HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => {}
+        HExpr::Ctor { args, .. } => {
+            for a in args {
+                collect_vars(a, f);
+            }
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            collect_vars(scrut, f);
+            // Arm binders are re-bound inside the helper's arm blocks, so
+            // only the scrutinee and the bodies contribute captures.
+            for arm in arms {
+                collect_vars(&arm.body, f);
+            }
+        }
     }
 }

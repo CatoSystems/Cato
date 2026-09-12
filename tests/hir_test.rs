@@ -273,3 +273,105 @@ fn parses_bool_params_and_not() {
     let body = build_one("f", "(defn f [b :- bool] :- bool (not b))");
     assert!(matches!(body, HExpr::Not(_)));
 }
+
+// --- Phase 3: deftype + match ---
+
+const SHAPE_DEFTYPE: &str = "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))";
+
+fn build_shape_prog(body: &str) -> HExpr {
+    let src = format!(
+        "{}\n(defn f [s :- Shape] :- f64 {})",
+        SHAPE_DEFTYPE, body
+    );
+    let exprs = read_all(&src).unwrap();
+    let fns = build(&exprs).unwrap();
+    fns.iter().find(|d| d.name == "f").unwrap().body.clone()
+}
+
+#[test]
+fn builds_match_with_exhaustive_arms() {
+    let body = build_shape_prog(
+        "(match s (Circle [r] (* r r)) (Rect [w h] (* w h)) (Point [] 0.0))",
+    );
+    let HExpr::Match { arms, ty, .. } = body else {
+        panic!("expected match");
+    };
+    assert_eq!(ty, Ty::F64);
+    assert_eq!(arms.len(), 3);
+    assert_eq!(arms[0].variant, Some(0));
+    assert_eq!(arms[0].binders, vec!["r".to_string()]);
+    assert_eq!(arms[2].variant, Some(2));
+}
+
+#[test]
+fn match_wildcard_covers_rest() {
+    let body = build_shape_prog("(match s (Rect [w h] w) (_ 1.0))");
+    let HExpr::Match { arms, .. } = body else {
+        panic!("expected match");
+    };
+    assert_eq!(arms.len(), 2);
+    assert_eq!(arms[1].variant, None);
+}
+
+#[test]
+fn rejects_nonexhaustive_match() {
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- f64 (match s (Rect [w h] w)))",
+        SHAPE_DEFTYPE
+    ));
+    assert!(err.contains("does not cover"), "got: {}", err);
+}
+
+#[test]
+fn rejects_duplicate_and_unknown_arms() {
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- f64 (match s (Rect [w h] w) (Rect [w h] h) (Point [] 0.0) (Circle [r] r)))",
+        SHAPE_DEFTYPE
+    ));
+    assert!(err.contains("more than once"), "got: {}", err);
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- f64 (match s (Blob [] 0.0) (_ 1.0)))",
+        SHAPE_DEFTYPE
+    ));
+    assert!(err.contains("not a variant"), "got: {}", err);
+}
+
+#[test]
+fn rejects_ctor_arity_mismatch() {
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- f64 (match s (Circle [] 0.0) (_ 1.0)))",
+        SHAPE_DEFTYPE
+    ));
+    // Field-count mismatch on the arm binder vector.
+    assert!(err.contains("binds"), "got: {}", err);
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- f64 (match s (Circle [r] r) (_ (Circle r 2.0))))",
+        SHAPE_DEFTYPE
+    ));
+    assert!(
+        err.contains("constructor Circle expects 1 argument"),
+        "got: {}",
+        err
+    );
+}
+
+#[test]
+fn lowers_ctor_calls() {
+    let src = format!(
+        "{}\n(defn mk [r :- f64] :- Shape (Circle r))",
+        SHAPE_DEFTYPE
+    );
+    let exprs = read_all(&src).unwrap();
+    let fns = build(&exprs).unwrap();
+    let body = &fns.iter().find(|d| d.name == "mk").unwrap().body;
+    assert!(matches!(body, HExpr::Ctor { variant: 0, .. }));
+}
+
+#[test]
+fn adts_rejected_in_arithmetic() {
+    let err = build_err(&format!(
+        "{}\n(defn f [s :- Shape] :- i64 (+ s 1))",
+        SHAPE_DEFTYPE
+    ));
+    assert!(err.contains("cannot be used in arithmetic"), "got: {}", err);
+}

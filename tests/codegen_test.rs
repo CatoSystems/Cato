@@ -4,7 +4,7 @@ use cato::reader::read_all;
 
 fn emit(src: &str) -> String {
     let fns = build(&read_all(src).unwrap()).unwrap();
-    emit_module(&fns)
+    emit_module(&[], &fns)
 }
 
 #[test]
@@ -167,4 +167,60 @@ fn min_max_use_select() {
     let ir = emit("(defn f [a :- i64 b :- i64] :- i64 (min a b))");
     assert!(ir.contains("icmp slt i64"));
     assert!(ir.contains("select i1"));
+}
+
+// --- Phase 3: deftype + match ---
+
+const SHAPE_SRC: &str = "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))
+
+(defn area [s :- Shape] :- f64
+  (match s
+    (Circle [r] (* r r))
+    (Rect [w h] (* w h))
+    (Point [] 0.0)))
+
+(defn widen [s :- Shape] :- Shape
+  (match s
+    (Rect [w h] (Rect (+ w 1.0) h))
+    (_ s)))";
+
+#[test]
+fn emits_tagged_union_type_and_switch() {
+    let exprs = read_all(SHAPE_SRC).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    assert!(ir.contains("%Shape = type { i64, [2 x i64] }"), "{}", ir);
+    assert!(ir.contains("switch i64"), "{}", ir);
+    assert!(ir.contains("unreachable"), "{}", ir);
+}
+
+#[test]
+fn match_merges_arms_with_phi() {
+    let exprs = read_all(SHAPE_SRC).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    // Scalar result merge in `area`, ptr result merge in `widen`.
+    assert!(ir.contains("phi double"), "{}", ir);
+    assert!(ir.contains("phi ptr"), "{}", ir);
+}
+
+#[test]
+fn ctor_stores_tag_and_bitcast_fields() {
+    let exprs = read_all(SHAPE_SRC).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    assert!(ir.contains("bitcast double"), "{}", ir);
+    assert!(ir.contains("alloca %Shape, align 8"), "{}", ir);
+}
+
+#[test]
+fn adt_values_cross_functions_by_value() {
+    // The returned struct is loaded by value at the boundary — a returned
+    // ptr to a callee alloca would dangle.
+    let exprs = read_all(SHAPE_SRC).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    assert!(ir.contains("define %Shape @widen("), "{}", ir);
+    // Param comes in by value and is copied to an entry slot.
+    assert!(ir.contains("store %Shape %s, ptr"), "{}", ir);
 }

@@ -102,3 +102,10 @@ fn compiles_count_even_below_to_expected_output() {
 "#;
     assert_eq!(compile_and_run("count_even_below", &src), "2\n");
 }
+
+#[test]
+fn compiles_shape_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/shape.cato")).unwrap();
+    assert_eq!(compile_and_run("shape", &src), "19.635\n12\n16\n4\n");
+}
