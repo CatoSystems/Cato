@@ -1,4 +1,4 @@
-use cato::codegen::emit_module;
+use cato::codegen::{emit_module, emit_module_fast};
 use cato::hir::build;
 use cato::reader::read_all;
 
@@ -296,4 +296,30 @@ fn string_literals_mint_i8_globals_and_use_strcmp() {
     assert!(ir.contains("private unnamed_addr constant [5 x i8]"), "{}", ir);
     assert!(ir.contains("call i32 @strcmp("), "{}", ir);
     assert!(ir.contains("call void @cato_print_string("), "{}", ir);
+}
+
+// --- Phase 9: FFI + --fast vectorization metadata ---
+
+#[test]
+fn externs_emit_declares_not_defines() {
+    let src = "(extern fabs [x :- f64] :- f64)
+               (defn main [] (print-f64 (fabs -3.5)))";
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    assert!(ir.contains("declare double @fabs(double)"), "{}", ir);
+    assert!(!ir.contains("define double @fabs"), "{}", ir);
+    assert!(ir.contains("call double @fabs(double"), "{}", ir);
+}
+
+#[test]
+fn fast_flag_attaches_vectorize_metadata() {
+    let src = "(defn f [xs :- vec] :- i64 (reduce + 0 xs))";
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let plain = emit_module(&adts, &fns);
+    assert!(!plain.contains("llvm.loop.vectorize"), "{}", plain);
+    let fast = emit_module_fast(&adts, &fns, true);
+    assert!(fast.contains("llvm.loop.vectorize.enable"), "{}", fast);
+    assert!(fast.contains("!llvm.loop !0"), "{}", fast);
 }

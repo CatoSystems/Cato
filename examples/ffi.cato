@@ -1,0 +1,17 @@
+; ffi.cato — Phase 9 reference program: FFI + auto-SIMD.
+;
+; extern declares a C symbol; calls are direct calls, no marshaling.
+; Compile with --fast and LLVM auto-vectorizes the fused loops:
+;   clang ffi.ll runtime.c -O2 && ./a.out
+
+(extern fabs [x :- f64] :- f64)
+(extern strlen [s :- str] :- i64)
+
+; a big enough range that --fast + -O2 vectorizes the loop
+(defn sum-range [a :- i64 b :- i64] :- i64
+  (reduce + 0 (range a b)))
+
+(defn main []
+  (print-f64 (fabs -3.5))          ; 3.5
+  (print-i64 (strlen "cato"))      ; 4
+  (print-i64 (sum-range 1 1025)))  ; 524800

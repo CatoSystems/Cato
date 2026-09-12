@@ -575,3 +575,20 @@ fn strings_reject_arithmetic_and_ordering() {
     let err = build_err("(defn f [a :- str b :- str] :- bool (< a b))");
     assert!(err.contains("strings support only"), "got: {}", err);
 }
+
+#[test]
+fn externs_have_concrete_signatures() {
+    let exprs = read_all("(extern fabs [x :- f64] :- f64)\n(defn main [] 0)").unwrap();
+    let fns = build(&exprs).unwrap();
+    let e = fns.iter().find(|d| d.name == "fabs").unwrap();
+    assert!(e.is_extern);
+    assert_eq!(e.ret, Ty::F64);
+}
+
+#[test]
+fn externs_may_not_have_bodies_or_generics() {
+    let err = build_err("(extern bad [x :- f64] :- f64 (+ x 1.0))");
+    assert!(err.contains("no body"), "got: {}", err);
+    let err = build_err("(extern bad [xs :- (Vector T)] :- i64)");
+    assert!(err.contains("concrete types"), "got: {}", err);
+}

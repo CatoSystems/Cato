@@ -8,6 +8,12 @@ use std::collections::HashMap;
 /// readonly`, with `inbounds` GEPs and `align 8` loads, so LLVM can
 /// vectorize the fused loop (spec §4.7).
 pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
+    emit_module_fast(adts, fns, false)
+}
+
+/// `--fast`: attach vectorization metadata to every fused loop so LLVM
+/// auto-vectorizes the language's pure loops.
+pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
     // Signature table: callee name -> (ret, param types). Includes declared
     // defns and hoisted loop helpers.
     let mut sigs: HashMap<String, (Ty, Vec<Ty>)> = HashMap::new();
@@ -21,7 +27,7 @@ pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     let mut loops: Vec<LoopSpec> = Vec::new();
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
-    let mut mdl = Mdl::new(adts.to_vec());
+    let mut mdl = Mdl::new(adts.to_vec(), fast);
 
     for d in fns {
         if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
@@ -60,8 +66,6 @@ pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     output.push("declare void @cato_print_f64(double)".to_string());
     output.push("declare void @cato_print_i64(i64)".to_string());
     output.push("declare void @cato_print_string(ptr)".to_string());
-    output.push("declare i64 @strlen(ptr)".to_string());
-    output.push("declare i32 @strcmp(ptr, ptr)".to_string());
     output.push(String::new());
 
     for spec in &loops {
@@ -70,7 +74,27 @@ pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     }
     for defn in &plain {
         output.push(String::new());
-        output.push(emit_plain(defn, &mut mdl, &sigs));
+        if defn.is_extern {
+            output.push(emit_extern_decl(defn, &mut mdl));
+        } else {
+            output.push(emit_plain(defn, &mut mdl, &sigs));
+        }
+    }
+
+    if fast {
+        output.push(String::new());
+        output.push("!0 = distinct !{!0, !1}".to_string());
+        output.push("!1 = !{!\"llvm.loop.vectorize.enable\", i1 true}".to_string());
+    }
+
+    // Runtime-helper declares minted during emission belong at module top.
+    for d in &mdl.decls {
+        let i = output
+            .iter()
+            .position(|l| l.starts_with("declare void @cato_print_i64"))
+            .unwrap_or(0);
+        output.insert(i + 1, d.clone());
+        output.insert(i + 1, String::new());
     }
 
     // Vec-literal globals minted during emission belong at module top.
@@ -457,14 +481,27 @@ struct Mdl {
     vec_globals: Vec<String>,
     adts: Vec<AdtDef>,
     counter: usize,
+    /// Emit `llvm.loop.vectorize.enable` metadata on fused loops (--fast).
+    fast: bool,
+    /// Deduplicated `declare` lines emitted lazily (runtime helpers and
+    /// user externs share the namespace).
+    decls: Vec<String>,
 }
 
 impl Mdl {
-    fn new(adts: Vec<AdtDef>) -> Self {
+    fn new(adts: Vec<AdtDef>, fast: bool) -> Self {
         Mdl {
             vec_globals: Vec::new(),
             adts,
             counter: 0,
+            fast,
+            decls: Vec::new(),
+        }
+    }
+    /// Emit a `declare` once per symbol (deduplicated by line).
+    fn declare(&mut self, line: String) {
+        if !self.decls.contains(&line) {
+            self.decls.push(line);
         }
     }
     fn adt_name(&self, idx: u32) -> String {
@@ -1067,10 +1104,20 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
     ));
     c.line(&format!("  ret {} {}", acc_ll, t_ret));
 
+    let mut lines = FnCtx::with_prelude(c.lines, &c.prelude);
+    if mdl.fast {
+        // Tag the loop backedge: LLVM then auto-vectorizes the pure fused
+        // loop (spec: auto-SIMD).
+        for line in lines.iter_mut() {
+            if line.starts_with("  br i1 ") && line.ends_with("label %loop, label %ret") {
+                *line = format!("{}, !llvm.loop !0", line);
+            }
+        }
+    }
     let mut text = format!("define {} @{}(", acc_ll, spec.helper);
     text.push_str(&params.join(", "));
     text.push_str(") {\n");
-    text.push_str(&FnCtx::with_prelude(c.lines, &c.prelude).join("\n"));
+    text.push_str(&lines.join("\n"));
     text.push('\n');
     text.push_str("}\n");
     text
@@ -1210,6 +1257,41 @@ fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>)
     text
 }
 
+/// FFI declaration: a plain LLVM `declare` — direct C calls, no marshaling.
+fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
+    let mut params = Vec::new();
+    for (_, pty) in &defn.params {
+        match pty {
+            Ty::Vec(e) => {
+                params.push(format!("ptr noalias nocapture readonly %data",));
+                params.push("i64 %len".to_string());
+                let _ = e;
+            }
+            Ty::F64 => params.push("double".to_string()),
+            Ty::I64 => params.push("i64".to_string()),
+            Ty::Bool => params.push("i1".to_string()),
+            Ty::Str => params.push("ptr".to_string()),
+            Ty::Adt(_) | Ty::Param(_) => {
+                panic!("codegen: extern params must be scalars, strings or vectors")
+            }
+        }
+    }
+    let ret_ll = match defn.ret {
+        Ty::I64 => "i64",
+        Ty::F64 => "double",
+        Ty::Bool => "i1",
+        Ty::Str => "ptr",
+        _ => panic!("codegen: extern return must be i64, f64, bool or str"),
+    };
+    let line = format!(
+        "declare {} @{}({})",
+        ret_ll,
+        mangle(&defn.name),
+        params.join(", ")
+    );
+    line
+}
+
 fn seq_forms(b: &HExpr) -> Vec<HExpr> {
     match b {
         HExpr::Seq(vs) => vs.clone(),
@@ -1342,6 +1424,7 @@ fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty
         HExpr::StrCmp(eq, a, b) => {
             let av = emit_str_val(a, c, mdl, sigs);
             let bv = emit_str_val(b, c, mdl, sigs);
+            mdl.declare("declare i32 @strcmp(ptr, ptr)".to_string());
             let t = c.temp();
             c.line(&format!("  {} = call i32 @strcmp(ptr {}, ptr {})", t, av, bv));
             let z = c.temp();
@@ -1759,6 +1842,7 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                         .cloned()
                         .unwrap_or_else(|| panic!("codegen: count of unknown var {}", s));
                     if ty == Ty::Str {
+                        mdl.declare("declare i64 @strlen(ptr)".to_string());
                         let t = c.temp();
                         c.line(&format!("  {} = call i64 @strlen(ptr {})", t, r));
                         t
@@ -1769,6 +1853,7 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             }
             HExpr::StrLit(_) => {
                 let p = emit_str_val(v, c, mdl, sigs);
+                mdl.declare("declare i64 @strlen(ptr)".to_string());
                 let t = c.temp();
                 c.line(&format!("  {} = call i64 @strlen(ptr {})", t, p));
                 t

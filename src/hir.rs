@@ -193,6 +193,8 @@ pub struct Defn {
     pub body: HExpr,
     /// Borrow kind per param (same length as `params`).
     pub borrows: Vec<Borrow>,
+    /// FFI declaration: emitted as an LLVM `declare`, not a `define`.
+    pub is_extern: bool,
 }
 
 type Env = HashMap<String, Ty>;
@@ -205,6 +207,8 @@ struct RawDefn {
     /// Type parameter names, in declaration order (indexed by `Ty::Param`).
     /// Empty for concrete defns.
     ty_params: Vec<String>,
+    /// FFI declaration: no body, the symbol is a C function.
+    is_extern: bool,
     body: Expr,
 }
 
@@ -264,7 +268,13 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
     let raws: Vec<RawDefn> = prog
         .iter()
         .filter(|f| !is_deftype(f))
-        .map(|f| parse_raw(f, &adt_by_name))
+        .map(|f| {
+            if is_extern(f) {
+                parse_extern(f, &adt_by_name)
+            } else {
+                parse_raw(f, &adt_by_name)
+            }
+        })
         .collect::<Result<_, _>>()?;
     let raw_by_name: HashMap<&str, &RawDefn> = raws
         .iter()
@@ -278,8 +288,9 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
 
     let mut out = Vec::new();
     for raw in &raws {
-        // Generic defns are templates: they are lowered per instantiation.
-        if !raw.ty_params.is_empty() {
+        // Generic defns are templates lowered per instantiation; externs
+        // are declarations with no body to lower.
+        if !raw.ty_params.is_empty() || raw.is_extern {
             continue;
         }
         let mut env = Env::new();
@@ -298,8 +309,23 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
             ret: raw.ret,
             body,
             borrows: raw.borrows.clone(),
+            is_extern: raw.is_extern,
         });
     }
+    // FFI declarations: no lowering, all params borrow (C reads them).
+    for raw in &raws {
+        if raw.is_extern {
+            out.push(Defn {
+                name: raw.name.clone(),
+                params: raw.params.clone(),
+                ret: raw.ret,
+                body: HExpr::ConstI64(0),
+                borrows: vec![Borrow::Shared; raw.params.len()],
+                is_extern: true,
+            });
+        }
+    }
+
     // Monomorphized generic instantiations generated during lowering.
     out.extend(ctx.inst.borrow_mut().extra.drain(..));
 
@@ -312,6 +338,56 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
         check_ownership(d, &sigs)?;
     }
     Ok((adts, out))
+}
+
+fn is_extern(form: &Expr) -> bool {
+    matches!(
+        form,
+        Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "extern")
+    )
+}
+
+/// (extern name [param :- ty ...] :- ret) — a direct C FFI declaration.
+fn parse_extern(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
+    let Expr::List(items) = form else {
+        return Err("expected (extern ...)".into());
+    };
+    if items.len() < 3 {
+        return Err("extern expects a name and a params vector".into());
+    }
+    let Expr::LitSym(name) = &items[1] else {
+        return Err("extern name must be a symbol".into());
+    };
+    let Expr::Vector(params) = &items[2] else {
+        return Err("extern params must be a vector".into());
+    };
+    let mut ty_params = Vec::new();
+    let (params, _borrows) = parse_params(params, adt_by_name, &mut ty_params)?;
+    if !ty_params.is_empty() {
+        return Err("extern declarations must have concrete types".into());
+    }
+    let mut ret = Ty::I64;
+    let mut body_start = 3;
+    if items.len() > body_start + 1 {
+        if let Expr::LitSym(sep) = &items[body_start] {
+            if sep == ":-" {
+                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params)?;
+                body_start += 2;
+            }
+        }
+    }
+    if items.len() > body_start {
+        return Err("extern declarations take no body".into());
+    }
+    Ok(RawDefn {
+        name: name.clone(),
+        params,
+        ret,
+        borrows: vec![Borrow::Shared; 0],
+        ty_params,
+        is_extern: true,
+        body: Expr::List(Vec::new()),
+    })
 }
 
 fn is_deftype(form: &Expr) -> bool {
@@ -642,6 +718,7 @@ fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn,
         ret,
         borrows,
         ty_params,
+        is_extern: false,
         body,
     })
 }
@@ -897,6 +974,7 @@ fn instantiate(
             ret,
             body,
             borrows: raw.borrows.clone(),
+            is_extern: false,
         });
     }
     Ok((mangled, ret))

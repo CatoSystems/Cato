@@ -2,7 +2,7 @@ use std::path::Path;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (file, out) = parse_args(&args);
+    let (file, out, fast) = parse_args(&args);
     let src = std::fs::read_to_string(&file)
         .unwrap_or_else(|e| { eprintln!("cato: cannot read {}: {}", file, e); std::process::exit(2); });
     let parsed = cato::reader::read_all(&src)
@@ -15,7 +15,7 @@ fn main() {
         .into_iter()
         .map(|mut d| { let b = cato::fuse::check(&d.body); d.body = b; d })
         .collect();
-    let ir = cato::codegen::emit_module(&adts, &fused);
+    let ir = cato::codegen::emit_module_fast(&adts, &fused, fast);
     match out {
         Some(p) => std::fs::write(&p, &ir)
             .unwrap_or_else(|e| { eprintln!("cato: cannot write {}: {}", p, e); std::process::exit(2); }),
@@ -23,9 +23,10 @@ fn main() {
     }
 }
 
-fn parse_args(args: &[String]) -> (String, Option<String>) {
+fn parse_args(args: &[String]) -> (String, Option<String>, bool) {
     let mut file = None;
     let mut out = None;
+    let mut fast = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -35,18 +36,19 @@ fn parse_args(args: &[String]) -> (String, Option<String>) {
                     _ => { eprintln!("cato: -o requires a filename argument"); std::process::exit(2); }
                 }
             }
+            "--fast" => { fast = true; i += 1; }
             "--help" | "-h" => { usage(); std::process::exit(0); }
             s if s.starts_with('-') => { eprintln!("cato: unknown flag {}", s); std::process::exit(2); }
             s => { file = Some(s.to_string()); i += 1; }
         }
     }
     match file {
-        Some(f) if Path::new(&f).exists() => (f, out),
+        Some(f) if Path::new(&f).exists() => (f, out, fast),
         Some(f) => { eprintln!("cato: no such file {}", f); std::process::exit(2); }
         None => { usage(); std::process::exit(2); }
     }
 }
 
 fn usage() {
-    eprintln!("cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll]\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.");
+    eprintln!("cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll] [--fast]\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.\n--fast attaches vectorization metadata to fused loops (auto-SIMD).");
 }

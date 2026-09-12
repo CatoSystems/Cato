@@ -89,11 +89,25 @@ Shipped and green on `main` (`cargo test`):
   allocation); `Ty::Str` is Copy; content equality via `strcmp`, `count` via
   `strlen`, `print-string`; ordering/arithmetic on strings rejected.
   Reference program: `examples/strings.cato` → `hello, cato 4 1 2 0 10`.
+- **Slice 9 — FFI + auto-SIMD.**
+  `(extern name [x :- f64 s :- str] :- i64)` declares C symbols emitted as
+  LLVM `declare`s — direct calls, no marshaling, params as shared borrows.
+  `cato --fast` attaches `llvm.loop.vectorize.enable` metadata to every
+  fused loop backedge so LLVM auto-vectorizes the language's pure loops;
+  lazy deduplicated declares keep the runtime symbol namespace clean.
+  Reference program: `examples/ffi.cato` → `3.5 4 524800`.
 
 Current type system: `i64`, `f64`, `bool`, `str`, vectors (`(Vector i64)` /
 `(Vector f64)`, type-parameterized), user ADTs (scalar payload fields).
 
 ## Roadmap
+
+### Phase 9b — Width types & parallel loops *(pending)*
+
+- `i8/i16/i32/f32/u*/usize` — parameterize the arithmetic emitters over
+  integer widths.
+- `(parallel loop)` / auto-parallelization across threads — needs a thread
+  pool and a provably disjoint write set.
 
 ### Phase 7b — Ownership: heap & escapes *(next)*
 
