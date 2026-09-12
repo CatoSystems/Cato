@@ -24,8 +24,9 @@ pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     let mut mdl = Mdl::new(adts.to_vec());
 
     for d in fns {
-        if matches!(d.body, HExpr::Reduce(_)) {
-            // Top-level loop defn: the function IS the helper.
+        if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
+            // Top-level loop defn: the function IS the helper. (main is
+            // always emitted as a plain function so its i32 ABI is kept.)
             let reduce = match &d.body {
                 HExpr::Reduce(r) => (**r).clone(),
                 _ => unreachable!(),
@@ -116,64 +117,122 @@ fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, Ty)]) -> Loo
     }
 }
 
-fn src_var_of(reduce: &HReduce) -> String {
-    let src = match reduce {
-        HReduce::Pipeline { src, .. } | HReduce::Closure { src, .. } => src,
-    };
-    match &**src {
-        HExpr::Var(v) => v.clone(),
-        other => panic!("codegen: loop src must be a var, got {:?}", other),
+/// Free variables contributed by a loop source: vector-variable names for
+/// `Var`/`Zip` bases (passed as data/len args, not captures) are excluded,
+/// while `range`/`take`/`drop` bound expressions are ordinary captures.
+fn collect_source_vars(src: &HSource, bv: &mut VarSet, skip: &mut Vec<String>) {
+    match src {
+        HSource::Var(v) => {
+            if !skip.contains(v) {
+                bv.insert_expr(&HExpr::Var(v.clone()));
+            }
+        }
+        HSource::Lit(_) => {}
+        HSource::Range(a, b) => {
+            bv.insert_expr(a);
+            bv.insert_expr(b);
+        }
+        HSource::Zip(a, b) => {
+            collect_source_vars(a, bv, skip);
+            collect_source_vars(b, bv, skip);
+        }
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => {
+            bv.insert_expr(n);
+            collect_source_vars(inner, bv, skip);
+        }
+    }
+}
+
+/// Call-site argument expressions for a loop source's base vectors, in
+/// parameter order (one vec per Var/Lit base; Zip contributes both sides).
+fn source_base_args(src: &HSource) -> Vec<HExpr> {
+    match src {
+        HSource::Var(v) => vec![HExpr::Var(v.clone())],
+        HSource::Lit(vs) => vec![HExpr::VecLit(vs.clone())],
+        HSource::Zip(a, b) => {
+            let mut out = source_base_args(a);
+            out.extend(source_base_args(b));
+            out
+        }
+        HSource::Range(..) => Vec::new(),
+        HSource::Take(_, inner) | HSource::Drop(_, inner) => source_base_args(inner),
+    }
+}
+
+/// Vector-variable names at the base of the source — these become the
+/// helper's data/len parameters rather than captures.
+fn base_vec_vars(src: &HSource, out: &mut Vec<String>) {
+    match src {
+        HSource::Var(v) => {
+            if !out.contains(v) {
+                out.push(v.clone());
+            }
+        }
+        HSource::Zip(a, b) => {
+            base_vec_vars(a, out);
+            base_vec_vars(b, out);
+        }
+        HSource::Lit(_) | HSource::Range(..) => {}
+        HSource::Take(_, inner) | HSource::Drop(_, inner) => base_vec_vars(inner, out),
     }
 }
 
 fn loop_free_vars(reduce: &HReduce) -> (Ty, VarSet) {
-    let src_var = src_var_of(reduce);
-    match reduce {
+    let (src, maps, filters, closure) = match reduce {
         HReduce::Pipeline {
-            init, maps, filters, ..
-        } => {
-            let mut bv = VarSet::new();
-            bv.insert_expr(init);
-            for m in maps {
-                bv.insert_expr(&m.body);
-                bv.remove(&m.el);
-            }
-            for fl in filters {
-                bv.insert_expr(&fl.body);
-                bv.remove(&fl.el);
-            }
-            bv.remove(&src_var);
-            let t = if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 };
-            (t, bv)
-        }
+            src, maps, filters, ..
+        } => (src, maps, filters, None),
         HReduce::Closure {
-            init,
             src,
-            acc,
-            el,
-            body,
             maps,
             filters,
+            acc,
+            el,
+            el2,
+            body,
             ..
-        } => {
-            let mut bv = VarSet::new();
-            bv.insert_expr(init);
-            bv.insert_expr(src);
-            for m in maps {
-                bv.insert_expr(&m.body);
-                bv.remove(&m.el);
-            }
-            for fl in filters {
-                bv.insert_expr(&fl.body);
-                bv.remove(&fl.el);
-            }
-            bv.insert_expr(body);
-            bv.remove(&src_var);
-            bv.remove(acc);
-            bv.remove(el);
-            let t = if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 };
-            (t, bv)
+        } => (src, maps, filters, Some((acc, el, el2, body))),
+    };
+    let mut base_vars = Vec::new();
+    base_vec_vars(src, &mut base_vars);
+    let mut bv = VarSet::new();
+    collect_source_vars(src, &mut bv, &mut base_vars);
+    if let Some(init) = reduce_init(reduce) {
+        bv.insert_expr(init);
+    }
+    for m in maps {
+        bv.insert_expr(&m.body);
+        bv.remove(&m.el);
+        if let Some(e2) = &m.el2 {
+            bv.remove(e2);
         }
+    }
+    for fl in filters {
+        bv.insert_expr(&fl.body);
+        bv.remove(&fl.el);
+        if let Some(e2) = &fl.el2 {
+            bv.remove(e2);
+        }
+    }
+    if let Some((acc, el, el2, body)) = closure {
+        bv.insert_expr(body);
+        bv.remove(acc);
+        bv.remove(el);
+        if let Some(e2) = el2 {
+            bv.remove(e2);
+        }
+    }
+    let t = if matches!(reduce_init(reduce), Some(HExpr::ConstF64(_))) {
+        Ty::F64
+    } else {
+        Ty::I64
+    };
+    (t, bv)
+}
+
+fn reduce_init(r: &HReduce) -> Option<&HExpr> {
+    match r {
+        HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => Some(init),
     }
 }
 
@@ -270,12 +329,6 @@ fn rewrite_body(
                 .collect::<Result<Vec<_>, _>>()?,
         ),
         HExpr::Reduce(r) => {
-            let src_var = match &**r {
-                HReduce::Pipeline { src, .. } | HReduce::Closure { src, .. } => match &**src {
-                    HExpr::Var(s) => s.clone(),
-                    _ => return Err("reduce source must be a vector variable".into()),
-                },
-            };
             let id = idmap.entry(fnprefix.to_string()).or_insert(0);
             let helper = format!("{}_reduce_{}", fnprefix, id);
             *id += 1;
@@ -283,15 +336,20 @@ fn rewrite_body(
             let ret_f64 = acc_ret_is_f64(r);
             let ret_ty = if ret_f64 { Ty::F64 } else { Ty::I64 };
             let spec = make_loop_spec(&helper, (**r).clone(), params);
-            // Signature: src vec + captures, ret = loop accumulator type.
-            let mut arg_tys = vec![Ty::VecI64];
+            // Base sources become data/len pairs; captures follow.
+            let base_args = source_base_args(reduce_src(r));
+            let mut arg_tys: Vec<Ty> = Vec::new();
+            for _ in &base_args {
+                arg_tys.push(Ty::VecI64);
+            }
             for (_, t) in &spec.caps {
                 arg_tys.push(*t);
             }
             sigs.insert(helper.clone(), (ret_ty, arg_tys));
             loops.push(spec);
 
-            let mut args = vec![HExpr::Var(src_var)];
+            let mut args: Vec<HExpr> = base_args;
+
             let caps = &loops.last().unwrap().caps.clone();
             for (cname, _) in caps {
                 args.push(HExpr::Var(cname.clone()));
@@ -305,6 +363,16 @@ fn rewrite_body(
                 .iter()
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
+        },
+        HExpr::Get { src, idx, default } => HExpr::Get {
+            src: Box::new(rewrite_body(src, fnprefix, params, idmap, loops, sigs)?),
+            idx: Box::new(rewrite_body(idx, fnprefix, params, idmap, loops, sigs)?),
+            default: match default {
+                Some(d) => Some(Box::new(rewrite_body(
+                    d, fnprefix, params, idmap, loops, sigs,
+                )?)),
+                None => None,
+            },
         },
         HExpr::Match { scrut, arms, ty } => HExpr::Match {
             scrut: Box::new(rewrite_body(scrut, fnprefix, params, idmap, loops, sigs)?),
@@ -470,6 +538,44 @@ fn llvm_f64(v: f64) -> String {
 // Loop function emission
 // ---------------------------------------------------------------------------
 
+/// Peel take/drop wrappers off a loop source, returning them in application
+/// order (innermost first) plus the base source. `is_drop` distinguishes the
+/// two wrapper kinds.
+fn unwrap_source(src: &HSource) -> (Vec<(&HExpr, bool)>, &HSource) {
+    let mut wrappers = Vec::new();
+    let mut cur = src;
+    loop {
+        match cur {
+            HSource::Take(n, inner) => {
+                wrappers.push((&**n, false));
+                cur = inner;
+            }
+            HSource::Drop(n, inner) => {
+                wrappers.push((&**n, true));
+                cur = inner;
+            }
+            other => {
+                // Collected outer-to-inner; application is innermost first.
+                wrappers.reverse();
+                return (wrappers, other);
+            }
+        }
+    }
+}
+
+/// Bind a stage element name to the raw i64 element register, converting to
+/// f64 when the stage reads f64 elements (a `map` stage's output fed to a
+/// following `filter`).
+fn bind_elem(c: &mut FnCtx, name: &str, ty: Ty, raw: &str) {
+    if ty == Ty::F64 {
+        let t = c.temp();
+        c.line(&format!("  {} = bitcast i64 {} to double", t, raw));
+        c.scalar.insert(name.to_string(), (t, Ty::F64));
+    } else {
+        c.scalar.insert(name.to_string(), (raw.to_string(), ty));
+    }
+}
+
 fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     let mut c = FnCtx::new();
     let mut adt_caps: Vec<(String, u32)> = Vec::new();
@@ -488,12 +594,28 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         init_val.to_string()
     };
 
-    let mut params = vec![
-        "ptr noalias nocapture readonly %data".to_string(),
-        "i64 %len".to_string(),
-    ];
+    // Source wrappers in application order (innermost first) and the base.
+    let (wrappers, base) = unwrap_source(reduce_src(&spec.reduce));
+
+    // Helper signature: one data/len pair per base vector variable, then
+    // captures. `range` bases contribute no parameters (their bounds are
+    // ordinary captures evaluated in the entry block).
+    let mut params: Vec<String> = Vec::new();
+    match base {
+        HSource::Var(_) | HSource::Lit(_) => {
+            params.push("ptr noalias nocapture readonly %data".to_string());
+            params.push("i64 %len".to_string());
+        }
+        HSource::Zip(..) => {
+            params.push("ptr noalias nocapture readonly %dataA".to_string());
+            params.push("i64 %lenA".to_string());
+            params.push("ptr noalias nocapture readonly %dataB".to_string());
+            params.push("i64 %lenB".to_string());
+        }
+        HSource::Range(..) => {}
+        _ => unreachable!("base source"),
+    }
     for (n, t) in &spec.caps {
-        // ADT captures cross the boundary by value, then live in a slot.
         let ll = match t {
             Ty::Adt(i) => mdl.adt_name(*i),
             other => mdl.ll_ty(*other),
@@ -511,27 +633,81 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             r,
             slot
         ));
-        c.scalar
-            .insert(n.clone(), (slot, Ty::Adt(*i)));
+        c.scalar.insert(n.clone(), (slot, Ty::Adt(*i)));
     }
 
     c.line("entry:");
     c.open("entry");
+
+    // Compute the iteration start index and element count. take/drop/range
+    // bounds are emitted here (branchlessly), so the whole pipeline still
+    // compiles to one loop.
+    let (mut start_v, mut count_v): (String, String) = match base {
+        HSource::Var(_) | HSource::Lit(_) => ("0".to_string(), "%len".to_string()),
+        HSource::Zip(..) => {
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i64 %lenA, %lenB", lt));
+            let cnt = c.temp();
+            c.line(&format!(
+                "  {} = select i1 {}, i64 %lenA, i64 %lenB",
+                cnt, lt
+            ));
+            ("0".to_string(), cnt)
+        }
+        HSource::Range(a, b) => {
+            let sv = emit_int(a, &mut c, mdl, sigs);
+            let ev = emit_int(b, &mut c, mdl, sigs);
+            let d = c.temp();
+            c.line(&format!("  {} = sub i64 {}, {}", d, ev, sv));
+            let neg = c.temp();
+            c.line(&format!("  {} = icmp slt i64 {}, 0", neg, d));
+            let cnt = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", cnt, neg, d));
+            (sv, cnt)
+        }
+        _ => unreachable!("base source"),
+    };
+    for (n, is_drop) in &wrappers {
+        let nv = emit_int(n, &mut c, mdl, sigs);
+        if *is_drop {
+            let s1 = c.temp();
+            c.line(&format!("  {} = add i64 {}, {}", s1, start_v, nv));
+            let c1 = c.temp();
+            c.line(&format!("  {} = sub i64 {}, {}", c1, count_v, nv));
+            let neg = c.temp();
+            c.line(&format!("  {} = icmp slt i64 {}, 0", neg, c1));
+            let c1c = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", c1c, neg, c1));
+            start_v = s1;
+            count_v = c1c;
+        } else {
+            let lt = c.temp();
+            c.line(&format!("  {} = icmp slt i64 {}, {}", lt, nv, count_v));
+            let c2 = c.temp();
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 {}",
+                c2, lt, nv, count_v
+            ));
+            count_v = c2;
+        }
+    }
     let t_isempty = c.temp();
-    c.line(&format!("  {} = icmp eq i64 %len, 0", t_isempty));
+    c.line(&format!("  {} = icmp eq i64 {}, 0", t_isempty, count_v));
     c.line(&format!("  br i1 {}, label %ret, label %loop", t_isempty));
 
     // Element / accumulator bindings shared by all stages.
-    let el = match &spec.reduce {
-        HReduce::Closure { el, .. } => el.clone(),
+    let (el, el2) = match &spec.reduce {
+        HReduce::Closure { el, el2, .. } => (el.clone(), el2.clone()),
         HReduce::Pipeline { maps, filters, .. } => {
-            if let Some(m) = maps.first() {
-                m.el.clone()
-            } else if let Some(f) = filters.first() {
-                f.el.clone()
-            } else {
-                "x".to_string()
-            }
+            let (first_el, first_el2) = match (maps.first(), filters.first()) {
+                (Some(m), _) => (Some(&m.el), m.el2.clone()),
+                (None, Some(f)) => (Some(&f.el), f.el2.clone()),
+                (None, None) => (None, None),
+            };
+            (
+                first_el.cloned().unwrap_or_else(|| "x".to_string()),
+                first_el2,
+            )
         }
     };
     let accsym = match &spec.reduce {
@@ -550,6 +726,54 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
         }
     };
 
+    // Element loads for the base kind, at index start + i.
+    // Returns (%x-reg, Option(%x2-reg)).
+    fn elem_loads(
+        c: &mut FnCtx,
+        base: &HSource,
+        start_v: &str,
+    ) -> (String, Option<String>) {
+        match base {
+            HSource::Var(_) | HSource::Lit(_) => {
+                let pidx = c.temp();
+                c.line(&format!("  {} = add i64 {}, %i", pidx, start_v));
+                let p = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds i64, ptr %data, i64 {}",
+                    p, pidx
+                ));
+                let x = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", x, p));
+                (x, None)
+            }
+            HSource::Zip(..) => {
+                let pidx = c.temp();
+                c.line(&format!("  {} = add i64 {}, %i", pidx, start_v));
+                let pa = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds i64, ptr %dataA, i64 {}",
+                    pa, pidx
+                ));
+                let xa = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", xa, pa));
+                let pb = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds i64, ptr %dataB, i64 {}",
+                    pb, pidx
+                ));
+                let xb = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", xb, pb));
+                (xa, Some(xb))
+            }
+            HSource::Range(..) => {
+                let x = c.temp();
+                c.line(&format!("  {} = add i64 {}, %i", x, start_v));
+                (x, None)
+            }
+            _ => unreachable!("base source"),
+        }
+    }
+
     match &spec.reduce {
         // Single-block closure: plain body, no stages, no control flow.
         HReduce::Closure { body, .. }
@@ -559,8 +783,14 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             // name becomes the phi's back-edge operand), then emit the block.
             let mut scratch = c.clone_with_lines(Vec::new());
             scratch.cur = "%loop".to_string();
-            scratch.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
-            scratch.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let (xv, x2v) = elem_loads(&mut scratch, base, &start_v);
+            scratch.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
+            if let (Some(name), Some(reg)) = (&el2, &x2v) {
+                scratch.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            }
+            scratch
+                .scalar
+                .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
             let val = if spec.acc_ty == Ty::F64 {
                 emit_float(body, &mut scratch, mdl, sigs)
             } else {
@@ -575,16 +805,19 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ {}, %loop ]",
                 acc_ll, init_lit, val
             ));
-            c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
-            c.line("  %x = load i64, ptr %p, align 8");
-            c.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
-            c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
+            c.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
+            if let (Some(name), Some(reg)) = (&el2, &x2v) {
+                c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            }
+            c.scalar
+                .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
             c.lines.extend(scratch.lines);
             carried = val;
             carried_block = "%loop";
             c.line("  %i.next = add i64 %i, 1");
             let t_cond = c.temp();
-            c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
+            c.line(&format!("  {} = icmp ult i64 %i.next, {}", t_cond, count_v));
             c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
         }
         // Single-block pipeline combine: no stages, a binop combine can't fork.
@@ -598,17 +831,20 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ %acc.next, %loop ]",
                 acc_ll, init_lit
             ));
-            c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
-            c.line("  %x = load i64, ptr %p, align 8");
-            c.scalar.insert(el.clone(), ("%x".to_string(), Ty::I64));
-            c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
-            let combined = combine_step(*combine, "%x", "%acc", spec.acc_ty, &mut c);
+            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
+            c.scalar.insert(el.clone(), (xv.clone(), Ty::I64));
+            if let (Some(name), Some(reg)) = (&el2, &x2v) {
+                c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+            }
+            c.scalar
+                .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let combined = combine_step(*combine, &xv, "%acc", spec.acc_ty, &mut c);
             c.line(&format!("  %acc.next = {}", combined));
             carried = "%acc.next".to_string();
             carried_block = "%loop";
             c.line("  %i.next = add i64 %i, 1");
             let t_cond = c.temp();
-            c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
+            c.line(&format!("  {} = icmp ult i64 %i.next, {}", t_cond, count_v));
             c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
         }
         // Structured apply/skip/merge: any maps, filters, or control flow.
@@ -621,12 +857,14 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
                 "  %acc = phi {} [ {}, %entry ], [ %acc.merge, %merge ]",
                 acc_ll, init_lit
             ));
-            c.line("  %p = getelementptr inbounds i64, ptr %data, i64 %i");
-            c.line("  %x = load i64, ptr %p, align 8");
+            let (xv, x2v) = elem_loads(&mut c, base, &start_v);
 
             if !filters.is_empty() {
                 for fl in filters {
-                    c.scalar.insert(fl.el.clone(), ("%x".to_string(), Ty::I64));
+                    bind_elem(&mut c, &fl.el, fl.el_ty, &xv);
+                    if let (Some(name), Some(reg)) = (&fl.el2, &x2v) {
+                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+                    }
                     let pv = emit_bool(&fl.body, &mut c, mdl, sigs);
                     let t_keep = c.temp();
                     c.line(&format!("  {} = icmp ne i1 {}, 0", t_keep, pv));
@@ -639,17 +877,38 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             c.line("");
             c.line("apply:");
             c.open("apply");
-            let mut val = "%x".to_string();
+            let mut val = xv.clone();
             let mut val_ty = Ty::I64;
-            for m in maps {
-                c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
+            for (k, m) in maps.iter().enumerate() {
+                if k == 0 {
+                    // First stage reads the raw element (an f64 source needs
+                    // a bitcast; later stages read the previous stage's
+                    // already-typed result).
+                    if m.el_ty == Ty::F64 {
+                        bind_elem(&mut c, &m.el, m.el_ty, &val);
+                    } else {
+                        c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
+                    }
+                    if let (Some(name), Some(reg)) = (&m.el2, &x2v) {
+                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+                    }
+                } else {
+                    c.scalar.insert(m.el.clone(), (val.clone(), m.el_ty));
+                    if let Some(name) = &m.el2 {
+                        let _ = name;
+                    }
+                }
                 val = emit_typed(&m.body, m.res_ty, &mut c, mdl, sigs);
                 val_ty = m.res_ty;
             }
-            c.scalar.insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            c.scalar
+                .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
             let r = match &spec.reduce {
                 HReduce::Closure { body, .. } => {
                     c.scalar.insert(el.clone(), (val.clone(), val_ty));
+                    if let (Some(name), Some(reg)) = (&el2, &x2v) {
+                        c.scalar.insert(name.clone(), (reg.clone(), Ty::I64));
+                    }
                     emit_typed(body, spec.acc_ty, &mut c, mdl, sigs)
                 }
                 HReduce::Pipeline { combine, .. } => {
@@ -680,7 +939,7 @@ fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>
             carried = "%acc.merge".to_string();
             carried_block = "%merge";
             let t_cond = c.temp();
-            c.line(&format!("  {} = icmp ult i64 %i.next, %len", t_cond));
+            c.line(&format!("  {} = icmp ult i64 %i.next, {}", t_cond, count_v));
             c.line(&format!("  br i1 {}, label %loop, label %ret", t_cond));
         }
     }
@@ -865,6 +1124,21 @@ fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty
 // Expression emission
 // ---------------------------------------------------------------------------
 
+fn reduce_src(r: &HReduce) -> &HSource {
+    match r {
+        HReduce::Pipeline { src, .. } | HReduce::Closure { src, .. } => src,
+    }
+}
+
+fn has_ctl_source(src: &HSource) -> bool {
+    match src {
+        HSource::Var(_) | HSource::Lit(_) => false,
+        HSource::Range(a, b) => has_ctl(a) || has_ctl(b),
+        HSource::Zip(a, b) => has_ctl_source(a) || has_ctl_source(b),
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => has_ctl(n) || has_ctl_source(inner),
+    }
+}
+
 /// Does this expression (or a stage / closure body) fork into basic blocks?
 fn has_ctl(e: &HExpr) -> bool {
     match e {
@@ -875,6 +1149,9 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
         HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
+        HExpr::Get { idx, default, .. } => {
+            has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
+        }
         HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Cmp(..) => false,
@@ -883,13 +1160,13 @@ fn has_ctl(e: &HExpr) -> bool {
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline { init, maps, filters, src, .. } => {
                 has_ctl(init)
-                    || has_ctl(src)
+                    || has_ctl_source(src)
                     || maps.iter().any(|m| has_ctl(&m.body))
                     || filters.iter().any(|f| has_ctl(&f.body))
             }
             HReduce::Closure { init, src, body, maps, filters, .. } => {
                 has_ctl(init)
-                    || has_ctl(src)
+                    || has_ctl_source(src)
                     || has_ctl(body)
                     || maps.iter().any(|m| has_ctl(&m.body))
                     || filters.iter().any(|f| has_ctl(&f.body))
@@ -1308,6 +1585,12 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
             t
         }
         HExpr::ConvF64(_) => panic!("codegen: ConvF64 in i64 context"),
+        HExpr::Call(name, args) if name == "print-i64" => {
+            // Side-effecting call inside a loop body (e.g. doseq).
+            let v = emit_int(&args[0], c, mdl, sigs);
+            c.line(&format!("  call void @cato_print_i64(i64 {})", v));
+            "0".to_string()
+        }
         HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
         HExpr::Let(binds, body) => {
             emit_let(binds, c, mdl, sigs);
@@ -1357,6 +1640,37 @@ fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         HExpr::Ctor { .. } => {
             emit_adt(e, c, mdl, sigs);
             "0".to_string()
+        }
+        HExpr::Get { src, idx, default } => {
+            let (d, l) = vec_arg(src, c, mdl);
+            let iv = emit_int(idx, c, mdl, sigs);
+            let inb = c.temp();
+            c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
+            let safe = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+            let p = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
+                p, d, safe
+            ));
+            let v = c.temp();
+            c.line(&format!("  {} = load i64, ptr {}, align 8", v, p));
+            match default {
+                Some(dv) => {
+                    let dvv = emit_int(dv, c, mdl, sigs);
+                    let r = c.temp();
+                    c.line(&format!(
+                        "  {} = select i1 {}, i64 {}, i64 {}",
+                        r, inb, v, dvv
+                    ));
+                    r
+                }
+                None => {
+                    let r = c.temp();
+                    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, v));
+                    r
+                }
+            }
         }
     }
     .to_string()
@@ -1623,6 +1937,25 @@ struct VarSet {
     vars: Vec<String>,
 }
 
+fn walk_source<F: FnMut(String)>(src: &HSource, f: &mut F) {
+    match src {
+        HSource::Var(v) => f(v.clone()),
+        HSource::Lit(_) => {}
+        HSource::Range(a, b) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HSource::Zip(a, b) => {
+            walk_source(a, f);
+            walk_source(b, f);
+        }
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => {
+            collect_vars(n, f);
+            walk_source(inner, f);
+        }
+    }
+}
+
 impl VarSet {
     fn new() -> Self {
         Self { vars: Vec::new() }
@@ -1639,8 +1972,7 @@ impl VarSet {
     }
 }
 
-fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
-    match h {
+fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {    match h {
         HExpr::Var(v) => f(v.clone()),
         HExpr::Bin(_, a, b) => {
             collect_vars(a, f);
@@ -1672,7 +2004,7 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 init, maps, filters, src, ..
             } => {
                 collect_vars(init, f);
-                collect_vars(src, f);
+                walk_source(src, f);
                 for m in maps {
                     collect_vars(&m.body, f);
                 }
@@ -1689,7 +2021,7 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 ..
             } => {
                 collect_vars(init, f);
-                collect_vars(src, f);
+                walk_source(src, f);
                 for m in maps {
                     collect_vars(&m.body, f);
                 }
@@ -1699,6 +2031,12 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(body, f);
             }
         },
+        HExpr::Get { idx, default, .. } => {
+            collect_vars(idx, f);
+            if let Some(d) = default {
+                collect_vars(d, f);
+            }
+        }
         HExpr::Call(_, args) => {
             for a in args {
                 collect_vars(a, f);

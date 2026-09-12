@@ -109,3 +109,13 @@ fn compiles_shape_to_expected_output() {
     let src = std::fs::read_to_string(manifest.join("examples/shape.cato")).unwrap();
     assert_eq!(compile_and_run("shape", &src), "19.635\n12\n16\n4\n");
 }
+
+#[test]
+fn compiles_collections_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("examples/collections.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("collections", &src),
+        "35\n9\n140\n64\n42\n3\n5\n10\n30\n"
+    );
+}

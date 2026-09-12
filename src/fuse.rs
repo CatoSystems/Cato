@@ -48,6 +48,14 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Abs(v, t) => HExpr::Abs(Box::new(check(v)), *t),
         HExpr::Min(a, b, t) => HExpr::Min(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::Get { src, idx, default } => HExpr::Get {
+            src: Box::new(check(src)),
+            idx: Box::new(check(idx)),
+            default: match default {
+                Some(d) => Some(Box::new(check(&d))),
+                None => None,
+            },
+        },
         HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
             adt: *adt,
             variant: *variant,
@@ -74,8 +82,10 @@ pub fn check(h: &HExpr) -> HExpr {
 
 fn check_reduce(r: &HReduce) -> HExpr {
     let ok_src = match r {
-        HReduce::Pipeline { src, .. } => matches!(**src, HExpr::Var(_)),
-        HReduce::Closure { src, .. } => matches!(**src, HExpr::Var(_)),
+        // Every HSource shape fuses into the single loop: a vector variable,
+        // a range, a zip of vector variables, or take/drop wrappers over any
+        // of them. Nothing to reject here anymore.
+        HReduce::Pipeline { .. } | HReduce::Closure { .. } => true,
     };
     if !ok_src {
         // Unsupported source shape: leave the node intact (codegen rejects).

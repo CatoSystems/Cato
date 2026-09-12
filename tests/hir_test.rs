@@ -48,7 +48,7 @@ fn builds_reduce_closure() {
                 assert_eq!(init, HExpr::ConstF64(0.0));
                 assert_eq!(acc, "acc".to_string());
                 assert_eq!(el, "x".to_string());
-                assert!(matches!(*src, HExpr::Var(_)));
+                assert!(matches!(src, HSource::Var(_)));
                 assert!(matches!(body, HExpr::Bin(BinOp::Add, _, _)));
             }
             _ => panic!("expected closure reduce"),
@@ -73,7 +73,7 @@ fn builds_pipeline_reduce_from_chain() {
                 assert_eq!(init, HExpr::ConstI64(0));
                 assert_eq!(maps.len(), 1);
                 assert_eq!(filters.len(), 1);
-                assert!(matches!(*src, HExpr::Var(_)));
+                assert!(matches!(src, HSource::Var(_)));
             }
             _ => panic!("expected pipeline reduce"),
         },
@@ -236,7 +236,7 @@ fn closure_reduce_over_map_chain_is_pipeline_backed() {
         } => {
             assert_eq!(maps.len(), 1);
             assert_eq!(filters.len(), 0);
-            assert!(matches!(*src, HExpr::Var(_)));
+            assert!(matches!(src, HSource::Var(_)));
         }
         _ => panic!("expected closure reduce"),
     }
@@ -374,4 +374,53 @@ fn adts_rejected_in_arithmetic() {
         SHAPE_DEFTYPE
     ));
     assert!(err.contains("cannot be used in arithmetic"), "got: {}", err);
+}
+
+// --- Phase 4: collection sources ---
+
+#[test]
+fn builds_take_drop_zip_range_sources() {
+    let exprs = read_all(
+        "(defn f [xs :- vec n :- i64] (reduce + 0 (take n (drop 1 xs))))
+         (defn g [xs :- vec ys :- vec] (reduce + 0 (map (fn [a b] (+ a b)) (zip xs ys))))
+         (defn h [a :- i64 b :- i64] (reduce + 0 (range a b)))
+         (defn k [] (reduce + 0 (vec-i64 1 2 3)))",
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    let get = |n: &str| fns.iter().find(|d| d.name == n).unwrap().body.clone();
+    let HExpr::Reduce(r) = get("f") else { panic!("f reduce") };
+    let HReduce::Pipeline { src, .. } = *r else { panic!("f pipeline") };
+    assert!(matches!(src, HSource::Take(_, ref s) if matches!(s.as_ref(), HSource::Drop(..))));
+
+    let HExpr::Reduce(r) = get("g") else { panic!("g reduce") };
+    let HReduce::Pipeline { src, maps, .. } = *r else { panic!("g pipeline") };
+    assert!(matches!(src, HSource::Zip(..)));
+    assert!(maps[0].el2.is_some(), "zip map binds a second element");
+
+    let HExpr::Reduce(r) = get("h") else { panic!("h reduce") };
+    let HReduce::Pipeline { src, .. } = *r else { panic!("h pipeline") };
+    assert!(matches!(src, HSource::Range(..)));
+
+    let HExpr::Reduce(r) = get("k") else { panic!("k reduce") };
+    let HReduce::Pipeline { src, .. } = *r else { panic!("k pipeline") };
+    assert!(matches!(src, HSource::Lit(ref vs) if vs == &vec![1, 2, 3]));
+}
+
+#[test]
+fn zip_closure_binds_two_elements() {
+    let exprs = read_all(
+        "(defn f [xs :- vec ys :- vec] (reduce (fn [acc a b] (+ acc (* a b))) 0 (zip xs ys)))",
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    let HExpr::Reduce(r) = &fns[0].body else { panic!("reduce") };
+    let HReduce::Closure { el2, .. } = &**r else { panic!("closure") };
+    assert!(el2.is_some());
+}
+
+#[test]
+fn builds_get_with_default() {
+    let body = build_one("f", "(defn f [xs :- vec] :- i64 (get xs 2 9))");
+    assert!(matches!(body, HExpr::Get { default: Some(_), .. }));
 }

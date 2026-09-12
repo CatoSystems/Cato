@@ -224,3 +224,30 @@ fn adt_values_cross_functions_by_value() {
     // Param comes in by value and is copied to an entry slot.
     assert!(ir.contains("store %Shape %s, ptr"), "{}", ir);
 }
+
+// --- Phase 4: fused collection sources ---
+
+#[test]
+fn take_drop_range_zip_stay_single_loops() {
+    let src = "(defn f [xs :- vec n :- i64] (reduce + 0 (take n (drop 1 xs))))
+               (defn g [a :- i64 b :- i64] (reduce + 0 (range a b)))
+               (defn h [xs :- vec ys :- vec] (reduce + 0 (map (fn [a b] (* a b)) (zip xs ys))))";
+    let exprs = read_all(src).unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = emit_module(&[], &fns);
+    // One loop per helper, no nested loops or calls in the loop body.
+    assert_eq!(ir.matches("icmp ult i64 %i.next").count(), 3, "{}", ir);
+    assert!(ir.contains("%dataA") && ir.contains("%dataB"), "{}", ir);
+    // take/drop/range bounds are computed branchlessly in the entry block.
+    assert!(ir.matches("select i1").count() >= 4, "{}", ir);
+}
+
+#[test]
+fn get_is_branchless_bounds_checked_load() {
+    let exprs = read_all("(defn f [xs :- vec] :- i64 (get xs 2 9))").unwrap();
+    let fns = build(&exprs).unwrap();
+    let ir = emit_module(&[], &fns);
+    assert!(ir.contains("icmp ult i64"), "{}", ir);
+    assert!(ir.contains("select i1"), "{}", ir);
+    assert!(ir.contains("getelementptr inbounds i64, ptr"), "{}", ir);
+}

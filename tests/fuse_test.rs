@@ -30,15 +30,15 @@ fn fuses_closure_reduce() {
 
 #[test]
 fn rejects_lazy_non_var_source() {
-    // (reduce + 0 (map square (vec-i64 1 2 3))) — a vector literal source is
-    // out of the slice scope; fusion must leave it intact rather than
-    // miscompile.
-    let h = fused_map_filter(
-        "bad",
+    // (reduce + 0 (map square 5)) — only vector variables, vector literals,
+    // ranges, zips and take/drop wrappers are valid fused sources.
+    let exprs = read_all(
         "(defn square [x :- i64] (* x x))
-         (defn bad [] (reduce + 0 (map square (vec-i64 1 2 3))))",
-    );
-    let _ = h;
+         (defn bad [] (reduce + 0 (map square 5)))",
+    )
+    .unwrap();
+    let err = cato::hir::build(&exprs).unwrap_err();
+    assert!(err.contains("vector variable"), "got: {}", err);
 }
 
 #[test]

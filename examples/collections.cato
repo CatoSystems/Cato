@@ -1,0 +1,35 @@
+; collections.cato — Phase 4/5 reference program.
+;
+; Collection API: get, range, take/drop/zip fused into the single loop, plus
+; the Phase 5 macro family (when, cond, if-let, doseq, variadic and/or).
+; No allocation anywhere: every pipeline below compiles to one loop.
+
+; range fuses: elements are generated in the loop, no vector is built.
+(defn sum-range [a :- i64 b :- i64] :- i64
+  (reduce + 0 (range a b)))
+
+; take/drop adjust the loop bounds — same single loop.
+(defn window-sum [xs :- vec] :- i64
+  (reduce + 0 (take 3 (drop 1 xs))))
+
+; zip reads two vectors in lockstep; the stage binds two elements.
+(defn dot [xs :- vec ys :- vec] :- i64
+  (reduce + 0 (map (fn [a b] (* a b)) (zip xs ys))))
+
+(defn nth-squared [xs :- vec i :- i64] :- i64
+  (* (get xs i) (get xs i -1)))
+
+(defn classify-all [xs :- vec] :- i64
+  (doseq [x xs]
+    (when (> x 2)
+      (print-i64 x))))
+
+(defn main []
+  (print-i64 (sum-range 5 10))             ; 5+6+7+8+9 = 35
+  (print-i64 (window-sum (vec-i64 1 2 3 4 5 6))) ; 2+3+4 = 9
+  (print-i64 (dot (vec-i64 1 2 3) (vec-i64 10 20 30))) ; 10+40+90 = 140
+  (print-i64 (nth-squared (vec-i64 7 8 9) 1)) ; 8*8 = 64
+  (print-i64 (get (vec-i64 7 8 9) 10 42))  ; out of bounds -> 42
+  (classify-all (vec-i64 1 3 5))           ; 3, 5
+  (print-i64 (cond (< 1 2) 10 (= 1 2) 20)) ; 10
+  (print-i64 (if-let [ok (< 1 2)] 30 40))) ; 30

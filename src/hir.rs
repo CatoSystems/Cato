@@ -68,6 +68,13 @@ pub enum HExpr {
         arms: Vec<HArm>,
         ty: Ty,
     },
+    /// `(get vec idx)` / `(get vec idx default)` — runtime-bounds-checked
+    /// element load, emitted branchlessly (select, no basic blocks).
+    Get {
+        src: Box<HExpr>,
+        idx: Box<HExpr>,
+        default: Option<Box<HExpr>>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -85,22 +92,40 @@ pub enum HReduce {
         init: HExpr,
         maps: Vec<MapSpec>,
         filters: Vec<FilterSpec>,
-        src: Box<HExpr>,
+        src: HSource,
     },
     Closure {
         init: HExpr,
-        src: Box<HExpr>,
+        src: HSource,
         acc: String,
         el: String,
+        el2: Option<String>,
         body: HExpr,
         maps: Vec<MapSpec>,
         filters: Vec<FilterSpec>,
     },
 }
 
+/// The source of a fused loop. `Take`/`Drop` adjust the loop bounds, `Range`
+/// generates elements without a backing vector, and `Zip` reads two vectors
+/// in lockstep (binding a second element variable) — all with zero
+/// allocation, fused into the single loop.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HSource {
+    Var(String),
+    /// An inline `(vec-i64 ...)` / vector literal as the loop base.
+    Lit(Vec<i64>),
+    Range(Box<HExpr>, Box<HExpr>),
+    Zip(Box<HSource>, Box<HSource>),
+    Take(Box<HExpr>, Box<HSource>),
+    Drop(Box<HExpr>, Box<HSource>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MapSpec {
     pub el: String,
+    /// Second element binding when the stage reads a `Zip` source.
+    pub el2: Option<String>,
     pub body: HExpr,
     pub el_ty: Ty,
     pub res_ty: Ty,
@@ -109,6 +134,7 @@ pub struct MapSpec {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterSpec {
     pub el: String,
+    pub el2: Option<String>,
     pub body: HExpr,
     pub el_ty: Ty,
 }
@@ -446,6 +472,7 @@ fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 "abs" => lower_abs(items, env, ctx),
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
+                "get" => lower_get(items, env, ctx),
                 "count" => {
                     if items.len() != 2 {
                         return Err("count expects exactly 1 argument".into());
@@ -804,6 +831,26 @@ fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     })
 }
 
+fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 3 && items.len() != 4 {
+        return Err("get expects (get <vec> <idx>) or (get <vec> <idx> <default>)".into());
+    }
+    let src = lower(&items[1], env, ctx)?;
+    if ty_of(&src, env, ctx) != Ty::VecI64 {
+        return Err("get source must be a vector".into());
+    }
+    let idx = lower(&items[2], env, ctx)?;
+    let default = match items.get(3) {
+        Some(d) => Some(Box::new(lower(d, env, ctx)?)),
+        None => None,
+    };
+    Ok(HExpr::Get {
+        src: Box::new(src),
+        idx: Box::new(idx),
+        default,
+    })
+}
+
 fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
     match e {
         HExpr::ConstI64(_) => Ty::I64,
@@ -840,6 +887,7 @@ fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
         HExpr::Ctor { adt, .. } => Ty::Adt(*adt),
         HExpr::Match { ty, .. } => *ty,
+        HExpr::Get { .. } => Ty::I64,
     }
 }
 
@@ -890,7 +938,7 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
                 init,
                 maps,
                 filters,
-                src: Box::new(src),
+                src,
             })))
         }
         _ => {
@@ -903,24 +951,38 @@ fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
             let Expr::Vector(params) = &fnitems[1] else {
                 return Err("reduce fn params".into());
             };
-            if params.len() < 2 {
-                return Err("reduce fn must bind exactly [acc el]".into());
-            }
-            let acc = param_name(&params[0])?;
-            let el = param_name(&params[1])?;
             let init = lower(&items[2], env, ctx)?;
             let init_ty = ty_of(&init, env, ctx);
             let (src, maps, filters) = pipeline_src(&items[3], env, ctx)?;
+            let zip = matches!(src, HSource::Zip(..));
+            let arity = if zip { 3 } else { 2 };
+            if params.len() != arity {
+                return Err(format!(
+                    "reduce fn must bind exactly [acc el{}] here",
+                    if zip { " el2" } else { "" }
+                ));
+            }
+            let acc = param_name(&params[0])?;
+            let el = param_name(&params[1])?;
+            let el2 = if zip {
+                Some(param_name(&params[2])?)
+            } else {
+                None
+            };
             let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
             let mut child = env.clone();
             child.insert(acc.clone(), init_ty);
             child.insert(el.clone(), el_ty);
+            if let Some(e2) = &el2 {
+                child.insert(e2.clone(), Ty::I64);
+            }
             let body = lower(&fnitems[2], &child, ctx)?;
             Ok(HExpr::Reduce(Box::new(HReduce::Closure {
                 init,
-                src: Box::new(src),
+                src,
                 acc,
                 el,
+                el2,
                 body,
                 maps,
                 filters,
@@ -936,61 +998,148 @@ fn param_name(e: &Expr) -> Result<String, String> {
     }
 }
 
-// Peel (map f inner) / (filter p inner) wrappers into specs, inner-most first,
-// returning (base_source, maps, filters). f/p may be an inline (fn [el] body)
-// or a reference to a defined function (e.g. square) or a builtin (even?).
+// Peel source wrappers and map/filter stages, inner-most first, returning
+// (source, maps, filters). Sources fuse into one loop: a vector variable,
+// a `range`, a `zip` of two vector variables, or any of those wrapped in
+// `take`/`drop`. Map/filter functions may be inline `(fn ...)` lambdas,
+// references to defined functions, or the `even?` builtin.
 fn pipeline_src(
     src: &Expr,
     env: &Env,
     ctx: &Ctx,
-) -> Result<(HExpr, Vec<MapSpec>, Vec<FilterSpec>), String> {
+) -> Result<(HSource, Vec<MapSpec>, Vec<FilterSpec>), String> {
     let Expr::List(items) = src else {
-        return Ok((lower(src, env, ctx)?, Vec::new(), Vec::new()));
+        return Ok((expr_to_source(src, env, ctx)?, Vec::new(), Vec::new()));
     };
     let Some(Expr::LitSym(head)) = items.first() else {
-        return Ok((lower(src, env, ctx)?, Vec::new(), Vec::new()));
+        return Ok((expr_to_source(src, env, ctx)?, Vec::new(), Vec::new()));
     };
-    if head == "map" {
-        if items.len() < 3 {
-            return Err("map expects (map <fn> <src>)".into());
+    match head.as_str() {
+        "map" => {
+            if items.len() < 3 {
+                return Err("map expects (map <fn> <src>)".into());
+            }
+            let (inner, mut maps, filters) = pipeline_src(&items[2], env, ctx)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+            let zip = matches!(inner, HSource::Zip(..));
+            let (el, el2, body, res_ty) = lambda_spec(&items[1], zip, el_ty, env, ctx)?;
+            maps.push(MapSpec {
+                el,
+                el2,
+                body,
+                el_ty,
+                res_ty,
+            });
+            Ok((inner, maps, filters))
         }
-        let (inner, mut maps, filters) = pipeline_src(&items[2], env, ctx)?;
-        let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
-        let (el, body, res_ty) = lambda_spec(&items[1], el_ty, env, ctx)?;
-        maps.push(MapSpec {
-            el,
-            body,
-            el_ty,
-            res_ty,
-        });
-        // maps is inner-first; push keeps it inner-first.
-        Ok((inner, maps, filters))
-    } else if head == "filter" {
-        if items.len() < 3 {
-            return Err("filter expects (filter <fn> <src>)".into());
+        "filter" => {
+            if items.len() < 3 {
+                return Err("filter expects (filter <fn> <src>)".into());
+            }
+            let (inner, maps, mut filters) = pipeline_src(&items[2], env, ctx)?;
+            let el_ty = maps.last().map(|m| m.res_ty).unwrap_or(Ty::I64);
+            let zip = matches!(inner, HSource::Zip(..));
+            let (el, el2, body, _) = lambda_spec(&items[1], zip, el_ty, env, ctx)?;
+            filters.push(FilterSpec {
+                el,
+                el2,
+                body,
+                el_ty,
+            });
+            Ok((inner, maps, filters))
         }
-        let (inner, maps, mut filters) = pipeline_src(&items[2], env, ctx)?;
-        let (el, body, _) = lambda_spec(&items[1], Ty::I64, env, ctx)?;
-        filters.push(FilterSpec {
-            el,
-            body,
-            el_ty: Ty::I64,
-        });
-        Ok((inner, maps, filters))
-    } else {
-        Ok((lower(src, env, ctx)?, Vec::new(), Vec::new()))
+        "take" => {
+            if items.len() != 3 {
+                return Err("take expects (take <n> <src>)".into());
+            }
+            let n = lower(&items[1], env, ctx)?;
+            let (inner, maps, filters) = pipeline_src(&items[2], env, ctx)?;
+            Ok((HSource::Take(Box::new(n), Box::new(inner)), maps, filters))
+        }
+        "drop" => {
+            if items.len() != 3 {
+                return Err("drop expects (drop <n> <src>)".into());
+            }
+            let n = lower(&items[1], env, ctx)?;
+            let (inner, maps, filters) = pipeline_src(&items[2], env, ctx)?;
+            Ok((HSource::Drop(Box::new(n), Box::new(inner)), maps, filters))
+        }
+        "zip" => {
+            if items.len() != 3 {
+                return Err("zip expects (zip <xs> <ys>)".into());
+            }
+            let a = vec_source_arg(&items[1], env, ctx)?;
+            let b = vec_source_arg(&items[2], env, ctx)?;
+            Ok((HSource::Zip(Box::new(a), Box::new(b)), Vec::new(), Vec::new()))
+        }
+        "range" => {
+            match items.len() {
+                2 => {
+                    let end = lower(&items[1], env, ctx)?;
+                    Ok((
+                        HSource::Range(Box::new(HExpr::ConstI64(0)), Box::new(end)),
+                        Vec::new(),
+                        Vec::new(),
+                    ))
+                }
+                3 => {
+                    let a = lower(&items[1], env, ctx)?;
+                    let b = lower(&items[2], env, ctx)?;
+                    Ok((HSource::Range(Box::new(a), Box::new(b)), Vec::new(), Vec::new()))
+                }
+                n => Err(format!("range expects 1 or 2 arguments, got {}", n - 1)),
+            }
+        }
+        _ => Ok((expr_to_source(src, env, ctx)?, Vec::new(), Vec::new())),
+    }
+}
+
+/// A plain vector source: a variable bound to a vector or an inline
+/// vector literal.
+fn expr_to_source(src: &Expr, env: &Env, ctx: &Ctx) -> Result<HSource, String> {
+    match src {
+        Expr::LitSym(v) => Ok(HSource::Var(v.clone())),
+        Expr::Vector(items) if items.iter().all(|e| matches!(e, Expr::LitI64(_))) => {
+            Ok(HSource::Lit(vec_lit_values(items)))
+        }
+        Expr::List(items)
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "vec-i64")
+                && items[1..].iter().all(|e| matches!(e, Expr::LitI64(_))) =>
+        {
+            Ok(HSource::Lit(vec_lit_values(&items[1..])))
+        }
+        _ => {
+            let _ = lower(src, env, ctx);
+            Err("reduce source must be a vector variable or literal".into())
+        }
+    }
+}
+
+fn vec_lit_values(items: &[Expr]) -> Vec<i64> {
+    items
+        .iter()
+        .map(|e| if let Expr::LitI64(v) = e { *v } else { unreachable!() })
+        .collect()
+}
+
+fn vec_source_arg(src: &Expr, _env: &Env, _ctx: &Ctx) -> Result<HSource, String> {
+    match src {
+        Expr::LitSym(v) => Ok(HSource::Var(v.clone())),
+        _ => Err("zip arguments must be vector variables".into()),
     }
 }
 
 fn lambda_spec(
     f: &Expr,
+    zip: bool,
     el_ty: Ty,
     env: &Env,
     ctx: &Ctx,
-) -> Result<(String, HExpr, Ty), String> {
+) -> Result<(String, Option<String>, HExpr, Ty), String> {
+    let arity = if zip { 2 } else { 1 };
     match f {
         Expr::List(items) => {
-            // Inline (fn [el] body)
+            // Inline (fn [el] body) or (fn [el el2] body)
             let Some(Expr::LitSym(h)) = items.first() else {
                 return Err("map/filter arg must be a function".into());
             };
@@ -1003,49 +1152,77 @@ fn lambda_spec(
             let Expr::Vector(params) = &items[1] else {
                 return Err("fn params".into());
             };
-            if params.is_empty() {
-                return Err("fn must bind an element param".into());
+            if params.len() != arity {
+                return Err(format!(
+                    "fn must bind exactly {} element param(s) here",
+                    arity
+                ));
             }
             let el = param_name(&params[0])?;
+            let el2 = if zip {
+                Some(param_name(&params[1])?)
+            } else {
+                None
+            };
             let mut child = env.clone();
             child.insert(el.clone(), el_ty);
+            if let Some(e2) = &el2 {
+                child.insert(e2.clone(), Ty::I64);
+            }
             let body = lower(&items[2], &child, ctx)?;
             let res_ty = ty_of(&body, &child, ctx);
-            Ok((el, body, res_ty))
+            Ok((el, el2, body, res_ty))
         }
-        Expr::LitSym(name) => resolve_function_ref(name, el_ty, env, ctx),
+        Expr::LitSym(name) => resolve_function_ref(name, zip, el_ty, env, ctx),
         _ => Err("map/filter arg must be a function".into()),
     }
 }
 
 fn resolve_function_ref(
     name: &str,
+    zip: bool,
     el_ty: Ty,
     env: &Env,
     ctx: &Ctx,
-) -> Result<(String, HExpr, Ty), String> {
+) -> Result<(String, Option<String>, HExpr, Ty), String> {
     if name == "even?" {
+        if zip {
+            return Err("even? cannot be used over a zip source".into());
+        }
         return Ok((
             "x".to_string(),
+            None,
             HExpr::Call("even?".to_string(), vec![HExpr::Var("x".to_string())]),
             Ty::Bool,
         ));
     }
     match ctx.raw_by_name.get(name) {
         Some(raw) => {
-            if raw.params.len() != 1 {
-                return Err(format!("function {} used in map/filter must have 1 param", name));
+            let arity = if zip { 2 } else { 1 };
+            if raw.params.len() != arity {
+                return Err(format!(
+                    "function {} used in map/filter must have {} param(s)",
+                    name, arity
+                ));
             }
             let el = raw.params[0].0.clone();
+            let el2 = if zip {
+                Some(raw.params[1].0.clone())
+            } else {
+                None
+            };
             let mut child = env.clone();
             child.insert(el.clone(), el_ty);
+            if let Some(e2) = &el2 {
+                child.insert(e2.clone(), Ty::I64);
+            }
             let body = match &raw.body {
                 Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
                     lower_body_forms(items, &child, ctx)?
                 }
                 _ => lower(&raw.body, &child, ctx)?,
             };
-            Ok((el, body, raw.ret))
+            Ok((el, el2, body, raw.ret))
         }
         None => Err(format!("unknown function in map/filter: {}", name)),
     }

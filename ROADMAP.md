@@ -61,28 +61,22 @@ Shipped and green on `main` (`cargo test`):
   phi (option→option transforms); ADTs cross function boundaries by value
   (no dangling stack pointers, no boxing).
   Reference program: `examples/shape.cato` → `19.635`, `12`, `16`, `4`.
+- **Slice 4 — Collection API (fused core) + macros beyond threading.**
+  `get` (bounds-checked, branchless); `range`, `take`, `drop`, `zip` and
+  inline vector literals as **fused loop sources** — take/drop compile to
+  branchless start/count arithmetic, zip binds two element variables, all in
+  the same single loop with zero allocation. `when`/`when-not`/`cond`/
+  `if-let`/`when-let`/`if-not`/`doseq` and variadic `and`/`or` desugar in
+  `expand.rs` with no codegen changes. `conj`/`subvec`/`for` are deferred
+  until vector materialization (Phase 7 heap story).
+  Reference program: `examples/collections.cato` → `35 9 140 64 42 3 5 10 30`.
 
 Current type system: `i64`, `f64`, `bool`, `vec` (`VecI64`), user ADTs
 (scalar payload fields).
 
 ## Roadmap
 
-### Phase 4 — Collection API *(next)*
-
-Richer vector programming once the core types are settled.
-
-- `get` (indexing), `conj`, `subvec`, `take`/`drop`/`zip`/`range`.
-- Vector construction beyond `vec-i64` literals.
-- Keeps the fusion invariant: `take`/`drop`/`zip`/`range` fuse into the same
-  single loop nest.
-
-### Phase 5 — Macro expansion beyond threading
-
-The `when`, `if-let`, `for`, `doseq`, `cond` family — mostly `expand.rs`
-rewrites, little or no codegen change. This is where Cato's macro power (a
-foundational language goal) starts paying off.
-
-### Phase 6 — Polymorphism & monomorphization
+### Phase 6 — Polymorphism & monomorphization *(next)*
 
 Generalize `(Vector T)` and parameterize over element types.
 
