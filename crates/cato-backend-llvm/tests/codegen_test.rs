@@ -1,6 +1,6 @@
-use cato::codegen::{emit_module, emit_module_fast};
-use cato::hir::build;
-use cato::reader::read_all;
+use cato_llvm::{emit_module, emit_module_fast};
+use cato_core::hir::build;
+use cato_core::reader::read_all;
 
 fn emit(src: &str) -> String {
     let fns = build(&read_all(src).unwrap()).unwrap();
@@ -187,7 +187,7 @@ const SHAPE_SRC: &str = "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64
 #[test]
 fn emits_tagged_union_type_and_switch() {
     let exprs = read_all(SHAPE_SRC).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     assert!(ir.contains("%Shape = type { i64, [2 x i64] }"), "{}", ir);
     assert!(ir.contains("switch i64"), "{}", ir);
@@ -197,7 +197,7 @@ fn emits_tagged_union_type_and_switch() {
 #[test]
 fn match_merges_arms_with_phi() {
     let exprs = read_all(SHAPE_SRC).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     // Scalar result merge in `area`, ptr result merge in `widen`.
     assert!(ir.contains("phi double"), "{}", ir);
@@ -207,7 +207,7 @@ fn match_merges_arms_with_phi() {
 #[test]
 fn ctor_stores_tag_and_bitcast_fields() {
     let exprs = read_all(SHAPE_SRC).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     assert!(ir.contains("bitcast double"), "{}", ir);
     assert!(ir.contains("alloca %Shape, align 8"), "{}", ir);
@@ -218,7 +218,7 @@ fn adt_values_cross_functions_by_value() {
     // The returned struct is loaded by value at the boundary — a returned
     // ptr to a callee alloca would dangle.
     let exprs = read_all(SHAPE_SRC).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     assert!(ir.contains("define %Shape @widen("), "{}", ir);
     // Param comes in by value and is copied to an entry slot.
@@ -305,7 +305,7 @@ fn externs_emit_declares_not_defines() {
     let src = "(extern fabs [x :- f64] :- f64)
                (defn main [] (print-f64 (fabs -3.5)))";
     let exprs = read_all(src).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     assert!(ir.contains("declare double @fabs(double)"), "{}", ir);
     assert!(!ir.contains("define double @fabs"), "{}", ir);
@@ -316,7 +316,7 @@ fn externs_emit_declares_not_defines() {
 fn fast_flag_attaches_vectorize_metadata() {
     let src = "(defn f [xs :- vec] :- i64 (reduce + 0 xs))";
     let exprs = read_all(src).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let plain = emit_module(&adts, &fns);
     assert!(!plain.contains("llvm.loop.vectorize"), "{}", plain);
     let fast = emit_module_fast(&adts, &fns, true);
@@ -333,7 +333,7 @@ fn runtime_conj_grows_with_capacity_and_in_place_append() {
                        w (conj v 3)]
                    (print-i64 (count w))))";
     let exprs = read_all(src).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     // Static source forces the copy path with 2x capacity headroom.
     assert!(ir.contains("call ptr @malloc(i64"), "{}", ir);
@@ -347,7 +347,7 @@ fn vector_returning_functions_pass_the_struct_by_value() {
     let src = "(defn grow [v :- vec x :- i64] :- vec (let [w (conj v x)] w))
                (defn main [] (let [w (grow (vec-i64 1) 2)] (print-i64 (count w))))";
     let exprs = read_all(src).unwrap();
-    let (adts, fns) = cato::hir::build_program(&exprs).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let ir = emit_module(&adts, &fns);
     assert!(ir.contains("define %VecI64 @grow("), "{}", ir);
     assert!(ir.contains("call %VecI64 @grow("), "{}", ir);

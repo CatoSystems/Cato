@@ -1,0 +1,12 @@
+[package]
+name = "cato-core"
+version.workspace = true
+edition.workspace = true
+description = "Cato frontend: reader, macro expansion, HIR, fusion check — backend-agnostic"
+
+[lib]
+name = "cato_core"
+path = "src/lib.rs"
+
+[dev-dependencies]
+cato-backend-llvm = { path = "../cato-backend-llvm" }

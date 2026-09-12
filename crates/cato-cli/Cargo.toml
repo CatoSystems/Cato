@@ -1,0 +1,13 @@
+[package]
+name = "cato-cli"
+version.workspace = true
+edition.workspace = true
+description = "Cato compiler CLI"
+
+[[bin]]
+name = "cato"
+path = "src/main.rs"
+
+[dependencies]
+cato-core = { path = "../cato-core" }
+cato-backend-llvm = { path = "../cato-backend-llvm" }

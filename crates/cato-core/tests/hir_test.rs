@@ -1,5 +1,5 @@
-use cato::hir::*;
-use cato::reader::read_all;
+use cato_core::hir::*;
+use cato_core::reader::read_all;
 
 fn build_one(name: &str, src: &str) -> HExpr {
     let exprs = read_all(src).unwrap();
@@ -606,11 +606,11 @@ fn conj_subvec_str_on_literals_fold_at_compile_time() {
     .unwrap();
     let fns = build(&exprs).unwrap();
     // subvec of a literal with constant bounds folds to a literal of 3.
-    let ir = cato::codegen::emit_module(&[], &fns);
+    let ir = cato_llvm::emit_module(&[], &fns);
     assert!(ir.contains("[3 x i64]"), "{}", ir);
     let exprs = read_all("(defn f [] :- i64 (count (str \"foo\" \"bar\")))").unwrap();
     let fns = build(&exprs).unwrap();
-    let ir = cato::codegen::emit_module(&[], &fns);
+    let ir = cato_llvm::emit_module(&[], &fns);
     // "foobar" is a single 7-byte constant (6 chars + NUL).
     assert!(ir.contains("[7 x i8]"), "{}", ir);
 }

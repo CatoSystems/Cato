@@ -1,5 +1,5 @@
-use cato::ast::Expr;
-use cato::reader::read_all;
+use cato_core::ast::Expr;
+use cato_core::reader::read_all;
 
 fn expr_eq(input: &str, expected: Expr) {
     let mut v = read_all(input).unwrap();

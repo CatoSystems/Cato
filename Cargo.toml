@@ -1,15 +1,14 @@
-[package]
-name = "cato"
+[workspace]
+resolver = "2"
+members = [
+    "crates/cato-core",
+    "crates/cato-backend-llvm",
+    "crates/cato-cli",
+]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
-
-[lib]
-name = "cato"
-path = "src/lib.rs"
-
-[[bin]]
-name = "cato"
-path = "src/main.rs"
 
 [profile.release]
 opt-level = 3

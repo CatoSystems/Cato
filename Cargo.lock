@@ -3,5 +3,23 @@
 version = 4
 
 [[package]]
-name = "cato"
+name = "cato-backend-llvm"
 version = "0.1.0"
+dependencies = [
+ "cato-core",
+]
+
+[[package]]
+name = "cato-cli"
+version = "0.1.0"
+dependencies = [
+ "cato-backend-llvm",
+ "cato-core",
+]
+
+[[package]]
+name = "cato-core"
+version = "0.1.0"
+dependencies = [
+ "cato-backend-llvm",
+]

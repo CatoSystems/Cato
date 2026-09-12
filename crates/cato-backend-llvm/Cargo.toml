@@ -1,0 +1,12 @@
+[package]
+name = "cato-backend-llvm"
+version.workspace = true
+edition.workspace = true
+description = "Cato LLVM IR backend: tagged unions, fused loops, ADTs, maps"
+
+[lib]
+name = "cato_llvm"
+path = "src/lib.rs"
+
+[dependencies]
+cato-core = { path = "../cato-core" }

@@ -1,4 +1,5 @@
-use crate::hir::*;
+use cato_core::hir::*;
+use cato_core::Backend;
 use std::collections::HashMap;
 
 /// LLVM IR emitter.
@@ -3688,5 +3689,20 @@ fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(&arm.body, f);
             }
         }
+    }
+}
+/// The LLVM IR backend. `fast` attaches vectorization metadata to fused
+/// loops (`--fast`).
+pub struct LlvmBackend {
+    pub fast: bool,
+}
+
+impl Backend for LlvmBackend {
+    fn name(&self) -> &'static str {
+        "llvm"
+    }
+
+    fn emit(&self, program: &cato_core::Program) -> Result<String, String> {
+        Ok(emit_module_fast(&program.adts, &program.defns, self.fast))
     }
 }

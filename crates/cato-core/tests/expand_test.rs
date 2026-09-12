@@ -1,6 +1,6 @@
-use cato::ast::Expr;
-use cato::expand::expand_all;
-use cato::reader::read_all;
+use cato_core::ast::Expr;
+use cato_core::expand::expand_all;
+use cato_core::reader::read_all;
 
 fn pp(e: &Expr) -> String {
     match e {

@@ -1,10 +1,10 @@
-use cato::fuse::check;
-use cato::hir::*;
-use cato::reader::read_all;
+use cato_core::fuse::check;
+use cato_core::hir::*;
+use cato_core::reader::read_all;
 
 fn fused_map_filter(name: &str, src: &str) -> HExpr {
     let exprs = read_all(src).unwrap();
-    let fns = cato::hir::build(&exprs).unwrap();
+    let fns = cato_core::hir::build(&exprs).unwrap();
     let defn = fns.iter().find(|d| d.name == name).expect("fn found");
     check(&defn.body).clone()
 }
@@ -37,7 +37,7 @@ fn rejects_lazy_non_var_source() {
          (defn bad [] (reduce + 0 (map square 5)))",
     )
     .unwrap();
-    let err = cato::hir::build(&exprs).unwrap_err();
+    let err = cato_core::hir::build(&exprs).unwrap_err();
     assert!(err.contains("vector variable"), "got: {}", err);
 }
 
