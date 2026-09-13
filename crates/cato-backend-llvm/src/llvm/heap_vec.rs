@@ -455,6 +455,43 @@ pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
         } else {
             continue;
         };
+        // Maps may hold a HAMT root (cap tag bit 0 set, Phase 15): shared
+        // trie nodes must not be freed, so only flat buffers are.
+        let is_map = c.growm.contains_key(name);
+        if is_map {
+            let cf = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+                cf, slot
+            ));
+            let capv = c.temp();
+            c.line(&format!("  {} = load i64, ptr {}, align 8", capv, cf));
+            let tag = c.temp();
+            c.line(&format!("  {} = and i64 {}, 1", tag, capv));
+            let isflat = c.temp();
+            c.line(&format!("  {} = icmp eq i64 {}, 0", isflat, tag));
+            let bfree = c.block_name();
+            let bskip = c.block_name();
+            let bdone = c.block_name();
+            c.line(&format!("  br i1 {}, label %{}, label %{}", isflat, bfree, bskip));
+            let lbl = c.open(&bfree);
+            c.line(&format!("{}:", lbl));
+            let pf = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                pf, slot
+            ));
+            let p = c.temp();
+            c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+            c.line(&format!("  call void @free(ptr {})", p));
+            c.line(&format!("  br label %{}", bdone));
+            let lbl = c.open(&bskip);
+            c.line(&format!("{}:", lbl));
+            c.line(&format!("  br label %{}", bdone));
+            let lbl = c.open(&bdone);
+            c.line(&format!("{}:", lbl));
+            continue;
+        }
         let pf = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",

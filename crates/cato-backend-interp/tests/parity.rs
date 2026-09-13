@@ -8,6 +8,7 @@ const EXAMPLES: &[&str] = &[
     "collections",
     "generic",
     "heap",
+    "hamt",
     "maps",
     "normalize",
     "own",
