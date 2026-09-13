@@ -68,6 +68,22 @@ pub(crate) fn call_user(
             Ty::Param(_) => panic!("codegen: unresolved type parameter in call args"),
             Ty::Map => panic!("codegen: map call args not supported"),
             Ty::Set => panic!("codegen: set call args not supported"),
+            Ty::Fn(_) => {
+                let slot = match expr {
+                    HExpr::Var(v) => c
+                        .scalar
+                        .get(v)
+                        .map(|(r, _)| r.clone())
+                        .unwrap_or_else(|| panic!("codegen: unknown closure var {}", v)),
+                    o => panic!("codegen: closure arg must be a var, got {:?}", o),
+                };
+                let lv = c.temp();
+                c.line(&format!(
+                    "  {} = load %Closure, ptr {}, align 8",
+                    lv, slot
+                ));
+                ll_args.push(format!("%Closure {}", lv));
+            }
             Ty::Str => {
                 let v = emit_str_val(expr, c, mdl, sigs);
                 ll_args.push(format!("ptr {}", v));

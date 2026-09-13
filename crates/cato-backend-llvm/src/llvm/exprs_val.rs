@@ -309,6 +309,10 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let v = emit_float(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::F32));
             }
+            Ty::Fn(_) => {
+                let slot = emit_closure_val(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (slot, *ty));
+            }
             Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
@@ -319,5 +323,33 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 c.scalar.insert(name.clone(), (v, Ty::I64));
             }
         }
+    }
+}
+
+/// Evaluate an expression that yields a closure value (a Closure literal,
+/// possibly wrapped in lets/seqs), binding intermediate scopes properly.
+pub(crate) fn emit_closure_val(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    match e {
+        HExpr::Closure { sig, mangled, captures, .. } => {
+            emit_closure_creation(mangled, *sig, captures, c, mdl, sigs)
+        }
+        HExpr::Let(binds, body, frees) => {
+            emit_let(binds, c, mdl, sigs);
+            let v = emit_closure_val(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_closure_val(vs.last().unwrap(), c, mdl, sigs)
+        }
+        o => panic!("codegen: expected a closure value, got {:?}", o),
     }
 }

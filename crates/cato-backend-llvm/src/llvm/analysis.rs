@@ -39,6 +39,8 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Subs { s, start, end } => has_ctl(s) || has_ctl(start) || has_ctl(end),
         HExpr::Split { s, sep } => has_ctl(s) || has_ctl(sep),
         HExpr::Join { sep, xs } => has_ctl(sep) || has_ctl(xs),
+        HExpr::Closure { body, .. } => has_ctl(body),
+        HExpr::ClosureCall { f, args, .. } => has_ctl(f) || args.iter().any(has_ctl),
         HExpr::Conj { .. } => true, // growth branches
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true, // fill loop
@@ -218,6 +220,16 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
         HExpr::Join { sep, xs } => {
             collect_vars(sep, f);
             collect_vars(xs, f);
+        }
+        HExpr::Closure { .. } => {
+            // The lambda body is emitted out of line; captures are read
+            // into the env here and are already emitted by the let.
+        }
+        HExpr::ClosureCall { f: callee, args, .. } => {
+            collect_vars(callee, f);
+            for a in args {
+                collect_vars(a, f);
+            }
         }
         HExpr::Conj { v, x, .. } => {
             collect_vars(v, f);

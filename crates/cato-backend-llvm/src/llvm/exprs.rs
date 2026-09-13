@@ -453,6 +453,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             "codegen: map value must be bound with let"
         ),
         HExpr::MapGet { .. } => emit_map_get(e, c, mdl, sigs),
+        HExpr::ClosureCall { .. } => emit_closure_call(e, c, mdl, sigs),
+        HExpr::Closure { .. } => {
+            panic!("codegen: closure value must be bound with let")
+        }
         HExpr::BinW(op, a, b, ty) => {
             let av = emit_int(a, c, mdl, sigs);
             let bv = emit_int(b, c, mdl, sigs);

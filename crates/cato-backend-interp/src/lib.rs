@@ -35,6 +35,11 @@ enum Value {
         variant: u32,
         fields: Rc<Vec<Value>>,
     },
+    Closure {
+        params: Vec<(String, cato_core::hir::Ty)>,
+        captures: Vec<(String, Value)>,
+        body: Box<cato_core::hir::HExpr>,
+    },
 }
 
 /// Wrap an i64 into the value range of `ty` (LLVM wrapping semantics).
@@ -595,6 +600,42 @@ impl<'p> Interpreter<'p> {
                 } else {
                     self.eval(f, env)?
                 }
+            }
+            HExpr::Closure { params, captures, body, .. } => {
+                let caps = captures
+                    .iter()
+                    .map(|(n, _)| {
+                        let v = env
+                            .get(n)
+                            .cloned()
+                            .unwrap_or_else(|| panic!("interp: capture {} unbound", n));
+                        (n.clone(), v)
+                    })
+                    .collect();
+                Value::Closure {
+                    params: params.clone(),
+                    captures: caps,
+                    body: Box::new((**body).clone()),
+                }
+            }
+            HExpr::ClosureCall { f, args, .. } => {
+                let fv = self.eval(f, env)?;
+                let (params, caps, body) = match fv {
+                    Value::Closure { params, captures, body } => (params, captures, body),
+                    o => panic!("interp: calling non-closure {:?}", o),
+                };
+                let mut child = env.clone();
+                for (n, v) in caps {
+                    child.insert(n, v);
+                }
+                let vals: Vec<Value> = args
+                    .iter()
+                    .map(|a| self.eval(a, env))
+                    .collect::<R<Vec<_>>>()?;
+                for ((n, _), v) in params.iter().zip(vals) {
+                    child.insert(n.clone(), v);
+                }
+                self.eval(&body, &mut child)?
             }
             HExpr::Let(binds, body, _frees) => {
                 let mut child = env.clone();

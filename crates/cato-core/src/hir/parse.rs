@@ -8,7 +8,11 @@ pub(crate) fn is_extern(form: &Expr) -> bool {
 }
 
 /// (extern name [param :- ty ...] :- ret) — a direct C FFI declaration.
-pub(crate) fn parse_extern(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
+pub(crate) fn parse_extern(
+    form: &Expr,
+    adt_by_name: &HashMap<String, u32>,
+    fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
+) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
         return Err("expected (extern ...)".into());
     };
@@ -22,7 +26,7 @@ pub(crate) fn parse_extern(form: &Expr, adt_by_name: &HashMap<String, u32>) -> R
         return Err("extern params must be a vector".into());
     };
     let mut ty_params = Vec::new();
-    let (params, _borrows) = parse_params(params, adt_by_name, &mut ty_params)?;
+    let (params, _borrows) = parse_params(params, adt_by_name, &mut ty_params, fnsigs)?;
     if !ty_params.is_empty() {
         return Err("extern declarations must have concrete types".into());
     }
@@ -31,7 +35,7 @@ pub(crate) fn parse_extern(form: &Expr, adt_by_name: &HashMap<String, u32>) -> R
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params)?;
+                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params, fnsigs)?;
                 body_start += 2;
             }
         }
@@ -127,7 +131,11 @@ pub(crate) fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr
 
 /// Types that move: ADTs and vectors. Scalars and strings (immutable static
 /// data) are Copy.
-pub(crate) fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Result<RawDefn, String> {
+pub(crate) fn parse_raw(
+    form: &Expr,
+    adt_by_name: &HashMap<String, u32>,
+    fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
+) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
         return Err("expected (defn ...)".into());
     };
@@ -144,14 +152,14 @@ pub(crate) fn parse_raw(form: &Expr, adt_by_name: &HashMap<String, u32>) -> Resu
         return Err("defn params must be a vector".into());
     };
     let mut ty_params: Vec<String> = Vec::new();
-    let (params, borrows) = parse_params(params, adt_by_name, &mut ty_params)?;
+    let (params, borrows) = parse_params(params, adt_by_name, &mut ty_params, fnsigs)?;
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params)?;
+                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params, fnsigs)?;
                 body_start += 2;
             }
         }
@@ -185,6 +193,7 @@ pub(crate) fn parse_params(
     params: &[Expr],
     adt_by_name: &HashMap<String, u32>,
     ty_params: &mut Vec<String>,
+    fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<(Vec<(String, Ty)>, Vec<Borrow>), String> {
     let mut out = Vec::new();
     let mut borrows = Vec::new();
@@ -208,7 +217,7 @@ pub(crate) fn parse_params(
                         }
                         other => (
                             Borrow::Owned,
-                            parse_ty(other, adt_by_name, ty_params)?,
+                            parse_ty(other, adt_by_name, ty_params, fnsigs)?,
                         ),
                     };
                     let borrow = if name_borrow != Borrow::Owned {
@@ -229,17 +238,41 @@ pub(crate) fn parse_params(
 }
 
 /// Parse a type annotation expression: a builtin/ADT symbol, a type
-/// parameter name, or `(Vector i64|f64|T)`.
+/// parameter name, `(Vector i64|f64|T)`, or `(Fn [t1 t2] ret)`.
 pub(crate) fn parse_ty(
     e: &Expr,
     adt_by_name: &HashMap<String, u32>,
     ty_params: &mut Vec<String>,
+    fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<Ty, String> {
     match e {
         Expr::List(items) => {
             let Some(Expr::LitSym(h)) = items.first() else {
                 return Err("type annotation must be a symbol or (Vector ty)".into());
             };
+            if h == "Fn" {
+                // (Fn [t1 ...] ret) — structural identity is resolved later
+                // by deduplicating against the program's signature table.
+                let Expr::Vector(pitems) = &items[1] else {
+                    return Err("Fn params must be a vector".into());
+                };
+                let mut ptys = Vec::new();
+                for p in pitems {
+                    ptys.push(parse_scalar_or_vec(p, adt_by_name, ty_params, fnsigs)?);
+                }
+                let ret = parse_scalar_or_vec(&items[2], adt_by_name, ty_params, fnsigs)?;
+                let sig = match fnsigs
+                    .iter()
+                    .position(|(p, r)| *p == ptys && *r == ret)
+                {
+                    Some(i) => i as u32,
+                    None => {
+                        fnsigs.push((ptys.clone(), ret));
+                        (fnsigs.len() - 1) as u32
+                    }
+                };
+                return Ok(Ty::Fn(sig));
+            }
             if h != "Vector" || items.len() != 2 {
                 return Err(format!(
                     "unsupported type annotation (expected (Vector ty), got {} elements)",
@@ -297,6 +330,23 @@ pub(crate) fn parse_ty_sym(
             Some(&i) => Ok(Ty::Adt(i)),
             None => Ok(Ty::Param(register_ty_param(other, ty_params))),
         },
+    }
+}
+
+/// Parse a Fn-annotation element type (scalar, str, or vector forms only —
+/// closures of closure params are not in the slice).
+fn parse_scalar_or_vec(
+    e: &Expr,
+    adt_by_name: &HashMap<String, u32>,
+    ty_params: &mut Vec<String>,
+    fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
+) -> Result<Ty, String> {
+    match e {
+        Expr::LitSym(s) => parse_ty_sym(s, adt_by_name, ty_params),
+        Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "Vector") => {
+            parse_ty(e, adt_by_name, ty_params, fnsigs)
+        }
+        _ => Err("Fn param/ret types must be scalars, str, or (Vector ty)".into()),
     }
 }
 

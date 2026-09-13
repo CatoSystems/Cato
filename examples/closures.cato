@@ -1,0 +1,25 @@
+; closures.cato — Phase 14 reference program: first-class closures.
+;
+; (fn ...) is usable anywhere an expression is: closures capture free
+; locals by value, pass as `(Fn [t1 t2] ret)` params to higher-order
+; functions, and are called like any function. Statically resolvable
+; pipelines (map/filter/reduce) stay defunctionalized — closures here hit
+; the calling-convention path.
+
+(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64
+  (f (f x)))
+
+(defn compose-call [f :- (Fn [i64] i64) g :- (Fn [i64] i64) x :- i64] :- i64
+  (f (g x)))
+
+(defn main []
+  (let [inc  (fn [x :- i64] (+ x 1))
+        addn (let [n 10] (fn [x :- i64] (+ x n)))
+        dbl  (fn [x :- i64] (* x 2))]
+    (do
+      (print-i64 (inc 41))               ; 42
+      (print-i64 (twice inc 40))         ; 42 (higher-order param)
+      (print-i64 (addn 5))               ; 15 (captures n = 10)
+      (print-i64 (twice addn 1))         ; 21
+      (print-i64 (compose-call inc dbl 20)) ; 41 (20 * 2 + 1)
+      (print-f64 (reduce (fn [acc x] (+ acc x)) 0.0 (vec-f64 1.5 2.5)))))) ; 4

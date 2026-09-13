@@ -228,6 +228,23 @@ pub(crate) fn rewrite_body(
             },
             ty: *ty,
         },
+        HExpr::Closure { sig, mangled, params, captures, body } => HExpr::Closure {
+            sig: *sig,
+            mangled: mangled.clone(),
+            params: params.clone(),
+            captures: captures.clone(),
+            // The out-of-line lambda body is rewritten separately; the
+            // in-node copy stays intact for the interpreter.
+            body: Box::new((**body).clone()),
+        },
+        HExpr::ClosureCall { f, args, sig } => HExpr::ClosureCall {
+            f: Box::new(rewrite_body(f, fnprefix, params, idmap, loops, sigs)?),
+            args: args
+                .iter()
+                .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
+                .collect::<Result<Vec<_>, _>>()?,
+            sig: *sig,
+        },
         HExpr::SetLit(vs) => HExpr::SetLit(
             vs.iter()
                 .map(|v| rewrite_body(v, fnprefix, params, idmap, loops, sigs))

@@ -38,6 +38,10 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Split { s, sep } => has_ctl(s) || has_ctl(sep),
         HExpr::Join { sep, xs } => has_ctl(sep) || has_ctl(xs),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
+        HExpr::Closure { body, .. } => has_ctl(body),
+        HExpr::ClosureCall { f, args, .. } => {
+            has_ctl(f) || args.iter().any(has_ctl)
+        }
         HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Reduce(r) => match &**r {

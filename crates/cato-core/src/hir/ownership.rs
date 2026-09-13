@@ -151,6 +151,24 @@ impl<'a> BCheck<'a> {
                 self.check(x, tys, st);
             }
             HExpr::Clone(inner) => self.check(inner, tys, st),
+            // Creating a closure captures free locals by value: non-Copy
+            // captures move.
+            HExpr::Closure { captures, .. } => {
+                for (name, ty) in captures {
+                    self.use_var(name, tys, st);
+                    if is_non_copy(*ty) {
+                        st.insert(name.clone(), VState::Moved);
+                    }
+                }
+            }
+            HExpr::ClosureCall { f, args, .. } => {
+                // Calling a closure reads the binding (params get a local
+                // copy of the closure value).
+                self.check(f, tys, st);
+                for a in args {
+                    self.check(a, tys, st);
+                }
+            }
             HExpr::DropStmt(inner) => {
                 self.check(inner, tys, st);
                 if let HExpr::Var(v) = &**inner {

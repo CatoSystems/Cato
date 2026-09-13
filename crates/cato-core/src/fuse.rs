@@ -156,6 +156,18 @@ pub fn check(h: &HExpr) -> HExpr {
             },
             ty: *ty,
         },
+        HExpr::Closure { sig, mangled, params, captures, body } => HExpr::Closure {
+            sig: *sig,
+            mangled: mangled.clone(),
+            params: params.clone(),
+            captures: captures.clone(),
+            body: Box::new(check(body)),
+        },
+        HExpr::ClosureCall { f, args, sig } => HExpr::ClosureCall {
+            f: Box::new(check(f)),
+            args: args.iter().map(check).collect(),
+            sig: *sig,
+        },
         HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
             adt: *adt,
             variant: *variant,

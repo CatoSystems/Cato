@@ -33,6 +33,9 @@ pub enum Ty {
     Set,
     /// User-defined ADT, indexed into the program's `AdtDef` table.
     Adt(u32),
+    /// First-class closure type, indexed into the program's signature table
+    /// `(param tys, ret ty)` — structural, deduped at lowering.
+    Fn(u32),
     /// Type parameter in a generic defn's annotations, indexed into the
     /// defn's `ty_params` list. Never survives monomorphization.
     Param(u32),
@@ -211,6 +214,25 @@ pub enum HExpr {
     /// The bool is the expected polarity (true for `=`).
     StrCmp(bool, Box<HExpr>, Box<HExpr>),
     Reduce(Box<HReduce>),
+    /// `(fn [x :- ty] body)` — a closure value capturing free locals by
+    /// value. The body stays in the node (the interpreter evaluates it
+    /// directly); the LLVM backend also gets a matching entry in
+    /// `Program.lambdas` for out-of-line emission.
+    Closure {
+        sig: u32,
+        /// Out-of-line body name (`@lambda_N`); the interpreter ignores it.
+        mangled: String,
+        params: Vec<(String, Ty)>,
+        /// Free locals captured at creation, in env-slot order.
+        captures: Vec<(String, Ty)>,
+        body: Box<HExpr>,
+    },
+    /// `(f args...)` where `f` is a closure value.
+    ClosureCall {
+        f: Box<HExpr>,
+        args: Vec<HExpr>,
+        sig: u32,
+    },
     Call(String, Vec<HExpr>),
     Let(
         Vec<(String, HExpr, Ty)>,
@@ -366,6 +388,11 @@ pub(crate) struct Ctx<'a> {
     pub(crate) raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
     pub(crate) adts: &'a [AdtDef],
     pub(crate) inst: RefCell<InstState>,
+    /// Closure signature table `(param tys, ret ty)`, deduped structurally;
+    /// `Ty::Fn(i)` indexes it. Also drained into `Program::fn_sigs`.
+    pub(crate) fn_sigs: RefCell<Vec<(Vec<Ty>, Ty)>>,
+    /// Out-of-line closure bodies for the code backends.
+    pub(crate) lambdas: RefCell<Vec<(String, Vec<(String, Ty)>, Vec<(String, Ty)>, Ty, HExpr)>>,
 }
 
 pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {

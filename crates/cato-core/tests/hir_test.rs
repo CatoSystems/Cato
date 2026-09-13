@@ -731,3 +731,27 @@ fn closed_width_rules() {
     // abs/min/max require i64/i32/f64.
     assert!(build(&read_all("(defn f [a :- u8] :- u8 (abs a))").unwrap()).is_err());
 }
+
+#[test]
+fn closures_capture_and_move() {
+    // Scalar captures are fine; the closure type is inferred.
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))"
+    ).unwrap()).is_ok());
+    // Non-Copy captures are not in the slice yet.
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0)))] (f 5)))"
+    ).unwrap()).is_err());
+    // Capturing moves a non-Copy binding: use after capture is rejected.
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [s \"hi\" f (fn [x :- i64] (+ x 1))] (do (f 1) 0)))"
+    ).unwrap()).is_ok());
+    // Higher-order params type-check the call.
+    assert!(build(&read_all(
+        "(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64 (f (f x)))"
+    ).unwrap()).is_ok());
+    // Calling a non-function local is still a plain user call (unchanged).
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [x (fn [y :- i64] y)] (x 1)))"
+    ).unwrap()).is_ok());
+}

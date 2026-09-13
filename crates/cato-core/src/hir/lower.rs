@@ -69,7 +69,7 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                         HExpr::Seq(seq)
                     })
                 }
-                "fn" => Err("lambda must be consumed by reduce/map/filter".into()),
+                "fn" => lower_closure(items, env, ctx),
                 "let" => lower_let(items, env, ctx),
                 "reduce" => lower_reduce(items, env, ctx),
                 "map" | "filter" => Err(format!(
@@ -477,6 +477,31 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                     return promote_bin(op, a, b, env, ctx);
                 }
                 _ => {
+                    // Calling a closure value bound to a local.
+                    if let Some(Ty::Fn(sig)) = env.get(head.as_str()).copied() {
+                        if let Some(raw) = ctx.raw_by_name.get(head.as_str()) {
+                            // A defn of the same name wins (shadows never
+                            // exist: raws are global).
+                            let _ = raw;
+                        }
+                        let mut args = Vec::new();
+                        for it in &items[1..] {
+                            args.push(lower(it, env, ctx)?);
+                        }
+                        let (want, _) = ctx.fn_sigs.borrow()[sig as usize].clone();
+                        if args.len() != want.len() {
+                            return Err(format!(
+                                "closure call expects {} argument(s), got {}",
+                                want.len(),
+                                args.len()
+                            ));
+                        }
+                        return Ok(HExpr::ClosureCall {
+                            f: Box::new(HExpr::Var(head.clone())),
+                            args,
+                            sig,
+                        });
+                    }
                     // Constructors resolve before user functions.
                     if let Some((adt, variant, fields)) = ctx.lookup_ctor(head) {
                         if items.len() - 1 != fields.len() {
@@ -592,7 +617,292 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Match { ty, .. } => *ty,
         HExpr::Get { ty, .. } => *ty,
         HExpr::Clone(inner) => ty_of(inner, env, ctx),
+        HExpr::Closure { sig, .. } => Ty::Fn(*sig),
+        HExpr::ClosureCall { sig, .. } => ctx
+            .fn_sigs
+            .borrow()
+            .get(*sig as usize)
+            .map(|(_, r)| *r)
+            .unwrap_or(Ty::I64),
         HExpr::DropStmt(_) => Ty::I64,
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Phase 14: first-class closures
+// ---------------------------------------------------------------------------
+
+/// Collect the free locals a closure body references (by env membership),
+/// in first-reference order, excluding the closure's own params.
+fn collect_captures(
+    e: &HExpr,
+    env: &Env,
+    params: &[String],
+    seen: &mut Vec<String>,
+    caps: &mut Vec<(String, Ty)>,
+) {
+    fn var(e: &HExpr, env: &Env, params: &[String], seen: &mut Vec<String>, caps: &mut Vec<(String, Ty)>, v: &str) {
+        if params.iter().any(|p| p == v) || seen.iter().any(|s| s == v) {
+            return;
+        }
+        if let Some(&t) = env.get(v) {
+            seen.push(v.to_string());
+            caps.push((v.to_string(), t));
+        }
+    }
+    match e {
+        HExpr::Var(v) => var(e, env, params, seen, caps, v),
+        HExpr::Bin(_, a, b) | HExpr::And(a, b) | HExpr::Or(a, b) | HExpr::Min(a, b, _) | HExpr::Max(a, b, _) | HExpr::Cmp(_, a, b, _) => {
+            collect_captures(a, env, params, seen, caps);
+            collect_captures(b, env, params, seen, caps);
+        }
+        HExpr::BinF(_, a, b) | HExpr::BinW(_, a, b, _) | HExpr::CmpW(_, a, b, _) => {
+            collect_captures(a, env, params, seen, caps);
+            collect_captures(b, env, params, seen, caps);
+        }
+        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) | HExpr::Not(x)
+        | HExpr::Clone(x) | HExpr::DropStmt(x) | HExpr::ICast(x, _) => {
+            collect_captures(x, env, params, seen, caps)
+        }
+        HExpr::Call(_, args) | HExpr::StrCat(args) | HExpr::SetLit(args) => {
+            for a in args {
+                collect_captures(a, env, params, seen, caps);
+            }
+        }
+        HExpr::Ctor { args, .. } => {
+            for a in args {
+                collect_captures(a, env, params, seen, caps);
+            }
+        }
+        HExpr::If(c, t, f, _) => {
+            collect_captures(c, env, params, seen, caps);
+            collect_captures(t, env, params, seen, caps);
+            collect_captures(f, env, params, seen, caps);
+        }
+        HExpr::Let(binds, body, _) => {
+            for (_, v, _) in binds {
+                collect_captures(v, env, params, seen, caps);
+            }
+            collect_captures(body, env, params, seen, caps);
+        }
+        HExpr::Seq(vs) => {
+            for v in vs {
+                collect_captures(v, env, params, seen, caps);
+            }
+        }
+        HExpr::Get { src, idx, default, .. } => {
+            collect_captures(src, env, params, seen, caps);
+            collect_captures(idx, env, params, seen, caps);
+            if let Some(d) = default {
+                collect_captures(d, env, params, seen, caps);
+            }
+        }
+        HExpr::MapLit(pairs) => {
+            for (k, v) in pairs {
+                collect_captures(k, env, params, seen, caps);
+                collect_captures(v, env, params, seen, caps);
+            }
+        }
+        HExpr::MapAssoc { m, k, v } => {
+            collect_captures(m, env, params, seen, caps);
+            collect_captures(k, env, params, seen, caps);
+            collect_captures(v, env, params, seen, caps);
+        }
+        HExpr::SetConj { s: m, x: k }
+        | HExpr::SetDisj { s: m, x: k }
+        | HExpr::SetContains { s: m, x: k } => {
+            collect_captures(m, env, params, seen, caps);
+            collect_captures(k, env, params, seen, caps);
+        }
+        HExpr::MapGet { src, key, default } => {
+            collect_captures(src, env, params, seen, caps);
+            collect_captures(key, env, params, seen, caps);
+            if let Some(d) = default {
+                collect_captures(d, env, params, seen, caps);
+            }
+        }
+        HExpr::Conj { v, x, .. } | HExpr::Subs { s: v, start: x, .. } | HExpr::Split { s: v, sep: x } => {
+            collect_captures(v, env, params, seen, caps);
+            collect_captures(x, env, params, seen, caps);
+        }
+        HExpr::Subvec { v, start, end, .. } => {
+            collect_captures(v, env, params, seen, caps);
+            collect_captures(start, env, params, seen, caps);
+            collect_captures(end, env, params, seen, caps);
+        }
+        HExpr::Join { sep, xs } => {
+            collect_captures(sep, env, params, seen, caps);
+            collect_captures(xs, env, params, seen, caps);
+        }
+        HExpr::For { src, body, .. } => {
+            collect_captures(src, env, params, seen, caps);
+            collect_captures(body, env, params, seen, caps);
+        }
+        HExpr::StrCmp(_, a, b) => {
+            collect_captures(a, env, params, seen, caps);
+            collect_captures(b, env, params, seen, caps);
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            collect_captures(scrut, env, params, seen, caps);
+            for arm in arms {
+                collect_captures(&arm.body, env, params, seen, caps);
+            }
+        }
+        HExpr::ClosureCall { f, args, .. } => {
+            collect_captures(f, env, params, seen, caps);
+            for a in args {
+                collect_captures(a, env, params, seen, caps);
+            }
+        }
+        // Reduce stage bodies reference the loop's own bindings; vars that
+        // live in the enclosing env are captures.
+        HExpr::Reduce(r) => match &**r {
+            HReduce::Pipeline { init, src, maps, filters, .. } => {
+                collect_captures(init, env, params, seen, caps);
+                collect_source_captures(src, env, params, seen, caps);
+                for m in maps {
+                    collect_captures(&m.body, env, params, seen, caps);
+                }
+                for f in filters {
+                    collect_captures(&f.body, env, params, seen, caps);
+                }
+            }
+            HReduce::Closure { init, src, body, maps, filters, .. } => {
+                collect_captures(init, env, params, seen, caps);
+                collect_source_captures(src, env, params, seen, caps);
+                collect_captures(body, env, params, seen, caps);
+                for m in maps {
+                    collect_captures(&m.body, env, params, seen, caps);
+                }
+                for f in filters {
+                    collect_captures(&f.body, env, params, seen, caps);
+                }
+            }
+        },
+        _ => {}
+    }
+}
+
+fn collect_source_captures(
+    src: &HSource,
+    env: &Env,
+    params: &[String],
+    seen: &mut Vec<String>,
+    caps: &mut Vec<(String, Ty)>,
+) {
+    match src {
+        HSource::Var(v) => {
+            if !params.iter().any(|p| p == v)
+                && !seen.iter().any(|s| s == v)
+            {
+                if let Some(&t) = env.get(v) {
+                    seen.push(v.to_string());
+                    caps.push((v.to_string(), t));
+                }
+            }
+        }
+        HSource::Lit(_) => {}
+        HSource::Range(a, b) => {
+            collect_captures(a, env, params, seen, caps);
+            collect_captures(b, env, params, seen, caps);
+        }
+        HSource::Zip(a, b) => {
+            collect_source_captures(a, env, params, seen, caps);
+            collect_source_captures(b, env, params, seen, caps);
+        }
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => {
+            collect_captures(n, env, params, seen, caps);
+            collect_source_captures(inner, env, params, seen, caps);
+        }
+    }
+}
+
+/// `(fn [x :- ty ...] body)` — a closure value. Params need annotations in
+/// this slice; free locals are captured by value (non-Copy captures move).
+pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() != 3 {
+        return Err("fn expects (fn [params] <body>)".into());
+    }
+    let Expr::Vector(pitems) = &items[1] else {
+        return Err("fn params must be a vector".into());
+    };
+    let mut params: Vec<(String, Ty)> = Vec::new();
+    let mut i = 0;
+    while i < pitems.len() {
+        let Expr::LitSym(name) = &pitems[i] else {
+            return Err("fn param must be a symbol".into());
+        };
+        let ty = if pitems.get(i + 1).map(|e| matches!(e, Expr::LitSym(s) if s == ":-")).unwrap_or(false) {
+            let Some(Expr::LitSym(tyname)) = pitems.get(i + 2) else {
+                return Err(format!("fn param {} expects a type annotation", name));
+            };
+            parse_ty_sym(tyname, &HashMap::new(), &mut Vec::new())?
+        } else {
+            return Err(format!(
+                "fn param {} needs a type annotation in this slice (x :- i64)",
+                name
+            ));
+        };
+        params.push((name.clone(), ty));
+        i += if ty_name_len(&pitems, i) == 3 { 3 } else { 1 };
+    }
+    let mut child = env.clone();
+    for (n, t) in &params {
+        child.insert(n.clone(), *t);
+    }
+    let body = lower(&items[2], &child, ctx)?;
+    let ret = ty_of(&body, &child, ctx);
+
+    let pnames: Vec<String> = params.iter().map(|(n, _)| n.clone()).collect();
+    let mut seen = Vec::new();
+    let mut caps = Vec::new();
+    collect_captures(&body, env, &pnames, &mut seen, &mut caps);
+    // Captures must be scalar or string in this slice (env slots are 8
+    // bytes; vectors are two words).
+    for (n, t) in &caps {
+        if matches!(t, Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Adt(_) | Ty::Fn(_)) {
+            return Err(format!(
+                "capturing {} of type {:?} is not supported yet (scalar or str captures only)",
+                n, t
+            ));
+        }
+    }
+
+    let ptys: Vec<Ty> = params.iter().map(|(_, t)| *t).collect();
+    let mut sigs = ctx.fn_sigs.borrow_mut();
+    let sig = match sigs.iter().position(|(p, r)| *p == ptys && *r == ret) {
+        Some(i) => i as u32,
+        None => {
+            sigs.push((ptys, ret));
+            (sigs.len() - 1) as u32
+        }
+    };
+    drop(sigs);
+
+    let mangled = format!("lambda_{}", ctx.lambdas.borrow().len());
+    ctx.lambdas.borrow_mut().push((
+        mangled.clone(),
+        caps.clone(),
+        params.clone(),
+        ret,
+        body.clone(),
+    ));
+
+    Ok(HExpr::Closure {
+        sig,
+        mangled,
+        params,
+        captures: caps,
+        body: Box::new(body),
+    })
+}
+
+/// How many forms the param annotation at position `i` consumes.
+fn ty_name_len(pitems: &[Expr], i: usize) -> usize {
+    if pitems.get(i + 1).map(|e| matches!(e, Expr::LitSym(s) if s == ":-")).unwrap_or(false) {
+        3
+    } else {
+        1
+    }
+}

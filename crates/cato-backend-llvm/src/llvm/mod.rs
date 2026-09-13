@@ -5,6 +5,7 @@
 
 mod comprehension;
 mod adt;
+mod closures;
 mod analysis;
 mod calls;
 mod emit_loop;
@@ -21,6 +22,7 @@ mod rewrite;
 mod state;
 
 pub(crate) use adt::*;
+pub(crate) use closures::*;
 pub(crate) use comprehension::*;
 pub(crate) use analysis::*;
 pub(crate) use calls::*;
@@ -39,13 +41,20 @@ pub(crate) use state::*;
 
 use cato_core::hir::*;
 use cato_core::{hir::AdtDef, hir::Defn, Backend};
+use cato_core::Lambda;
 use std::collections::HashMap;
 
 pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
-    emit_module_fast(adts, fns, false)
+    emit_module_fast(adts, fns, false, &[], &[])
 }
 
-pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
+pub fn emit_module_fast(
+    adts: &[AdtDef],
+    fns: &[Defn],
+    fast: bool,
+    fn_sigs: &[(Vec<Ty>, Ty)],
+    lambdas: &[Lambda],
+) -> String {
     // Signature table: callee name -> (ret, param types). Includes declared
     // defns and hoisted loop helpers.
     let mut sigs: HashMap<String, (Ty, Vec<Ty>)> = HashMap::new();
@@ -59,7 +68,7 @@ pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
     let mut loops: Vec<LoopSpec> = Vec::new();
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
-    let mut mdl = Mdl::new(adts.to_vec(), fast);
+    let mut mdl = Mdl::new(adts.to_vec(), fast, fn_sigs.to_vec(), lambdas.to_vec());
 
     for d in fns {
         if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
@@ -90,6 +99,7 @@ pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
 
     output.push("; cato: generated LLVM IR (vertical slice)".to_string());
     output.push("%VecI64 = type { ptr, i64, i64 }".to_string());
+    output.push("%Closure = type { ptr, ptr }".to_string());
     for adt in adts {
         let n = adt.variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
         output.push(format!("%{} = type {{ i64, [{} x i64] }}", adt.name, n));
@@ -111,6 +121,23 @@ pub fn emit_module_fast(adts: &[AdtDef], fns: &[Defn], fast: bool) -> String {
         } else {
             output.push(emit_plain(defn, &mut mdl, &sigs));
         }
+    }
+    // Closure bodies get the same loop-hoisting rewrite as plain defns.
+    for lambda in &mdl.lambdas.clone() {
+        let mut idmap2: HashMap<String, usize> = HashMap::new();
+        let body = rewrite_body(
+            &lambda.body,
+            &lambda.mangled,
+            &lambda.params,
+            &mut idmap2,
+            &mut loops,
+            &mut sigs,
+        )
+        .unwrap_or_else(|e| panic!("codegen: {}", e));
+        let mut l = lambda.clone();
+        l.body = body;
+        output.push(String::new());
+        output.push(emit_lambda(&l, &mut mdl, &sigs));
     }
 
     if fast {
@@ -154,6 +181,12 @@ impl Backend for LlvmBackend {
     }
 
     fn emit(&self, program: &cato_core::Program) -> Result<String, String> {
-        Ok(emit_module_fast(&program.adts, &program.defns, self.fast))
+        Ok(emit_module_fast(
+            &program.adts,
+            &program.defns,
+            self.fast,
+            &program.fn_sigs,
+            &program.lambdas,
+        ))
     }
 }

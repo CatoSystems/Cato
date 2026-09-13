@@ -4,6 +4,7 @@
 use std::process::Command;
 
 const EXAMPLES: &[&str] = &[
+    "closures",
     "collections",
     "generic",
     "heap",

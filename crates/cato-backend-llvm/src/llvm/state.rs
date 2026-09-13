@@ -1,4 +1,5 @@
 use super::*;
+use cato_core::Lambda;
 
 pub(crate) struct Mdl {
     pub(crate) vec_globals: Vec<String>,
@@ -9,16 +10,27 @@ pub(crate) struct Mdl {
     /// Deduplicated `declare` lines emitted lazily (runtime helpers and
     /// user externs share the namespace).
     pub(crate) decls: Vec<String>,
+    /// Closure signature table (`Ty::Fn(i)` indexes it).
+    pub(crate) fn_sigs: Vec<(Ty, Vec<Ty>)>,
+    /// Out-of-line closure bodies.
+    pub(crate) lambdas: Vec<Lambda>,
 }
 
 impl Mdl {
-    pub(crate) fn new(adts: Vec<AdtDef>, fast: bool) -> Self {
+    pub(crate) fn new(
+        adts: Vec<AdtDef>,
+        fast: bool,
+        fn_sigs: Vec<(Vec<Ty>, Ty)>,
+        lambdas: Vec<Lambda>,
+    ) -> Self {
         Mdl {
             vec_globals: Vec::new(),
             adts,
             counter: 0,
             fast,
             decls: Vec::new(),
+            fn_sigs: fn_sigs.into_iter().map(|(p, r)| (r, p)).collect(),
+            lambdas,
         }
     }
     /// Emit a `declare` once per symbol (deduplicated by line).
@@ -45,7 +57,7 @@ impl Mdl {
             Ty::Vec(_) | Ty::Map | Ty::Set => {
                 panic!("codegen: aggregate type in scalar position")
             }
-            Ty::Adt(_) | Ty::Str => "ptr".into(),
+            Ty::Adt(_) | Ty::Str | Ty::Fn(_) => "ptr".into(),
             Ty::Param(_) => panic!("codegen: unresolved type parameter"),
         }
     }
