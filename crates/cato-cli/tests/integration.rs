@@ -271,3 +271,65 @@ fn compiles_widths2_to_expected_output() {
         "widths2.cato output"
     );
 }
+
+// Phase 13: scope-exit frees — heap bindings are released, with no
+// double-frees or use-after-frees (checked under AddressSanitizer).
+#[test]
+fn scope_exit_frees_are_sanitizer_clean() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rt = manifest.join("../../runtime/runtime.c");
+    for name in ["heap", "maps", "sets", "slice"] {
+        let src = manifest.join("../../examples").join(format!("{}.cato", name));
+        let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
+        let exe = manifest.join("../../target").join(format!("frees_{}_bin", name));
+
+        let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+            .arg(&src).arg("-o").arg(&out_ll)
+            .status().expect("cato run");
+        assert!(status.success(), "{}: cato compile failed", name);
+
+        let cc = Command::new("clang")
+            .args(["-fsanitize=address"])
+            .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+            .status().expect("clang link");
+        assert!(cc.success(), "{}: clang failed", name);
+
+        let out = Command::new(&exe).output().expect("run binary");
+        assert!(out.status.success(), "{}: binary failed", name);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!stderr.contains("AddressSanitizer"), "{}: sanitizer error:\n{}", name, stderr);
+    }
+}
+
+// Phase 13: frees are annotated in HIR for non-escaping bindings.
+#[test]
+fn non_escaping_bindings_get_free_annotations() {
+    let program = cato_core::compile_to_program(
+        "(defn main []
+           (let [m {1 2}
+                 s #{1 2}
+                 v (vec-i64 1 2)]
+             (do (print-i64 (count m)) (print-i64 (count s)) (print-i64 (count v)))))",
+    )
+    .expect("compile");
+    let main = program.defns.iter().find(|d| d.name == "main").unwrap();
+    fn lets(e: &cato_core::hir::HExpr) -> Vec<&Vec<String>> {
+        use cato_core::hir::HExpr;
+        match e {
+            HExpr::Let(_, body, frees) => {
+                let mut all = vec![frees];
+                all.extend(lets(body));
+                all
+            }
+            other => {
+                let _ = other;
+                Vec::new()
+            }
+        }
+    }
+    let frees: Vec<&Vec<String>> = lets(&main.body);
+    assert!(!frees.is_empty(), "expected annotated lets");
+    let names: Vec<String> = frees.iter().flat_map(|f| f.iter().cloned()).collect();
+    assert!(names.contains(&"m".to_string()), "map binding should be freed");
+    assert!(names.contains(&"s".to_string()), "set binding should be freed");
+}

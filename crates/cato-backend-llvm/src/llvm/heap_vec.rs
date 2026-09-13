@@ -438,3 +438,30 @@ pub(crate) fn emit_join(
     ));
     p
 }
+
+/// Phase 13: free the still-owned heap bindings of a `let` scope at its
+/// exit. The frontend's `annotate_frees` guarantees each name here is
+/// unique, unconsumed, and un-escaped, so a plain load+free is sound.
+pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
+    if frees.is_empty() {
+        return;
+    }
+    mdl.ensure_decl("declare void @free(ptr)");
+    for name in frees {
+        let slot = if let Some((s, _)) = c.grow.get(name) {
+            s.clone()
+        } else if let Some((s, _)) = c.growm.get(name) {
+            s.clone()
+        } else {
+            continue;
+        };
+        let pf = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+            pf, slot
+        ));
+        let p = c.temp();
+        c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+        c.line(&format!("  call void @free(ptr {})", p));
+    }
+}

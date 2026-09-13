@@ -212,7 +212,14 @@ pub enum HExpr {
     StrCmp(bool, Box<HExpr>, Box<HExpr>),
     Reduce(Box<HReduce>),
     Call(String, Vec<HExpr>),
-    Let(Vec<(String, HExpr, Ty)>, Box<HExpr>),
+    Let(
+        Vec<(String, HExpr, Ty)>,
+        Box<HExpr>,
+        /// Bindings to free at this scope's exit (Phase 13): heap-owning
+        /// bindings (Vec/Map/Set) that are provably unique here — never
+        /// consumed by a call or conj, and never escaped by return.
+        Vec<String>,
+    ),
     Seq(Vec<HExpr>),
     If(Box<HExpr>, Box<HExpr>, Box<HExpr>, Ty),
     And(Box<HExpr>, Box<HExpr>),

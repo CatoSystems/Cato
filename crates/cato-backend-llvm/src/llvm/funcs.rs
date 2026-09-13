@@ -253,9 +253,11 @@ pub(crate) fn emit_vec_pair(
         }
         HExpr::VecLit(_) => vec_arg(e, c, mdl),
         HExpr::Call(..) => emit_vec_call(e, c, mdl, sigs),
-        HExpr::Let(binds, body) => {
+        HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
-            emit_vec_pair(body, c, mdl, sigs)
+            let v = emit_vec_pair(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {

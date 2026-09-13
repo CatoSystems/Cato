@@ -234,7 +234,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     } else {
         lower(&items[2], &child, ctx)?
     };
-    Ok(HExpr::Let(resolved, Box::new(body)))
+    Ok(HExpr::Let(resolved, Box::new(body), Vec::new()))
 }
 
 

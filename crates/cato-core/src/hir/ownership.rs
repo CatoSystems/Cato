@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn is_non_copy(ty: Ty) -> bool {
     matches!(ty, Ty::Adt(_) | Ty::Vec(_))
@@ -248,7 +249,7 @@ impl<'a> BCheck<'a> {
                     }
                 }
             }
-            HExpr::Let(binds, body) => {
+            HExpr::Let(binds, body, frees) => {
                 for (name, value, ty) in binds {
                     self.check(value, tys, st);
                     // Binding a non-Copy value moves it.
@@ -275,3 +276,131 @@ impl<'a> BCheck<'a> {
     }
 }
 
+
+// ---------------------------------------------------------------------------
+// Phase 13: scope-exit frees
+// ---------------------------------------------------------------------------
+
+/// Heap-owning types: bindings of these types hold a malloc'd buffer that
+/// can be released at binding scope exit.
+fn heap_owning(ty: Ty) -> bool {
+    matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set)
+}
+
+fn annotate_walk(
+    e: &mut HExpr,
+    consumed: &HashSet<String>,
+    escaped: &HashSet<String>,
+    shadowed: &HashSet<String>,
+) {
+    match e {
+        HExpr::Let(binds, body, frees) => {
+            annotate_walk(body, consumed, escaped, shadowed);
+            for (name, _value, ty) in binds.iter() {
+                if heap_owning(*ty)
+                    && !consumed.contains(name)
+                    && !escaped.contains(name)
+                    && !shadowed.contains(name)
+                {
+                    frees.push(name.clone());
+                }
+            }
+        }
+        HExpr::Seq(vs) => {
+            for v in vs {
+                annotate_walk(v, consumed, escaped, shadowed);
+            }
+        }
+        HExpr::If(c, t, f, _) => {
+            annotate_walk(c, consumed, escaped, shadowed);
+            annotate_walk(t, consumed, escaped, shadowed);
+            annotate_walk(f, consumed, escaped, shadowed);
+        }
+        _ => {}
+    }
+}
+
+/// Annotate every `Let` in a defn body with the bindings that may be freed
+/// at scope exit. A binding qualifies when:
+/// - its type owns a heap buffer (Vec / Map / Set),
+/// - it is never passed as a call argument or used as a `conj` source
+///   (conj mutates in place, so consumers alias the buffer),
+/// - it is not the function's returned value,
+/// - it is not shadowed by another binding of the same name (which would
+///   alias the same env slot at codegen).
+/// Conservative by design: anything uncertain leaks, nothing double-frees.
+pub(crate) fn annotate_frees(body: &mut HExpr) {
+    let mut consumed: HashSet<String> = HashSet::new();
+    let mut shadowed: HashSet<String> = HashSet::new();
+    let mut escaped: HashSet<String> = HashSet::new();
+
+    fn collect(
+        e: &HExpr,
+        consumed: &mut HashSet<String>,
+        shadowed: &mut HashMap<String, usize>,
+    ) {
+        match e {
+            HExpr::Call(_, args) => {
+                for a in args {
+                    if let HExpr::Var(v) = a {
+                        consumed.insert(v.clone());
+                    }
+                    collect(a, consumed, shadowed);
+                }
+            }
+            HExpr::Conj { v, x, .. } => {
+                if let HExpr::Var(name) = &**v {
+                    consumed.insert(name.clone());
+                }
+                collect(x, consumed, shadowed);
+            }
+            HExpr::Let(binds, body, _) => {
+                for (n, value, _) in binds {
+                    *shadowed.entry(n.clone()).and_modify(|c| *c += 1).or_insert(1);
+                    collect(value, consumed, shadowed);
+                }
+                collect(body, consumed, shadowed);
+            }
+            HExpr::Seq(vs) | HExpr::StrCat(vs) => {
+                for v in vs {
+                    collect(v, consumed, shadowed);
+                }
+            }
+            HExpr::If(c, t, f, _) => {
+                collect(c, consumed, shadowed);
+                collect(t, consumed, shadowed);
+                collect(f, consumed, shadowed);
+            }
+            HExpr::And(c, t) | HExpr::Or(c, t) => {
+                collect(c, consumed, shadowed);
+                collect(t, consumed, shadowed);
+            }
+            _ => {}
+        }
+    }
+
+    fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
+        match e {
+            HExpr::Let(_, body, _) => tail_escape(body, escaped),
+            HExpr::Seq(vs) => {
+                if let Some(last) = vs.last() {
+                    tail_escape(last, escaped);
+                }
+            }
+            HExpr::Var(v) => {
+                escaped.insert(v.clone());
+            }
+            _ => {}
+        }
+    }
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    collect(body, &mut consumed, &mut counts);
+    tail_escape(body, &mut escaped);
+    let shadowed: HashSet<String> = counts
+        .into_iter()
+        .filter(|(_, c)| *c > 1)
+        .map(|(n, _)| n)
+        .collect();
+    annotate_walk(body, &consumed, &escaped, &shadowed);
+}

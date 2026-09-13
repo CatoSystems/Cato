@@ -64,9 +64,11 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 call_user(name, args, c, mdl, sigs)
             }
         }
-        HExpr::Let(binds, body) => {
+        HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
-            emit_float(body, c, mdl, sigs)
+            let v = emit_float(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
         }
         HExpr::Seq(vs) => {
             for v in vs {

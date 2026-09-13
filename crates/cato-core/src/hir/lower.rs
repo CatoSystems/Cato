@@ -583,7 +583,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
                 .copied()
                 .unwrap_or(Ty::I64)
         }
-        HExpr::Let(_, b) => ty_of(b, env, ctx),
+        HExpr::Let(_, b, _) => ty_of(b, env, ctx),
         HExpr::Seq(v) => v.last().map(|x| ty_of(x, env, ctx)).unwrap_or(Ty::I64),
         HExpr::If(_, _, _, t) => *t,
         HExpr::And(..) | HExpr::Or(..) | HExpr::Not(_) | HExpr::Cmp(..) => Ty::Bool,

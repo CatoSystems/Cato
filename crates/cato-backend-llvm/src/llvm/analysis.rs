@@ -49,7 +49,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Get { idx, default, .. } => {
             has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
         }
-        HExpr::Let(binds, body) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
+        HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Cmp(..) => false,
         HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => false,
@@ -145,7 +145,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(a, f);
             }
         }
-        HExpr::Let(binds, body) => {
+        HExpr::Let(binds, body, _) => {
             for (_, e, _) in binds {
                 collect_vars(e, f);
             }

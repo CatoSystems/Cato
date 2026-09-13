@@ -136,7 +136,7 @@ fn builds_multi_type_let_sequence() {
              (+ d 0.5)))",
     );
     match body {
-        HExpr::Let(binds, inner) => {
+        HExpr::Let(binds, inner, _) => {
             assert_eq!(binds.len(), 2);
             let HExpr::Bin(BinOp::Add, _, _) = *inner else {
                 panic!("expected f64 add body after both bindings")

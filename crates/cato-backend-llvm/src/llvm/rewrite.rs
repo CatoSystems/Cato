@@ -64,7 +64,7 @@ pub(crate) fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        HExpr::Let(binds, body) => HExpr::Let(
+        HExpr::Let(binds, body, frees) => HExpr::Let(
             binds
                 .iter()
                 .map(|(n, e, t)| {
@@ -76,6 +76,7 @@ pub(crate) fn rewrite_body(
                 })
                 .collect::<Result<Vec<_>, String>>()?,
             Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
+            frees.clone(),
         ),
         HExpr::Seq(vs) => HExpr::Seq(
             vs.iter()

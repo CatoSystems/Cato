@@ -73,6 +73,8 @@ pub fn build_program_located(
             _ => lower(&raw.body, &env, &ctx),
         }
         .map_err(|e| locate(*span, &e))?;
+        let mut body = body;
+        annotate_frees(&mut body);
         out.push(Defn {
             name: raw.name.clone(),
             params: raw.params.clone(),

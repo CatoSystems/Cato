@@ -21,12 +21,13 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Call(n, args) => {
             HExpr::Call(n.clone(), args.iter().map(check).collect())
         }
-        HExpr::Let(binds, body) => HExpr::Let(
+        HExpr::Let(binds, body, frees) => HExpr::Let(
             binds
                 .iter()
                 .map(|(n, e, t)| (n.clone(), check(e), *t))
                 .collect(),
             Box::new(check(body)),
+            frees.clone(),
         ),
         HExpr::Seq(vs) => HExpr::Seq(vs.iter().map(check).collect()),
         HExpr::Var(v) => HExpr::Var(v.clone()),

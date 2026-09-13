@@ -596,7 +596,7 @@ impl<'p> Interpreter<'p> {
                     self.eval(f, env)?
                 }
             }
-            HExpr::Let(binds, body) => {
+            HExpr::Let(binds, body, _frees) => {
                 let mut child = env.clone();
                 for (name, value, _ty) in binds {
                     let v = self.eval(value, &mut child)?;
