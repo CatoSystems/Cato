@@ -60,6 +60,11 @@ pub fn parse_args(args: &[String]) -> Cli {
                 eprintln!("cato: unknown flag {}", s);
                 std::process::exit(2);
             }
+            "run" if file.is_none() && backend == "llvm" => {
+                // `cato run <file.cato>` — interpreter script mode.
+                backend = "interp".to_string();
+                i += 1;
+            }
             s => {
                 file = Some(s.to_string());
                 i += 1;
@@ -102,6 +107,6 @@ pub fn parse_args(args: &[String]) -> Cli {
 
 fn usage() {
     eprintln!(
-        "cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll] [--fast] [--backend llvm]\n  cato --explain E301\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.\n--fast attaches vectorization metadata to fused loops (auto-SIMD).\n--explain prints long-form documentation for a diagnostic code.\n\nBackends: llvm (default)."
+        "cato: compile a .cato program to LLVM IR\n\nUSAGE:\n  cato <file.cato> [-o out.ll] [--fast] [--backend llvm]\n  cato --explain E301\n\nBy default the LLVM IR is written to stdout; use -o to write it to a file.\n--fast attaches vectorization metadata to fused loops (auto-SIMD).\n--explain prints long-form documentation for a diagnostic code.\n\nBackends: llvm (default, emits IR), interp (executes and prints output).\n--backend interp / `cato run` execute the program directly, no LLVM."
     );
 }

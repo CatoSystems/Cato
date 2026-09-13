@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 cato-core = { path = "../cato-core" }
 cato-backend-llvm = { path = "../cato-backend-llvm" }
+cato-interp = { path = "../cato-backend-interp" }

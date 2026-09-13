@@ -1,0 +1,10 @@
+[package]
+name = "cato-interp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cato-core = { path = "../cato-core" }
+
+[dev-dependencies]
+cato-core = { path = "../cato-core" }
