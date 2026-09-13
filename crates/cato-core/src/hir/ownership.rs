@@ -84,7 +84,7 @@ impl<'a> BCheck<'a> {
                 self.check(a, tys, st);
                 self.check(b, tys, st);
             }
-            HExpr::CmpW(_, a, b) => {
+            HExpr::CmpW(_, a, b, _) | HExpr::BinF(_, a, b) => {
                 self.check(a, tys, st);
                 self.check(b, tys, st);
             }

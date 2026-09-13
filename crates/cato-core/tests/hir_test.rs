@@ -715,3 +715,19 @@ fn set_ops_require_sets() {
     assert!(build(&read_all("(defn main [] :- str (subs 3 0 1))").unwrap()).is_err());
     assert!(build(&read_all("(defn main [] :- str (join 3 (vec-i64 1)))").unwrap()).is_err());
 }
+
+#[test]
+fn closed_width_rules() {
+    // Same-width arithmetic and comparisons are allowed.
+    assert!(build(&read_all("(defn f [a :- u8 b :- u8] :- u8 (+ a b))").unwrap()).is_ok());
+    // Mixed integer widths are rejected.
+    assert!(build(&read_all("(defn f [a :- u8 b :- i64] :- i64 (+ a b))").unwrap()).is_err());
+    // f32 never auto-promotes.
+    assert!(build(&read_all("(defn f [a :- f32 b :- i64] :- f32 (+ a b))").unwrap()).is_err());
+    // Unsigned comparisons lower through the closed-width path.
+    assert!(build(&read_all("(defn f [a :- u32 b :- u32] :- bool (> a b))").unwrap()).is_ok());
+    // Casting literals to widths works: (u8 255).
+    assert!(build(&read_all("(defn main [] :- i64 (i64 (u8 255)))").unwrap()).is_ok());
+    // abs/min/max require i64/i32/f64.
+    assert!(build(&read_all("(defn f [a :- u8] :- u8 (abs a))").unwrap()).is_err());
+}

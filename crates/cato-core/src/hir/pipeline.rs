@@ -14,14 +14,26 @@ pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(
     if matches!(at, Ty::Adt(_) | Ty::Str) || matches!(bt, Ty::Adt(_) | Ty::Str) {
         return Err("ADT and string values cannot be used in arithmetic".into());
     }
-    // i32 is a closed width: both operands must be i32 (cast explicitly).
-    if at == Ty::I32 && bt == Ty::I32 {
+    // Every width is closed: both operands must share it (cast explicitly).
+    // i64 keeps the historical auto-promotion to f64 below; f32 never
+    // auto-promotes.
+    if at == bt && at.is_int() {
         return Ok((a, b));
     }
-    if at == Ty::I32 || bt == Ty::I32 {
-        return Err(
-            "cannot mix i32 with other widths — cast with (i64 e) or (i32 e)".into(),
-        );
+    if at == Ty::F32 && bt == Ty::F32 {
+        return Ok((a, b));
+    }
+    if at.is_int() && bt.is_int() {
+        return Err(format!(
+            "cannot mix widths {:?} and {:?} — cast explicitly",
+            at, bt
+        ));
+    }
+    if at == Ty::F32 || bt == Ty::F32 {
+        return Err(format!(
+            "cannot mix f32 with {:?} — cast with (f32 e) or (f64 e)",
+            if at == Ty::F32 { bt } else { at }
+        ));
     }
     let f = at == Ty::F64 || bt == Ty::F64;
     Ok((coerce_f64(a, at, f), coerce_f64(b, bt, f)))
@@ -29,8 +41,12 @@ pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(
 
 pub(crate) fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     let (a, b) = promote_pair(a, b, env, ctx)?;
-    if ty_of(&a, env, ctx) == Ty::I32 {
-        return Ok(HExpr::BinW(op, Box::new(a), Box::new(b), Ty::I32));
+    let t = ty_of(&a, env, ctx);
+    if t != Ty::I64 && t.is_int() {
+        return Ok(HExpr::BinW(op, Box::new(a), Box::new(b), t));
+    }
+    if t == Ty::F32 {
+        return Ok(HExpr::BinF(op, Box::new(a), Box::new(b)));
     }
     Ok(HExpr::Bin(op, Box::new(a), Box::new(b)))
 }

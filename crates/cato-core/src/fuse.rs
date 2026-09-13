@@ -53,8 +53,11 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::BinW(op, a, b, t) => {
             HExpr::BinW(op.clone(), Box::new(check(a)), Box::new(check(b)), *t)
         }
-        HExpr::CmpW(op, a, b) => {
-            HExpr::CmpW(op.clone(), Box::new(check(a)), Box::new(check(b)))
+        HExpr::CmpW(op, a, b, t) => {
+            HExpr::CmpW(op.clone(), Box::new(check(a)), Box::new(check(b)), *t)
+        }
+        HExpr::BinF(op, a, b) => {
+            HExpr::BinF(op.clone(), Box::new(check(a)), Box::new(check(b)))
         }
         HExpr::ICast(inner, t) => HExpr::ICast(Box::new(check(inner)), *t),
         HExpr::MapLit(pairs) => HExpr::MapLit(

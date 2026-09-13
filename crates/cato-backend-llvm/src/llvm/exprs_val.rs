@@ -301,9 +301,13 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let v = emit_str_val(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::Str));
             }
-            Ty::I32 => {
+            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
                 let v = emit_int(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::I32));
+                c.scalar.insert(name.clone(), (v, *t));
+            }
+            Ty::F32 => {
+                let v = emit_float(value, c, mdl, sigs);
+                c.scalar.insert(name.clone(), (v, Ty::F32));
             }
             Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
             Ty::Adt(_) => {

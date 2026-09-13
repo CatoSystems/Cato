@@ -125,7 +125,13 @@ pub(crate) fn rewrite_body(
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *t,
         ),
-        HExpr::CmpW(op, a, b) => HExpr::CmpW(
+        HExpr::CmpW(op, a, b, t) => HExpr::CmpW(
+            op.clone(),
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
+            *t,
+        ),
+        HExpr::BinF(op, a, b) => HExpr::BinF(
             op.clone(),
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),

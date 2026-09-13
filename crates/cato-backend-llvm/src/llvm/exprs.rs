@@ -1,20 +1,77 @@
 use super::*;
 
+/// Emit a widening/narrowing/conversion cast between scalar widths:
+/// same-bits ints reinterpret for free, narrowing truncates, signed
+/// widening sexts, unsigned widening zexts, and the float matrix maps
+/// to sitofp/uitofp/fptosi/fptoui/fptrunc/fpext.
+pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String {
+    if src == target {
+        return r;
+    }
+    let t = c.temp();
+    let sll = if src.is_float() { Mdl::ll_scalar(src) } else { Mdl::ll_scalar(src) };
+    let dll = Mdl::ll_scalar(target);
+    if src.is_int() && target.is_int() {
+        let (sb, db) = (src.int_bits(), target.int_bits());
+        if sb == db {
+            return r; // reinterpret: no instruction
+        }
+        if sb > db {
+            c.line(&format!("  {} = trunc {} {} to {}", t, sll, r, dll));
+        } else if src.is_uint() {
+            c.line(&format!("  {} = zext {} {} to {}", t, sll, r, dll));
+        } else {
+            c.line(&format!("  {} = sext {} {} to {}", t, sll, r, dll));
+        }
+    } else if src.is_int() && target.is_float() {
+        let op = if src.is_uint() { "uitofp" } else { "sitofp" };
+        c.line(&format!("  {} = {} {} {} to {}", t, op, sll, r, dll));
+    } else if src.is_float() && target.is_int() {
+        let op = if target.is_uint() { "fptoui" } else { "fptosi" };
+        c.line(&format!("  {} = {} {} {} to {}", t, op, sll, r, dll));
+    } else {
+        // float <-> float
+        let op = if target == Ty::F32 { "fptrunc" } else { "fpext" };
+        c.line(&format!("  {} = {} {} {} to {}", t, op, sll, r, dll));
+    }
+    t
+}
+
 pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
-        HExpr::CmpW(op, a, b) => {
-            let av = emit_int(a, c, mdl, sigs);
-            let bv = emit_int(b, c, mdl, sigs);
+        HExpr::CmpW(op, a, b, ty) => {
+            let av = emit_typed(a, *ty, c, mdl, sigs);
+            let bv = emit_typed(b, *ty, c, mdl, sigs);
+            if ty.is_float() {
+                let ll = Mdl::ll_scalar(*ty);
+                let op = match op {
+                    CmpOp::Eq => "oeq",
+                    CmpOp::Ne => "une",
+                    CmpOp::Lt => "olt",
+                    CmpOp::Gt => "ogt",
+                    CmpOp::Le => "ole",
+                    CmpOp::Ge => "oge",
+                };
+                let t = c.temp();
+                c.line(&format!("  {} = fcmp {} {} {}, {}", t, op, ll, av, bv));
+                return t;
+            }
+            let ll = Mdl::ll_scalar(*ty);
             let op = match op {
                 CmpOp::Eq => "eq",
                 CmpOp::Ne => "ne",
+                // Unsigned widths use the `ult` family.
+                CmpOp::Lt if ty.is_uint() => "ult",
+                CmpOp::Gt if ty.is_uint() => "ugt",
+                CmpOp::Le if ty.is_uint() => "ule",
+                CmpOp::Ge if ty.is_uint() => "uge",
                 CmpOp::Lt => "slt",
                 CmpOp::Gt => "sgt",
                 CmpOp::Le => "sle",
                 CmpOp::Ge => "sge",
             };
             let t = c.temp();
-            c.line(&format!("  {} = icmp {} i32 {}, {}", t, op, av, bv));
+            c.line(&format!("  {} = icmp {} {} {}, {}", t, op, ll, av, bv));
             t
         }
         HExpr::StrCmp(eq, a, b) => {
@@ -203,7 +260,32 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::Call(name, args) if name == "print-i64" => {
             // Side-effecting call inside a loop body (e.g. doseq).
             let v = emit_int(&args[0], c, mdl, sigs);
-            c.line(&format!("  call void @cato_print_i64(i64 {})", v));
+            let w = static_int_width(&args[0], c, sigs);
+            let v64 = if w == Ty::I64 {
+                v
+            } else if w == Ty::Bool {
+                let t = c.temp();
+                c.line(&format!("  {} = zext i1 {} to i64", t, v));
+                t
+            } else if w.is_float() {
+                let t = c.temp();
+                c.line(&format!(
+                    "  {} = fptosi {} {} to i64",
+                    t,
+                    Mdl::ll_scalar(w),
+                    v
+                ));
+                t
+            } else if w.is_uint() {
+                let t = c.temp();
+                c.line(&format!("  {} = zext {} {} to i64", t, Mdl::ll_scalar(w), v));
+                t
+            } else {
+                let t = c.temp();
+                c.line(&format!("  {} = sext {} {} to i64", t, Mdl::ll_scalar(w), v));
+                t
+            };
+            c.line(&format!("  call void @cato_print_i64(i64 {})", v64));
             "0".to_string()
         }
         HExpr::Call(name, args) if name == "print-string" => {
@@ -260,7 +342,21 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             }
             other => panic!("codegen: count of {:?}", other),
         },
-        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
+        HExpr::Call(name, args) => {
+            let v = call_user(name, args, c, mdl, sigs);
+            // A bool-returning callee used in i64 position widens to 0/1.
+            let is_bool = sigs
+                .get(name)
+                .map(|(r, _)| *r == Ty::Bool)
+                .unwrap_or(false);
+            if is_bool {
+                let t = c.temp();
+                c.line(&format!("  {} = zext i1 {} to i64", t, v));
+                t
+            } else {
+                v
+            }
+        }
         HExpr::Let(binds, body) => {
             emit_let(binds, c, mdl, sigs);
             emit_int(body, c, mdl, sigs)
@@ -362,34 +458,20 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 BinOp::Add => "add",
                 BinOp::Sub => "sub",
                 BinOp::Mul => "mul",
+                BinOp::Div if ty.is_uint() => "udiv",
                 BinOp::Div => "sdiv",
             };
-            let ll = if *ty == Ty::I32 { "i32" } else { "i64" };
+            let ll = Mdl::ll_scalar(*ty);
             let t = c.temp();
             c.line(&format!("  {} = {} {} {}, {}", t, op, ll, av, bv));
             t
         }
         HExpr::ICast(inner, target) => {
-            let iv = emit_int(inner, c, mdl, sigs);
-            let t = c.temp();
-            // i64 -> i32 truncates; i32 -> i64 sign-extends.
-            match (*target, static_int_width(inner, c, sigs)) {
-                (Ty::I32, Ty::I64) => {
-                    c.line(&format!("  {} = trunc i64 {} to i32", t, iv))
-                }
-                (Ty::I64, Ty::I32) => {
-                    c.line(&format!("  {} = sext i32 {} to i64", t, iv))
-                }
-                (Ty::I32, Ty::I32) => {
-                    c.line(&format!("  {} = add i32 {}, 0", t, iv))
-                }
-                (Ty::I64, Ty::I64) => {
-                    c.line(&format!("  {} = add i64 {}, 0", t, iv))
-                }
-                _ => panic!("codegen: invalid int cast"),
-            }
-            t
+            let src = static_int_width(inner, c, sigs);
+            let iv = emit_typed(inner, src, c, mdl, sigs);
+            emit_cast(iv, src, *target, c)
         }
+        HExpr::BinF(..) => panic!("codegen: f32 arithmetic in i64 context"),
         HExpr::SetLit(_)
         | HExpr::SetConj { .. }
         | HExpr::SetDisj { .. }

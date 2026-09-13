@@ -9,7 +9,17 @@ pub enum Ty {
     I64,
     /// 32-bit signed integer (narrow width slice).
     I32,
+    I8,
+    I16,
+    U8,
+    U16,
+    U32,
+    U64,
+    /// Unsigned machine word (64-bit on this target).
+    Usize,
     F64,
+    /// 32-bit float.
+    F32,
     /// Vector with an element type: `(Vector i64)`, `(Vector f64)`.
     Vec(Elem),
     Bool,
@@ -42,6 +52,38 @@ pub enum Elem {
 impl Elem {
     pub fn is_param(self) -> bool {
         matches!(self, Elem::Param(_))
+    }
+}
+
+impl Ty {
+    pub fn is_int(self) -> bool {
+        matches!(
+            self,
+            Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize
+        )
+    }
+
+    pub fn is_uint(self) -> bool {
+        matches!(self, Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize)
+    }
+
+    pub fn is_float(self) -> bool {
+        matches!(self, Ty::F64 | Ty::F32)
+    }
+
+    pub fn is_numeric(self) -> bool {
+        self.is_int() || self.is_float()
+    }
+
+    /// Bits of an integer width (unsigned types share the signed width).
+    pub fn int_bits(self) -> u32 {
+        match self {
+            Ty::I8 | Ty::U8 => 8,
+            Ty::I16 | Ty::U16 => 16,
+            Ty::I32 | Ty::U32 => 32,
+            Ty::I64 | Ty::U64 | Ty::Usize => 64,
+            _ => panic!("int_bits on non-int"),
+        }
     }
 }
 
@@ -80,6 +122,8 @@ pub enum HExpr {
     ConstF64(f64),
     Var(String),
     Bin(BinOp, Box<HExpr>, Box<HExpr>),
+    /// f32 arithmetic (f32 is a closed width like i32).
+    BinF(BinOp, Box<HExpr>, Box<HExpr>),
     ConvF64(Box<HExpr>),
     Count(Box<HExpr>),
     VecLit(VLit),
@@ -108,8 +152,9 @@ pub enum HExpr {
     },
     /// i32 arithmetic: `(+ a b)` over i32 operands (wrapping).
     BinW(BinOp, Box<HExpr>, Box<HExpr>, Ty),
-    /// i32 comparisons.
-    CmpW(CmpOp, Box<HExpr>, Box<HExpr>),
+    /// Comparisons over closed widths: the Ty selects the LLVM type,
+    /// signedness (signed vs `ult` family) and float vs int comparison.
+    CmpW(CmpOp, Box<HExpr>, Box<HExpr>, Ty),
     /// `(i32 e)` / `(i64 e)` — explicit widening/narrowing casts.
     ICast(Box<HExpr>, Ty),
     /// `{k v ...}` — a map literal; constant keys are sorted at compile time.

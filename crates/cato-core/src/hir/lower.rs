@@ -81,21 +81,39 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                         return Err("f64 expects exactly 1 argument".into());
                     }
                     let inner = lower(&items[1], env, ctx)?;
+                    if ty_of(&inner, env, ctx) == Ty::F32 {
+                        return Ok(HExpr::ICast(Box::new(inner), Ty::F64));
+                    }
                     Ok(HExpr::ConvF64(Box::new(inner)))
                 }
-                "i32" | "i64" => {
+                "f32" => {
+                    if items.len() != 2 {
+                        return Err("f32 expects exactly 1 argument".into());
+                    }
+                    let inner = lower(&items[1], env, ctx)?;
+                    let src_ty = ty_of(&inner, env, ctx);
+                    if src_ty == Ty::F32 {
+                        return Ok(inner);
+                    }
+                    if !src_ty.is_numeric() {
+                        return Err(format!("f32 cast expects a numeric operand, got {:?}", src_ty));
+                    }
+                    Ok(HExpr::ICast(Box::new(inner), Ty::F32))
+                }
+                "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" => {
                     if items.len() != 2 {
                         return Err(format!("{} expects exactly 1 argument", head));
                     }
                     let inner = lower(&items[1], env, ctx)?;
-                    let target = if head == "i32" { Ty::I32 } else { Ty::I64 };
+                    let target = parse_ty_sym(head, &HashMap::new(), &mut Vec::new())
+                        .unwrap_or_else(|_| panic!("width head {}", head));
                     let src_ty = ty_of(&inner, env, ctx);
                     if src_ty == target {
                         return Ok(inner);
                     }
-                    if !matches!(src_ty, Ty::I64 | Ty::I32) {
+                    if !src_ty.is_numeric() {
                         return Err(format!(
-                            "{} cast expects an i64/i32 operand, got {:?}",
+                            "{} cast expects a numeric operand, got {:?}",
                             head, src_ty
                         ));
                     }
@@ -525,6 +543,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::For { res_elem, .. } => Ty::Vec(*res_elem),
         HExpr::StrCat(_) => Ty::Str,
         HExpr::BinW(.., t) => *t,
+        HExpr::BinF(..) => Ty::F32,
         HExpr::CmpW(..) => Ty::Bool,
         HExpr::ICast(_, t) => *t,
         HExpr::MapLit(_) => Ty::Map,

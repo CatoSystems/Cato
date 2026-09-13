@@ -53,13 +53,13 @@ pub(crate) fn call_user(
                 let v = emit_float(expr, c, mdl, sigs);
                 ll_args.push(format!("double {}", v));
             }
-            Ty::I64 => {
+            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
                 let v = emit_int(expr, c, mdl, sigs);
-                ll_args.push(format!("i64 {}", v));
+                ll_args.push(format!("{} {}", Mdl::ll_scalar(*t), v));
             }
-            Ty::I32 => {
-                let v = emit_int(expr, c, mdl, sigs);
-                ll_args.push(format!("i32 {}", v));
+            Ty::F32 => {
+                let v = emit_float(expr, c, mdl, sigs);
+                ll_args.push(format!("float {}", v));
             }
             Ty::Bool => {
                 let v = emit_bool(expr, c, mdl, sigs);
@@ -89,16 +89,14 @@ pub(crate) fn call_user(
     let adt_ret = matches!(ret_ty, Ty::Adt(_));
     let ret_ll = if *ret_ty == Ty::Bool {
         "i1".to_string()
-    } else if *ret_ty == Ty::F64 {
-        "double".to_string()
+    } else if ret_ty.is_int() || ret_ty.is_float() {
+        Mdl::ll_scalar(*ret_ty).to_string()
     } else if let Ty::Adt(i) = *ret_ty {
         mdl.adt_name(i)
     } else if *ret_ty == Ty::Str {
         "ptr".to_string()
     } else if matches!(ret_ty, Ty::Vec(_)) {
         "%VecI64".to_string()
-    } else if *ret_ty == Ty::I32 {
-        "i32".to_string()
     } else {
         "i64".to_string()
     };

@@ -19,7 +19,8 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::StrLit(_) => false,
         HExpr::StrCmp(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
-        HExpr::CmpW(_, a, b) => has_ctl(a) || has_ctl(b),
+        HExpr::CmpW(_, a, b, _) => has_ctl(a) || has_ctl(b),
+        HExpr::BinF(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::ICast(inner, _) => has_ctl(inner),
         HExpr::StrCat(args) => args.iter().any(has_ctl),
         HExpr::MapLit(pairs) => pairs
@@ -169,7 +170,11 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(a, f);
             collect_vars(b, f);
         }
-        HExpr::CmpW(_, a, b) => {
+        HExpr::CmpW(_, a, b, _) => {
+            collect_vars(a, f);
+            collect_vars(b, f);
+        }
+        HExpr::BinF(_, a, b) => {
             collect_vars(a, f);
             collect_vars(b, f);
         }

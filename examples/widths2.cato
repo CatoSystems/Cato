@@ -1,0 +1,30 @@
+; widths2.cato — Phase 12 reference program: remaining widths.
+;
+; i8/i16 signed, u8/u16/u32/u64/usize unsigned, f32 — closed widths with
+; explicit casts, unsigned comparison via the `ult` family, wrapping
+; arithmetic at each width.
+
+(defn clamp-u8 [x :- i64] :- i64
+  ; 200+100 wraps to 44 in u8, then widens back signed.
+  (i64 (u8 (+ (u8 x) (u8 100)))))
+
+(defn ucmp [a :- u32 b :- u32] :- bool
+  ; -1 as u32 is huge: unsigned comparison must say 4294967295 > 1.
+  (> a b))
+
+(defn f32-roundtrip [x :- f64] :- f64
+  ; narrowing to f32 loses precision, widening keeps the f32 value.
+  (f64 (f32 x)))
+
+(defn main []
+  (do
+    (print-i64 (clamp-u8 200))            ; 44  (u8 wrap: 300 - 256)
+    (print-i64 (clamp-u8 -1))             ; 99  (255 + 100 wraps to 99 in u8)
+    (print-i64 (i64 (i8 200)))            ; -56 (i8 signed wrap)
+    (print-i64 (i64 (u32 4294967295)))    ; 4294967295 (u32 max)
+    (print-i64 (ucmp (u32 4294967295) (u32 1))) ; 1 (unsigned >)
+    (print-i64 (> (i32 -1) (i32 1)))      ; 0 (signed <)
+    (print-i64 (i64 (+ (u16 60000) (u16 10000)))) ; 4464 (70000 wraps mod 65536)
+    (print-f64 (f32-roundtrip 0.1))       ; 0.1 (f32 value widened to f64)
+    (print-i64 (usize 7))                 ; 7
+    (print-f64 (f64 (f32 2.5)))))         ; 2.5

@@ -17,15 +17,15 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::F64));
                 params.push(format!("double {}", r));
             }
-            Ty::I64 => {
+            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
                 let r = format!("%{}", mangle(pname));
-                c.scalar.insert(pname.clone(), (r.clone(), Ty::I64));
-                params.push(format!("i64 {}", r));
+                c.scalar.insert(pname.clone(), (r.clone(), *t));
+                params.push(format!("{} {}", Mdl::ll_scalar(*t), r));
             }
-            Ty::I32 => {
+            Ty::F32 => {
                 let r = format!("%{}", mangle(pname));
-                c.scalar.insert(pname.clone(), (r.clone(), Ty::I32));
-                params.push(format!("i32 {}", r));
+                c.scalar.insert(pname.clone(), (r.clone(), Ty::F32));
+                params.push(format!("float {}", r));
             }
             Ty::Bool => {
                 let r = format!("%{}", mangle(pname));
@@ -96,10 +96,8 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         } else {
             let ret_ll = if defn.ret == Ty::Bool {
                 "i1"
-            } else if defn.ret == Ty::F64 {
-                "double"
-            } else if defn.ret == Ty::I32 {
-                "i32"
+            } else if defn.ret.is_int() || defn.ret.is_float() {
+                Mdl::ll_scalar(defn.ret)
             } else {
                 "i64"
             };
@@ -117,8 +115,8 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         mdl.adt_name(i)
     } else if matches!(defn.ret, Ty::Vec(_)) {
         "%VecI64".to_string()
-    } else if defn.ret == Ty::I32 {
-        "i32".to_string()
+    } else if defn.ret.is_int() || defn.ret.is_float() {
+        Mdl::ll_scalar(defn.ret).to_string()
     } else {
         "i64".to_string()
     };
@@ -145,8 +143,8 @@ pub(crate) fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
                 let _ = e;
             }
             Ty::F64 => params.push("double".to_string()),
-            Ty::I64 => params.push("i64".to_string()),
-            Ty::I32 => params.push("i32".to_string()),
+            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => params.push(Mdl::ll_scalar(*t).to_string()),
+            Ty::F32 => params.push("float".to_string()),
             Ty::Bool => params.push("i1".to_string()),
             Ty::Str => params.push("ptr".to_string()),
             Ty::Map => panic!("codegen: map params not supported"),
@@ -181,10 +179,12 @@ pub(crate) fn seq_forms(b: &HExpr) -> Vec<HExpr> {
 
 pub(crate) fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>, ret: Ty) -> String {
     match ret {
-        Ty::F64 => emit_float(e, c, mdl, sigs),
+        Ty::F64 | Ty::F32 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
-        Ty::I64 => emit_int(e, c, mdl, sigs),
-        Ty::I32 => emit_int(e, c, mdl, sigs),
+        t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+            let _ = t;
+            emit_int(e, c, mdl, sigs)
+        }
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) => panic!("codegen: cannot return a vector"),
@@ -222,10 +222,12 @@ pub(crate) fn emit_typed(
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     match ty {
-        Ty::F64 => emit_float(e, c, mdl, sigs),
+        Ty::F64 | Ty::F32 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
-        Ty::I64 => emit_int(e, c, mdl, sigs),
-        Ty::I32 => emit_int(e, c, mdl, sigs),
+        t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+            let _ = t;
+            emit_int(e, c, mdl, sigs)
+        }
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
         Ty::Vec(_) | Ty::Map | Ty::Set => {
@@ -269,8 +271,11 @@ pub(crate) fn emit_vec_pair(
 pub(crate) fn static_int_width(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> Ty {
     match e {
         HExpr::ConstI64(_) => Ty::I64,
+        HExpr::ConstF64(_) => Ty::F64,
+        HExpr::ConvF64(_) => Ty::F64,
         HExpr::ICast(_, t) => *t,
         HExpr::BinW(.., t) => *t,
+        HExpr::BinF(..) => Ty::F32,
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
         HExpr::Var(v) => c
             .scalar

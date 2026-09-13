@@ -79,11 +79,24 @@ pub(crate) fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Resul
             Box::new(b),
         ));
     }
-    if ty_of(&a, env, ctx) == Ty::I32 && ty_of(&b, env, ctx) == Ty::I32 {
-        return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b)));
+    let at = ty_of(&a, env, ctx);
+    let bt = ty_of(&b, env, ctx);
+    // Closed widths compare in their own width (and signedness); f32
+    // compares with fcmp. i64 keeps the plain Cmp path.
+    if at == Ty::F32 && bt == Ty::F32 {
+        return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b), Ty::F32));
     }
-    if ty_of(&a, env, ctx) == Ty::I32 || ty_of(&b, env, ctx) == Ty::I32 {
-        return Err("cannot compare mixed widths — cast with (i64 e) or (i32 e)".into());
+    if at == bt && at.is_int() && at != Ty::I64 {
+        return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b), at));
+    }
+    if at.is_int() && bt.is_int() && at != bt {
+        return Err(format!(
+            "cannot compare mixed widths {:?} and {:?} — cast explicitly",
+            at, bt
+        ));
+    }
+    if at == Ty::F32 || bt == Ty::F32 {
+        return Err("cannot mix f32 with other widths — cast with (f32 e) or (f64 e)".into());
     }
     let (a, b) = promote_pair(a, b, env, ctx)?;
     let is_f64 = ty_of(&a, env, ctx) == Ty::F64;

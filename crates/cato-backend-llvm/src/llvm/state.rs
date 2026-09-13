@@ -35,9 +35,12 @@ impl Mdl {
     /// alloca/GEP), so signatures stay pointer-based — no boxing, no heap.
     pub(crate) fn ll_ty(&self, t: Ty) -> String {
         match t {
-            Ty::I64 => "i64".into(),
-            Ty::I32 => "i32".into(),
+            Ty::I64 | Ty::U64 | Ty::Usize => "i64".into(),
+            Ty::I32 | Ty::U32 => "i32".into(),
+            Ty::I16 | Ty::U16 => "i16".into(),
+            Ty::I8 | Ty::U8 => "i8".into(),
             Ty::F64 => "double".into(),
+            Ty::F32 => "float".into(),
             Ty::Bool => "i1".into(),
             Ty::Vec(_) | Ty::Map | Ty::Set => {
                 panic!("codegen: aggregate type in scalar position")
@@ -107,6 +110,19 @@ impl Mdl {
         self.declare(line.to_string());
     }
     /// LLVM type of a vector element.
+    /// LLVM type of a scalar value in register/param position.
+    pub(crate) fn ll_scalar(t: Ty) -> &'static str {
+        match t {
+            Ty::I64 | Ty::U64 | Ty::Usize => "i64",
+            Ty::I32 | Ty::U32 => "i32",
+            Ty::I16 | Ty::U16 => "i16",
+            Ty::I8 | Ty::U8 => "i8",
+            Ty::F64 => "double",
+            Ty::F32 => "float",
+            _ => panic!("ll_scalar on non-scalar {:?}", t),
+        }
+    }
+
     pub(crate) fn elem_ll(&self, e: Elem) -> &'static str {
         match e {
             Elem::I64 => "i64",

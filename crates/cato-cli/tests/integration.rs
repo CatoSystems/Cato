@@ -243,3 +243,31 @@ fn subs_split_join_edge_cases() {
     );
     assert_eq!(out, "3\n\n1\nabc\nell\n\n?\n");
 }
+
+// Phase 12: remaining widths, end-to-end.
+#[test]
+fn compiles_widths2_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../examples/widths2.cato");
+    let out_ll = manifest.join("../../target/widths2.ll");
+    let rt = manifest.join("../../runtime/runtime.c");
+    let exe = manifest.join("../../target/widths2_bin");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).arg("-o").arg(&out_ll)
+        .status().expect("cato run");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang link failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(
+        stdout,
+        "44\n99\n-56\n4294967295\n1\n0\n4464\n0.1\n7\n2.5\n",
+        "widths2.cato output"
+    );
+}

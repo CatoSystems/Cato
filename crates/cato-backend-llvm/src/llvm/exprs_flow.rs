@@ -9,6 +9,19 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             let (r, _) = c.scalar.get(v).expect("known f64 var");
             r.clone()
         }
+        HExpr::BinF(op, a, b) => {
+            let av = emit_typed(a, Ty::F32, c, mdl, sigs);
+            let bv = emit_typed(b, Ty::F32, c, mdl, sigs);
+            let op = match op {
+                BinOp::Add => "fadd",
+                BinOp::Sub => "fsub",
+                BinOp::Mul => "fmul",
+                BinOp::Div => "fdiv",
+            };
+            let t = c.temp();
+            c.line(&format!("  {} = {} float {}, {}", t, op, av, bv));
+            t
+        }
         HExpr::Bin(op, a, b) => {
             let av = emit_float(a, c, mdl, sigs);
             let bv = emit_float(b, c, mdl, sigs);
@@ -22,6 +35,11 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             c.line(&format!("  {} = {} double {}, {}", t, op, av, bv));
             t
         }
+        HExpr::ICast(inner, target) if *target == Ty::F64 || *target == Ty::F32 => {
+            let src = static_int_width(inner, c, sigs);
+            let iv = emit_typed(inner, src, c, mdl, sigs);
+            emit_cast(iv, src, *target, c)
+        }
         HExpr::ConvF64(v) => {
             let iv = emit_int(v, c, mdl, sigs);
             let t = c.temp();
@@ -31,7 +49,16 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
         HExpr::Call(name, args) => {
             if name == "print-f64" {
                 let v = emit_float(&args[0], c, mdl, sigs);
-                c.line(&format!("  call void @cato_print_f64(double {})", v));
+                // f32 values widen to double for printing.
+                let w = static_int_width(&args[0], c, sigs);
+                let vd = if w == Ty::F32 {
+                    let t = c.temp();
+                    c.line(&format!("  {} = fpext float {} to double", t, v));
+                    t
+                } else {
+                    v
+                };
+                c.line(&format!("  call void @cato_print_f64(double {})", vd));
                 "0.0".to_string()
             } else {
                 call_user(name, args, c, mdl, sigs)
