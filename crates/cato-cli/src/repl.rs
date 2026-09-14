@@ -33,18 +33,11 @@ pub fn run() {
     let interactive = std::io::stdin().is_terminal();
     let history = if interactive { load_history() } else { Vec::new() };
 
+    // Plain startup lines: no ANSI, so the first line is exactly
+    // "Cato REPL <version>" on every terminal.
+    println!("Cato REPL {}", env!("CARGO_PKG_VERSION"));
     println!(
-        "{} {}",
-        crate::ui::paint(colors, "1", "Cato REPL"),
-        crate::ui::paint(colors, "2", env!("CARGO_PKG_VERSION"))
-    );
-    println!(
-        "{}",
-        crate::ui::paint(
-            colors,
-            "2",
-            "definitions accumulate, forms evaluate via the interpreter; :quit or Ctrl-D exits"
-        )
+        "definitions accumulate, forms evaluate via the interpreter; :quit or Ctrl-D exits"
     );
 
     let mut session = Session::new();

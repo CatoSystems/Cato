@@ -3,13 +3,29 @@
 
 use std::io::IsTerminal;
 
+fn ansi_ok() -> bool {
+    // Standard conventions: NO_COLOR disables colors; CLICOLOR_FORCE=1
+    // enables them regardless of terminal detection; a missing or `dumb`
+    // TERM means the terminal may not interpret escape sequences.
+    if std::env::var_os("CLICOLOR_FORCE").is_some() {
+        return true;
+    }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    match std::env::var("TERM") {
+        Ok(t) => t != "dumb",
+        Err(_) => true,
+    }
+}
+
 fn color_enabled() -> bool {
-    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+    ansi_ok() && std::io::stderr().is_terminal()
 }
 
 /// Colors for REPL prompts and results, which live on stdout.
 pub fn stdout_color_enabled() -> bool {
-    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+    ansi_ok() && std::io::stdout().is_terminal()
 }
 
 /// Paint with an explicit enable flag (choose the gate at the call site).
