@@ -861,6 +861,35 @@ fn generics_dispatch_over_collection_types() {
 }
 
 #[test]
+fn generics_wildcard_vector_specializers() {
+    // (Vector _) matches every concrete vector; an exact specializer is
+    // strictly more specific and wins where both apply.
+    let src = "(defgeneric len [c] :- i64)\n(defmethod len [v :- (Vector _)] :- i64 (count v))\n(defmethod len [v :- (Vector i64)] :- i64 (+ (count v) 100))\n(defn main [] :- i64 (do (len [1 2]) (len [1.5])))";
+    let defns = build(&read_all(src).unwrap()).unwrap();
+    let names: Vec<&str> = defns.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.contains(&"len__m1"), "exact method present: {:?}", names);
+    assert!(
+        names.iter().any(|n| n.starts_with("len__m0__vec_f64")),
+        "vec_f64 instance expected: {:?}",
+        names
+    );
+    assert!(
+        !names.contains(&"len__m0__vec_i64"),
+        "the exact call site must not instantiate the wildcard: {:?}",
+        names
+    );
+
+    // A non-vector call with only a wildcard vector method is uncovered.
+    let uncovered = "(defgeneric len [c] :- i64)\n(defmethod len [v :- (Vector _)] :- i64 (count v))\n(defn main [] :- i64 (len {1 2}))";
+    let err = build(&read_all(uncovered).unwrap()).unwrap_err();
+    assert!(err.contains("no method len for (map)"), "got: {}", err);
+
+    // (Vector T) stays rejected — the wildcard is spelled (Vector _).
+    let tparam = "(defgeneric len [c] :- i64)\n(defmethod len [v :- (Vector T)] :- i64 (count v))";
+    assert!(build(&read_all(tparam).unwrap()).is_err());
+}
+
+#[test]
 fn print_is_a_generic_multimethod() {
     // The prelude provides print for builtin types; a call compiles to a
     // hidden method call with no dispatch tree.

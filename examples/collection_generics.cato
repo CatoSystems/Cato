@@ -28,6 +28,13 @@
 (defn counts [n :- i64] :- map {0 n 1 (+ n n)})
 (defn singleton [x :- i64] :- set (conj #{} x))
 
+; Wildcards: (Vector _) matches any vector element type, instantiated per
+; call site — and a concrete specializer beats the wildcard where both
+; apply.
+(defgeneric len [c] :- i64)
+(defmethod len [v :- (Vector _)] :- i64 (count v))
+(defmethod len [v :- (Vector i64)] :- i64 (+ (count v) 100))
+
 (defn main []
   (do
     (print (size [1 2 3]))            ; 3
@@ -42,4 +49,8 @@
     (print (fits (Circle 5.0) [3.0]))     ; 0 (false)
     (print (fits (Rect 1.0 2.0) [4.0 9.0])) ; 1 (true)
     (print (get (counts 7) 1))            ; 14
-    (print (size (singleton 5)))))        ; 1
+    (print (size (singleton 5)))          ; 1
+    (print (len [1 2 3]))                 ; 103 — exact beats wildcard
+    (print (len [1.5 2.5]))               ; 2   — wildcard (vec_f64)
+    (let [words (split "x,y" ",")]
+      (print (len words)))))              ; 2   — wildcard (vec_str)

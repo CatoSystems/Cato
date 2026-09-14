@@ -53,8 +53,13 @@ fn head_is(form: &Expr, h: &str) -> bool {
 /// A specializer for one parameter position.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Spec {
-    /// A concrete builtin type (`i64`, `f64`, `str`, `bool`, widths).
+    /// A concrete builtin type (`i64`, `f64`, `str`, `bool`, widths,
+    /// `(Vector i64)`, `map`, `set`).
     Builtin(Ty),
+    /// Any concrete vector: `(Vector _)`. Instantiated per element type —
+    /// each call site lowers a specialized hidden method for the
+    /// argument's concrete element type.
+    VecAny,
     /// The whole ADT: matches every variant.
     Adt(u32),
     /// Exactly this variant of this ADT.
@@ -63,17 +68,20 @@ pub(crate) enum Spec {
 
 impl Spec {
     /// Ground type of a value bound by this specializer (variants bind as
-    /// their ADT — Cato has no variant subtypes).
+    /// their ADT — Cato has no variant subtypes). Wildcards have none:
+    /// they must be instantiated first.
     pub(crate) fn ground(&self) -> Ty {
         match self {
             Spec::Builtin(t) => *t,
             Spec::Adt(a) | Spec::Variant(a, _) => Ty::Adt(*a),
+            Spec::VecAny => panic!("internal: (Vector _) ground requested before instantiation"),
         }
     }
 
     fn matches_ty(&self, t: Ty) -> bool {
         match (self, t) {
             (Spec::Builtin(s), u) => *s == u,
+            (Spec::VecAny, Ty::Vec(e)) => !e.is_param(),
             (Spec::Adt(a), Ty::Adt(x)) | (Spec::Variant(a, _), Ty::Adt(x)) => *a == x,
             _ => false,
         }
@@ -83,17 +91,19 @@ impl Spec {
         match self {
             Spec::Adt(a) => *a == adt,
             Spec::Variant(a, v) => *a == adt && *v == var,
-            Spec::Builtin(_) => false,
+            Spec::Builtin(_) | Spec::VecAny => false,
         }
     }
 
     /// `self` is strictly more specific than `other`: a variant over its
-    /// own ADT. Equal specializers are not strictly more specific.
+    /// own ADT, or a concrete vector over the `(Vector _)` wildcard. Equal
+    /// specializers are not strictly more specific.
     fn strictly_more(&self, other: &Spec) -> bool {
-        matches!(
-            (self, other),
-            (Spec::Variant(a1, _), Spec::Adt(a2)) if a1 == a2
-        )
+        match (self, other) {
+            (Spec::Variant(a1, _), Spec::Adt(a2)) if a1 == a2 => true,
+            (Spec::Builtin(Ty::Vec(_)), Spec::VecAny) => true,
+            _ => false,
+        }
     }
 
     /// `self` is at least as specific as `other` (equal or strictly more).
@@ -104,6 +114,7 @@ impl Spec {
     fn display(&self, adts: &[AdtDef]) -> String {
         match self {
             Spec::Builtin(t) => ty_display(*t),
+            Spec::VecAny => "(Vector _)".into(),
             Spec::Adt(a) => adts[*a as usize].name.clone(),
             Spec::Variant(a, v) => adts[*a as usize].variants[*v as usize].0.clone(),
         }
@@ -341,19 +352,11 @@ pub(crate) fn collect_generics(
                             return Err(bad("specializer expects a type"));
                         };
                         let spec = match ty {
-                            // (Vector i64|f64|str) — concrete element types.
-                            Expr::List(_) => {
-                                match parse_specializer_ty(ty) {
-                                    Ok(t) if is_dispatchable_ty(t) => Spec::Builtin(t),
-                                    Err(e) => return Err(bad(&e)),
-                                    Ok(t) => {
-                                        return Err(bad(&format!(
-                                            "cannot dispatch on {} yet",
-                                            ty_display(t)
-                                        )))
-                                    }
-                                }
-                            }
+                            // (Vector i64|f64|str) concrete, or (Vector _).
+                            Expr::List(_) => match parse_specializer_spec(ty) {
+                                Ok(spec) => spec,
+                                Err(e) => return Err(bad(&e)),
+                            },
                             Expr::LitSym(tyname) => {
                                 if let Ok(Ty::Adt(a)) =
                                     parse_ty_sym(tyname, adt_by_name, &mut Vec::new())
@@ -453,30 +456,32 @@ fn display_specs(specs: &[Spec], adts: &[AdtDef]) -> String {
         .join(" × ")
 }
 
-/// Parse a concrete collection type annotation in specializer position:
-/// `(Vector i64|f64|str)`. Element type parameters are rejected — methods
-/// lower once per concrete signature, so there is no `(Vector T)`.
-fn parse_specializer_ty(e: &Expr) -> Result<Ty, String> {
+/// Parse a collection type annotation in specializer position:
+/// `(Vector i64|f64|str)` for a concrete vector, `(Vector _)` for the
+/// wildcard. Element type parameters are rejected — except for the
+/// wildcard, methods lower once per concrete signature.
+fn parse_specializer_spec(e: &Expr) -> Result<Spec, String> {
     let Expr::List(items) = e else {
-        return Err("type annotation must be a symbol or (Vector i64|f64|str)".into());
+        return Err("type annotation must be a symbol or (Vector ...)".into());
     };
     let Some(Expr::LitSym(h)) = items.first() else {
-        return Err("type annotation must be a symbol or (Vector i64|f64|str)".into());
+        return Err("type annotation must be a symbol or (Vector ...)".into());
     };
     if h != "Vector" || items.len() != 2 {
         return Err(format!(
-            "unsupported specializer (expected (Vector i64|f64|str), got {} form(s))",
+            "unsupported specializer (expected (Vector i64|f64|str|_), got {} form(s))",
             items.len().saturating_sub(1)
         ));
     }
     match &items[1] {
-        Expr::LitSym(s) if s == "i64" => Ok(Ty::Vec(Elem::I64)),
-        Expr::LitSym(s) if s == "f64" => Ok(Ty::Vec(Elem::F64)),
-        Expr::LitSym(s) if s == "str" => Ok(Ty::Vec(Elem::Str)),
+        Expr::LitSym(s) if s == "i64" => Ok(Spec::Builtin(Ty::Vec(Elem::I64))),
+        Expr::LitSym(s) if s == "f64" => Ok(Spec::Builtin(Ty::Vec(Elem::F64))),
+        Expr::LitSym(s) if s == "str" => Ok(Spec::Builtin(Ty::Vec(Elem::Str))),
+        Expr::LitSym(u) if u == "_" => Ok(Spec::VecAny),
         Expr::LitSym(p) => Err(format!(
-            "specializer element type `{p}` is a type parameter — methods take concrete vector types"
+            "specializer element type `{p}` is a type parameter — use (Vector _) for any vector"
         )),
-        _ => Err("Vector element type must be i64, f64 or str".into()),
+        _ => Err("Vector element type must be i64, f64, str or _".into()),
     }
 }
 
@@ -487,6 +492,8 @@ fn method_combos(m: &MethodDef, adts: &[AdtDef]) -> Vec<Vec<Slot>> {
     for s in &m.specs {
         let options: Vec<Slot> = match s {
             Spec::Builtin(t) => vec![Slot::Fixed(*t)],
+            // Dead: check_unreachable skips wildcard generics entirely.
+            Spec::VecAny => unreachable!("(Vector _) has no fixed slot"),
             Spec::Adt(a) => (0..adts[*a as usize].variants.len())
                 .map(|v| Slot::Var(*a, v as u32))
                 .collect(),
@@ -520,6 +527,16 @@ fn applies_at(specs: &[Spec], combo: &[Slot]) -> bool {
 /// applies to, another applicable method is component-wise at least as
 /// specific (so it can never be the unique maximum).
 fn check_unreachable(name: &str, g: &GenericDef, adts: &[AdtDef]) -> Result<(), String> {
+    // Wildcard generics skip the dominance analysis: `(Vector _)` is
+    // never at_least an exact spec, so a wildcard method can only be
+    // dominated by an identical one — which the duplicate check above
+    // already rejects.
+    if g.methods
+        .iter()
+        .any(|m| m.specs.iter().any(|s| matches!(s, Spec::VecAny)))
+    {
+        return Ok(());
+    }
     use crate::diagnostics::locate;
     for m in &g.methods {
         let combos = method_combos(m, adts);
@@ -627,16 +644,18 @@ pub(crate) fn generic_call(
         .collect();
 
     if adt_positions.is_empty() {
-        // Pure builtin signature: methods match only by exact type.
-        let matching: Vec<usize> = (0..method_names.len())
+        // Pure builtin/collection signature: applicability through
+        // matches_ty (wildcards match any concrete vector), resolved to
+        // the unique maximal method under the partial order.
+        let applicable: Vec<usize> = (0..method_names.len())
             .filter(|mi| {
                 specs_all[*mi]
                     .iter()
                     .zip(arg_tys.iter())
-                    .all(|(s, t)| matches!((s, t), (Spec::Builtin(b), _) if b == t))
+                    .all(|(s, t)| s.matches_ty(*t))
             })
             .collect();
-        if matching.is_empty() {
+        if applicable.is_empty() {
             return Err(format!(
                 "no method {} for ({})",
                 name,
@@ -647,9 +666,36 @@ pub(crate) fn generic_call(
                     .join(", ")
             ));
         }
-        // Duplicates are rejected at collection, so one exact match.
-        let hidden = method_names[matching[0]].clone();
-        let r = resolve_method_ret(name, matching[0], ctx)?;
+        let maximal: Vec<usize> = applicable
+            .iter()
+            .copied()
+            .filter(|mi| {
+                !applicable.iter().any(|ni| {
+                    ni != mi
+                        && specs_all[*ni].iter().zip(specs_all[*mi].iter()).all(|(s2, s1)| s2.at_least(s1))
+                        && specs_all[*ni]
+                            .iter()
+                            .zip(specs_all[*mi].iter())
+                            .any(|(s2, s1)| s2.strictly_more(s1))
+                })
+            })
+            .collect();
+        if maximal.len() > 1 {
+            let comps: Vec<String> = maximal
+                .iter()
+                .map(|mi| display_specs(&specs_all[*mi], ctx.adts))
+                .collect();
+            return Err(format!(
+                "ambiguous call to {} at ({}): {} are both applicable and neither is more specific — add a more specific method",
+                name,
+                arg_tys.iter().map(|t| ty_display(*t)).collect::<Vec<_>>().join(", "),
+                comps.join(" and ")
+            ));
+        }
+        // Wildcard positions instantiate with the call's concrete types;
+        // methods without wildcards keep their classic hidden name.
+        let mi = maximal[0];
+        let (hidden, r) = resolve_method_instance(name, mi, Some(arg_tys.clone()), ctx)?;
         ctx.gens
             .borrow_mut()
             .call_rets
@@ -730,10 +776,37 @@ pub(crate) fn generic_call(
         chosen.push((combo, maximal[0]));
     }
 
+    // Instantiate the selected methods: wildcard positions bind to this
+    // call's concrete collection types (identical across combos — those
+    // slots are fixed by the call's static types). Every method's
+    // callable name lands in `call_names`; classic methods keep theirs.
+    let mut call_names = method_names.clone();
+    let mut instance_rets: Vec<Option<Ty>> = vec![None; method_names.len()];
+    for (_combo, mi) in &chosen {
+        if instance_rets[*mi].is_some() {
+            continue;
+        }
+        let specs = &specs_all[*mi];
+        let grounds: Vec<Ty> = specs
+            .iter()
+            .enumerate()
+            .map(|(pi, s)| match s {
+                // The wildcard is a builtin (non-ADT) position, fixed by
+                // the call's static argument type at the same position.
+                Spec::VecAny => arg_tys[pi].clone(),
+                other => other.ground(),
+            })
+            .collect();
+        let (h, r) = resolve_method_instance(name, *mi, Some(grounds), ctx)?;
+        call_names[*mi] = h;
+        instance_rets[*mi] = Some(r);
+    }
+
     // Every selected method must agree on the return type.
     let mut ret: Option<Ty> = None;
     for (_, mi) in &chosen {
-        let r = resolve_method_ret(name, *mi, ctx)?;
+        let r = instance_rets[*mi]
+            .expect("selected method instantiated above");
         match ret {
             None => ret = Some(r),
             Some(prev) if prev != r => {
@@ -769,7 +842,7 @@ pub(crate) fn generic_call(
         return Ok(HExpr::Call(key, args));
     }
     let params: Vec<String> = (0..arity).map(|i| format!("__a{}", i)).collect();
-    let body = build_tree(&chosen, &adt_positions, 0, &params, &method_names, ret)?;
+    let body = build_tree(&chosen, &adt_positions, 0, &params, &call_names, ret)?;
     ctx.gens.borrow_mut().extra.push(Defn {
         name: key.clone(),
         params: params.iter().cloned().zip(arg_tys.clone()).collect(),
@@ -861,27 +934,51 @@ fn build_tree(
 /// The hidden defn's params are the specializers' ground types, so the
 /// dispatch tree (and plain builtin call sites) can call it with the
 /// call's argument registers.
-fn resolve_method_ret(name: &str, mi: usize, ctx: &Ctx) -> Result<Ty, String> {
-    {
-        let gens = ctx.gens.borrow();
-        let g = gens.generics.get(name).unwrap();
-        if let Some(r) = gens.lowered_rets.get(&g.methods[mi].hidden) {
-            return Ok(*r);
-        }
-    }
+/// Lower method `mi` and return its callable hidden name plus return type.
+/// When the method has `(Vector _)` positions, `grounds` (the call site's
+/// concrete types at those and all other positions) selects a
+/// **specialized instance**: the body lowers once per distinct ground
+/// signature, cached under `name__m{mi}__{ground keys}`. Methods without
+/// wildcards ignore the override and lower once under their plain hidden
+/// name, exactly as before.
+fn resolve_method_instance(
+    name: &str,
+    mi: usize,
+    grounds_override: Option<Vec<Ty>>,
+    ctx: &Ctx,
+) -> Result<(String, Ty), String> {
     let (hidden, grounds, names, destructure, body_expr, declared) = {
         let gens = ctx.gens.borrow();
         let g = gens.generics.get(name).unwrap();
         let m = &g.methods[mi];
-        (
-            m.hidden.clone(),
-            m.specs.iter().map(|s| s.ground()).collect::<Vec<_>>(),
-            m.names.clone(),
-            m.destructure.clone(),
-            m.body.clone(),
-            m.ret,
-        )
+        let has_wildcard = m.specs.iter().any(|s| matches!(s, Spec::VecAny));
+        match grounds_override {
+            // Specialized instance: wildcard positions bind to the call's
+            // concrete types.
+            Some(gv) if has_wildcard => {
+                let hidden = format!("{}__{}", m.hidden, grounds_key(&gv, ctx));
+                (hidden, gv, m.names.clone(), m.destructure.clone(), m.body.clone(), m.ret)
+            }
+            // Classic: lower once under the method's own hidden name.
+            _ => {
+                let classic: Vec<Ty> = m.specs.iter().map(|s| s.ground()).collect();
+                (
+                    m.hidden.clone(),
+                    classic,
+                    m.names.clone(),
+                    m.destructure.clone(),
+                    m.body.clone(),
+                    m.ret,
+                )
+            }
+        }
     };
+    {
+        let gens = ctx.gens.borrow();
+        if let Some(r) = gens.lowered_rets.get(&hidden) {
+            return Ok((hidden, *r));
+        }
+    }
     let mut env = Env::new();
     for (n, t) in names.iter().zip(grounds.iter()) {
         env.insert(n.clone(), *t);
@@ -933,6 +1030,11 @@ fn resolve_method_ret(name: &str, mi: usize, ctx: &Ctx) -> Result<Ty, String> {
     ctx.gens
         .borrow_mut()
         .lowered_rets
-        .insert(hidden, ret);
-    Ok(ret)
+        .insert(hidden.clone(), ret);
+    Ok((hidden, ret))
+}
+
+/// Symbol-safe cache key for a ground signature.
+fn grounds_key(grounds: &[Ty], ctx: &Ctx) -> String {
+    grounds.iter().map(|t| ty_key(*t, ctx)).collect::<Vec<_>>().join("_")
 }
