@@ -152,6 +152,12 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         ));
         let _ = e;
         c.line(&format!("  ret %VecI64 {}", s1));
+    } else if matches!(defn.ret, Ty::Map | Ty::Set) {
+        // Map/set return: the header goes back by value in the same
+        // %VecI64 shape — maps with the representation tag in field 2,
+        // sets with an unused cap of 0.
+        let header = emit_collection_ret(&defn.body, defn.ret, &mut c, mdl, sigs);
+        c.line(&format!("  ret %VecI64 {}", header));
     } else {
         let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
         if let Ty::Adt(i) = defn.ret {
@@ -184,7 +190,7 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         "double".to_string()
     } else if let Ty::Adt(i) = defn.ret {
         mdl.adt_name(i)
-    } else if matches!(defn.ret, Ty::Vec(_)) {
+    } else if matches!(defn.ret, Ty::Vec(_) | Ty::Map | Ty::Set) {
         "%VecI64".to_string()
     } else if defn.ret.is_int() || defn.ret.is_float() {
         Mdl::ll_scalar(defn.ret).to_string()
@@ -308,6 +314,34 @@ pub(crate) fn emit_typed(
         }
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
+}
+
+/// Build the by-value `%VecI64` header for a map/set return: maps carry
+/// (ptr, len, cap) — cap is the flat/HAMT representation tag — and sets
+/// (ptr, len) with an unused cap of 0, so both share the vector struct.
+pub(crate) fn emit_collection_ret(
+    e: &HExpr,
+    ret: Ty,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let (p, l, cap) = if ret == Ty::Map {
+        map_val(e, c, mdl, sigs)
+    } else {
+        let (p, l) = set_val(e, c, mdl, sigs);
+        (p, l, "0".to_string())
+    };
+    let s0 = c.temp();
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+        s0, p
+    ));
+    let s1 = c.temp();
+    c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+    let s2 = c.temp();
+    c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+    s2
 }
 
 pub(crate) fn emit_vec_pair(

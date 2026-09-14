@@ -120,7 +120,7 @@ pub(crate) fn call_user(
         mdl.adt_name(i)
     } else if *ret_ty == Ty::Str {
         "ptr".to_string()
-    } else if matches!(ret_ty, Ty::Vec(_)) {
+    } else if matches!(ret_ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
         "%VecI64".to_string()
     } else {
         "i64".to_string()

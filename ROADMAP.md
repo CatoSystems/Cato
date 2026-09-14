@@ -119,10 +119,12 @@ The dispatch domain now includes builtin collection types: `defmethod`
 specializers accept concrete vectors — `(Vector i64)`, `(Vector f64)`,
 `(Vector str)` — plus `map` and `set`, alongside ADTs, scalars and
 variants, with exact resolution (a call over an uncovered type is a
-compile-time E204). Underneath it, the LLVM backend gained a map/set
-call-argument ABI: maps pass as a `(ptr, len, cap)` triple, sets as a
-`(ptr, len)` pair, each copied into a callee-local header slot so owned
-in-place growth rewrites the callee's slot, never the caller's frame.
+compile-time E204). Underneath it, the LLVM backend gained the
+collection calling convention: maps pass as a `(ptr, len, cap)` triple,
+sets as a `(ptr, len)` pair, each copied into a callee-local header slot
+so owned in-place growth rewrites the callee's slot, never the caller's
+frame — and maps and sets also **return** by value in the same header
+shape, composing with `get`, `count` and dispatch at the call site.
 
 ## Next steps
 

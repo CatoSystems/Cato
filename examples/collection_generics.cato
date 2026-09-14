@@ -23,6 +23,11 @@
 (defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0)))
 (defmethod fits [(Rect w h) box :- (Vector f64)] :- bool (< (+ w h) (get box 0)))
 
+; Maps and sets also flow back from functions: the header returns by
+; value, and the result composes with get/count and dispatch.
+(defn counts [n :- i64] :- map {0 n 1 (+ n n)})
+(defn singleton [x :- i64] :- set (conj #{} x))
+
 (defn main []
   (do
     (print (size [1 2 3]))            ; 3
@@ -35,4 +40,6 @@
     (print (size #{7 8}))             ; 2
     (print (fits (Circle 2.0) [3.0]))     ; 1 (true)
     (print (fits (Circle 5.0) [3.0]))     ; 0 (false)
-    (print (fits (Rect 1.0 2.0) [4.0 9.0])))) ; 1 (true)
+    (print (fits (Rect 1.0 2.0) [4.0 9.0])) ; 1 (true)
+    (print (get (counts 7) 1))            ; 14
+    (print (size (singleton 5)))))        ; 1

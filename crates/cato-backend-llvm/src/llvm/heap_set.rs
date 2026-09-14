@@ -55,6 +55,15 @@ pub(crate) fn set_val(
                 panic!("codegen: {} is not a set binding", v)
             }
         }
+        // A call returning a set: the %VecI64 header comes back by value.
+        HExpr::Call(..) => {
+            let st = call_user_node(e, c, mdl, sigs);
+            let p = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 0", p, st));
+            let l = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 1", l, st));
+            (p, l)
+        }
         HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } => {
             let slot = match e {
                 HExpr::SetLit(vs) => emit_set_lit(vs, c, mdl, sigs),

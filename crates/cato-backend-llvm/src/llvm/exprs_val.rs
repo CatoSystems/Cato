@@ -216,6 +216,36 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 c.vecs.insert(name.clone(), (p, l, el));
                 continue;
             }
+            // Calls returning maps/sets: the %VecI64 header goes into a
+            // fresh local slot (map/set ops read and owned growth rewrites
+            // the local slot only).
+            if matches!(*ty, Ty::Map | Ty::Set) {
+                let st = call_user_node(value, c, mdl, sigs);
+                let slot = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca %VecI64, align 8", slot));
+                for i in 0..3 {
+                    let v = c.temp();
+                    c.line(&format!(
+                        "  {} = extractvalue %VecI64 {}, {}",
+                        v, st, i
+                    ));
+                    let pf = c.temp();
+                    c.prelude.push(format!(
+                        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 {}",
+                        pf, slot, i
+                    ));
+                    if i == 0 {
+                        c.prelude
+                            .push(format!("  store ptr {}, ptr {}, align 8", v, pf));
+                    } else {
+                        c.prelude
+                            .push(format!("  store i64 {}, ptr {}, align 8", v, pf));
+                    }
+                }
+                c.growm.insert(name.clone(), (slot, *ty));
+                continue;
+            }
         }
         // Heap-constructing values bind as growable slots.
         match value {
@@ -335,6 +365,49 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, *ty));
+            }
+            Ty::Map | Ty::Set => {
+                // Alias: share the source header slot (set ops read only
+                // ptr/len; map ops see the same representation tag).
+                if let HExpr::Var(src) = value {
+                    if let Some((slot, _)) = c.growm.get(src).cloned() {
+                        c.growm.insert(name.clone(), (slot, *ty));
+                        continue;
+                    }
+                }
+                // Any other value form: evaluate to (ptr, len[, cap]) and
+                // materialize a local header slot.
+                let (p, l, cap) = if *ty == Ty::Map {
+                    map_val(value, c, mdl, sigs)
+                } else {
+                    let (p, l) = set_val(value, c, mdl, sigs);
+                    (p, l, "0".to_string())
+                };
+                let slot = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca %VecI64, align 8", slot));
+                let pf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                    pf, slot
+                ));
+                c.prelude
+                    .push(format!("  store ptr {}, ptr {}, align 8", p, pf));
+                let lf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+                    lf, slot
+                ));
+                c.prelude
+                    .push(format!("  store i64 {}, ptr {}, align 8", l, lf));
+                let cf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+                    cf, slot
+                ));
+                c.prelude
+                    .push(format!("  store i64 {}, ptr {}, align 8", cap, cf));
+                c.growm.insert(name.clone(), (slot, *ty));
             }
             _ => {
                 let v = emit_int(value, c, mdl, sigs);

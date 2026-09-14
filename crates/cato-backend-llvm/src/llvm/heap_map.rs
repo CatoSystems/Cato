@@ -169,6 +169,17 @@ pub(crate) fn map_val(
             let (p, l, cap) = header_load(&slot, c);
             (p, l, cap)
         }
+        // A call returning a map: the %VecI64 header comes back by value.
+        HExpr::Call(..) => {
+            let st = call_user_node(e, c, mdl, sigs);
+            let p = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 0", p, st));
+            let l = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 1", l, st));
+            let cap = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 2", cap, st));
+            (p, l, cap)
+        }
         other => panic!("codegen: unsupported map value {:?}", other),
     }
 }
