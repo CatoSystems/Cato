@@ -378,3 +378,25 @@ fn parallel_rejects_unqualified_reduces() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("identity init"), "got: {}", stderr);
 }
+
+// Phase 19: the REPL evaluates expressions and defines functions.
+#[test]
+fn repl_evaluates_forms() {
+    use std::io::Write as _;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("repl")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn repl");
+    child
+        .stdin.as_mut().unwrap()
+        .write_all(b"(defn sq [x :- i64] :- i64 (* x x))\n(sq 12)\n(let [[a b] (vec-i64 3 4)] (+ a b))\n:quit\n")
+        .expect("write repl");
+    let out = child.wait_with_output().expect("repl output");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("sq => defined"), "got: {}", stdout);
+    assert!(stdout.contains("=> 144"), "got: {}", stdout);
+    assert!(stdout.contains("=> 7"), "got: {}", stdout);
+}

@@ -2,6 +2,8 @@
 //! backend selected on the command line.
 
 mod cli;
+mod lsp;
+mod repl;
 
 use cato_core::{compile_named, Backend};
 use cato_interp::InterpBackend;
@@ -9,6 +11,14 @@ use cato_llvm::LlvmBackend;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("repl") {
+        repl::run();
+        return;
+    }
+    if args.first().map(|s| s.as_str()) == Some("lsp") {
+        lsp::run();
+        return;
+    }
     let cli = cli::parse_args(&args);
     let src = std::fs::read_to_string(&cli.file).unwrap_or_else(|e| {
         eprintln!("cato: cannot read {}: {}", cli.file, e);

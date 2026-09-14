@@ -20,7 +20,7 @@ use std::rc::Rc;
 /// values are kept normalized into `0..2^bits` (the unsigned reading),
 /// signed values sign-extended — so i64 comparisons are width-correct.
 #[derive(Clone, Debug)]
-enum Value {
+pub enum Value {
     Int(i64),
     F64(f64),
     F32(f32),
@@ -96,17 +96,22 @@ impl<'p> Interpreter<'p> {
 
     /// Run `main` and return the captured stdout.
     pub fn run(mut self) -> R<String> {
-        let main = self
+        self.run_entry("main").map(|(_, out)| out)
+    }
+
+    /// Run an arbitrary zero-arg defn; returns (result value, stdout).
+    pub fn run_entry(mut self, name: &str) -> R<(Value, String)> {
+        let defn = self
             .defns
-            .get("main")
-            .ok_or_else(|| "interp: no main defn".to_string())?;
-        let args: Vec<Value> = main
+            .get(name)
+            .ok_or_else(|| format!("interp: no {} defn", name))?;
+        let args: Vec<Value> = defn
             .params
             .iter()
             .map(|(_, t)| default_value(*t))
             .collect();
-        self.call("main", &args)?;
-        Ok(self.out)
+        let v = self.call(name, &args)?;
+        Ok((v, std::mem::take(&mut self.out)))
     }
 
     fn call(&mut self, name: &str, args: &[Value]) -> R<Value> {
@@ -935,5 +940,43 @@ impl Backend for InterpBackend {
 
     fn emit(&self, program: &Program) -> Result<String, String> {
         Interpreter::new(program).run()
+    }
+}
+
+/// REPL-friendly rendering of a value.
+pub fn fmt_value(v: &Value) -> String {
+    match v {
+        Value::Int(i) => i.to_string(),
+        Value::Bool(b) => if *b { "true" } else { "false" }.to_string(),
+        Value::F64(f) => {
+            let s = fmt_f64(*f);
+            if s.contains('.') || s.contains('e') {
+                s
+            } else {
+                format!("{}.0", s)
+            }
+        }
+        Value::F32(f) => format!("{}f", fmt_f64(*f as f64)),
+        Value::Str(s) => format!("{:?}", s),
+        Value::Vec(xs) => {
+            let inner: Vec<String> = xs.iter().map(|v| fmt_value(v)).collect();
+            format!("[{}]", inner.join(" "))
+        }
+        Value::Set(xs) => {
+            let inner: Vec<String> = xs.iter().map(|v| v.to_string()).collect();
+            format!("#{{{}}}", inner.join(" "))
+        }
+        Value::Map(entries) => {
+            let inner: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{} {}", k, v))
+                .collect();
+            format!("{{{}}}", inner.join(", "))
+        }
+        Value::Adt { variant, fields } => {
+            let inner: Vec<String> = fields.iter().map(|v| fmt_value(v)).collect();
+            format!("#<variant {} ({})>", variant, inner.join(" "))
+        }
+        Value::Closure { .. } => "#<closure>".to_string(),
     }
 }
