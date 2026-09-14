@@ -840,10 +840,24 @@ fn generics_dispatch_over_collection_types() {
     let generic_vec = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector T)] :- i64 (count v))";
     assert!(build(&read_all(generic_vec).unwrap()).is_err());
 
-    // Map/set dispatch is not offered yet (no map/set call ABI in the
-    // LLVM backend).
-    let mapspec = "(defgeneric size [c] :- i64)\n(defmethod size [m :- map] :- i64 (count m))";
-    assert!(build(&read_all(mapspec).unwrap()).is_err());
+    // Map and set specializers are accepted. A pure-collection call
+    // resolves directly to the hidden method — no dispatch defn.
+    let coll = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector i64)] :- i64 (count v))\n(defmethod size [m :- map] :- i64 (count m))\n(defmethod size [s :- set] :- i64 (count s))\n(defn main [] :- i64 (size {1 2}))";
+    let defns = build(&read_all(coll).unwrap()).unwrap();
+    assert!(
+        defns.iter().any(|d| d.name == "size__m1"),
+        "map method expected: {:?}",
+        defns.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+
+    // Mixed ADT x map dispatch synthesizes a symbol-safe dispatch defn.
+    let mixed_map = "(deftype Ent (Bolt [v :- i64]))\n(defgeneric tag [e :- Ent m :- map] :- i64)\n(defmethod tag [e :- Bolt m :- map] :- i64 (get m 1))\n(defn main [] :- i64 (tag (Bolt 1) {5 6}))";
+    let defns = build(&read_all(mixed_map).unwrap()).unwrap();
+    assert!(
+        defns.iter().any(|d| d.name == "tag__Ent_map"),
+        "map dispatch defn expected: {:?}",
+        defns.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
 }
 
 #[test]

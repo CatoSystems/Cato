@@ -37,8 +37,68 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::Str));
                 params.push(format!("ptr {}", r));
             }
-            Ty::Map => panic!("codegen: map params not supported (maps are local values)"),
-            Ty::Set => panic!("codegen: set params not supported (sets are local values)"),
+            Ty::Map => {
+                // (ptr, len, cap) triple copied into an entry slot: map ops
+                // read — and owned in-place growth rewrites — the local
+                // slot only, never the caller's frame.
+                let d = format!("%{}_data", mangle(pname));
+                let l = format!("%{}_len", mangle(pname));
+                let cp = format!("%{}_cap", mangle(pname));
+                params.push(format!("ptr noalias nocapture readonly {}", d));
+                params.push(format!("i64 {}", l));
+                params.push(format!("i64 {}", cp));
+                let slot = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca %VecI64, align 8", slot));
+                let pf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                    pf, slot
+                ));
+                c.prelude
+                    .push(format!("  store ptr {}, ptr {}, align 8", d, pf));
+                let lf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+                    lf, slot
+                ));
+                c.prelude
+                    .push(format!("  store i64 {}, ptr {}, align 8", l, lf));
+                let cf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+                    cf, slot
+                ));
+                c.prelude
+                    .push(format!("  store i64 {}, ptr {}, align 8", cp, cf));
+                c.growm.insert(pname.clone(), (slot, *pty));
+            }
+            Ty::Set => {
+                // (ptr, len) pair copied into an entry slot, like maps
+                // minus the representation tag.
+                let d = format!("%{}_data", mangle(pname));
+                let l = format!("%{}_len", mangle(pname));
+                params.push(format!("ptr noalias nocapture readonly {}", d));
+                params.push(format!("i64 {}", l));
+                let slot = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca %VecI64, align 8", slot));
+                let pf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                    pf, slot
+                ));
+                c.prelude
+                    .push(format!("  store ptr {}, ptr {}, align 8", d, pf));
+                let lf = c.temp();
+                c.prelude.push(format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+                    lf, slot
+                ));
+                c.prelude
+                    .push(format!("  store i64 {}, ptr {}, align 8", l, lf));
+                c.growm.insert(pname.clone(), (slot, *pty));
+            }
             Ty::Fn(_) => {
                 // Closure params arrive by value; copy into an entry slot.
                 let r = format!("%{}", mangle(pname));

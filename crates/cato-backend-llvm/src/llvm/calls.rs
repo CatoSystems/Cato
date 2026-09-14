@@ -66,8 +66,17 @@ pub(crate) fn call_user(
                 ll_args.push(format!("i1 {}", v));
             }
             Ty::Param(_) => panic!("codegen: unresolved type parameter in call args"),
-            Ty::Map => panic!("codegen: map call args not supported"),
-            Ty::Set => panic!("codegen: set call args not supported"),
+            Ty::Map => {
+                let (p, l, cap) = map_val(expr, c, mdl, sigs);
+                ll_args.push(format!("ptr {}", p));
+                ll_args.push(format!("i64 {}", l));
+                ll_args.push(format!("i64 {}", cap));
+            }
+            Ty::Set => {
+                let (p, l) = set_val(expr, c, mdl, sigs);
+                ll_args.push(format!("ptr {}", p));
+                ll_args.push(format!("i64 {}", l));
+            }
             Ty::Fn(_) => {
                 let slot = match expr {
                     HExpr::Var(v) => c

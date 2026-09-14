@@ -14,10 +14,10 @@
 //! Declaration order affects nothing.
 //!
 //! Dispatch domain: ADTs and their variants, builtin scalars, `str`,
-//! `bool`, and concrete vectors — `(Vector i64)`, `(Vector f64)`,
-//! `(Vector str)`. Collection specializers are exact (no element-type
-//! wildcards), so hidden methods lower once per method with concrete
-//! parameter types.
+//! `bool`, `map`, `set`, and concrete vectors — `(Vector i64)`,
+//! `(Vector f64)`, `(Vector str)`. Collection specializers are exact (no
+//! element-type wildcards), so hidden methods lower once per method with
+//! concrete parameter types.
 
 use super::*;
 use crate::ast::{Expr, Span};
@@ -31,7 +31,7 @@ use crate::ast::{Expr, Span};
 pub(crate) fn is_dispatchable_ty(t: Ty) -> bool {
     t.is_int()
         || t.is_float()
-        || matches!(t, Ty::Str | Ty::Bool)
+        || matches!(t, Ty::Str | Ty::Bool | Ty::Map | Ty::Set)
         || matches!(t, Ty::Vec(e) if !e.is_param())
 }
 
@@ -366,7 +366,7 @@ pub(crate) fn collect_generics(
                                         Ok(t) if is_dispatchable_ty(t) => Spec::Builtin(t),
                                         _ => {
                                             return Err(bad(&format!(
-                                                "unknown specializer type {} (builtin scalars, str, bool, concrete vectors, ADTs and their variants only)",
+                                                "unknown specializer type {} (builtin scalars, str, bool, map, set, concrete vectors, ADTs and their variants only)",
                                                 tyname
                                             )))
                                         }
@@ -592,7 +592,7 @@ pub(crate) fn generic_call(
                 t if is_dispatchable_ty(*t) => {}
                 other => {
                     return Err(format!(
-                        "generic {} cannot dispatch on {:?} (builtin scalars, str, bool, vectors and ADTs only)",
+                        "generic {} cannot dispatch on {:?} (builtin scalars, str, bool, map, set, vectors and ADTs only)",
                         name, other
                     ))
                 }
