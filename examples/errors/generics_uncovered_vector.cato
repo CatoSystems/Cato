@@ -1,0 +1,6 @@
+;; E204: no method covers (Vector str) at the call — only (Vector i64)
+;; has a method.
+(defgeneric size [c] :- i64)
+(defmethod size [v :- (Vector i64)] :- i64 (count v))
+(defn main [] :- i64
+  (size (split "a,b" ",")))

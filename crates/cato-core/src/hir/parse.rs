@@ -326,6 +326,7 @@ pub(crate) fn parse_ty_sym(
         "bool" => Ok(Ty::Bool),
         "str" | "string" => Ok(Ty::Str),
         "map" => Ok(Ty::Map),
+        "set" => Ok(Ty::Set),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
             None => Ok(Ty::Param(register_ty_param(other, ty_params))),

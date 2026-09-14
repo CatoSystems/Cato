@@ -115,6 +115,14 @@ E204/E205). `print` is a builtin multimethod; all examples use it.
 `call-next-method` and method combination remain deferred — see
 `docs/superpowers/specs/2026-09-13-cato-clos-generics-design.md`.
 
+The dispatch domain now includes builtin collection types: `defmethod`
+specializers accept concrete vectors — `(Vector i64)`, `(Vector f64)`,
+`(Vector str)` — alongside ADTs, scalars and variants, with exact
+resolution (a call over an uncovered vector type is a compile-time E204).
+Map and set specializers are deliberately not offered yet: the LLVM
+backend has no map/set call-argument ABI, and the language does not
+advertise what one backend cannot run.
+
 ## Next steps
 
 ### Phase 10 — Diagnostics with source spans *(next)*

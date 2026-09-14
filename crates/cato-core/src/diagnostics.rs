@@ -102,7 +102,7 @@ pub fn classify(msg: &str) -> &'static str {
         "E201"
     } else if m.contains("ambiguous call to") {
         "E203"
-    } else if m.contains("no method") && m.contains("for this variant combination") {
+    } else if m.contains("no method") {
         "E204"
     } else if m.contains("can never be selected") || m.contains("duplicate method for") {
         "E205"
@@ -126,7 +126,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ("E302", "Conflicting exclusive borrows.\n\n`&!` borrows must be unique: the same binding was passed\nexclusively twice in one call. Reorder the calls or clone."),
     ("E401", "Non-exhaustive match.\n\nA `match` over an ADT did not cover every variant and had no\n`_` wildcard arm. Add the missing variants or a default arm."),
     ("E203", "Ambiguous generic-function dispatch.\n\nTwo applicable methods are incomparable in specificity\n(e.g. `Circle × Shape` and `Shape × Circle`): neither is more\nspecific, so the method to run is undecidable. Add a method for\nthe exact combination (e.g. `Circle × Circle`)."),
-    ("E204", "Uncovered generic-function dispatch.\n\nNo method applies to some variant combination at a call site.\nAdd a method for the missing combination or a default method\nspecializing the whole ADT."),
+    ("E204", "Uncovered generic-function dispatch.\n\nNo method applies to some type combination at a call site —\na variant combination, or a builtin/collection type like\n`(Vector str)`. Add a method for the missing type or a default\nmethod specializing the whole ADT."),
     ("E205", "Unreachable or duplicate generic-function method.\n\nA method can never be selected because a more specific method\ncovers every input it applies to, or two methods share the same\nspecializers. Remove one."),
 ];
 

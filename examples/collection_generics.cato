@@ -1,0 +1,34 @@
+; collection_generics.cato — multimethods over builtin collection types.
+;
+; defmethod specializers accept concrete vectors — (Vector i64|f64|str) —
+; alongside ADTs, scalars and variants. Collection slots are exact: a call
+; with an uncovered vector type is a compile-time "no method" error, and
+; mixed ADT x vector dispatch composes with the same structural
+; specificity order.
+
+(deftype Shape
+  (Circle [r :- f64])
+  (Rect [w :- f64 h :- f64]))
+
+; One generic, three collection methods: resolution is exact per call type.
+(defgeneric size [c] :- i64)
+(defmethod size [v :- (Vector i64)] :- i64 (count v))
+(defmethod size [v :- (Vector f64)] :- i64 (count v))
+(defmethod size [v :- (Vector str)] :- i64 (count v))
+
+; Multi-dispatch: ADT variant x vector slot in one specializer list.
+(defgeneric fits [s :- Shape box :- (Vector f64)] :- bool)
+(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0)))
+(defmethod fits [(Rect w h) box :- (Vector f64)] :- bool (< (+ w h) (get box 0)))
+
+(defn main []
+  (do
+    (print (size [1 2 3]))            ; 3
+    (print (size [1.5 2.5]))          ; 2
+    ; (split ...) results are passed through a binding, like any vector
+    ; argument to a plain defn.
+    (let [parts (split "a,b,c" ",")]
+      (print (size parts)))           ; 3
+    (print (fits (Circle 2.0) [3.0]))     ; 1 (true)
+    (print (fits (Circle 5.0) [3.0]))     ; 0 (false)
+    (print (fits (Rect 1.0 2.0) [4.0 9.0])))) ; 1 (true)

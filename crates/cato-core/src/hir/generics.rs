@@ -12,9 +12,28 @@
 //! (`Circle × Shape` and `Shape × Circle` are incomparable — two
 //! applicable incomparable methods are a compile-time ambiguity).
 //! Declaration order affects nothing.
+//!
+//! Dispatch domain: ADTs and their variants, builtin scalars, `str`,
+//! `bool`, and concrete vectors — `(Vector i64)`, `(Vector f64)`,
+//! `(Vector str)`. Collection specializers are exact (no element-type
+//! wildcards), so hidden methods lower once per method with concrete
+//! parameter types.
 
 use super::*;
 use crate::ast::{Expr, Span};
+
+/// May a multimethod dispatch on this type? Concrete types only — a
+/// `(Vector T)` element parameter inside a generic defn cannot select a
+/// method, because methods lower once per concrete signature. Map and set
+/// specializers are not offered yet: the LLVM backend cannot pass map/set
+/// values as call arguments (vectors carry a `(ptr, len)` ABI; maps and
+/// sets do not yet), so accepting them would break backend parity.
+pub(crate) fn is_dispatchable_ty(t: Ty) -> bool {
+    t.is_int()
+        || t.is_float()
+        || matches!(t, Ty::Str | Ty::Bool)
+        || matches!(t, Ty::Vec(e) if !e.is_param())
+}
 
 pub(crate) fn is_defgeneric(form: &Expr) -> bool {
     head_is(form, "defgeneric")
@@ -106,7 +125,19 @@ fn ty_display(t: Ty) -> String {
         Ty::F32 => "f32".into(),
         Ty::Bool => "bool".into(),
         Ty::Str => "str".into(),
+        Ty::Vec(el) => format!("(Vector {})", elem_display(el)),
+        Ty::Map => "map".into(),
+        Ty::Set => "set".into(),
         other => format!("{:?}", other),
+    }
+}
+
+fn elem_display(e: Elem) -> String {
+    match e {
+        Elem::I64 => "i64".into(),
+        Elem::F64 => "f64".into(),
+        Elem::Str => "str".into(),
+        Elem::Param(p) => format!("T{}", p),
     }
 }
 
@@ -306,31 +337,43 @@ pub(crate) fn collect_generics(
                         if sep != ":-" {
                             return Err(bad_spec());
                         }
-                        let Some(Expr::LitSym(tyname)) = specs.get(k + 2) else {
+                        let Some(ty) = specs.get(k + 2) else {
                             return Err(bad("specializer expects a type"));
                         };
-                        let spec = if let Ok(Ty::Adt(a)) =
-                            parse_ty_sym(tyname, adt_by_name, &mut Vec::new())
-                        {
-                            Spec::Adt(a)
-                        } else if let Some(&(a, v)) = variant_of.get(tyname.as_str()) {
-                            Spec::Variant(a, v)
-                        } else {
-                            match parse_ty_sym(tyname, adt_by_name, &mut Vec::new()) {
-                                Ok(t)
-                                    if t.is_int()
-                                        || t.is_float()
-                                        || matches!(t, Ty::Str | Ty::Bool) =>
-                                {
-                                    Spec::Builtin(t)
-                                }
-                                _ => {
-                                    return Err(bad(&format!(
-                                        "unknown specializer type {} (builtin scalars, str, bool, ADTs and their variants only)",
-                                        tyname
-                                    )))
+                        let spec = match ty {
+                            // (Vector i64|f64|str) — concrete element types.
+                            Expr::List(_) => {
+                                match parse_specializer_ty(ty) {
+                                    Ok(t) if is_dispatchable_ty(t) => Spec::Builtin(t),
+                                    Err(e) => return Err(bad(&e)),
+                                    Ok(t) => {
+                                        return Err(bad(&format!(
+                                            "cannot dispatch on {} yet",
+                                            ty_display(t)
+                                        )))
+                                    }
                                 }
                             }
+                            Expr::LitSym(tyname) => {
+                                if let Ok(Ty::Adt(a)) =
+                                    parse_ty_sym(tyname, adt_by_name, &mut Vec::new())
+                                {
+                                    Spec::Adt(a)
+                                } else if let Some(&(a, v)) = variant_of.get(tyname.as_str()) {
+                                    Spec::Variant(a, v)
+                                } else {
+                                    match parse_ty_sym(tyname, adt_by_name, &mut Vec::new()) {
+                                        Ok(t) if is_dispatchable_ty(t) => Spec::Builtin(t),
+                                        _ => {
+                                            return Err(bad(&format!(
+                                                "unknown specializer type {} (builtin scalars, str, bool, concrete vectors, ADTs and their variants only)",
+                                                tyname
+                                            )))
+                                        }
+                                    }
+                                }
+                            }
+                            _ => return Err(bad_spec()),
                         };
                         names.push(pname.clone());
                         sp.push(spec);
@@ -408,6 +451,33 @@ fn display_specs(specs: &[Spec], adts: &[AdtDef]) -> String {
         .map(|s| s.display(adts))
         .collect::<Vec<_>>()
         .join(" × ")
+}
+
+/// Parse a concrete collection type annotation in specializer position:
+/// `(Vector i64|f64|str)`. Element type parameters are rejected — methods
+/// lower once per concrete signature, so there is no `(Vector T)`.
+fn parse_specializer_ty(e: &Expr) -> Result<Ty, String> {
+    let Expr::List(items) = e else {
+        return Err("type annotation must be a symbol or (Vector i64|f64|str)".into());
+    };
+    let Some(Expr::LitSym(h)) = items.first() else {
+        return Err("type annotation must be a symbol or (Vector i64|f64|str)".into());
+    };
+    if h != "Vector" || items.len() != 2 {
+        return Err(format!(
+            "unsupported specializer (expected (Vector i64|f64|str), got {} form(s))",
+            items.len().saturating_sub(1)
+        ));
+    }
+    match &items[1] {
+        Expr::LitSym(s) if s == "i64" => Ok(Ty::Vec(Elem::I64)),
+        Expr::LitSym(s) if s == "f64" => Ok(Ty::Vec(Elem::F64)),
+        Expr::LitSym(s) if s == "str" => Ok(Ty::Vec(Elem::Str)),
+        Expr::LitSym(p) => Err(format!(
+            "specializer element type `{p}` is a type parameter — methods take concrete vector types"
+        )),
+        _ => Err("Vector element type must be i64, f64 or str".into()),
+    }
 }
 
 /// The combos a method applies to: builtin positions are fixed, ADT
@@ -513,12 +583,16 @@ pub(crate) fn generic_call(
         for t in &arg_tys {
             match t {
                 Ty::Adt(_) => {}
-                t if t.is_int()
-                    || t.is_float()
-                    || matches!(t, Ty::Str | Ty::Bool) => {}
+                Ty::Vec(Elem::Param(_)) => {
+                    return Err(format!(
+                        "generic {} cannot dispatch on a (Vector T) — methods take concrete vector types",
+                        name
+                    ))
+                }
+                t if is_dispatchable_ty(*t) => {}
                 other => {
                     return Err(format!(
-                        "generic {} cannot dispatch on {:?} (builtin scalars, str, bool and ADTs only)",
+                        "generic {} cannot dispatch on {:?} (builtin scalars, str, bool, vectors and ADTs only)",
                         name, other
                     ))
                 }
@@ -722,10 +796,24 @@ fn display_combo(combo: &[(usize, u32)], arg_tys: &[Ty], ctx: &Ctx) -> String {
         .join(", ")
 }
 
+/// Symbol-safe type key for generated dispatch defn names (LLVM
+/// identifiers — no spaces or brackets).
 fn ty_key(t: Ty, ctx: &Ctx) -> String {
     match t {
         Ty::Adt(a) => ctx.adts[a as usize].name.clone(),
+        Ty::Vec(el) => format!("vec_{}", elem_key(el)),
+        Ty::Map => "map".into(),
+        Ty::Set => "set".into(),
         other => ty_display(other),
+    }
+}
+
+fn elem_key(e: Elem) -> String {
+    match e {
+        Elem::I64 => "i64".into(),
+        Elem::F64 => "f64".into(),
+        Elem::Str => "str".into(),
+        Elem::Param(p) => format!("t{}", p),
     }
 }
 

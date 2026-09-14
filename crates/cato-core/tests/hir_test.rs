@@ -812,6 +812,41 @@ fn generics_structural_specificity() {
 }
 
 #[test]
+fn generics_dispatch_over_collection_types() {
+    // Concrete vector specializers are accepted alongside ADTs.
+    let ok = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector i64)] :- i64 (count v))\n(defmethod size [v :- (Vector str)] :- i64 (count v))\n(defn main [] :- i64 (size [1 2 3]))";
+    assert!(build(&read_all(ok).unwrap()).is_ok());
+
+    // Mixed ADT x vector dispatch synthesizes a dispatch defn with a
+    // symbol-safe name.
+    let mixed = "(deftype Shape (Circle [r :- f64]))\n(defgeneric fits [s :- Shape box :- (Vector f64)] :- bool)\n(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0)))\n(defn main [] :- bool (fits (Circle 2.0) [3.0]))";
+    let defns = build(&read_all(mixed).unwrap()).unwrap();
+    assert!(
+        defns.iter().any(|d| d.name == "fits__Shape_vec_f64"),
+        "dispatch defn expected: {:?}",
+        defns.iter().map(|d| &d.name).collect::<Vec<_>>()
+    );
+
+    // An uncovered vector type is a call-site error naming the type.
+    let uncovered = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector i64)] :- i64 (count v))\n(defn main [] :- i64 (size (split \"a,b\" \",\")))";
+    let err = build(&read_all(uncovered).unwrap()).unwrap_err();
+    assert!(
+        err.contains("no method size for ((Vector str))"),
+        "got: {}",
+        err
+    );
+
+    // Element type parameters cannot select methods: methods are concrete.
+    let generic_vec = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector T)] :- i64 (count v))";
+    assert!(build(&read_all(generic_vec).unwrap()).is_err());
+
+    // Map/set dispatch is not offered yet (no map/set call ABI in the
+    // LLVM backend).
+    let mapspec = "(defgeneric size [c] :- i64)\n(defmethod size [m :- map] :- i64 (count m))";
+    assert!(build(&read_all(mapspec).unwrap()).is_err());
+}
+
+#[test]
 fn print_is_a_generic_multimethod() {
     // The prelude provides print for builtin types; a call compiles to a
     // hidden method call with no dispatch tree.

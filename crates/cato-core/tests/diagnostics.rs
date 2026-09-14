@@ -31,6 +31,12 @@ const CASES: &[(&str, &str, usize, &str)] = &[
         "no method hit for this variant combination",
     ),
     (
+        "generics_uncovered_vector.cato",
+        "E204",
+        5,
+        "no method size for ((Vector str))",
+    ),
+    (
         "generics_unreachable.cato",
         "E205",
         8,
