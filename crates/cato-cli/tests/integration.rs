@@ -510,7 +510,8 @@ fn repl_evaluates_forms() {
         .expect("write repl");
     let out = child.wait_with_output().expect("repl output");
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("sq => defined"), "got: {}", stdout);
-    assert!(stdout.contains("=> 144"), "got: {}", stdout);
-    assert!(stdout.contains("=> 7"), "got: {}", stdout);
+    assert!(stdout.contains("#'user/sq"), "got: {}", stdout);
+    assert!(stdout.contains("user=> "), "clojure-style prompt: {}", stdout);
+    assert!(stdout.contains("\n144"), "got: {}", stdout);
+    assert!(stdout.contains("\n7"), "got: {}", stdout);
 }

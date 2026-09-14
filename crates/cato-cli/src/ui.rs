@@ -7,6 +7,20 @@ fn color_enabled() -> bool {
     std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
 }
 
+/// Colors for REPL prompts and results, which live on stdout.
+pub fn stdout_color_enabled() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
+/// Paint with an explicit enable flag (choose the gate at the call site).
+pub fn paint(enabled: bool, code: &str, s: &str) -> String {
+    if enabled {
+        format!("\x1b[{code}m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
 fn wrap(code: &str, s: &str) -> String {
     if color_enabled() {
         format!("\x1b[{code}m{s}\x1b[0m")

@@ -51,6 +51,8 @@ cato build <file.cato>        IR + runtime/runtime.c -> native binary (-o, defau
 cato build --target wasm32    -> WebAssembly binary (wasm32-unknown-unknown)
 cato run <file.cato>          execute with the tree-walking interpreter
 cato run --native <file.cato>   build and execute a native binary in one step
+cato repl                     Clojure-style REPL: ns prompt (user=>), multi-line
+                              forms until parens balance (#_=>), history, colors
 ```
 
 IR emission is opt-in: the default compile mode runs the whole pipeline

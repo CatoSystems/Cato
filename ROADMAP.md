@@ -74,8 +74,10 @@ AddressSanitizer-clean heap behavior; ~140 tests on `main`.
   tree-walking interpreter with `cato run` and a differential parity
   suite over all of `examples/`.
 - **Tooling.** `(ns ...)` + `(require [path :as alias])` multi-file
-  compilation (`examples/modules/`), `cato repl`, `cato lsp`
-  (diagnostics, definition, hover).
+  compilation (`examples/modules/`), `cato repl` (Clojure-style: namespace
+  prompt, multi-line forms with `#_=>` continuation, editable lines with
+  persistent history via a dependency-free stty raw-mode editor, colored
+  results/errors), `cato lsp` (diagnostics, definition, hover).
 - **Native builds from the CLI.** `cato build` links the emitted IR with
   `runtime/runtime.c` into a native binary (system C compiler, `-O`
   levels, `--emit-ll`, `--asan`); `cato run --native` builds and executes
