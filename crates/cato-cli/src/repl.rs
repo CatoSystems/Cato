@@ -49,6 +49,7 @@ pub fn run() {
 
     let mut session = Session::new();
     let mut pending = String::new();
+    let mut last_interrupt = false;
     let mut reader = LineReader::new(interactive, history);
 
     loop {
@@ -72,17 +73,26 @@ pub fn run() {
                 break;
             }
             ReadOutcome::Interrupt => {
+                let was_top_level = pending.is_empty();
                 pending.clear();
                 println!();
+                // Two consecutive Ctrl-C at an empty prompt also exits —
+                // one abandons the (possibly pending) form.
+                if was_top_level && last_interrupt {
+                    println!("{}", crate::ui::paint(colors, "2", "bye"));
+                    break;
+                }
+                last_interrupt = was_top_level;
                 continue;
             }
             ReadOutcome::Line(line) => {
+                last_interrupt = false;
                 let trimmed = line.trim();
                 if pending.is_empty() {
                     if trimmed.is_empty() {
                         continue;
                     }
-                    if trimmed == ":quit" || trimmed == ":q" {
+                    if matches!(trimmed, ":quit" | ":q" | ":exit" | "exit" | "quit") {
                         break;
                     }
                     if trimmed == ":help" {
@@ -154,9 +164,13 @@ impl Session {
 }
 
 fn evaluate(entry: &str, session: &mut Session, colors: bool) {
-    let Ok((exprs, spans)) = read_all_spanned(entry) else {
-        repl_error(colors, "could not read form");
-        return;
+    let forms = crate::ui::guard(|| read_all_spanned(entry).map_err(|e| e.msg));
+    let (exprs, spans) = match forms {
+        Ok(pair) => pair,
+        Err(e) => {
+            repl_error(colors, &e);
+            return;
+        }
     };
     for (expr, span) in exprs.into_iter().zip(spans) {
         let text = &entry[span.lo..span.hi];
@@ -184,7 +198,7 @@ fn process_form(text: &str, expr: &Expr, session: &mut Session, colors: bool) {
         let previous = (session.ns_form.clone(), session.ns.clone());
         session.ns_form = Some(text.to_string());
         session.ns = name;
-        if let Err(e) = session.compile() {
+        if let Err(e) = crate::ui::guard(|| session.compile()) {
             (session.ns_form, session.ns) = previous;
             repl_error(colors, &e);
         }
@@ -193,7 +207,7 @@ fn process_form(text: &str, expr: &Expr, session: &mut Session, colors: bool) {
 
     if DEF_HEADS.contains(&head.as_str()) {
         session.parts.push(text.to_string());
-        match session.compile() {
+        match crate::ui::guard(|| session.compile()) {
             Ok(_) => {
                 if NAMED_HEADS.contains(&head.as_str()) {
                     if let Expr::List(items) = expr {
@@ -212,18 +226,21 @@ fn process_form(text: &str, expr: &Expr, session: &mut Session, colors: bool) {
         return;
     }
 
-    // Expression: wrap in a synthetic defn and run it.
+    // Expression: wrap in a synthetic defn and run it. Both compile and
+    // execution are panic-guarded: malformed input must cost an error
+    // message, never the session.
     let src = format!("{}\n(defn __repl [] {})", session.source(), text);
-    match compile_named("<repl>", &src) {
-        Ok(program) => match cato_interp::Interpreter::new(&program).run_entry("__repl") {
-            Ok((v, out)) => {
-                if !out.is_empty() {
-                    print!("{}", out);
-                }
-                println!("{}", crate::ui::paint(colors, "1", &fmt_value(&v)));
+    let run = crate::ui::guard(move || {
+        let program = compile_named("<repl>", &src)?;
+        cato_interp::Interpreter::new(&program).run_entry("__repl")
+    });
+    match run {
+        Ok((v, out)) => {
+            if !out.is_empty() {
+                print!("{}", out);
             }
-            Err(e) => repl_error(colors, &e),
-        },
+            println!("{}", crate::ui::paint(colors, "1", &fmt_value(&v)));
+        }
         Err(e) => repl_error(colors, &e),
     }
 }
@@ -245,9 +262,9 @@ fn repl_error(colors: bool, msg: &str) {
 
 fn repl_help(colors: bool) {
     let dim = |s: &str| crate::ui::paint(colors, "2", s);
-    println!(":quit, :q  leave the REPL (also Ctrl-D on an empty line)");
-    println!("Ctrl-C     abandon the current form");
-    println!("Ctrl-L     clear the screen");
+    println!(":quit, :q, :exit, exit, quit   leave the REPL (also Ctrl-D on an empty line)");
+    println!("Ctrl-C       abandon the current form; twice on an empty prompt exits");
+    println!("Ctrl-L       clear the screen");
     println!(
         "{}",
         dim("forms may span lines: the REPL keeps reading until the parens balance")

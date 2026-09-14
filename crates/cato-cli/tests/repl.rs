@@ -91,3 +91,28 @@ fn repl_help_lists_commands() {
     let out = repl(":help\n:quit\n");
     assert!(out.contains(":quit"), "{}", out);
 }
+
+// Interpreting malformed input that trips internal invariant panics must
+// produce an error, never a dead REPL: the session continues afterwards.
+#[test]
+fn repl_survives_runtime_panics() {
+    let out = repl("(count 5)\n(if 1 2 3)\n(+ 1 2)\n:quit\n");
+    assert!(!out.contains("panicked"), "raw panic leaked: {}", out);
+    assert!(out.contains("error:"), "count on non-vector must error: {}", out);
+    assert!(out.contains("error:"), "if on non-bool must error: {}", out);
+    assert!(out.contains("\n3\n"), "session must keep working: {}", out);
+}
+
+// Every documented exit word terminates the REPL cleanly.
+#[test]
+fn repl_exit_words() {
+    for word in [":quit", ":q", ":exit", "exit", "quit"] {
+        let out = repl(&format!("(+ 1 2)\n{word}\n"));
+        assert!(out.contains("\n3\n"), "{word}: {}", out);
+        assert!(
+            !out.contains("error:") || out.contains("quit"),
+            "{word} must not evaluate as a form: {}",
+            out
+        );
+    }
+}

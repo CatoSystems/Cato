@@ -76,3 +76,28 @@ pub fn suggestion_suffix(input: &str, candidates: &[&str]) -> String {
         None => String::new(),
     }
 }
+
+/// Run `f`, converting a panic (the interpreter contains `panic!`
+/// invariants that malformed input can reach) into an `Err` so bad input
+/// costs an error message instead of a dead process or a raw backtrace.
+/// The default panic hook is suppressed for the duration.
+pub fn guard<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let previous_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    std::panic::set_hook(previous_hook);
+    match result {
+        Ok(r) => r,
+        Err(payload) => Err(panic_message(payload)),
+    }
+}
+
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else {
+        "internal error".to_string()
+    }
+}

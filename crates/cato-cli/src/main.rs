@@ -112,8 +112,10 @@ fn main() {
             std::process::exit(code);
         }
         Mode::RunInterp => {
-            // The interpreter's artifact is the program output.
-            InterpBackend.emit(&program).unwrap_or_else(|e| {
+            // The interpreter's artifact is the program output. Runtime
+            // panics (malformed programs reaching interp invariants) are
+            // reported as errors, not raw backtraces.
+            crate::ui::guard(|| InterpBackend.emit(&program)).unwrap_or_else(|e| {
                 eprintln!("{} {}", ui::error_lead(), e);
                 std::process::exit(1);
             })
