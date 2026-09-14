@@ -76,6 +76,28 @@ AddressSanitizer-clean heap behavior; ~140 tests on `main`.
 - **Tooling.** `(ns ...)` + `(require [path :as alias])` multi-file
   compilation (`examples/modules/`), `cato repl`, `cato lsp`
   (diagnostics, definition, hover).
+- **Native builds from the CLI.** `cato build` links the emitted IR with
+  `runtime/runtime.c` into a native binary (system C compiler, `-O`
+  levels, `--emit-ll`, `--asan`); `cato run --native` builds and executes
+  in one step with exit-code propagation; `cato run` remains the fast
+  interpreter mode. All modes agree byte-for-byte on program output.
+- **Targets & opt-in emission.** IR is emitted only when asked for
+  (`--emit-ir`); bare `cato <file>` is a compile check with a one-line
+  stderr summary. The `--target wasm32` option emits
+  `wasm32-unknown-unknown` modules — the IR is asserted to pass LLVM's
+  wasm codegen — with `cato build --target wasm32` linking `.wasm` where a
+  wasm-capable clang + lld is available.
+- **CLI ergonomics.** `cato help` / `--help` on stdout with documented
+  exit codes (0 ok, 1 compile/runtime error, 2 usage); a friendly no-args
+  banner; did-you-mean suggestions for mistyped flags and commands; TTY
+  colors with `NO_COLOR` support; check/build success lines with timing.
+- **Middle end.** HIR optimization pipeline in `cato-core/src/opt/`:
+  constant folding (wrapping, backend-exact semantics), DCE +
+  copy-propagation, multimethod devirtualization, inlining, and clone
+  elision with free-list transfer — fixed-point driver with a free-list
+  recompute + ownership re-verify safety net. On by default (`--no-opt`
+  skips); both backends benefit; guarded by the parity suite and an
+  opt-off/opt-on interpreter differential.
 
 ## Next steps
 
