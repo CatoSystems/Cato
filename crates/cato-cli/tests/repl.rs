@@ -116,3 +116,38 @@ fn repl_exit_words() {
         );
     }
 }
+
+// Regression: raw mode disables the terminal's LF->CRLF translation, so a
+// bare newline on Enter left the cursor mid-column and every result line
+// printed indented. Through a pty, the result must start at column 0.
+// Skipped where the BSD `script` pty helper is unavailable.
+#[test]
+fn repl_results_start_at_column_zero_on_a_terminal() {
+    let script = std::path::Path::new("/usr/bin/script");
+    if !script.exists() {
+        return;
+    }
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let mut child = Command::new(script)
+        .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_cato"), "repl"])
+        .env("TERM", "xterm-256color")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn script");
+    let stdin = child.stdin.as_mut().expect("stdin");
+    let _ = stdin.write_all(b"(+ 1 2)\r");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let _ = stdin.write_all(b":quit\r");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let out = child.wait_with_output().expect("repl output");
+    let raw = String::from_utf8_lossy(&out.stdout).to_string();
+
+    assert!(
+        raw.contains("\r\n\x1b[1m3\x1b[0m"),
+        "result must begin at column 0 after CRLF; got: {:?}",
+        raw
+    );
+}

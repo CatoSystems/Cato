@@ -68,7 +68,7 @@ pub fn run() {
             ReadOutcome::Interrupt => {
                 let was_top_level = pending.is_empty();
                 pending.clear();
-                println!();
+                // The editor already emitted CRLF for the abandoned line.
                 // Two consecutive Ctrl-C at an empty prompt also exits —
                 // one abandons the (possibly pending) form.
                 if was_top_level && last_interrupt {
@@ -461,12 +461,18 @@ fn read_line_raw_inner(prompt: &str, history: &[String]) -> std::io::Result<Read
         };
         match b {
             b'\r' | b'\n' => {
-                println!();
+                // Raw mode disables the terminal's LF->CRLF translation,
+                // so a bare newline drops a line but keeps the cursor
+                // column — every later output would be indented. Always
+                // emit an explicit CRLF.
+                print!("\r\n");
+                std::io::stdout().flush().unwrap();
                 return Ok(ReadOutcome::Line(ed.buf.into_iter().collect()));
             }
             0x03 => {
                 // Ctrl-C: abandon the current line.
-                println!();
+                print!("\r\n");
+                std::io::stdout().flush().unwrap();
                 return Ok(ReadOutcome::Interrupt);
             }
             0x04 => {
