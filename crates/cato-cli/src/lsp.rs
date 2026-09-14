@@ -236,7 +236,7 @@ fn publish_diagnostics(uri: &str, text: &str) {
     let backend = frontend.as_ref().ok().map(|p| {
         let p = p.clone();
         std::panic::catch_unwind(move || {
-            cato_llvm::LlvmBackend { fast: false, threads: 1 }.emit(&p)
+            cato_llvm::LlvmBackend { fast: false, threads: 1, target: Default::default() }.emit(&p)
         })
     });
     let diags = match frontend {

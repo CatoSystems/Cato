@@ -3,13 +3,18 @@
 
 mod cli;
 mod lsp;
+mod native;
 mod repl;
+mod ui;
 
-use cato_core::{compile_named, Backend};
+use cli::{Cli, Mode, Target};
+use cato_core::Backend;
 use cato_interp::InterpBackend;
-use cato_llvm::LlvmBackend;
+use cato_llvm::{LlvmBackend, Target as LlvmTarget};
+use std::time::Instant;
 
 fn main() {
+    let started = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("repl") {
         repl::run();
@@ -21,29 +26,118 @@ fn main() {
     }
     let cli = cli::parse_args(&args);
     let src = std::fs::read_to_string(&cli.file).unwrap_or_else(|e| {
-        eprintln!("cato: cannot read {}: {}", cli.file, e);
-        std::process::exit(2);
+        eprintln!("{} cannot read {}: {}", ui::error_lead(), cli.file, e);
+        std::process::exit(1);
     });
-    let program =
-        compile_named(&cli.file, &src).unwrap_or_else(|e| { eprintln!("cato: {}", e); std::process::exit(2); });
-    let result = match cli.backend.as_str() {
-        "llvm" => LlvmBackend { fast: cli.fast, threads: cli.threads }.emit(&program),
-        "interp" => InterpBackend.emit(&program),
-        other => {
-            eprintln!("cato: unknown backend '{}' (available: llvm, interp)", other);
-            std::process::exit(2);
+    let program = cato_core::compile_named_with(&cli.file, &src, !cli.no_opt)
+        .unwrap_or_else(|e| {
+            eprintln!("{} {}", ui::error_lead(), e);
+            std::process::exit(1);
+        });
+    if cli.dump_hir {
+        eprintln!("{:#?}", program);
+    }
+
+    // `--backend interp` executes instead of compiling, exactly like `run`.
+    let mode = match cli.mode {
+        Mode::Compile if cli.backend == "interp" => Mode::RunInterp,
+        other => other,
+    };
+    let result = match mode {
+        // Compile check; IR text only on explicit `--emit-ir`.
+        Mode::Compile => {
+            if !cli.emit_ir {
+                eprintln!(
+                    "{} compiled {} in {}ms",
+                    ui::check_mark(),
+                    cli.file,
+                    started.elapsed().as_millis()
+                );
+                return;
+            }
+            let backend = llvm_backend(&cli);
+            let ir = backend
+                .emit(&program)
+                .unwrap_or_else(|e| {
+                    eprintln!("{} backend error: {}", ui::error_lead(), e);
+                    std::process::exit(1);
+                });
+            match &cli.out {
+                Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
+                    eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);
+                    std::process::exit(1);
+                }),
+                None => print!("{}", ir),
+            }
+            return;
+        }
+        // Compile to a native executable and (for run) execute it.
+        Mode::Build => {
+            let default = match cli.target {
+                Target::Wasm32 => format!("{}.wasm", default_stem(&cli.file)),
+                Target::Native => default_stem(&cli.file),
+            };
+            let out = cli.out.clone().unwrap_or(default);
+            match native::build_native(&program, &cli, std::path::Path::new(&out)) {
+                Ok(bin) => {
+                    eprintln!(
+                        "{} built {} in {}ms",
+                        ui::check_mark(),
+                        bin.display(),
+                        started.elapsed().as_millis()
+                    );
+                }
+                Err(e) => {
+                    eprintln!("{} {}", ui::error_lead(), e);
+                    std::process::exit(1);
+                }
+            }
+            return;
+        }
+        Mode::RunNative => {
+            let bin = std::env::temp_dir().join(format!(
+                "cato_run_{}{}",
+                std::process::id(),
+                std::env::consts::EXE_SUFFIX
+            ));
+            let bin = native::build_native(&program, &cli, &bin).unwrap_or_else(|e| {
+                eprintln!("{} {}", ui::error_lead(), e);
+                std::process::exit(1);
+            });
+            let code = native::run_binary(&bin).unwrap_or_else(|e| {
+                eprintln!("{} {}", ui::error_lead(), e);
+                std::process::exit(1);
+            });
+            let _ = std::fs::remove_file(&bin);
+            std::process::exit(code);
+        }
+        Mode::RunInterp => {
+            // The interpreter's artifact is the program output.
+            InterpBackend.emit(&program).unwrap_or_else(|e| {
+                eprintln!("{} {}", ui::error_lead(), e);
+                std::process::exit(1);
+            })
         }
     };
-    let ir = result
-        .unwrap_or_else(|e| { eprintln!("cato: backend error: {}", e); std::process::exit(2); });
-    if cli.backend == "interp" {
-        // The interpreter's artifact is the program output.
-        print!("{}", ir);
-        return;
+    print!("{}", result);
+}
+
+/// The LLVM backend configured from CLI flags.
+fn llvm_backend(cli: &Cli) -> LlvmBackend {
+    LlvmBackend {
+        fast: cli.fast,
+        threads: cli.threads,
+        target: match cli.target {
+            Target::Native => LlvmTarget::Native,
+            Target::Wasm32 => LlvmTarget::Wasm32,
+        },
     }
-    match cli.out {
-        Some(p) => std::fs::write(&p, &ir)
-            .unwrap_or_else(|e| { eprintln!("cato: cannot write {}: {}", p, e); std::process::exit(2); }),
-        None => print!("{}", ir),
-    }
+}
+
+/// `slice.cato` -> `slice`.
+fn default_stem(file: &str) -> String {
+    std::path::Path::new(file)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "a.out".to_string())
 }

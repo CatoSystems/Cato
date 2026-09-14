@@ -174,12 +174,51 @@ pub fn emit_module_fast(
     output.join("\n")
 }
 
+/// The code generation target of the emitted module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Target {
+    /// The compiling host (no explicit triple in the emitted IR; the
+    /// consuming compiler picks its default).
+    #[default]
+    Native,
+    /// WebAssembly 32-bit freestanding (`wasm32-unknown-unknown`). The
+    /// emitted IR carries the wasm32 triple and data layout; runtime C
+    /// helpers (print, malloc) become host imports.
+    Wasm32,
+}
+
+impl Target {
+    /// `(triple, data layout)` for the module header, or `None` for the
+    /// native default.
+    fn header(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Target::Native => None,
+            Target::Wasm32 => Some((
+                "wasm32-unknown-unknown",
+                "e-m:e-p:32:32-i64:64-a:0:32-n32:64-S128",
+            )),
+        }
+    }
+}
+
 /// The LLVM IR backend. `fast` attaches vectorization metadata to fused
 /// loops (`--fast`).
 pub struct LlvmBackend {
     pub fast: bool,
     /// Thread count for `(parallel ...)` loops (`--threads`, default 1).
     pub threads: usize,
+    /// Emission target (`--target`, default native).
+    pub target: Target,
+}
+
+impl Default for LlvmBackend {
+    fn default() -> Self {
+        LlvmBackend {
+            fast: false,
+            threads: 1,
+            target: Target::Native,
+        }
+    }
 }
 
 impl Backend for LlvmBackend {
@@ -188,13 +227,19 @@ impl Backend for LlvmBackend {
     }
 
     fn emit(&self, program: &cato_core::Program) -> Result<String, String> {
-        Ok(emit_module_fast(
+        let ir = emit_module_fast(
             &program.adts,
             &program.defns,
             self.fast,
             &program.fn_sigs,
             &program.lambdas,
             self.threads,
-        ))
+        );
+        Ok(match self.target.header() {
+            None => ir,
+            Some((triple, layout)) => format!(
+                "target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n\n{ir}"
+            ),
+        })
     }
 }

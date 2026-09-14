@@ -5,4 +5,4 @@
 //! `align 8` loop data, `--fast` vectorization metadata.
 
 mod llvm;
-pub use llvm::{emit_module, emit_module_fast, LlvmBackend};
+pub use llvm::{emit_module, emit_module_fast, LlvmBackend, Target};

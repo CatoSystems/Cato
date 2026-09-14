@@ -1,0 +1,64 @@
+//! Terminal UX helpers: colored output (TTY-gated, `NO_COLOR`-aware) and
+//! "did you mean" suggestions for mistyped flags and commands.
+
+use std::io::IsTerminal;
+
+fn color_enabled() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+fn wrap(code: &str, s: &str) -> String {
+    if color_enabled() {
+        format!("\x1b[{code}m{s}\x1b[0m")
+    } else {
+        s.to_string()
+    }
+}
+
+/// A bold-red `cato: error:` lead for diagnostics.
+pub fn error_lead() -> String {
+    wrap("1;31", "cato: error:")
+}
+
+/// A green check mark for success lines.
+pub fn check_mark() -> String {
+    wrap("1;32", "✓")
+}
+
+/// Edit distance between two strings (classic DP, small inputs).
+fn levenshtein(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut cur = vec![0usize; b.len() + 1];
+    for i in 1..=a.len() {
+        cur[0] = i;
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[b.len()]
+}
+
+/// The closest candidate within a forgiving threshold, if any.
+pub fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
+    let input = input.trim_start_matches('-');
+    candidates
+        .iter()
+        .filter_map(|c| {
+            let d = levenshtein(input, c.trim_start_matches('-'));
+            (d <= 2 && d < c.len()).then(|| (d, c))
+        })
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| (*c).to_string())
+}
+
+/// Suggestion suffix (" — did you mean `x`?") or empty.
+pub fn suggestion_suffix(input: &str, candidates: &[&str]) -> String {
+    match did_you_mean(input, candidates) {
+        Some(c) => format!(" — did you mean '{}'?", c),
+        None => String::new(),
+    }
+}

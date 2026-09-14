@@ -9,6 +9,7 @@ pub mod diagnostics;
 pub mod expand;
 pub mod fuse;
 pub mod hir;
+pub mod opt;
 pub mod reader;
 
 pub use ast::Expr;
@@ -49,34 +50,18 @@ pub trait Backend {
 /// Run the full frontend pipeline. Errors carry codes and, where a span is
 /// known, a `file:line:col` location with a caret snippet.
 pub fn compile_to_program(src: &str) -> Result<Program, String> {
-    compile_named("input.cato", src)
+    compile_named_with("input.cato", src, true)
 }
 
-/// Builtin multimethods, prepended to every compilation. `(print x)`
-/// dispatches on the static type of `x`; examples use `print` instead of
-/// the per-type builtins (which remain as the method bodies' primitives).
-const PRELUDE: &str = r#"
-(defgeneric print [x])
-(defmethod print [x :- i64] (print-i64 x))
-(defmethod print [x :- f64] (print-f64 x))
-(defmethod print [x :- str] (print-string x))
-(defmethod print [x :- bool] (print-i64 x))
-(defmethod print [x :- i8] (print-i64 x))
-(defmethod print [x :- i16] (print-i64 x))
-(defmethod print [x :- i32] (print-i64 x))
-(defmethod print [x :- u8] (print-i64 x))
-(defmethod print [x :- u16] (print-i64 x))
-(defmethod print [x :- u32] (print-i64 x))
-(defmethod print [x :- u64] (print-i64 x))
-(defmethod print [x :- usize] (print-i64 x))
-"#;
-
 /// Like `compile_to_program`, with the file name used in diagnostics.
-/// Supports multi-file compilation: `(require [relpath.cato :as alias])`
-/// loads another file (relative to this one) and makes its defns callable
-/// as `alias/name`; `(ns name)` declares the file's namespace (each file
-/// at most one, names unique across the compilation).
 pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
+    compile_named_with(file, src, true)
+}
+
+/// Compile with the middle-end optimization pipeline on (`true`, default)
+/// or off (`false` — the pre-optimization HIR, useful for debugging and
+/// differential testing).
+pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Program, String> {
     diagnostics::with_source(file, src, || {
         let mut seen_files = std::collections::HashSet::new();
         seen_files.insert(file.to_string());
@@ -109,14 +94,37 @@ pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
                 l
             })
             .collect();
-        Ok(Program {
+        let mut program = Program {
             adts,
             defns,
             lambdas,
             fn_sigs,
-        })
+        };
+        if optimize {
+            opt::optimize(&mut program)?;
+        }
+        Ok(program)
     })
 }
+
+/// Builtin multimethods, prepended to every compilation. `(print x)`
+/// dispatches on the static type of `x`; examples use `print` instead of
+/// the per-type builtins (which remain as the method bodies' primitives).
+const PRELUDE: &str = r#"
+(defgeneric print [x])
+(defmethod print [x :- i64] (print-i64 x))
+(defmethod print [x :- f64] (print-f64 x))
+(defmethod print [x :- str] (print-string x))
+(defmethod print [x :- bool] (print-i64 x))
+(defmethod print [x :- i8] (print-i64 x))
+(defmethod print [x :- i16] (print-i64 x))
+(defmethod print [x :- i32] (print-i64 x))
+(defmethod print [x :- u8] (print-i64 x))
+(defmethod print [x :- u16] (print-i64 x))
+(defmethod print [x :- u32] (print-i64 x))
+(defmethod print [x :- u64] (print-i64 x))
+(defmethod print [x :- usize] (print-i64 x))
+"#;
 
 // ---------------------------------------------------------------------------
 // Phase 19: modules — (ns ...) and (require [path :as alias])
