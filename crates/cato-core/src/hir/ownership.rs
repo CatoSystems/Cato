@@ -231,7 +231,7 @@ impl<'a> BCheck<'a> {
                 // move in one arm (e.g. a generic-dispatch call) must not
                 // poison the other arms — only one arm runs.
                 let post_scrut = st.clone();
-                let mut post_tys = tys.clone();
+                let post_tys = tys.clone();
                 for arm in arms {
                     let mut arm_tys = post_tys.clone();
                     let mut arm_st = post_scrut.clone();
@@ -272,7 +272,7 @@ impl<'a> BCheck<'a> {
                     }
                 }
             }
-            HExpr::Let(binds, body, frees) => {
+            HExpr::Let(binds, body, _frees) => {
                 for (name, value, ty) in binds {
                     self.check(value, tys, st);
                     // Binding a non-Copy value moves it.
@@ -354,7 +354,6 @@ fn annotate_walk(
 /// Conservative by design: anything uncertain leaks, nothing double-frees.
 pub(crate) fn annotate_frees(body: &mut HExpr) {
     let mut consumed: HashSet<String> = HashSet::new();
-    let mut shadowed: HashSet<String> = HashSet::new();
     let mut escaped: HashSet<String> = HashSet::new();
 
     fn collect(
@@ -379,7 +378,7 @@ pub(crate) fn annotate_frees(body: &mut HExpr) {
             }
             HExpr::Let(binds, body, _) => {
                 for (n, value, _) in binds {
-                    *shadowed.entry(n.clone()).and_modify(|c| *c += 1).or_insert(1);
+                    shadowed.entry(n.clone()).and_modify(|c| *c += 1).or_insert(1);
                     collect(value, consumed, shadowed);
                 }
                 collect(body, consumed, shadowed);

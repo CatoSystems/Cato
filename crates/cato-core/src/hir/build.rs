@@ -119,8 +119,12 @@ pub fn build_program_located(
     // Monomorphized generic instantiations generated during lowering.
     out.extend(ctx.inst.borrow_mut().extra.drain(..));
 
-    // Multimethod hidden/dispatch defns generated during lowering.
-    out.extend(ctx.gens.borrow_mut().extra.drain(..));
+    // Multimethod hidden/dispatch defns generated during lowering; their
+    // bodies get the same scope-exit free annotation as plain defns.
+    for mut d in ctx.gens.borrow_mut().extra.drain(..) {
+        annotate_frees(&mut d.body);
+        out.push(d);
+    }
 
     // Closure bodies: clone into the program's lambda table.
     let lambdas: Vec<crate::Lambda> = ctx

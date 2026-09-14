@@ -190,8 +190,6 @@ pub(crate) fn emit_lambda(
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     let mut c = FnCtx::new();
-    // Env param.
-    let envp = "%env".to_string();
     // Params.
     let mut params = vec!["ptr noalias nocapture readonly %env".to_string()];
     for (pname, pty) in &lambda.params {

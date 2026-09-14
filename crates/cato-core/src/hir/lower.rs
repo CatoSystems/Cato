@@ -692,7 +692,7 @@ fn collect_captures(
     seen: &mut Vec<String>,
     caps: &mut Vec<(String, Ty)>,
 ) {
-    fn var(e: &HExpr, env: &Env, params: &[String], seen: &mut Vec<String>, caps: &mut Vec<(String, Ty)>, v: &str) {
+    fn var(env: &Env, params: &[String], seen: &mut Vec<String>, caps: &mut Vec<(String, Ty)>, v: &str) {
         if params.iter().any(|p| p == v) || seen.iter().any(|s| s == v) {
             return;
         }
@@ -702,7 +702,7 @@ fn collect_captures(
         }
     }
     match e {
-        HExpr::Var(v) => var(e, env, params, seen, caps, v),
+        HExpr::Var(v) => var(env, params, seen, caps, v),
         HExpr::Bin(_, a, b) | HExpr::And(a, b) | HExpr::Or(a, b) | HExpr::Min(a, b, _) | HExpr::Max(a, b, _) | HExpr::Cmp(_, a, b, _) => {
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);

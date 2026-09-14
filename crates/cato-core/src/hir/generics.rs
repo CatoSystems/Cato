@@ -124,7 +124,6 @@ pub(crate) struct MethodDef {
 }
 
 pub(crate) struct GenericDef {
-    pub name: String,
     pub arity: usize,
     pub ret: Option<Ty>,
     pub methods: Vec<MethodDef>,
@@ -190,12 +189,20 @@ pub(crate) fn collect_generics(
             // Params may be annotated; the annotations are documentation —
             // dispatch domains come from the methods.
             let mut ret = None;
+            let mut next = 3;
             if let Some(Expr::LitSym(sep)) = items.get(3) {
                 if sep == ":-" {
-                    if let Some(Expr::LitSym(t)) = items.get(4) {
-                        ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                    match items.get(4) {
+                        Some(Expr::LitSym(t)) => {
+                            ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                            next = 5;
+                        }
+                        _ => return Err(bad("defgeneric :- expects a return type")),
                     }
                 }
+            }
+            if items.len() > next {
+                return Err(bad("unexpected trailing forms in defgeneric"));
             }
             if gens.generics.contains_key(name.as_str()) {
                 return Err(bad(&format!("duplicate defgeneric {}", name)));
@@ -213,7 +220,6 @@ pub(crate) fn collect_generics(
             gens.generics.insert(
                 name.clone(),
                 GenericDef {
-                    name: name.clone(),
                     arity,
                     ret,
                     methods: Vec::new(),
@@ -235,10 +241,13 @@ pub(crate) fn collect_generics(
             let mut ret = None;
             if let Some(Expr::LitSym(sep)) = items.get(3) {
                 if sep == ":-" {
-                    if let Some(Expr::LitSym(t)) = items.get(4) {
-                        ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                    match items.get(4) {
+                        Some(Expr::LitSym(t)) => {
+                            ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                            si = 5;
+                        }
+                        _ => return Err(bad("defmethod :- expects a return type")),
                     }
-                    si = 5;
                 }
             }
             let body = if items.len() - si == 1 {
@@ -308,10 +317,16 @@ pub(crate) fn collect_generics(
                             Spec::Variant(a, v)
                         } else {
                             match parse_ty_sym(tyname, adt_by_name, &mut Vec::new()) {
-                                Ok(t) if !matches!(t, Ty::Param(_)) => Spec::Builtin(t),
+                                Ok(t)
+                                    if t.is_int()
+                                        || t.is_float()
+                                        || matches!(t, Ty::Str | Ty::Bool) =>
+                                {
+                                    Spec::Builtin(t)
+                                }
                                 _ => {
                                     return Err(bad(&format!(
-                                        "unknown specializer type {}",
+                                        "unknown specializer type {} (builtin scalars, str, bool, ADTs and their variants only)",
                                         tyname
                                     )))
                                 }
@@ -582,24 +597,15 @@ pub(crate) fn generic_call(
         // Build one combo (variant index per ADT position).
         let mut rest = vi;
         let mut combo: Vec<(usize, u32)> = Vec::new();
-        for (pos, a, nv) in &adt_positions {
+        for (pos, _adt, nv) in &adt_positions {
             combo.push((*pos, (rest % nv) as u32));
             rest /= nv;
         }
         let slots: Vec<Slot> = (0..arg_tys.len())
             .map(|ci| match combo.iter().find(|(p, _)| *p == ci) {
-                Some((_, v)) => Slot::Var(adt_positions[0].1, *v),
-                None => Slot::Fixed(arg_tys[ci]),
-            })
-            .collect();
-        let slots: Vec<Slot> = slots
-            .iter()
-            .enumerate()
-            .map(|(ci, _)| match combo.iter().find(|(p, _)| *p == ci) {
                 Some((_, v)) => {
-                    let a = match arg_tys[ci] {
-                        Ty::Adt(a) => a,
-                        _ => unreachable!(),
+                    let Ty::Adt(a) = arg_tys[ci] else {
+                        unreachable!("combo slot on non-ADT")
                     };
                     Slot::Var(a, *v)
                 }

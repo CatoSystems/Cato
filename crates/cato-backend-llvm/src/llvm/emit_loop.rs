@@ -455,11 +455,7 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
 ///   partial.
 /// - `@H_par(data, len, caps...)` — spawns `--threads` workers over
 ///   contiguous chunks and combines their partials with the same op.
-pub(crate) fn emit_parallel_runners(
-    spec: &LoopSpec,
-    mdl: &mut Mdl,
-    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-) -> String {
+pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     let t = mdl.threads.max(1);
     let h = &spec.helper;
     let acc_ll = if spec.acc_ty == Ty::F64 { "double" } else { "i64" };

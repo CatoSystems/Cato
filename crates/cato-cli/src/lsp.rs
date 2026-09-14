@@ -385,7 +385,7 @@ pub fn run() {
                 let text = docs.get(uri).map(|d| d.text.clone()).unwrap_or_default();
                 let word = word_at(&text, offset_of(&text, line, ch)).unwrap_or_default();
                 match find_defn(&text, &word) {
-                    Some((ln, sig)) if method == "textDocument/definition" => respond(
+                    Some((ln, _sig)) if method == "textDocument/definition" => respond(
                         &id,
                         Json::Obj(vec![
                             ("uri".into(), Json::Str(uri.into())),

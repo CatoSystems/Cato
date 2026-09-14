@@ -95,7 +95,7 @@ impl<'p> Interpreter<'p> {
     }
 
     /// Run `main` and return the captured stdout.
-    pub fn run(mut self) -> R<String> {
+    pub fn run(self) -> R<String> {
         self.run_entry("main").map(|(_, out)| out)
     }
 
@@ -155,11 +155,10 @@ impl<'p> Interpreter<'p> {
             }
             _ => {}
         }
-        let defn = self
+        let defn: &'p cato_core::Defn = *self
             .defns
             .get(name)
-            .ok_or_else(|| format!("interp: unknown function {}", name))?
-            .clone();
+            .ok_or_else(|| format!("interp: unknown function {}", name))?;
         if defn.is_extern {
             return Err(format!("interp: unsupported extern {}", name));
         }
@@ -173,7 +172,7 @@ impl<'p> Interpreter<'p> {
     }
 
     fn eval(&mut self, e: &cato_core::hir::HExpr, env: &mut HashMap<String, Value>) -> R<Value> {
-        use cato_core::hir::{BinOp, CmpOp, HExpr, Ty, VLit};
+        use cato_core::hir::{BinOp, HExpr, Ty, VLit};
         Ok(match e {
             HExpr::ConstI64(v) => Value::Int(*v),
             HExpr::ConstF64(v) => Value::F64(*v),
@@ -667,9 +666,6 @@ impl<'p> Interpreter<'p> {
             HExpr::Reduce(r) => self.eval_reduce(r, env)?,
             HExpr::Clone(inner) => self.eval(inner, env)?,
             HExpr::DropStmt(_) => Value::Int(0),
-            other => {
-                return Err(format!("interp: unsupported node {:?}", other));
-            }
         })
     }
 

@@ -116,7 +116,7 @@ pub fn emit_module_fast(
         output.push(emit_loop(spec, &mut mdl, &sigs));
         if spec.parallel {
             output.push(String::new());
-            output.push(emit_parallel_runners(spec, &mut mdl, &sigs));
+            output.push(emit_parallel_runners(spec, &mut mdl));
         }
     }
     for defn in &plain {
