@@ -65,3 +65,27 @@ fn interp_evaluates_sets_strings_and_closures() {
     let out = cato_interp::Interpreter::new(&program).run().expect("run");
     assert_eq!(out, "1\na-b\n4\n");
 }
+
+#[test]
+fn modules_agree_between_backends() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent().unwrap().parent().unwrap();
+    let cato = root.join("target/debug/cato");
+    let rt = root.join("runtime/runtime.c");
+    let src = root.join("examples/modules/main.cato");
+
+    let out = Command::new(&cato).arg("run").arg(&src).output().expect("interp run");
+    assert!(out.status.success(), "interp: {}", String::from_utf8_lossy(&out.stderr));
+    let interp = String::from_utf8_lossy(&out.stdout).to_string();
+
+    let ll = root.join("target/modules_main.ll");
+    let exe = root.join("target/modules_main_bin");
+    let status = Command::new(&cato).arg(&src).arg("-o").arg(&ll).status().expect("emit");
+    assert!(status.success());
+    let cc = Command::new("clang").arg(&ll).arg(&rt).arg("-o").arg(&exe).status().expect("clang");
+    assert!(cc.success());
+    let out = Command::new(&exe).output().expect("llvm run");
+    let llvm = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(interp, llvm, "modules parity");
+    assert_eq!(interp, "49\n25\n16\n");
+}

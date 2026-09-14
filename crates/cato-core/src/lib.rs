@@ -53,10 +53,17 @@ pub fn compile_to_program(src: &str) -> Result<Program, String> {
 }
 
 /// Like `compile_to_program`, with the file name used in diagnostics.
+/// Supports multi-file compilation: `(require [relpath.cato :as alias])`
+/// loads another file (relative to this one) and makes its defns callable
+/// as `alias/name`; `(ns name)` declares the file's namespace (each file
+/// at most one, names unique across the compilation).
 pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
     diagnostics::with_source(file, src, || {
-        let (forms, spans) = reader::read_all_spanned(src)
-            .map_err(|e| diagnostics::locate(e.span, &e.msg))?;
+        let mut seen_files = std::collections::HashSet::new();
+        seen_files.insert(file.to_string());
+        let mut seen_ns: Vec<String> = Vec::new();
+        let located = expand_file(file, src, &mut seen_files, &mut seen_ns)?;
+        let (forms, spans): (Vec<_>, Vec<_>) = located.iter().cloned().unzip();
         let expanded = expand::expand_all_located(&forms, &spans)?;
         let located: Vec<_> = expanded.into_iter().zip(spans).collect();
         let (adts, defns, lambdas, fn_sigs) = hir::build_program_located(&located)?;
@@ -81,4 +88,169 @@ pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
             fn_sigs,
         })
     })
+}
+
+// ---------------------------------------------------------------------------
+// Phase 19: modules — (ns ...) and (require [path :as alias])
+// ---------------------------------------------------------------------------
+
+/// Is this form `(require [path :as alias])`?
+fn require_of(form: &Expr) -> Option<(String, String)> {
+    let Expr::List(items) = form else { return None };
+    if !matches!(items.first(), Some(Expr::LitSym(h)) if h == "require") {
+        return None;
+    }
+    let Some(Expr::Vector(spec)) = items.get(1) else {
+        return None;
+    };
+    if spec.len() != 3 {
+        return None;
+    }
+    let Some(Expr::LitStr(path)) = spec.first() else {
+        return None;
+    };
+    if !matches!(spec.get(1), Some(Expr::LitSym(s)) if s == ":as") {
+        return None;
+    }
+    let Some(Expr::LitSym(alias)) = spec.get(2) else {
+        return None;
+    };
+    Some((path.clone(), alias.clone()))
+}
+
+/// Rewrite call heads in `forms`: `from` -> `to` (position-0 symbols of
+/// list forms), plus defn headers named `from`.
+fn rewrite_heads(forms: &mut [(Expr, crate::ast::Span)], from: &str, to: &str) {
+    for (form, _) in forms.iter_mut() {
+        rewrite_heads_expr(form, from, to);
+    }
+}
+
+fn rewrite_heads_expr(e: &mut Expr, from: &str, to: &str) {
+    match e {
+        Expr::List(items) => {
+            if let Some(Expr::LitSym(h)) = items.first_mut() {
+                if h == from {
+                    *h = to.to_string();
+                }
+            }
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn") {
+                if let Some(Expr::LitSym(n)) = items.get_mut(1) {
+                    if n == from {
+                        *n = to.to_string();
+                    }
+                }
+            }
+            for it in items.iter_mut() {
+                rewrite_heads_expr(it, from, to);
+            }
+        }
+        Expr::Vector(items) => {
+            for it in items.iter_mut() {
+                rewrite_heads_expr(it, from, to);
+            }
+        }
+        Expr::MapLit(pairs) => {
+            for (k, v) in pairs.iter_mut() {
+                rewrite_heads_expr(k, from, to);
+                rewrite_heads_expr(v, from, to);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Defn/extern names declared by these forms.
+fn defn_names(forms: &[(Expr, crate::ast::Span)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (f, _) in forms {
+        if let Expr::List(items) = f {
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn" || h == "extern") {
+                if let Some(Expr::LitSym(n)) = items.get(1) {
+                    out.push(n.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Load `file`, pull in its `(require ...)`s recursively, and return the
+/// flattened (form, span) list (require/ns forms dropped). Required defns
+/// are renamed `alias__name` and the requiring file's `alias/name` call
+/// heads are rewritten to match. `(ns name)` is validated (one per file,
+/// names unique across the compilation) and dropped.
+fn expand_file(
+    file: &str,
+    src: &str,
+    seen_files: &mut std::collections::HashSet<String>,
+    seen_ns: &mut Vec<String>,
+) -> Result<Vec<(Expr, crate::ast::Span)>, String> {
+    let (all_forms, all_spans) = reader::read_all_spanned(src)
+        .map_err(|e| diagnostics::locate(e.span, &e.msg))?;
+
+    let mut kept: Vec<(Expr, crate::ast::Span)> = Vec::new();
+    for (f, s) in all_forms.into_iter().zip(all_spans) {
+        if let Expr::List(items) = &f {
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "ns") {
+                match items.get(1) {
+                    Some(Expr::LitSym(name)) => {
+                        if seen_ns.contains(name) {
+                            return Err(diagnostics::locate(
+                                s,
+                                &format!("duplicate ns {}", name),
+                            ));
+                        }
+                        seen_ns.push(name.clone());
+                    }
+                    _ => return Err(diagnostics::locate(s, "ns expects a name")),
+                }
+                continue;
+            }
+        }
+        kept.push((f, s));
+    }
+
+    let mut merged: Vec<(Expr, crate::ast::Span)> = Vec::new();
+    let mut own: Vec<(Expr, crate::ast::Span)> = Vec::new();
+    let mut alias_rewrites: Vec<(String, String)> = Vec::new();
+    for (f, s) in kept {
+        if let Some((path, alias)) = require_of(&f) {
+            let dir = std::path::Path::new(file)
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_default();
+            let child_file = dir.join(&path).to_string_lossy().to_string();
+            if !seen_files.insert(child_file.clone()) {
+                continue; // already merged once
+            }
+            let child_src = std::fs::read_to_string(&child_file).map_err(|e| {
+                diagnostics::locate(
+                    s,
+                    &format!("require: cannot read {}: {}", child_file, e),
+                )
+            })?;
+            let child = expand_file(&child_file, &child_src, seen_files, seen_ns)?;
+            // Rename the child's defns under the alias and rewrite its own
+            // internal call heads to the renamed versions.
+            let names = defn_names(&child);
+            let mut renamed = child;
+            for n in &names {
+                rewrite_heads(&mut renamed, n, &format!("{}__{}", alias, n));
+            }
+            merged.extend(renamed);
+            for n in &names {
+                alias_rewrites.push((format!("{}/{}", alias, n), format!("{}__{}", alias, n)));
+            }
+            continue;
+        }
+        own.push((f, s));
+    }
+    // Alias rewrites apply to the whole file, so run them after every
+    // form has been collected.
+    for (from, to) in &alias_rewrites {
+        rewrite_heads(&mut own, from, to);
+    }
+    merged.extend(own);
+    Ok(merged)
 }

@@ -1,0 +1,6 @@
+; geom.cato — required by main.cato: (ns) + internal cross-references.
+(ns my.geom)
+
+(defn square [x :- i64] :- i64 (* x x))
+(defn hypot-sq [a :- i64 b :- i64] :- i64
+  (+ (square a) (square b)))
