@@ -1,0 +1,33 @@
+; generics.cato — CLOS-style generic functions over closed ADTs.
+;
+; defgeneric declares a name; defmethod adds specializations. Dispatch is
+; resolved at compile time through a structural specificity partial order
+; (Variant > whole ADT, component-wise for multiple dispatch) into an
+; ordinary nested match — no runtime method tables. Declaration order
+; never affects which method runs.
+
+(deftype Shape
+  (Circle [r :- f64])
+  (Rect [w :- f64 h :- f64])
+  (Tri [a :- f64 b :- f64 c :- f64]))
+
+(deftype Paint (Red []) (Blue []))
+
+(defgeneric area [s :- Shape] :- f64)
+(defmethod area [(Circle r)] :- f64 (* 3.14159265358979 (* r r)))
+(defmethod area [(Rect w h)] :- f64 (* w h))
+(defmethod area [s :- Shape] :- f64 0.0)   ; default: uncovered variants
+
+(defgeneric mix [s :- Shape p :- Paint] :- f64)
+(defmethod mix [(Circle r) p :- Red] :- f64 (* 2.0 r))
+(defmethod mix [(Rect w h) p :- Blue] :- f64 (+ w h))
+(defmethod mix [s :- Shape p :- Paint] :- f64 1.0)
+
+(defn main []
+  (do
+    (print (area (Circle 2.0)))     ; 12.5664
+    (print (area (Rect 3.0 4.0)))   ; 12
+    (print (area (Tri 1.0 1.0 1.0))) ; 0 (default)
+    (print (mix (Circle 2.0) (Red)))   ; 4   (most specific pair)
+    (print (mix (Rect 2.0 3.0) (Blue))) ; 5
+    (print (mix (Tri 1.0 1.0 1.0) (Red))))) ; 1 (default pair)

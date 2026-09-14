@@ -27,7 +27,7 @@
     (Point [] 4)))
 
 (defn main []
-  (print-f64 (area (Circle 2.5)))
-  (print-f64 (area (Rect 3.0 4.0)))
-  (print-f64 (area (widen (Rect 3.0 4.0))))
-  (print-i64 (classify (Point))))
+  (print (area (Circle 2.5)))
+  (print (area (Rect 3.0 4.0)))
+  (print (area (widen (Rect 3.0 4.0))))
+  (print (classify (Point))))

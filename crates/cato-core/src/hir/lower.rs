@@ -574,6 +574,12 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                     for it in &items[1..] {
                         args.push(lower(it, env, ctx)?);
                     }
+                    // Generic functions (multimethods) resolve by
+                    // structural specificity into hidden dispatch calls.
+                    if ctx.gens.borrow().generics.contains_key(head.as_str()) {
+                        let arg_tys = args.iter().map(|a| ty_of(a, env, ctx)).collect();
+                        return generic_call(head, args, arg_tys, ctx);
+                    }
                     // Generic callees are instantiated per call-site type.
                     if let Some(raw) = ctx.raw_by_name.get(head.as_str()) {
                         if !raw.ty_params.is_empty() {
@@ -636,6 +642,9 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         },
         HExpr::Call(name, _) if name == "even?" => Ty::Bool,
         HExpr::Call(name, _) => {
+            if let Some(r) = ctx.gens.borrow().call_rets.get(name.as_str()) {
+                return *r;
+            }
             if let Some(raw) = ctx.raw_by_name.get(name.as_str()) {
                 if raw.ty_params.is_empty() {
                     return raw.ret;

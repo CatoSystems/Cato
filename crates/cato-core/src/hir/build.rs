@@ -28,7 +28,7 @@ pub fn build_program_located(
     // Pass 0: collect deftype forms into the ADT table so every defn (in any
     // order) can refer to the types.
     let mut adts: Vec<AdtDef> = Vec::new();
-    for (form, span) in prog {
+    for (form, span) in prog.iter() {
         if is_deftype(form) {
             adts.push(parse_deftype(form).map_err(|e| locate(*span, &e))?);
         }
@@ -40,11 +40,15 @@ pub fn build_program_located(
         }
     }
 
+    // Generic functions (multimethods): collect the method table and
+    // strip the forms; call sites resolve during lowering.
+    let (prog, gens) = collect_generics(prog, &adts, &adt_by_name)?;
+
     // Pass 1: parse every defn into a raw (un-lowered) form without lowering,
     // so map/filter and calls can resolve any function regardless of order.
     let mut fn_sigs: Vec<(Vec<Ty>, Ty)> = Vec::new();
     let mut raws: Vec<(RawDefn, crate::ast::Span)> = Vec::new();
-    for (form, span) in prog {
+    for (form, span) in prog.iter() {
         if is_deftype(form) {
             continue;
         }
@@ -64,6 +68,7 @@ pub fn build_program_located(
         raw_by_name: &raw_by_name,
         adts: &adts,
         inst: RefCell::new(InstState::default()),
+        gens: RefCell::new(gens),
         fn_sigs: RefCell::new(fn_sigs),
         lambdas: RefCell::new(Vec::new()),
     };
@@ -113,6 +118,9 @@ pub fn build_program_located(
 
     // Monomorphized generic instantiations generated during lowering.
     out.extend(ctx.inst.borrow_mut().extra.drain(..));
+
+    // Multimethod hidden/dispatch defns generated during lowering.
+    out.extend(ctx.gens.borrow_mut().extra.drain(..));
 
     // Closure bodies: clone into the program's lambda table.
     let lambdas: Vec<crate::Lambda> = ctx

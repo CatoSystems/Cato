@@ -46,9 +46,9 @@
         m40 (assoc m39 41 4000)
            ]
     (do
-      (print-i64 (get m0 1 0))
-      (print-i64 (get m5 6 0))
-      (print-i64 (get m20 21 0))
-      (print-i64 (get m40 41 0))
-      (print-i64 (get m40 999 42))
-      (print-i64 (count m40)))))
+      (print (get m0 1 0))
+      (print (get m5 6 0))
+      (print (get m20 21 0))
+      (print (get m40 41 0))
+      (print (get m40 999 42))
+      (print (count m40)))))

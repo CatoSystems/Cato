@@ -22,9 +22,9 @@
   (reduce + 0.0 (take 2 (map (fn [a b] (* a b)) (zip xs ys)))))
 
 (defn main []
-  (print-i64 (gsum (vec-i64 1 2 3 4)))        ; 10
-  (print-f64 (mean (vec-f64 1.0 2.0 3.0 4.0))) ; 2.5
-  (print-f64 (gmax (vec-f64 1.5 7.25 3.0)))   ; 7.25
-  (print-i64 (gmax (vec-i64 5 9 2)))          ; 9
-  (print-f64 (get (vec-f64 1.5 2.5) 1))       ; 2.5
-  (print-f64 (f64-window (vec-f64 1.0 2.0 3.0) (vec-f64 10.0 20.0 30.0)))) ; 1*10+2*20 = 50
+  (print (gsum (vec-i64 1 2 3 4)))        ; 10
+  (print (mean (vec-f64 1.0 2.0 3.0 4.0))) ; 2.5
+  (print (gmax (vec-f64 1.5 7.25 3.0)))   ; 7.25
+  (print (gmax (vec-i64 5 9 2)))          ; 9
+  (print (get (vec-f64 1.5 2.5) 1))       ; 2.5
+  (print (f64-window (vec-f64 1.0 2.0 3.0) (vec-f64 10.0 20.0 30.0)))) ; 1*10+2*20 = 50

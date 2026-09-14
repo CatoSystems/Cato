@@ -12,6 +12,6 @@
   (reduce + 0 (range a b)))
 
 (defn main []
-  (print-f64 (fabs -3.5))          ; 3.5
-  (print-i64 (strlen "cato"))      ; 4
-  (print-i64 (sum-range 1 1025)))  ; 524800
+  (print (fabs -3.5))          ; 3.5
+  (print (strlen "cato"))      ; 4
+  (print (sum-range 1 1025)))  ; 524800

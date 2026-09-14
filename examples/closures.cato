@@ -17,9 +17,9 @@
         addn (let [n 10] (fn [x :- i64] (+ x n)))
         dbl  (fn [x :- i64] (* x 2))]
     (do
-      (print-i64 (inc 41))               ; 42
-      (print-i64 (twice inc 40))         ; 42 (higher-order param)
-      (print-i64 (addn 5))               ; 15 (captures n = 10)
-      (print-i64 (twice addn 1))         ; 21
-      (print-i64 (compose-call inc dbl 20)) ; 41 (20 * 2 + 1)
-      (print-f64 (reduce (fn [acc x] (+ acc x)) 0.0 (vec-f64 1.5 2.5)))))) ; 4
+      (print (inc 41))               ; 42
+      (print (twice inc 40))         ; 42 (higher-order param)
+      (print (addn 5))               ; 15 (captures n = 10)
+      (print (twice addn 1))         ; 21
+      (print (compose-call inc dbl 20)) ; 41 (20 * 2 + 1)
+      (print (reduce (fn [acc x] (+ acc x)) 0.0 (vec-f64 1.5 2.5)))))) ; 4

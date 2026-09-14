@@ -18,13 +18,13 @@
 
 (defn main []
   (do
-    (print-i64 (clamp-u8 200))            ; 44  (u8 wrap: 300 - 256)
-    (print-i64 (clamp-u8 -1))             ; 99  (255 + 100 wraps to 99 in u8)
-    (print-i64 (i64 (i8 200)))            ; -56 (i8 signed wrap)
-    (print-i64 (i64 (u32 4294967295)))    ; 4294967295 (u32 max)
-    (print-i64 (ucmp (u32 4294967295) (u32 1))) ; 1 (unsigned >)
-    (print-i64 (> (i32 -1) (i32 1)))      ; 0 (signed <)
-    (print-i64 (i64 (+ (u16 60000) (u16 10000)))) ; 4464 (70000 wraps mod 65536)
-    (print-f64 (f32-roundtrip 0.1))       ; 0.1 (f32 value widened to f64)
-    (print-i64 (usize 7))                 ; 7
-    (print-f64 (f64 (f32 2.5)))))         ; 2.5
+    (print (clamp-u8 200))            ; 44  (u8 wrap: 300 - 256)
+    (print (clamp-u8 -1))             ; 99  (255 + 100 wraps to 99 in u8)
+    (print (i64 (i8 200)))            ; -56 (i8 signed wrap)
+    (print (i64 (u32 4294967295)))    ; 4294967295 (u32 max)
+    (print (ucmp (u32 4294967295) (u32 1))) ; 1 (unsigned >)
+    (print (> (i32 -1) (i32 1)))      ; 0 (signed <)
+    (print (i64 (+ (u16 60000) (u16 10000)))) ; 4464 (70000 wraps mod 65536)
+    (print (f32-roundtrip 0.1))       ; 0.1 (f32 value widened to f64)
+    (print (usize 7))                 ; 7
+    (print (f64 (f32 2.5)))))         ; 2.5

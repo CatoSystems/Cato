@@ -1,0 +1,9 @@
+;; E203: two applicable methods, neither more specific.
+(deftype Ent
+  (Bolt [v :- i64])
+  (Ball [r :- i64]))
+(defgeneric collide [a :- Ent b :- Ent] :- i64)
+(defmethod collide [a :- Bolt b :- Ent] :- i64 1)
+(defmethod collide [a :- Ent b :- Bolt] :- i64 2)
+(defn main [] :- i64
+  (collide (Bolt 1) (Bolt 2)))

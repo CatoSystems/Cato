@@ -1,8 +1,10 @@
 # Cato Generics, Common Lisp Style — Design Study
 
-*Status: design only, not yet built. This document studies how CLOS-style
-generic functions adapt to Cato's world: closed ADTs, static types,
-monomorphization, no runtime class hierarchy.*
+*Status: **implemented**. This document specifies how CLOS-style generic
+functions adapt to Cato's world: closed ADTs, static types,
+monomorphization, no runtime class hierarchy. The 2026-09-14 refinement
+replaces declaration-order specificity with a structural partial order;
+the text reflects the implemented semantics.*
 
 ## 1. What Common Lisp gives you
 
@@ -43,7 +45,7 @@ monomorphization, and a compile-time totality discipline (exhaustive
 | CLOS                              | Cato adaptation                                             |
 |-----------------------------------|-------------------------------------------------------------|
 | class specializer                | ADT **variant** specializer (`(defmethod area [(Circle r)] ...)`) |
-| class precedence list            | declaration order (last applicable wins — most recent refinement) |
+| class precedence list            | **structural partial order**: `Variant > Adt`, component-wise for multiple dispatch; declaration order is semantically irrelevant |
 | runtime dispatch search          | compile-time **exhaustive tag dispatch** (a `match`), zero overhead |
 | open world, runtime failure      | closed world; coverage checked at compile time like `match`     |
 | `call-next-method`               | a **direct call** to the next method body (statically known)    |
@@ -53,6 +55,27 @@ The key insight: **a Cato generic function over one specialized ADT
 parameter *is* a `match` over that ADT's variants** — with arms spread
 across multiple `defmethod` forms instead of one site. Everything else is
 syntax and a coverage check we already have.
+
+## 2b. The specificity relation (normative)
+
+For one component, `s ⪰ t` ("s is at least as specific as t") iff
+`s == t`, or `s = Variant(v)` and `t = Adt(A)` with `v ∈ A`. A method
+tuple `m' ⪰ m` iff `m'.i ⪰ m.i` for every component. At a given call,
+applicable methods `m` with some other applicable `m' ⪰ m` strictly are
+dominated; the **maximal set** under this partial order must have exactly
+one element:
+
+- **empty** → compile error `E204` (uncovered combination),
+- **one** → that method runs,
+- **two or more** → compile error `E203` (ambiguous: neither is more
+  specific; the error names the competing methods). Adding a strictly
+  more specific method resolves the ambiguity.
+
+Declaration order is never consulted for semantics. A method dominated at
+*every* combination it applies to is **unreachable** — compile error
+`E205` (as are duplicate specializer tuples). Resolution is
+demand-driven: generics without calls are only checked for duplicates and
+unreachability, not coverage.
 
 ## 3. Proposed surface syntax
 
@@ -197,16 +220,30 @@ ones. Duplicate-variant methods become legal again (they form the chain).
 
 ## 8. Slice plan (TDD-sized)
 
-1. `defgeneric` + single-ADT `defmethod` desugar to `match`; coverage
-   errors; duplicate-variant errors. Reference: `examples/generics.cato`
-   (shapes, both backends via the parity suite).
-2. Whole-value and destructuring specializer forms.
-3. `call-next-method` via hidden per-method `defn`s; reverse-declaration
-   specificity; chained methods on one variant.
-4. Two-parameter multiple dispatch with cross-product coverage checking.
-5. (later) `T` fallback methods; method combination; jump tables.
+1. ✅ `defgeneric` + single-ADT `defmethod` resolved to `match`; coverage
+   errors; duplicate errors. Reference: `examples/generics.cato` (shapes,
+   both backends via the parity suite).
+2. ✅ Whole-value and destructuring specializer forms.
+3. ⬜ `call-next-method` — **deferred** until the basic specificity
+   system is exercised; when built it follows the structural order (most
+   specific → next less specific → fallback), not declaration order.
+4. ✅ Two-parameter multiple dispatch: component-wise specificity,
+   cross-product coverage, `E203` ambiguity on incomparable maxima.
+5. ⬜ (later) `T` fallback methods; method combination; jump tables.
 
-Total new machinery: one desugar pass (form-level, like macro expansion),
-one coverage checker reusing `match`'s, zero codegen changes for slices
-1–2, zero for 3–4 beyond hidden defns. That is the argument for doing
-generics this way: CLOS ergonomics, match economics.
+Total new machinery: one collection pass (form-level, like macro
+expansion), a resolution phase at call sites (applicability → maximal
+set under the partial order → coverage/ambiguity), and synthesized
+dispatch defns that are ordinary HIR. Zero codegen changes — the LLVM
+backend and the interpreter see plain defns and matches. That is the
+argument for doing generics this way: CLOS ergonomics, match economics.
+
+## 9. `print` is a generic
+
+The prelude defines print as a multimethod over the builtin types
+(`i64`, all widths, `f64`, `str`, `bool`); the method bodies call the
+print runtime primitives. Builtin dispatch is static (exact type match),
+so `(print x)` on a scalar compiles to a direct hidden-method call — no
+tree. `(print x)` on an ADT builds the dispatch tree over its variants.
+The per-type builtins remain as primitives but user code (all of
+`examples/`) uses `(print ...)`.

@@ -390,6 +390,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
     pub(crate) adts: &'a [AdtDef],
     pub(crate) inst: RefCell<InstState>,
+    /// Generic-function (multimethod) state: method table, hidden defns.
+    pub(crate) gens: RefCell<GenState>,
     /// Closure signature table `(param tys, ret ty)`, deduped structurally;
     /// `Ty::Fn(i)` indexes it. Also drained into `Program::fn_sigs`.
     pub(crate) fn_sigs: RefCell<Vec<(Vec<Ty>, Ty)>>,
@@ -406,6 +408,7 @@ pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {
 mod build;
 mod ctl;
 mod forms;
+mod generics;
 mod lower;
 mod match_lower;
 mod mono;
@@ -417,6 +420,7 @@ mod stagefn;
 pub use build::{build_program, build_program_located};
 pub(crate) use ctl::*;
 pub(crate) use forms::*;
+pub(crate) use generics::*;
 pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;

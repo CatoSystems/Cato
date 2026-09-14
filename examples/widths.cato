@@ -10,9 +10,9 @@
   (min (max x lo) hi))
 
 (defn main []
-  (print-i64 (widen (narrow 7)))              ; 7
+  (print (widen (narrow 7)))              ; 7
   (let [a (i32 10)
         b (i32 3)]
-    (print-i64 (i64 (* a b)))                 ; 30
-    (print-i64 (i64 (clamp32 (i32 500) b a))) ; 10
-    (print-i64 (i64 (abs (i32 -42))))))       ; 42
+    (print (i64 (* a b)))                 ; 30
+    (print (i64 (clamp32 (i32 500) b a))) ; 10
+    (print (i64 (abs (i32 -42))))))       ; 42

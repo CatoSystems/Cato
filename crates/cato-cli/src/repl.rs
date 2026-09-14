@@ -11,7 +11,7 @@ use cato_core::compile_named;
 use cato_interp::fmt_value;
 use std::io::{BufRead, Write};
 
-const HEADS: [&str; 5] = ["defn", "deftype", "extern", "ns", "require"];
+const HEADS: [&str; 7] = ["defn", "deftype", "extern", "ns", "require", "defgeneric", "defmethod"];
 
 pub fn run() {
     let mut session = String::new();

@@ -34,6 +34,6 @@
     v))
 
 (defn main []
-  (print-i64 (reuse (Box 41)))          ; 41 + 41 + 41 = 123
-  (print-i64 (peek2 (Box 1) (Box 2)))   ; 3
-  (print-i64 (consume-and-drop (Box 7)))) ; 7
+  (print (reuse (Box 41)))          ; 41 + 41 + 41 = 123
+  (print (peek2 (Box 1) (Box 2)))   ; 3
+  (print (consume-and-drop (Box 7)))) ; 7

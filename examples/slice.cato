@@ -18,5 +18,5 @@
     (/ ss (f64 (- n 1)))))
 
 (defn main []
-  (print-f64 (variance (vec-i64 1 2 3 4 5)))
-  (print-i64 (fused (vec-i64 1 2 3 4 5))))
+  (print (variance (vec-i64 1 2 3 4 5)))
+  (print (fused (vec-i64 1 2 3 4 5))))

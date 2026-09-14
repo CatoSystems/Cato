@@ -780,3 +780,45 @@ fn phase19_patterns() {
         "(deftype P (Q [x :- i64 y :- i64] R [z :- i64]))\n(defn main [] :- i64 (match (Q 1 2) (Q [x y :when (= x y)] 100) (R [z] z)))"
     ).unwrap()).is_err());
 }
+
+#[test]
+fn generics_structural_specificity() {
+    let src = |body: &str| {
+        format!(
+            "(deftype Ent (Bolt [v :- i64]) (Ball [r :- i64]))\n{}",
+            body
+        )
+    };
+    // Variant specializers beat the whole-ADT default in either order.
+    let m1 = "(defgeneric g [x :- Ent] :- i64)\n(defmethod g [x :- Bolt] :- i64 1)\n(defmethod g [x :- Ent] :- i64 0)\n(defn main [] :- i64 (g (Bolt 1)))";
+    let m2 = "(defgeneric g [x :- Ent] :- i64)\n(defmethod g [x :- Ent] :- i64 0)\n(defmethod g [x :- Bolt] :- i64 1)\n(defn main [] :- i64 (g (Bolt 1)))";
+    assert!(build(&read_all(&src(m1)).unwrap()).is_ok());
+    assert!(build(&read_all(&src(m2)).unwrap()).is_ok());
+    // Duplicate specializers are rejected.
+    let dup = "(defgeneric g [x :- Ent] :- i64)\n(defmethod g [x :- Bolt] :- i64 1)\n(defmethod g [x :- Bolt] :- i64 2)";
+    assert!(build(&read_all(&src(dup)).unwrap()).is_err());
+    // Uncovered variant at a call site is rejected.
+    let uncovered = "(defgeneric g [x :- Ent] :- i64)\n(defmethod g [x :- Bolt] :- i64 1)\n(defn main [] :- i64 (g (Ball 2)))";
+    assert!(build(&read_all(&src(uncovered)).unwrap()).is_err());
+    // Ambiguous two-dispatch: incomparable maxima.
+    let amb = "(defgeneric h [x :- Ent y :- Ent] :- i64)\n(defmethod h [x :- Bolt y :- Ent] :- i64 1)\n(defmethod h [x :- Ent y :- Bolt] :- i64 2)\n(defn main [] :- i64 (h (Bolt 1) (Bolt 2)))";
+    assert!(build(&read_all(&src(amb)).unwrap()).is_err());
+    // A more specific pair resolves it.
+    let resolved = "(defgeneric h [x :- Ent y :- Ent] :- i64)\n(defmethod h [x :- Bolt y :- Ent] :- i64 1)\n(defmethod h [x :- Ent y :- Bolt] :- i64 2)\n(defmethod h [x :- Bolt y :- Bolt] :- i64 3)\n(defmethod h [x :- Ent y :- Ent] :- i64 4)\n(defn main [] :- i64 (h (Bolt 1) (Bolt 2)))";
+    assert!(build(&read_all(&src(resolved)).unwrap()).is_ok());
+    // No call sites: no dispatch errors (resolution is demand-driven).
+    let nocall = "(defgeneric h [x :- Ent y :- Ent] :- i64)\n(defmethod h [x :- Bolt y :- Ent] :- i64 1)\n(defmethod h [x :- Ent y :- Bolt] :- i64 2)";
+    assert!(build(&read_all(&src(nocall)).unwrap()).is_ok());
+}
+
+#[test]
+fn print_is_a_generic_multimethod() {
+    // The prelude provides print for builtin types; a call compiles to a
+    // hidden method call with no dispatch tree.
+    let program = cato_core::compile_to_program("(defn main [] :- i64 (print 42))").unwrap();
+    let fns = &program.defns;
+    let names: Vec<&str> = fns.iter().map(|d| d.name.as_str()).collect();
+    assert!(names.iter().any(|n| n.starts_with("print__m")), "hidden print methods present: {:?}", names);
+    // No method exists for maps: clean error.
+    assert!(cato_core::compile_to_program("(defn main [] :- i64 (print {1 2}))").is_err());
+}

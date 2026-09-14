@@ -227,9 +227,14 @@ impl<'a> BCheck<'a> {
             }
             HExpr::Match { scrut, arms, .. } => {
                 self.check(scrut, tys, st);
+                // Every arm starts from the same post-scrutinee state: a
+                // move in one arm (e.g. a generic-dispatch call) must not
+                // poison the other arms — only one arm runs.
+                let post_scrut = st.clone();
+                let mut post_tys = tys.clone();
                 for arm in arms {
-                    let mut arm_tys = tys.clone();
-                    let mut arm_st = st.clone();
+                    let mut arm_tys = post_tys.clone();
+                    let mut arm_st = post_scrut.clone();
                     for b in &arm.binders {
                         arm_tys.insert(b.clone(), Ty::I64);
                         arm_st.insert(b.clone(), VState::Owned);

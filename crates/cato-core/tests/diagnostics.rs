@@ -18,6 +18,24 @@ const CASES: &[(&str, &str, usize, &str)] = &[
     ("nonexhaustive_match.cato", "E401", 5, "does not cover: Circle"),
     ("bad_arity.cato", "E201", 2, "expects 2 operands"),
     ("bad_type.cato", "E202", 2, "conj source must be a vector"),
+    (
+        "generics_ambiguous.cato",
+        "E203",
+        8,
+        "neither is more specific",
+    ),
+    (
+        "generics_uncovered.cato",
+        "E204",
+        7,
+        "no method hit for this variant combination",
+    ),
+    (
+        "generics_unreachable.cato",
+        "E205",
+        8,
+        "can never be selected",
+    ),
 ];
 
 #[test]

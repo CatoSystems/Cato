@@ -10,9 +10,9 @@
         0))
 
 (defn main []
-  (print-string "hello, cato")
-  (print-i64 (count "cato"))            ; 4
-  (print-i64 (classify "cato"))         ; 1
-  (print-i64 (classify "llvm"))         ; 2
-  (print-i64 (classify "rust"))         ; 0
-  (print-i64 (if (= "cat" "cat") 10 20))) ; 10
+  (print "hello, cato")
+  (print (count "cato"))            ; 4
+  (print (classify "cato"))         ; 1
+  (print (classify "llvm"))         ; 2
+  (print (classify "rust"))         ; 0
+  (print (if (= "cat" "cat") 10 20))) ; 10

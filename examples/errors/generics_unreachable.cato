@@ -1,0 +1,9 @@
+;; E205: the whole-ADT default can never run — every variant has a method.
+(deftype Ent
+  (Bolt [v :- i64])
+  (Ball [r :- i64]))
+(defgeneric f [x :- Ent] :- i64)
+(defmethod f [x :- Bolt] :- i64 1)
+(defmethod f [x :- Ball] :- i64 2)
+(defmethod f [x :- Ent] :- i64 3)
+(defn main [] :- i64 0)

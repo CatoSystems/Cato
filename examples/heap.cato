@@ -19,16 +19,16 @@
     b))
 
 (defn main []
-  (print-i64 (count (conj (vec-i64 1 2) 3)))   ; folded: 3
-  (print-i64 (count (str "cato" "llvm")))      ; folded: 8
-  (print-i64 (squares-under 5))                ; 1+4+9+16 = 30
+  (print (count (conj (vec-i64 1 2) 3)))   ; folded: 3
+  (print (count (str "cato" "llvm")))      ; folded: 8
+  (print (squares-under 5))                ; 1+4+9+16 = 30
   (let [v (vec-i64 1 2)
         w (grow-to v 3 4)]                     ; in-place + one growth
-    (print-i64 (count w))                      ; 4
-    (print-i64 (reduce + 0 w)))                ; 10
+    (print (count w))                      ; 4
+    (print (reduce + 0 w)))                ; 10
   (let [s (str "heap" (str "alloc"))]
-    (print-string s)                           ; heapalloc
-    (print-i64 (count s)))                     ; 9
+    (print s)                           ; heapalloc
+    (print (count s)))                     ; 9
   (let [sub (subvec (vec-i64 1 2 3 4 5) 1 4)]
-    (print-i64 (count sub))                    ; 3
-    (print-i64 (reduce + 0 sub))))             ; 2+3+4 = 9
+    (print (count sub))                    ; 3
+    (print (reduce + 0 sub))))             ; 2+3+4 = 9

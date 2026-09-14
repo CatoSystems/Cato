@@ -1,0 +1,8 @@
+;; E204: no method covers (Ball, Ball) at the call.
+(deftype Ent
+  (Bolt [v :- i64])
+  (Ball [r :- i64]))
+(defgeneric hit [a :- Ent b :- Ent] :- i64)
+(defmethod hit [a :- Bolt b :- Ent] :- i64 1)
+(defn main [] :- i64
+  (hit (Ball 1) (Ball 2)))

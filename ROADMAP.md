@@ -79,12 +79,17 @@ AddressSanitizer-clean heap behavior; ~140 tests on `main`.
 
 ## Next steps
 
-### Generics, Common Lisp style (designed, not yet built)
+### Generics, Common Lisp style — shipped (slice 1-2, 4)
 
-CLOS-style generic functions adapted to closed ADTs and static dispatch —
-see `docs/superpowers/specs/2026-09-13-cato-clos-generics-design.md`.
-`defgeneric`/`defmethod` desugaring to nested `match` keeps codegen
-untouched; `call-next-method` becomes a direct call.
+`defgeneric`/`defmethod` multimethods over closed ADTs, resolved through
+a structural specificity partial order (variant > whole ADT,
+component-wise for multiple dispatch) into compiler-generated dispatch
+functions holding nested matches — no runtime method tables, no
+declaration-order semantics. Ambiguous (incomparable) and uncovered
+combinations are compile-time errors with dedicated diagnostics (E203/
+E204/E205). `print` is a builtin multimethod; all examples use it.
+`call-next-method` and method combination remain deferred — see
+`docs/superpowers/specs/2026-09-13-cato-clos-generics-design.md`.
 
 ## Next steps
 

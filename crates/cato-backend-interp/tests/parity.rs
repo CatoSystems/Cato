@@ -20,6 +20,7 @@ const EXAMPLES: &[&str] = &[
     "widths",
     "widths2",
     "ffi",
+    "generics",
 ];
 
 #[test]

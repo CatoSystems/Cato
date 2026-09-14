@@ -181,6 +181,7 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             c.line(&format!("  {} = icmp eq i64 {}, 0", t, p));
             t
         }
+        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
         other => panic!("codegen: expected a boolean expression, got {:?}", other),
     }
 }
@@ -257,11 +258,26 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             t
         }
         HExpr::ConvF64(_) => panic!("codegen: ConvF64 in i64 context"),
+        HExpr::Call(name, args) if name == "print-f64" => {
+            // print method body in i64 context (print returns 0).
+            let v = emit_float(&args[0], c, mdl, sigs);
+            let w = static_int_width(&args[0], c, sigs);
+            let vd = if w == Ty::F32 {
+                let t = c.temp();
+                c.line(&format!("  {} = fpext float {} to double", t, v));
+                t
+            } else {
+                v
+            };
+            c.line(&format!("  call void @cato_print_f64(double {})", vd));
+            "0".to_string()
+        }
         HExpr::Call(name, args) if name == "print-i64" => {
             // Side-effecting call inside a loop body (e.g. doseq).
             let v = emit_int(&args[0], c, mdl, sigs);
             let w = static_int_width(&args[0], c, sigs);
-            let v64 = if w == Ty::I64 {
+            let v64 = if w == Ty::I64 || w == Ty::U64 || w == Ty::Usize {
+                // Same bits: the i64 register already holds the value.
                 v
             } else if w == Ty::Bool {
                 let t = c.temp();

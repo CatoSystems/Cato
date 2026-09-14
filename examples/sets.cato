@@ -11,13 +11,13 @@
         joined (join "-" parts)
         piece (subs joined 2 4)]
     (do
-      (print-i64 (count s))          ; 3  (dup 3 collapsed, sorted)
-      (print-i64 (contains? s 3))    ; 1
-      (print-i64 (contains? s 9))    ; 0
-      (print-i64 (count s3))         ; 3  (conj 2 adds, disj 5 removes)
-      (print-i64 (contains? s3 5))   ; 0
-      (print-i64 (contains? s3 2))   ; 1
-      (print-i64 (count parts))      ; 3
-      (print-string (get parts 1))   ; b
-      (print-string joined)          ; a-b-c
-      (print-string piece))))        ; b-
+      (print (count s))          ; 3  (dup 3 collapsed, sorted)
+      (print (contains? s 3))    ; 1
+      (print (contains? s 9))    ; 0
+      (print (count s3))         ; 3  (conj 2 adds, disj 5 removes)
+      (print (contains? s3 5))   ; 0
+      (print (contains? s3 2))   ; 1
+      (print (count parts))      ; 3
+      (print (get parts 1))   ; b
+      (print joined)          ; a-b-c
+      (print piece))))        ; b-

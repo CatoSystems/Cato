@@ -13,4 +13,4 @@
        (reduce (fn [acc x] (max acc (abs x))) 0.0)))
 
 (defn main []
-  (print-f64 (normalize (vec-i64 2 4 6) 8.0)))
+  (print (normalize (vec-i64 2 4 6) 8.0)))

@@ -52,6 +52,25 @@ pub fn compile_to_program(src: &str) -> Result<Program, String> {
     compile_named("input.cato", src)
 }
 
+/// Builtin multimethods, prepended to every compilation. `(print x)`
+/// dispatches on the static type of `x`; examples use `print` instead of
+/// the per-type builtins (which remain as the method bodies' primitives).
+const PRELUDE: &str = r#"
+(defgeneric print [x])
+(defmethod print [x :- i64] (print-i64 x))
+(defmethod print [x :- f64] (print-f64 x))
+(defmethod print [x :- str] (print-string x))
+(defmethod print [x :- bool] (print-i64 x))
+(defmethod print [x :- i8] (print-i64 x))
+(defmethod print [x :- i16] (print-i64 x))
+(defmethod print [x :- i32] (print-i64 x))
+(defmethod print [x :- u8] (print-i64 x))
+(defmethod print [x :- u16] (print-i64 x))
+(defmethod print [x :- u32] (print-i64 x))
+(defmethod print [x :- u64] (print-i64 x))
+(defmethod print [x :- usize] (print-i64 x))
+"#;
+
 /// Like `compile_to_program`, with the file name used in diagnostics.
 /// Supports multi-file compilation: `(require [relpath.cato :as alias])`
 /// loads another file (relative to this one) and makes its defns callable
@@ -63,6 +82,15 @@ pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
         seen_files.insert(file.to_string());
         let mut seen_ns: Vec<String> = Vec::new();
         let located = expand_file(file, src, &mut seen_files, &mut seen_ns)?;
+        // The prelude defines `print` as a multimethod over the builtin
+        // types; it participates in the same pipeline as user code.
+        let (prelude_forms, _) = reader::read_all_spanned(PRELUDE)
+            .map_err(|e| e.msg)?;
+        let located: Vec<_> = prelude_forms
+            .into_iter()
+            .map(|f| (f, crate::ast::Span::default()))
+            .chain(located)
+            .collect();
         let (forms, spans): (Vec<_>, Vec<_>) = located.iter().cloned().unzip();
         let expanded = expand::expand_all_located(&forms, &spans)?;
         let located: Vec<_> = expanded.into_iter().zip(spans).collect();
