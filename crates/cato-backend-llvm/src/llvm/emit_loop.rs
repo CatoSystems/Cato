@@ -343,6 +343,14 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     emit_typed(body, spec.acc_ty, &mut c, mdl, sigs)
                 }
                 HReduce::Pipeline { combine, .. } => {
+                    // Int elements under an f64 accumulator widen first.
+                    let val = if spec.acc_ty == Ty::F64 && val_ty != Ty::F64 {
+                        let t = c.temp();
+                        c.line(&format!("  {} = sitofp i64 {} to double", t, val));
+                        t
+                    } else {
+                        val
+                    };
                     let t = c.temp();
                     let combined =
                         combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
@@ -432,3 +440,264 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
 // ---------------------------------------------------------------------------
 // Plain (non-loop) function emission
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Phase 18: parallel chunk runners
+// ---------------------------------------------------------------------------
+
+/// Emit the pthread runner pair for a parallel loop. The fused loop helper
+/// itself is the chunk function: because the combine is associative and
+/// commutative and the init is its identity, folding each contiguous chunk
+/// from the identity and combining the partials in any order is exact.
+///
+/// - `@H_tramp(ptr arg)` — pthread entry: unpacks the arg record
+///   `{ data, start, end, slot, caps... }`, calls the chunk fn, stores the
+///   partial.
+/// - `@H_par(data, len, caps...)` — spawns `--threads` workers over
+///   contiguous chunks and combines their partials with the same op.
+pub(crate) fn emit_parallel_runners(
+    spec: &LoopSpec,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let t = mdl.threads.max(1);
+    let h = &spec.helper;
+    let acc_ll = if spec.acc_ty == Ty::F64 { "double" } else { "i64" };
+    let identity = if spec.acc_ty == Ty::F64 {
+        llvm_f64(loop_init(&spec.reduce))
+    } else {
+        loop_init(&spec.reduce).to_string()
+    };
+    let combine = match &spec.reduce {
+        HReduce::Pipeline { combine, .. } => *combine,
+        _ => unreachable!("parallel requires a pipeline reduce"),
+    };
+    let (fop, iop) = match combine {
+        BinOp::Add => ("fadd", "add"),
+        _ => ("fmul", "mul"),
+    };
+    let op = if spec.acc_ty == Ty::F64 { fop } else { iop };
+
+    // Arg record layout (bytes): 0 data, 8 start, 16 end, 24 slot-ptr,
+    // 32 result value, 32 + 8*i captures. Every field is 8 bytes; the
+    // stride covers the whole record so nothing overlaps the next one.
+    let ncaps = spec.caps.len();
+    let stride = 32 + 8 + 8 * ncaps;
+
+    mdl.ensure_decl("declare i32 @pthread_create(ptr, ptr, ptr, ptr)");
+    mdl.ensure_decl("declare i32 @pthread_join(ptr, ptr)");
+    mdl.ensure_decl("declare ptr @malloc(i64)");
+    mdl.ensure_decl("declare void @free(ptr)");
+
+    // ---- trampoline ----
+    let mut c = FnCtx::new();
+    c.line("entry:");
+    c.open("entry");
+    let data = c.temp();
+    c.line(&format!("  {} = load ptr, ptr %argp, align 8", data));
+    let sf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr %argp, i64 1",
+        sf
+    ));
+    let start = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", start, sf));
+    let ef = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr %argp, i64 2",
+        ef
+    ));
+    let end = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", end, ef));
+    let slotf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr %argp, i64 3",
+        slotf
+    ));
+    let slot = c.temp();
+    c.line(&format!("  {} = load ptr, ptr {}, align 8", slot, slotf));
+    let mut cap_regs = Vec::new();
+    for (i, (n, ty)) in spec.caps.iter().enumerate() {
+        let f = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds i64, ptr %argp, i64 {}",
+            f,
+            4 + i
+        ));
+        let v = c.temp();
+        match ty {
+            Ty::Bool => {
+                c.line(&format!("  {} = load i8, ptr {}, align 1", v, f));
+                let b = c.temp();
+                c.line(&format!("  {} = trunc i8 {} to i1", b, v));
+                cap_regs.push((b, "i1".to_string()));
+            }
+            other => {
+                let ll = Mdl::ll_scalar(*other);
+                c.line(&format!("  {} = load {}, ptr {}, align 8", v, ll, f));
+                cap_regs.push((v, ll.to_string()));
+            }
+        }
+        let _ = n;
+    }
+    let count = c.temp();
+    c.line(&format!("  {} = sub i64 {}, {}", count, end, start));
+    let r = c.temp();
+    let mut call_args = vec![
+        format!("ptr {}", data),
+        format!("i64 {}", count),
+    ];
+    call_args.extend(cap_regs.iter().map(|(r, l)| format!("{} {}", l, r)));
+    c.line(&format!(
+        "  {} = call {} @{}({})",
+        r,
+        acc_ll,
+        h,
+        call_args.join(", ")
+    ));
+    c.line(&format!("  store {} {}, ptr {}, align 8", acc_ll, r, slot));
+    c.line("  ret ptr null");
+    let tramp = format!(
+        "define ptr @{}_tramp(ptr %argp) {{\n{}\n}}\n",
+        h,
+        FnCtx::with_prelude(c.lines, &c.prelude).join("\n")
+    );
+
+    // ---- runner ----
+    let mut c = FnCtx::new();
+    let mut params = vec![
+        "ptr noalias nocapture readonly %data".to_string(),
+        "i64 %len".to_string(),
+    ];
+    for (n, t) in &spec.caps {
+        params.push(format!("{} %{}", mdl.ll_ty(*t), mangle(n)));
+    }
+    c.line("entry:");
+    c.open("entry");
+    // chunk = (len + T - 1) / T  (ceil)
+    let tm1 = c.temp();
+    c.line(&format!("  {} = add i64 {}, -1", tm1, t));
+    let lenm = c.temp();
+    c.line(&format!("  {} = add i64 %len, {}", lenm, tm1));
+    let chunk = c.temp();
+    c.line(&format!("  {} = udiv i64 {}, {}", chunk, lenm, t));
+    // arg blob + per-thread result slots: one record per thread.
+    let recbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, {}", recbytes, stride, t));
+    let blob = emit_malloc(&mut c, mdl, &recbytes);
+    // handles
+    let handles: Vec<String> = (0..t).map(|_| c.temp()).collect();
+    for hd in &handles {
+        c.prelude.push(format!("  {} = alloca ptr, align 8", hd));
+    }
+    for i in 0..t {
+        let base = c.temp();
+        c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", base, blob, (i * stride) as i64));
+        let s0 = c.temp();
+        c.line(&format!("  {} = mul i64 {}, {}", s0, chunk, i));
+        // The chunk fn reads data[0..count]: hand each worker a pointer
+        // sliced to its chunk start (element-typed GEP).
+        let elem = spec.base_elems.first().copied().unwrap_or(Elem::I64);
+        let sliced = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds {}, ptr %data, i64 {}",
+            sliced,
+            mdl.elem_ll(elem),
+            s0
+        ));
+        let f0 = c.temp();
+        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 0", f0, base));
+        c.line(&format!("  store ptr {}, ptr {}, align 8", sliced, f0));
+        let f1 = c.temp();
+        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 1", f1, base));
+        c.line(&format!("  store i64 {}, ptr {}, align 8", s0, f1));
+        let e0 = c.temp();
+        c.line(&format!("  {} = add i64 {}, {}", e0, s0, chunk));
+        let over = c.temp();
+        c.line(&format!("  {} = icmp ugt i64 {}, %len", over, e0));
+        let e1 = c.temp();
+        c.line(&format!("  {} = select i1 {}, i64 %len, i64 {}", e1, over, e0));
+        // Chunk starts past the end must clamp up to start: end < start
+        // would make the worker's count negative.
+        let under = c.temp();
+        c.line(&format!("  {} = icmp ult i64 {}, {}", under, e1, s0));
+        let e2 = c.temp();
+        c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", e2, under, s0, e1));
+        let f2 = c.temp();
+        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 2", f2, base));
+        c.line(&format!("  store i64 {}, ptr {}, align 8", e2, f2));
+        // result slot points into the record's tail
+        let sp = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+            sp, base, (32 + 8 * ncaps) as i64
+        ));
+        let f3 = c.temp();
+        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 3", f3, base));
+        c.line(&format!("  store ptr {}, ptr {}, align 8", sp, f3));
+        for (k, (n, _ty)) in spec.caps.iter().enumerate() {
+            let cf = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
+                cf,
+                base,
+                4 + k
+            ));
+            let reg = format!("%{}", mangle(n));
+            let ll = match spec.caps[k].1 {
+                Ty::Bool => "i1".to_string(),
+                other => Mdl::ll_scalar(other).to_string(),
+            };
+            c.line(&format!("  store {} {}, ptr {}, align 8", ll, reg, cf));
+        }
+        let hn = &handles[i];
+        let treg = c.temp();
+        c.line(&format!(
+            "  {} = call i32 @pthread_create(ptr {}, ptr null, ptr @{}_tramp, ptr {})",
+            treg,
+            hn,
+            h,
+            base
+        ));
+    }
+    for i in 0..t {
+        // pthread_join takes the handle BY VALUE: load it from the alloca
+        // pthread_create wrote.
+        let hv = c.temp();
+        c.line(&format!("  {} = load ptr, ptr {}, align 8", hv, handles[i]));
+        let treg = c.temp();
+        c.line(&format!(
+            "  {} = call i32 @pthread_join(ptr {}, ptr null)",
+            treg, hv
+        ));
+    }
+    // Combine partials.
+    let mut acc = c.temp();
+    if spec.acc_ty == Ty::F64 {
+        c.line(&format!("  {} = fadd double {}, 0.000000e+00", acc, identity));
+    } else {
+        c.line(&format!("  {} = add i64 {}, 0", acc, identity));
+    }
+    for i in 0..t {
+        let sp = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+            sp, blob, ((i * stride) + 32 + 8 * ncaps) as i64
+        ));
+        let pv = c.temp();
+        c.line(&format!("  {} = load {}, ptr {}, align 8", pv, acc_ll, sp));
+        let nx = c.temp();
+        c.line(&format!("  {} = {} {} {}, {}", nx, op, acc_ll, acc, pv));
+        acc = nx;
+    }
+    c.line(&format!("  call void @free(ptr {})", blob));
+    c.line(&format!("  ret {} {}", acc_ll, acc));
+    let runner = format!(
+        "define {} @{}_par({}) {{\n{}\n}}\n",
+        acc_ll,
+        h,
+        params.join(", "),
+        FnCtx::with_prelude(c.lines, &c.prelude).join("\n")
+    );
+    format!("{}{}", tramp, runner)
+}

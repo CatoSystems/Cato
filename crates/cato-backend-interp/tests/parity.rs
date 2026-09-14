@@ -12,6 +12,7 @@ const EXAMPLES: &[&str] = &[
     "maps",
     "normalize",
     "own",
+    "parallel",
     "sets",
     "shape",
     "slice",

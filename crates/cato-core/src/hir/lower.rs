@@ -72,6 +72,47 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                 "fn" => lower_closure(items, env, ctx),
                 "let" => lower_let(items, env, ctx),
                 "reduce" => lower_reduce(items, env, ctx),
+                "parallel" => {
+                    // (parallel (reduce ...)): chunked parallel emission
+                    // when the reduce is a static associative combine over
+                    // a vector source with the identity init.
+                    if items.len() != 2 {
+                        return Err("parallel expects exactly one form".into());
+                    }
+                    let inner = lower(&items[1], env, ctx)?;
+                    match inner {
+                        HExpr::Reduce(mut r) => {
+                            let ok = match &*r {
+                                HReduce::Pipeline { combine, init, src, .. } => {
+                                    let identity = match combine {
+                                        BinOp::Add => {
+                                            matches!(*init, HExpr::ConstI64(0) | HExpr::ConstF64(0.0))
+                                        }
+                                        BinOp::Mul => {
+                                            matches!(*init, HExpr::ConstI64(1) | HExpr::ConstF64(1.0))
+                                        }
+                                        _ => false,
+                                    };
+                                    identity && matches!(src, HSource::Var(_))
+                                }
+                                _ => false,
+                            };
+                            if !ok {
+                                return Err(
+                                    "parallel reduce requires + or * over a vector source with the identity init (0 / 1)".into()
+                                );
+                            }
+                            if let HReduce::Pipeline { parallel, .. } = &mut *r {
+                                *parallel = true;
+                            }
+                            Ok(HExpr::Reduce(r))
+                        }
+                        other => Err(format!(
+                            "parallel expects a reduce form, got {:?}",
+                            ty_of(&other, env, ctx)
+                        )),
+                    }
+                }
                 "map" | "filter" => Err(format!(
                     "{} must appear as the source of a reduce in the slice",
                     head

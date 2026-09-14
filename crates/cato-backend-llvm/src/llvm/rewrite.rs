@@ -100,7 +100,13 @@ pub(crate) fn rewrite_body(
             for (_, t) in &spec.caps {
                 arg_tys.push(*t);
             }
-            sigs.insert(helper.clone(), (ret_ty, arg_tys));
+            sigs.insert(helper.clone(), (ret_ty, arg_tys.clone()));
+            let par_name = if spec.parallel {
+                sigs.insert(format!("{}_par", helper), (ret_ty, arg_tys.clone()));
+                format!("{}_par", helper)
+            } else {
+                helper.clone()
+            };
             loops.push(spec);
 
             let mut args: Vec<HExpr> = base_args;
@@ -109,7 +115,7 @@ pub(crate) fn rewrite_body(
             for (cname, _) in caps {
                 args.push(HExpr::Var(cname.clone()));
             }
-            HExpr::Call(helper, args)
+            HExpr::Call(par_name, args)
         }
         HExpr::Ctor { adt, variant, args } => HExpr::Ctor {
             adt: *adt,

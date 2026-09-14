@@ -7,6 +7,15 @@ pub(crate) struct LoopSpec {
     /// Element type of each base vector, in call-site argument order.
     pub(crate) base_elems: Vec<Elem>,
     pub(crate) reduce: HReduce,
+    /// Parallel chunked emission requested by `(parallel ...)` and still
+    /// qualified (vector source, scalar captures).
+    pub(crate) parallel: bool,
+}
+
+/// Parallel eligibility at the ABI level: every capture must be a scalar
+/// (the runner stores them into a plain arg block).
+fn caps_parallel_ok(caps: &[(String, Ty)]) -> bool {
+    caps.iter().all(|(_, t)| t.is_int() || matches!(t, Ty::F64 | Ty::F32 | Ty::Bool | Ty::Str))
 }
 
 /// Element type of each base vector of a loop source (argument order).
@@ -50,12 +59,20 @@ pub(crate) fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, T
         .collect();
     caps.sort_by(|a, b| a.0.cmp(&b.0));
     let base_elems = source_base_elems(reduce_src(&reduce), params);
+    let requested = match &reduce {
+        HReduce::Pipeline { parallel, src, .. } => {
+            *parallel && matches!(src, HSource::Var(_))
+        }
+        _ => false,
+    };
+    let parallel = requested && caps_parallel_ok(&caps);
     LoopSpec {
         helper: helper.to_string(),
         acc_ty,
         caps,
         base_elems,
         reduce,
+        parallel,
     }
 }
 

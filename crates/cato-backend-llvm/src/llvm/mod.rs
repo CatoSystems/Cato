@@ -45,7 +45,7 @@ use cato_core::Lambda;
 use std::collections::HashMap;
 
 pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
-    emit_module_fast(adts, fns, false, &[], &[])
+    emit_module_fast(adts, fns, false, &[], &[], 1)
 }
 
 pub fn emit_module_fast(
@@ -54,6 +54,7 @@ pub fn emit_module_fast(
     fast: bool,
     fn_sigs: &[(Vec<Ty>, Ty)],
     lambdas: &[Lambda],
+    threads: usize,
 ) -> String {
     // Signature table: callee name -> (ret, param types). Includes declared
     // defns and hoisted loop helpers.
@@ -68,7 +69,7 @@ pub fn emit_module_fast(
     let mut loops: Vec<LoopSpec> = Vec::new();
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
-    let mut mdl = Mdl::new(adts.to_vec(), fast, fn_sigs.to_vec(), lambdas.to_vec());
+    let mut mdl = Mdl::new(adts.to_vec(), fast, fn_sigs.to_vec(), lambdas.to_vec(), threads);
 
     for d in fns {
         if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
@@ -113,6 +114,10 @@ pub fn emit_module_fast(
     for spec in &loops {
         output.push(String::new());
         output.push(emit_loop(spec, &mut mdl, &sigs));
+        if spec.parallel {
+            output.push(String::new());
+            output.push(emit_parallel_runners(spec, &mut mdl, &sigs));
+        }
     }
     for defn in &plain {
         output.push(String::new());
@@ -173,6 +178,8 @@ pub fn emit_module_fast(
 /// loops (`--fast`).
 pub struct LlvmBackend {
     pub fast: bool,
+    /// Thread count for `(parallel ...)` loops (`--threads`, default 1).
+    pub threads: usize,
 }
 
 impl Backend for LlvmBackend {
@@ -187,6 +194,7 @@ impl Backend for LlvmBackend {
             self.fast,
             &program.fn_sigs,
             &program.lambdas,
+            self.threads,
         ))
     }
 }

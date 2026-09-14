@@ -7,6 +7,8 @@ pub struct Cli {
     pub out: Option<String>,
     pub fast: bool,
     pub backend: String,
+    /// Worker threads for `(parallel ...)` loops.
+    pub threads: usize,
 }
 
 pub fn parse_args(args: &[String]) -> Cli {
@@ -14,6 +16,7 @@ pub fn parse_args(args: &[String]) -> Cli {
     let mut out = None;
     let mut fast = false;
     let mut backend = "llvm".to_string();
+    let mut threads = 1usize;
     let mut explain = None;
     let mut i = 0;
     while i < args.len() {
@@ -32,6 +35,22 @@ pub fn parse_args(args: &[String]) -> Cli {
                 fast = true;
                 i += 1;
             }
+            "--threads" => match args.get(i + 1) {
+                Some(n) => match n.parse::<usize>() {
+                    Ok(v) if v >= 1 && v <= 1024 => {
+                        threads = v;
+                        i += 2;
+                    }
+                    _ => {
+                        eprintln!("cato: --threads expects a number between 1 and 1024");
+                        std::process::exit(2);
+                    }
+                },
+                None => {
+                    eprintln!("cato: --threads requires a number");
+                    std::process::exit(2);
+                }
+            },
             "--explain" => match args.get(i + 1) {
                 Some(c) => {
                     explain = Some(c.clone());
@@ -93,6 +112,7 @@ pub fn parse_args(args: &[String]) -> Cli {
             out,
             fast,
             backend,
+            threads,
         },
         Some(f) => {
             eprintln!("cato: no such file {}", f);

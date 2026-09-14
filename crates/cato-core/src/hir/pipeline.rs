@@ -90,6 +90,7 @@ pub(crate) fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr
                 maps,
                 filters,
                 src,
+                parallel: false,
             })))
         }
         _ => {

@@ -300,6 +300,8 @@ pub enum HReduce {
         maps: Vec<MapSpec>,
         filters: Vec<FilterSpec>,
         src: HSource,
+        /// Parallel-chunked emission (`(parallel (reduce ...))`, Phase 18).
+        parallel: bool,
     },
     Closure {
         init: HExpr,

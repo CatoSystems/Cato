@@ -333,3 +333,48 @@ fn non_escaping_bindings_get_free_annotations() {
     assert!(names.contains(&"m".to_string()), "map binding should be freed");
     assert!(names.contains(&"s".to_string()), "set binding should be freed");
 }
+
+// Phase 18: `(parallel (reduce ...))` — chunked across pthreads, same
+// result as the sequential loop at every thread count.
+#[test]
+fn parallel_reduce_matches_sequential() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../examples/parallel.cato");
+    let rt = manifest.join("../../runtime/runtime.c");
+    let mut outputs = Vec::new();
+    for t in ["1", "2", "4", "8"] {
+        let out_ll = manifest.join("../../target/par_test.ll");
+        let exe = manifest.join("../../target/par_test_bin");
+        let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+            .arg(&src).args(["--threads", t]).arg("-o").arg(&out_ll)
+            .status().expect("cato run");
+        assert!(status.success(), "cato compile failed");
+        let cc = Command::new("clang")
+            .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+            .status().expect("clang link");
+        assert!(cc.success(), "clang link failed");
+        let out = Command::new(&exe).output().expect("run binary");
+        assert!(out.status.success(), "binary failed at {} threads", t);
+        outputs.push(String::from_utf8_lossy(&out.stdout).to_string());
+    }
+    // Sequential first line and every parallel line agree at all counts.
+    for o in &outputs[1..] {
+        assert_eq!(o, &outputs[0], "thread-count-dependent output");
+    }
+    assert_eq!(
+        outputs[0], "1275\n1275\n-3258495067890909184\n42925\n",
+        "parallel reduce values"
+    );
+}
+
+#[test]
+fn parallel_rejects_unqualified_reduces() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let bad = manifest.join("../../target/par_bad.cato");
+    std::fs::write(&bad, "(defn main [] :- i64 (parallel (reduce (fn [a x] (- a x)) 0 (vec-i64 1 2 3))))").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&bad).output().expect("run binary");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("identity init"), "got: {}", stderr);
+}

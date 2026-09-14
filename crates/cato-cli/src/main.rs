@@ -17,7 +17,7 @@ fn main() {
     let program =
         compile_named(&cli.file, &src).unwrap_or_else(|e| { eprintln!("cato: {}", e); std::process::exit(2); });
     let result = match cli.backend.as_str() {
-        "llvm" => LlvmBackend { fast: cli.fast }.emit(&program),
+        "llvm" => LlvmBackend { fast: cli.fast, threads: cli.threads }.emit(&program),
         "interp" => InterpBackend.emit(&program),
         other => {
             eprintln!("cato: unknown backend '{}' (available: llvm, interp)", other);

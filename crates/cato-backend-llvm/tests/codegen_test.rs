@@ -319,7 +319,7 @@ fn fast_flag_attaches_vectorize_metadata() {
     let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
     let plain = emit_module(&adts, &fns);
     assert!(!plain.contains("llvm.loop.vectorize"), "{}", plain);
-    let fast = emit_module_fast(&adts, &fns, true, &[], &[]);
+    let fast = emit_module_fast(&adts, &fns, true, &[], &[], 1);
     assert!(fast.contains("llvm.loop.vectorize.enable"), "{}", fast);
     assert!(fast.contains("!llvm.loop !0"), "{}", fast);
 }

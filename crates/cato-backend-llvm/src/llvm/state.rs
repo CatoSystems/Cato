@@ -14,6 +14,8 @@ pub(crate) struct Mdl {
     pub(crate) fn_sigs: Vec<(Ty, Vec<Ty>)>,
     /// Out-of-line closure bodies.
     pub(crate) lambdas: Vec<Lambda>,
+    /// Thread count for `(parallel ...)` loops (`--threads`).
+    pub(crate) threads: usize,
 }
 
 impl Mdl {
@@ -22,6 +24,7 @@ impl Mdl {
         fast: bool,
         fn_sigs: Vec<(Vec<Ty>, Ty)>,
         lambdas: Vec<Lambda>,
+        threads: usize,
     ) -> Self {
         Mdl {
             vec_globals: Vec::new(),
@@ -31,6 +34,7 @@ impl Mdl {
             decls: Vec::new(),
             fn_sigs: fn_sigs.into_iter().map(|(p, r)| (r, p)).collect(),
             lambdas,
+            threads,
         }
     }
     /// Emit a `declare` once per symbol (deduplicated by line).
