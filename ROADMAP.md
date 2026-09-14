@@ -39,29 +39,52 @@ line — see `docs/ARCHITECTURE.md`.
 
 ## Status — shipped and green
 
-All reference programs in `examples/` run with exact expected output;
-117 tests on `main`.
+All reference programs in `examples/` run with exact expected output on
+both backends, with interpreter-vs-LLVM parity asserted in tests and
+AddressSanitizer-clean heap behavior; ~140 tests on `main`.
 
-- **Frontend & fusion.** Reader; macros (`->`/`->>`, `when`, `when-not`,
-  `cond`, `if-let`, `when-let`, `if-not`, `doseq`, variadic `and`/`or`);
-  typed HIR; fusion check. Fused single-loop sources: vector variables,
-  literals, `range`, `zip`, `take`/`drop`, `map`/`filter`. Reference:
-  `slice.cato`, `normalize.cato`, `collections.cato`.
-- **Types.** `i64`, `i32` (closed width, explicit casts), `f64`, `bool`,
-  `str` (static constants, `strcmp`/`strlen`), `(Vector i64)` / `(Vector f64)`
-  with generic `(Vector T)` monomorphization, user ADTs (`deftype` +
-  exhaustive `match`, tagged unions), maps (`{k v}`, immutable snapshots,
-  `get`/`assoc`/`count`). Reference: `shape.cato`, `generic.cato`,
-  `widths.cato`, `strings.cato`, `maps.cato`.
-- **Ownership.** Moves for non-Copy values, `&` shared / `&!` exclusive
-  borrows, `clone`/`drop`, flow-sensitive use-after-move checking —
-  compile-time only, zero runtime overhead. Reference: `own.cato`.
-- **Heap.** Owned growable vectors (`{ptr, len, cap}`, in-place `conj` with
-  amortized O(1) append), `subvec`, `for` comprehensions, `(str ...)`
-  concatenation, vector-returning functions. Reference: `heap.cato`.
-- **FFI & SIMD.** `(extern ...)` C declarations (direct calls, no
-  marshaling); `--fast` attaches vectorization metadata to fused loops.
-  Reference: `ffi.cato`.
+- **Frontend & fusion.** Reader (byte spans); macros; typed HIR; fusion
+  check; stream fusion sources: vector variables, literals, `range`,
+  `zip`, `take`/`drop`, `map`/`filter`. Reference: `slice.cato`,
+  `normalize.cato`, `collections.cato`.
+- **Types.** `i64`, `i32`, `i8`, `i16`, `u8/u16/u32/u64/usize`, `f64`,
+  `f32` (closed widths, explicit casts, unsigned `ult`-family
+  comparisons), `bool`, `str`, `(Vector i64|f64|str)` with generic
+  monomorphization, user ADTs + exhaustive `match` (wildcard binders,
+  `:when` guards with fall-through), maps (flat + persistent HAMT with
+  structural sharing), sets (`#{...}`, `conj`/`disj`/`contains?`),
+  `(subs)`/`(split)`/`(join)`. References: `shape.cato`, `generic.cato`,
+  `widths.cato`, `widths2.cato`, `strings.cato`, `maps.cato`,
+  `hamt.cato`, `sets.cato`.
+- **Ownership.** Moves, `&`/`&!` borrows, `clone`/`drop`, use-after-move
+  checking, and scope-exit frees for non-escaping heap bindings
+  (ASAN-verified). Reference: `own.cato`, `heap.cato`.
+- **Closures.** First-class `(fn ...)` values: capture-by-value envs,
+  `(Fn [t1 t2] ret)` higher-order params, out-of-line lambda bodies under
+  the LLVM `%Closure {code, env}` convention; fused pipelines unchanged.
+  Reference: `closures.cato`.
+- **FFI & SIMD.** `(extern ...)` direct C calls; `--fast` vectorization
+  metadata. Reference: `ffi.cato`.
+- **Parallelism.** `(parallel (reduce + 0 xs))` — qualified reduces chunk
+  across pthreads with identical output at any `--threads N`. Reference:
+  `parallel.cato`.
+- **Diagnostics.** Coded errors (`E001`–`E401`) with `file:line:col` +
+  caret snippets; `errors/` suite; `cato --explain CODE`.
+- **Multi-backend.** `Backend` trait proven twice: LLVM and a
+  tree-walking interpreter with `cato run` and a differential parity
+  suite over all of `examples/`.
+- **Tooling.** `(ns ...)` + `(require [path :as alias])` multi-file
+  compilation (`examples/modules/`), `cato repl`, `cato lsp`
+  (diagnostics, definition, hover).
+
+## Next steps
+
+### Generics, Common Lisp style (designed, not yet built)
+
+CLOS-style generic functions adapted to closed ADTs and static dispatch —
+see `docs/superpowers/specs/2026-09-13-cato-clos-generics-design.md`.
+`defgeneric`/`defmethod` desugaring to nested `match` keeps codegen
+untouched; `call-next-method` becomes a direct call.
 
 ## Next steps
 
