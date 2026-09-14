@@ -4,6 +4,81 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
     if items.len() < 3 {
         return Err("match expects a scrutinee and at least one arm".into());
     }
+    // Guards: an arm of the form (V [b :when g] body) falls through to the
+    // remaining arms when g fails — desugared into
+    //   (V [b] (if g body (match scrut rest...)))
+    // plus a routing wildcard `(_ (match scrut rest...))` that keeps the
+    // outer match variant-total. Sound because the guard fall-through is
+    // only well-defined when the remaining arms cover every variant
+    // (checked here by lowering the scrutinee to find its ADT).
+    for (ai, arm) in items[2..].iter().enumerate() {
+        let Expr::List(arm_items) = arm else { continue };
+        let Some(Expr::Vector(bs)) = arm_items.get(1) else { continue };
+        let Some(wpos) = bs.iter().position(|b| matches!(b, Expr::LitSym(s) if s == ":when")) else {
+            continue;
+        };
+        if arm_items.len() != 3 || wpos + 2 != bs.len() {
+            return Err("guard arms expect (Variant [binders :when cond] body)".into());
+        }
+        let Some(Expr::LitSym(vname)) = arm_items.first() else {
+            return Err("guard arm must start with a variant name".into());
+        };
+        let rest: Vec<Expr> = items[2 + ai + 1..].to_vec();
+        // The scrutinee's ADT: needed to check that the fall-through arms
+        // cover every variant.
+        let scrut_probe = lower(&items[1], env, ctx)?;
+        let Ty::Adt(adt) = ty_of(&scrut_probe, env, ctx) else {
+            return Err("guard arms require an ADT scrutinee".into());
+        };
+        let all: Vec<&str> = ctx.adts[adt as usize]
+            .variants
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        let rest_heads: Vec<&str> = rest
+            .iter()
+            .filter_map(|r| match r {
+                Expr::List(ris) => match ris.first() {
+                    Some(Expr::LitSym(h)) => Some(h.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect();
+        let rest_total = rest_heads.contains(&"_")
+            || all.iter().all(|v| rest_heads.contains(v));
+        if !rest_total {
+            return Err(format!(
+                "guard arm {} falls through, but the later arms do not cover every variant (add a _ arm)",
+                vname
+            ));
+        }
+        let mut inner: Vec<Expr> = vec![
+            Expr::LitSym("match".into()),
+            items[1].clone(),
+        ];
+        inner.extend(rest.clone());
+        let rewritten = Expr::List(vec![
+            arm_items[0].clone(),
+            Expr::Vector(bs[..wpos].to_vec()),
+            Expr::List(vec![
+                Expr::LitSym("if".into()),
+                bs[wpos + 1].clone(),
+                arm_items[2].clone(),
+                Expr::List(inner.clone()),
+            ]),
+        ]);
+        // Routing wildcard: every variant other than the guarded one goes
+        // straight to the fall-through match.
+        let route = Expr::List(vec![
+            Expr::LitSym("_".into()),
+            Expr::List(inner),
+        ]);
+        let mut next: Vec<Expr> = items[..2 + ai].to_vec();
+        next.push(rewritten);
+        next.push(route);
+        return lower_match(&next, env, ctx);
+    }
     let scrut = lower(&items[1], env, ctx)?;
     let Ty::Adt(adt) = ty_of(&scrut, env, ctx) else {
         return Err("match scrutinee must be an ADT value".into());
@@ -74,8 +149,16 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
             let Expr::LitSym(bn) = b else {
                 return Err(format!("match arm {} binder must be a symbol", head));
             };
-            child.insert(bn.clone(), *fty);
-            bindernames.push(bn.clone());
+            if bn == "_" {
+                // Wildcard binder: unique gensym, never referenced by the
+                // arm body.
+                let g = format!("_wild{}", bindernames.len() + ctx.inst.borrow().cache.len());
+                child.insert(g.clone(), *fty);
+                bindernames.push(g);
+            } else {
+                child.insert(bn.clone(), *fty);
+                bindernames.push(bn.clone());
+            }
         }
             let body = lower(&arm_items[2], &child, ctx)?;
             let bty = ty_of(&body, &child, ctx);

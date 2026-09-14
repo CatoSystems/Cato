@@ -215,8 +215,54 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     let mut resolved = Vec::new();
     let mut i = 0;
     while i < binds.len() {
+        // Vector destructuring: `[a b] expr` binds a = (get expr 0),
+        // b = (get expr 1). `_` skips an element.
+        if let Expr::Vector(pat) = &binds[i] {
+            let value = lower(&binds[i + 1], &mut child, ctx)?;
+            let t = ty_of(&value, &child, ctx);
+            let elem = match t {
+                Ty::Vec(e) => e,
+                other => {
+                    return Err(format!(
+                        "destructured binding source must be a vector, got {:?}",
+                        other
+                    ))
+                }
+            };
+            let tmp = format!("$d{}", ctx.inst.borrow().cache.len() + resolved.len());
+            child.insert(tmp.clone(), Ty::Vec(elem));
+            resolved.push((tmp.clone(), value, Ty::Vec(elem)));
+            for (k, p) in pat.iter().enumerate() {
+                let Expr::LitSym(pn) = p else {
+                    return Err("destructure pattern elements must be symbols or _".into());
+                };
+                if pn == "_" {
+                    continue;
+                }
+                let zero: HExpr = match elem {
+                    Elem::I64 => HExpr::ConstI64(0),
+                    Elem::F64 => HExpr::ConstF64(0.0),
+                    other => {
+                        return Err(format!(
+                            "destructuring supports i64/f64 vectors, got {:?}",
+                            other
+                        ))
+                    }
+                };
+                let getv = HExpr::Get {
+                    src: Box::new(HExpr::Var(tmp.clone())),
+                    idx: Box::new(HExpr::ConstI64(k as i64)),
+                    default: Some(Box::new(zero)),
+                    ty: elem_ty(elem),
+                };
+                child.insert(pn.clone(), elem_ty(elem));
+                resolved.push((pn.clone(), getv, elem_ty(elem)));
+            }
+            i += 2;
+            continue;
+        }
         let Expr::LitSym(name) = &binds[i] else {
-            return Err("let binding name must be a symbol".into());
+            return Err("let binding name must be a symbol or a [a b] pattern".into());
         };
         let value = lower(&binds[i + 1], &mut child, ctx)?;
         let t = ty_of(&value, &child, ctx);

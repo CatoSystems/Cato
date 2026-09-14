@@ -755,3 +755,28 @@ fn closures_capture_and_move() {
         "(defn main [] :- i64 (let [x (fn [y :- i64] y)] (x 1)))"
     ).unwrap()).is_ok());
 }
+
+#[test]
+fn phase19_patterns() {
+    // Vector destructuring with _ and short-pattern defaults.
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [[a _ c] (vec-i64 1 2 3)] (+ a c)))"
+    ).unwrap()).is_ok());
+    // Destructure requires a vector source.
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [[a] 3] a))"
+    ).unwrap()).is_err());
+    // _ wildcard binders in match arms.
+    assert!(build(&read_all(
+        "(deftype P (Q [x :- i64 y :- i64]))\n(defn main [] :- i64 (match (Q 1 2) (Q [_ y] y)))"
+    ).unwrap()).is_ok());
+    // Guards: a passing guard takes the arm; a failing one falls through.
+    let ok = build(&read_all(
+        "(deftype P (Q [x :- i64 y :- i64]))\n(defn main [] :- i64 (match (Q 1 2) (Q [x y :when (= x y)] 100) (_ 0)))",
+    ).unwrap());
+    assert!(ok.is_ok(), "guard match should compile: {:?}", ok.err());
+    // A guard with no total fall-through is rejected.
+    assert!(build(&read_all(
+        "(deftype P (Q [x :- i64 y :- i64] R [z :- i64]))\n(defn main [] :- i64 (match (Q 1 2) (Q [x y :when (= x y)] 100) (R [z] z)))"
+    ).unwrap()).is_err());
+}

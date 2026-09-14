@@ -313,7 +313,25 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let slot = emit_closure_val(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (slot, *ty));
             }
-            Ty::Vec(_) => materialize_vec_lit(value, name, c, mdl),
+            Ty::Vec(_) => {
+                // Destructuring temps (and plain aliases) share the source
+                // vector's (ptr, len); literals materialize a static global.
+                if let HExpr::Var(src) = value {
+                    if let Some((slot, elem)) = c.grow.get(src).cloned() {
+                        c.grow.insert(name.clone(), (slot, elem));
+                        continue;
+                    }
+                    if let Some((p, l, elem)) = c.vecs.get(src).cloned() {
+                        c.vecs.insert(name.clone(), (p, l, elem));
+                        continue;
+                    }
+                    if let Some((slot, _)) = c.growm.get(src).cloned() {
+                        c.growm.insert(name.clone(), (slot, Ty::Map));
+                        continue;
+                    }
+                }
+                materialize_vec_lit(value, name, c, mdl)
+            }
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, *ty));
