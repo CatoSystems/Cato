@@ -15,7 +15,8 @@ floor the self-hosted kernel's passes stand on. Reference:
 - `(recur e1 ...)` re-binds the loop variables and jumps to the loop head.
   It targets the **innermost enclosing loop**; arity must equal the loop's
   binding count; it must appear in **tail position** — the loop body tail,
-  `if` branches, `match` arm bodies, `let`/`do` tails. Anywhere else is a
+  `if` branches, `let`/`do` tails (recur through `match` arms is
+  rejected with a clear error in this slice). Anywhere else is a
   compile error (validated post-lowering by a tail walk). `recur` crossing
   a closure boundary is an error (fn-head `recur` is not in this slice).
 - Loop variables are **Copy types** in this slice: numeric widths, `bool`,

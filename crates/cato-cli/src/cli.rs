@@ -51,6 +51,8 @@ pub struct Cli {
     pub mode: Mode,
     pub file: String,
     pub out: Option<String>,
+    /// Arguments after the file in `cato run file args...` (S3).
+    pub interp_args: Vec<String>,
     /// Emit LLVM IR text in compile mode (`--emit-ir`).
     pub emit_ir: bool,
     pub target: Target,
@@ -79,6 +81,7 @@ impl Default for Cli {
             mode: Mode::Compile,
             file: String::new(),
             out: None,
+            interp_args: Vec::new(),
             emit_ir: false,
             target: Target::Native,
             fast: false,
@@ -250,6 +253,13 @@ pub fn parse_args(args: &[String]) -> Cli {
             }
             s => {
                 if file.is_some() {
+                    // `cato run file args...`: trailing positionals are the
+                    // interpreted program's arguments (S3).
+                    if cli.mode == Mode::RunInterp {
+                        cli.interp_args.push(s.to_string());
+                        i += 1;
+                        continue;
+                    }
                     // Two positionals: if the first one looked like a
                     // mistyped command, say so instead of "unexpected arg".
                     let first = file.as_deref().unwrap_or(s);

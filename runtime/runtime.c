@@ -210,3 +210,125 @@ void *cato_hamt_from_flat(const void *flat, int64_t len) {
         t = cato_hamt_assoc(t, e[2 * i], e[2 * i + 1]);
     return t;
 }
+
+// ---------------------------------------------------------------------------
+// S3: host surface
+// ---------------------------------------------------------------------------
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+
+void cato_print_str_raw(const char *s) { fputs(s, stdout); }
+
+char *cato_num_to_str(long long v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%lld", v);
+    char *out = malloc(strlen(buf) + 1);
+    strcpy(out, buf);
+    return out;
+}
+
+char *cato_u64_to_str(unsigned long long v) {
+    char buf[32];
+    snprintf(buf, sizeof buf, "%llu", v);
+    char *out = malloc(strlen(buf) + 1);
+    strcpy(out, buf);
+    return out;
+}
+
+char *cato_f64_to_str(double v) {
+    char buf[64];
+    snprintf(buf, sizeof buf, "%g", v);
+    char *out = malloc(strlen(buf) + 1);
+    strcpy(out, buf);
+    return out;
+}
+
+// A heap `(Option i64)` / `(Option f64)` box: { i64 tag, i64 payload }.
+// Tag 0 = Some, 1 = None (variant declaration order).
+void *cato_parse_i64(const char *s) {
+    char *end = NULL;
+    errno = 0;
+    long long v = strtoll(s, &end, 10);
+    // Overflow (ERANGE) is None, matching the interpreter's parse.
+    int bad = !end || end == s || *end != '\0' || errno == ERANGE;
+    void *box = malloc(16);
+    long long *words = (long long *)box;
+    if (bad) {
+        words[0] = 1;
+        words[1] = 0;
+    } else {
+        words[0] = 0;
+        words[1] = v;
+    }
+    return box;
+}
+
+void *cato_parse_f64(const char *s) {
+    char *end = NULL;
+    double v = strtod(s, &end);
+    void *box = malloc(16);
+    long long *words = (long long *)box;
+    if (!end || end == s || *end != '\0') {
+        words[0] = 1;
+        words[1] = 0;
+    } else {
+        words[0] = 0;
+        memcpy(&words[1], &v, sizeof v);
+    }
+    return box;
+}
+
+char *cato_slurp(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        char *empty = malloc(1);
+        empty[0] = '\0';
+        return empty;
+    }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *out = malloc((size_t)n + 1);
+    size_t got = fread(out, 1, (size_t)n, f);
+    out[got] = '\0';
+    fclose(f);
+    return out;
+}
+
+void cato_spit(const char *path, const char *content) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(content, 1, strlen(content), f);
+    fclose(f);
+}
+
+static char **g_argv_values = NULL;
+static long long g_argc = 0;
+
+void cato_args_init(int argc, char **argv) {
+    if (argc > 1) {
+        g_argv_values = malloc(sizeof(char *) * (size_t)(argc - 1));
+        for (int i = 1; i < argc; i++) {
+            g_argv_values[i - 1] = strdup(argv[i]);
+        }
+        g_argc = argc - 1;
+    }
+}
+
+// Returns the argument data pointer; stores the length through out_n.
+char **cato_args(long long *out_n) {
+    if (g_argv_values == NULL) {
+        g_argv_values = malloc(sizeof(char *));
+        g_argv_values[0] = strdup("");
+        g_argc = 1;
+        *out_n = 0;
+        return g_argv_values;
+    }
+    *out_n = g_argc;
+    return g_argv_values;
+}
+
+void cato_exit(long long status) { exit((int)status); }

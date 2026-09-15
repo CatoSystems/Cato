@@ -97,7 +97,7 @@ The biggest language slice; every compiler data structure depends on it.
 - Reference: `examples/trees.cato` — a recursive tree built, folded, dropped,
   ASAN-clean.
 
-## Phase S2 — `loop`/`recur` + rich closures
+## Phase S2 — `loop`/`recur` + rich closures *(shipped — `examples/loops.cato`)*
 
 - `loop`/`recur` with general while-loop codegen — the LLVM backend today
   emits only fused `reduce` loops and `for` fill loops; `recur` targets the
@@ -107,7 +107,7 @@ The biggest language slice; every compiler data structure depends on it.
   under the `%Closure {code, env}` convention).
 - Reference: `examples/loops.cato`; parity; ASAN-clean.
 
-## Phase S3 — Host surface: numbers↔strings, files, argv, exit, spawn
+## Phase S3 — Host surface: numbers↔strings, files, argv, exit, spawn *(shipped — `examples/host.cato`)*
 
 The compiler is a program that reads files, writes files, and starts other
 programs — none of which the language can do today.

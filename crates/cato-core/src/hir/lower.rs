@@ -500,15 +500,23 @@ pub(crate) fn lower_expect(
                 }
                 "str" => {
                     if items.len() < 2 {
-                        return Err("str expects at least one string argument".into());
+                        return Err("str expects at least one argument".into());
                     }
                     let mut args = Vec::new();
                     for it in &items[1..] {
                         let a = lower(it, env, ctx)?;
-                        if ty_of(&a, env, ctx) != Ty::Str {
-                            return Err("str arguments must be strings".into());
+                        let t = ty_of(&a, env, ctx);
+                        if t == Ty::Str {
+                            args.push(a);
+                        } else if t.is_numeric() || t == Ty::Bool {
+                            // S3: number→string conversion in `str`.
+                            args.push(HExpr::ToStr(Box::new(a), t));
+                        } else {
+                            return Err(format!(
+                                "str arguments must be strings, numbers or bools, got {:?}",
+                                t
+                            ));
                         }
-                        args.push(a);
                     }
                     // Fold: concatenating literals is a new literal.
                     if args.iter().all(|a| matches!(a, HExpr::StrLit(_))) {
@@ -546,6 +554,79 @@ pub(crate) fn lower_expect(
                     }
                     let inner = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Count(Box::new(inner)))
+                }
+                "print-str" => {
+                    if items.len() != 2 {
+                        return Err("print-str expects exactly 1 argument".into());
+                    }
+                    let a = lower(&items[1], env, ctx)?;
+                    if ty_of(&a, env, ctx) != Ty::Str {
+                        return Err("print-str expects a string".into());
+                    }
+                    Ok(HExpr::Call("print-str".into(), vec![a]))
+                }
+                "slurp" => {
+                    if items.len() != 2 {
+                        return Err("slurp expects (slurp <path>)".into());
+                    }
+                    let p = lower(&items[1], env, ctx)?;
+                    if ty_of(&p, env, ctx) != Ty::Str {
+                        return Err("slurp path must be a string".into());
+                    }
+                    Ok(HExpr::Slurp(Box::new(p)))
+                }
+                "spit" => {
+                    if items.len() != 3 {
+                        return Err("spit expects (spit <path> <content>)".into());
+                    }
+                    let path = lower(&items[1], env, ctx)?;
+                    let data = lower(&items[2], env, ctx)?;
+                    if ty_of(&path, env, ctx) != Ty::Str || ty_of(&data, env, ctx) != Ty::Str {
+                        return Err("spit arguments must be strings".into());
+                    }
+                    Ok(HExpr::Spit {
+                        path: Box::new(path),
+                        data: Box::new(data),
+                    })
+                }
+                "args" => {
+                    if items.len() != 1 {
+                        return Err("args expects no arguments".into());
+                    }
+                    Ok(HExpr::Args)
+                }
+                "exit" => {
+                    if items.len() != 2 {
+                        return Err("exit expects (exit <status>)".into());
+                    }
+                    let c2 = lower(&items[1], env, ctx)?;
+                    if ty_of(&c2, env, ctx) != Ty::I64 {
+                        return Err("exit status must be i64".into());
+                    }
+                    Ok(HExpr::Exit(Box::new(c2)))
+                }
+                "parse-i64" | "parse-f64" => {
+                    if items.len() != 2 {
+                        return Err(format!("{} expects ({} <s>)", head, head));
+                    }
+                    let a = lower(&items[1], env, ctx)?;
+                    if ty_of(&a, env, ctx) != Ty::Str {
+                        return Err(format!("{} expects a string", head));
+                    }
+                    let int = head == "parse-i64";
+                    let want = if int { Ty::I64 } else { Ty::F64 };
+                    // The prelude's (Option a) provides the result type.
+                    let tpl = ctx
+                        .adts
+                        .iter()
+                        .position(|d| d.name == "Option" && d.ty_params.len() == 1)
+                        .ok_or("parse builtins require the prelude's (Option a) type")?;
+                    let idx = ctx.instantiate_adt(tpl as u32, &[want])?;
+                    Ok(HExpr::ParseNum {
+                        s: Box::new(a),
+                        int,
+                        res: Ty::Adt(idx),
+                    })
                 }
                 "print-string" => {
                     if items.len() != 2 {
@@ -810,6 +891,12 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
             ty_of(body, &child, ctx)
         }
         HExpr::Recur(_) => Ty::I64,
+        HExpr::ToStr(_, _) => Ty::Str,
+        HExpr::ParseNum { res, .. } => *res,
+        HExpr::Slurp(_) => Ty::Str,
+        HExpr::Spit { .. } => Ty::I64,
+        HExpr::Args => Ty::Vec(Elem::Str),
+        HExpr::Exit(_) => Ty::I64,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,
             VLit::F64(_) => Elem::F64,
@@ -984,6 +1071,14 @@ fn collect_captures(
             collect_captures(idx, env, params, seen, caps);
         }
         HExpr::CharStr(c) => collect_captures(c, env, params, seen, caps),
+        HExpr::ToStr(e, _) => collect_captures(e, env, params, seen, caps),
+        HExpr::ParseNum { s, .. } => collect_captures(s, env, params, seen, caps),
+        HExpr::Slurp(p) => collect_captures(p, env, params, seen, caps),
+        HExpr::Spit { path, data } => {
+            collect_captures(path, env, params, seen, caps);
+            collect_captures(data, env, params, seen, caps);
+        }
+        HExpr::Exit(c) => collect_captures(c, env, params, seen, caps),
         HExpr::Match { scrut, arms, .. } => {
             collect_captures(scrut, env, params, seen, caps);
             for arm in arms {

@@ -89,6 +89,19 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             ty,
         },
         HExpr::Recur(args) => HExpr::Recur(args.into_iter().map(|a| rewrite(a, f)).collect()),
+        HExpr::ToStr(e, t) => HExpr::ToStr(Box::new(rewrite(*e, f)), t),
+        HExpr::ParseNum { s, int, res } => HExpr::ParseNum {
+            s: Box::new(rewrite(*s, f)),
+            int,
+            res,
+        },
+        HExpr::Slurp(p) => HExpr::Slurp(Box::new(rewrite(*p, f))),
+        HExpr::Spit { path, data } => HExpr::Spit {
+            path: Box::new(rewrite(*path, f)),
+            data: Box::new(rewrite(*data, f)),
+        },
+        HExpr::Args => HExpr::Args,
+        HExpr::Exit(c) => HExpr::Exit(Box::new(rewrite(*c, f))),
         HExpr::MapLit(pairs) => HExpr::MapLit(
             pairs
                 .into_iter()
@@ -389,6 +402,7 @@ fn count_walk(
             count_walk(idx, targets, shadowed, counts);
         }
         HExpr::CharStr(c) => count_walk(c, targets, shadowed, counts),
+        HExpr::Args => {}
         HExpr::Loop { binds, body, .. } => {
             for (_, _, e) in binds {
                 count_walk(e, targets, shadowed, counts);
@@ -400,6 +414,14 @@ fn count_walk(
                 count_walk(a, targets, shadowed, counts);
             }
         }
+        HExpr::ToStr(e, _) => count_walk(e, targets, shadowed, counts),
+        HExpr::ParseNum { s, .. } => count_walk(s, targets, shadowed, counts),
+        HExpr::Slurp(p) => count_walk(p, targets, shadowed, counts),
+        HExpr::Spit { path, data } => {
+            count_walk(path, targets, shadowed, counts);
+            count_walk(data, targets, shadowed, counts);
+        }
+        HExpr::Exit(c) => count_walk(c, targets, shadowed, counts),
         HExpr::If(c, t, f, _) => {
             count_walk(c, targets, shadowed, counts);
             count_walk(t, targets, shadowed, counts);
@@ -910,6 +932,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(idx, f);
         }
         HExpr::CharStr(c) => visit_nodes(c, f),
+        HExpr::Args => {}
         HExpr::Loop { binds, body, .. } => {
             for (_, _, e) in binds {
                 visit_nodes(e, f);
@@ -921,6 +944,14 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
                 visit_nodes(a, f);
             }
         }
+        HExpr::ToStr(e, _) => visit_nodes(e, f),
+        HExpr::ParseNum { s, .. } => visit_nodes(s, f),
+        HExpr::Slurp(p) => visit_nodes(p, f),
+        HExpr::Spit { path, data } => {
+            visit_nodes(path, f);
+            visit_nodes(data, f);
+        }
+        HExpr::Exit(c) => visit_nodes(c, f),
         HExpr::If(c, t, f2, _) => {
             visit_nodes(c, f);
             visit_nodes(t, f);

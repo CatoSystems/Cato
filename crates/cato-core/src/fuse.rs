@@ -50,6 +50,19 @@ pub fn check(h: &HExpr) -> HExpr {
             ty: *ty,
         },
         HExpr::Recur(args) => HExpr::Recur(args.iter().map(check).collect()),
+        HExpr::ToStr(e, t) => HExpr::ToStr(Box::new(check(e)), *t),
+        HExpr::ParseNum { s, int, res } => HExpr::ParseNum {
+            s: Box::new(check(s)),
+            int: *int,
+            res: *res,
+        },
+        HExpr::Slurp(p) => HExpr::Slurp(Box::new(check(p))),
+        HExpr::Spit { path, data } => HExpr::Spit {
+            path: Box::new(check(path)),
+            data: Box::new(check(data)),
+        },
+        HExpr::Args => HExpr::Args,
+        HExpr::Exit(c) => HExpr::Exit(Box::new(check(c))),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::If(c, t, e, ty) => HExpr::If(

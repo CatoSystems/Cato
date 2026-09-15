@@ -109,6 +109,49 @@ pub(crate) fn emit_str_val(
         }
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::StrCat(args) => emit_strcat(args, c, mdl, sigs),
+        HExpr::ToStr(inner, t) => {
+            // Number/bool → runtime decimal text (malloc'd, owned).
+            let v = match t {
+                Ty::F64 => {
+                    let f = emit_float(inner, c, mdl, sigs);
+                    mdl.declare("declare ptr @cato_f64_to_str(double)".to_string());
+                    let r = c.temp();
+                    c.line(&format!("  {} = call ptr @cato_f64_to_str(double {})", r, f));
+                    r
+                }
+                Ty::Bool => {
+                    let b = emit_bool(inner, c, mdl, sigs);
+                    let z = c.temp();
+                    c.line(&format!("  {} = zext i1 {} to i64", z, b));
+                    mdl.declare("declare ptr @cato_num_to_str(i64)".to_string());
+                    let r = c.temp();
+                    c.line(&format!("  {} = call ptr @cato_num_to_str(i64 {})", r, z));
+                    r
+                }
+                t if t.is_uint() => {
+                    let i = emit_int(inner, c, mdl, sigs);
+                    mdl.declare("declare ptr @cato_u64_to_str(i64)".to_string());
+                    let r = c.temp();
+                    c.line(&format!("  {} = call ptr @cato_u64_to_str(i64 {})", r, i));
+                    r
+                }
+                _ => {
+                    let i = emit_int(inner, c, mdl, sigs);
+                    mdl.declare("declare ptr @cato_num_to_str(i64)".to_string());
+                    let r = c.temp();
+                    c.line(&format!("  {} = call ptr @cato_num_to_str(i64 {})", r, i));
+                    r
+                }
+            };
+            v
+        }
+        HExpr::Slurp(p) => {
+            let pv = emit_str_val(p, c, mdl, sigs);
+            mdl.declare("declare ptr @cato_slurp(ptr)".to_string());
+            let r = c.temp();
+            c.line(&format!("  {} = call ptr @cato_slurp(ptr {})", r, pv));
+            r
+        }
         HExpr::CharStr(inner) => {
             // A fresh 2-byte allocation: the character byte plus NUL. The
             // value is the low byte of the operand (i8 trunc semantics).
@@ -277,6 +320,36 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 c.growm.insert(name.clone(), (slot, *ty));
                 continue;
             }
+        }
+        // S3 host values.
+        match value {
+            HExpr::ParseNum { s, int, .. } => {
+                let sv = emit_str_val(s, c, mdl, sigs);
+                let helper = if *int {
+                    mdl.ensure_decl("declare ptr @cato_parse_i64(ptr)");
+                    "cato_parse_i64"
+                } else {
+                    mdl.ensure_decl("declare ptr @cato_parse_f64(ptr)");
+                    "cato_parse_f64"
+                };
+                let p = c.temp();
+                c.line(&format!("  {} = call ptr @{}(ptr {})", p, helper, sv));
+                c.scalar.insert(name.clone(), (p, *ty));
+                continue;
+            }
+            HExpr::Args => {
+                let lptr = c.temp();
+                c.prelude
+                    .push(format!("  {} = alloca i64, align 8", lptr));
+                mdl.ensure_decl("declare ptr @cato_args(ptr)");
+                let arr = c.temp();
+                c.line(&format!("  {} = call ptr @cato_args(ptr {})", arr, lptr));
+                let l = c.temp();
+                c.line(&format!("  {} = load i64, ptr {}, align 8", l, lptr));
+                c.vecs.insert(name.clone(), (arr, l, Elem::Str));
+                continue;
+            }
+            _ => {}
         }
         // Heap-constructing values bind as growable slots.
         match value {

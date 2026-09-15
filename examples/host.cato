@@ -1,0 +1,23 @@
+; host.cato — S3 reference program: the host surface.
+;
+; Numbers↔strings, raw printing, file IO, and process arguments. The
+; parse builtins return the prelude's `(Option a)`; `(exit n)` terminates
+; with a real status; `slurp`/`spit` round-trip through the filesystem.
+
+(defn main []
+  (let [n :- (Option i64) (parse-i64 "123")
+        bad :- (Option i64) (parse-i64 "nope")
+        f :- (Option f64) (parse-f64 "2.5")
+        text (str 42 " " 3.5 " " true)
+        argv (args)]
+    (do
+      (print (match n (Some [v] v) (None [] 0)))      ; 123
+      (print (match bad (Some [v] v) (None [] -1)))   ; -1
+      (print (match f (Some [v] v) (None [] 0.0)))    ; 2.5
+      (print-str text)                                ; 42 3.5 1 (no \n)
+      (print (count text))                            ; 8
+      (spit "/tmp/cato_s3_host.txt" "host round trip")
+      (print (count (slurp "/tmp/cato_s3_host.txt"))) ; 15
+      ; Arguments: the parity harness runs with none.
+      (print (count argv))                            ; 0
+      (print (if (> (count argv) 0) (get argv 0) "none")))))

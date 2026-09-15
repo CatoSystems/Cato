@@ -48,6 +48,36 @@ pub(crate) fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<HExpr>, String>>()?,
         ),
+        HExpr::ToStr(e2, t) => HExpr::ToStr(
+            Box::new(rewrite_body(e2, fnprefix, params, idmap, loops, sigs)?),
+            *t,
+        ),
+        HExpr::ParseNum { s, int, res } => HExpr::ParseNum {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            int: *int,
+            res: *res,
+        },
+        HExpr::Slurp(p) => HExpr::Slurp(Box::new(rewrite_body(
+            p,
+            fnprefix,
+            params,
+            idmap,
+            loops,
+            sigs,
+        )?)),
+        HExpr::Spit { path, data } => HExpr::Spit {
+            path: Box::new(rewrite_body(path, fnprefix, params, idmap, loops, sigs)?),
+            data: Box::new(rewrite_body(data, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::Args => HExpr::Args,
+        HExpr::Exit(c) => HExpr::Exit(Box::new(rewrite_body(
+            c,
+            fnprefix,
+            params,
+            idmap,
+            loops,
+            sigs,
+        )?)),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::Bin(op, a, b) => HExpr::Bin(

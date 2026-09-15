@@ -113,6 +113,15 @@ impl<'a> BCheck<'a> {
                     self.check(a, tys, st);
                 }
             }
+            HExpr::ToStr(e, _) => self.check(e, tys, st),
+            HExpr::ParseNum { s, .. } => self.check(s, tys, st),
+            HExpr::Slurp(p) => self.check(p, tys, st),
+            HExpr::Spit { path, data } => {
+                self.check(path, tys, st);
+                self.check(data, tys, st);
+            }
+            HExpr::Args => {}
+            HExpr::Exit(c) => self.check(c, tys, st),
             HExpr::StrCat(args) => {
                 for a in args {
                     self.check(a, tys, st);
@@ -424,6 +433,14 @@ fn annotate_walk(
                 annotate_walk(a, consumed, escaped, shadowed, facts);
             }
         }
+        HExpr::ToStr(e, _) => annotate_walk(e, consumed, escaped, shadowed, facts),
+        HExpr::ParseNum { s, .. } => annotate_walk(s, consumed, escaped, shadowed, facts),
+        HExpr::Slurp(p) => annotate_walk(p, consumed, escaped, shadowed, facts),
+        HExpr::Spit { path, data } => {
+            annotate_walk(path, consumed, escaped, shadowed, facts);
+            annotate_walk(data, consumed, escaped, shadowed, facts);
+        }
+        HExpr::Exit(c) => annotate_walk(c, consumed, escaped, shadowed, facts),
         _ => {}
     }
 }
@@ -489,6 +506,14 @@ pub(crate) fn annotate_frees(body: &mut HExpr, facts: &AdtFacts) {
                     collect(a, consumed, shadowed);
                 }
             }
+            HExpr::ToStr(e, _) => collect(e, consumed, shadowed),
+            HExpr::ParseNum { s, .. } => collect(s, consumed, shadowed),
+            HExpr::Slurp(p) => collect(p, consumed, shadowed),
+            HExpr::Spit { path, data } => {
+                collect(path, consumed, shadowed);
+                collect(data, consumed, shadowed);
+            }
+            HExpr::Exit(c) => collect(c, consumed, shadowed),
             HExpr::And(c, t) | HExpr::Or(c, t) => {
                 collect(c, consumed, shadowed);
                 collect(t, consumed, shadowed);

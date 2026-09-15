@@ -81,6 +81,8 @@ pub struct Interpreter<'p> {
     /// Stash for the innermost loop's `recur` arguments (S2). Validation
     /// guarantees the nearest loop is the target, so one slot suffices.
     recur_sink: Option<Vec<Value>>,
+    /// The interpreted program's arguments (`(args)`), S3.
+    program_args: Vec<String>,
 }
 
 type R<T> = Result<T, String>;
@@ -95,7 +97,13 @@ impl<'p> Interpreter<'p> {
                 .collect(),
             out: String::new(),
             recur_sink: None,
+            program_args: Vec::new(),
         }
+    }
+
+    /// Provide `(args)` for the interpreted program (CLI passthrough).
+    pub fn set_program_args(&mut self, args: Vec<String>) {
+        self.program_args = args;
     }
 
     /// Run `main` and return the captured stdout.
@@ -140,6 +148,14 @@ impl<'p> Interpreter<'p> {
                     other => panic!("interp: print-string on {:?}", other),
                 }
                 self.out.push('\n');
+                return Ok(Value::Int(0));
+            }
+            // S3: raw print without the trailing newline.
+            "print-str" => {
+                match &args[0] {
+                    Value::Str(s) => self.out.push_str(s),
+                    other => panic!("interp: print-str on {:?}", other),
+                }
                 return Ok(Value::Int(0));
             }
             "even?" => {
@@ -595,6 +611,87 @@ impl<'p> Interpreter<'p> {
                 // the sink before anything else observes this value.
                 return Ok(Value::Int(0));
             }
+            HExpr::ToStr(e, t) => {
+                let v = self.eval(e, env)?;
+                let text = match (&v, t) {
+                    (Value::Int(i), _) => format!("{}", i),
+                    (Value::Bool(b), _) => format!("{}", *b as i64),
+                    (Value::F64(f), _) => fmt_f64(*f),
+                    (Value::F32(f), _) => fmt_f64(*f as f64),
+                    o => panic!("interp: str on {:?}", o),
+                };
+                Value::Str(Rc::new(text))
+            }
+            HExpr::ParseNum { s, int, .. } => {
+                let sv = self.eval(s, env)?;
+                let text = match sv {
+                    Value::Str(t) => t.as_ref().clone(),
+                    o => panic!("interp: parse on {:?}", o),
+                };
+                if *int {
+                    match text.trim().parse::<i64>() {
+                        // Careful: Rust parse rejects "+5"? It accepts it.
+                        Ok(v) => Value::Adt {
+                            variant: 0,
+                            fields: Rc::new(vec![Value::Int(v)]),
+                        },
+                        Err(_) => Value::Adt {
+                            variant: 1,
+                            fields: Rc::new(vec![]),
+                        },
+                    }
+                } else {
+                    match text.trim().parse::<f64>() {
+                        Ok(v) => Value::Adt {
+                            variant: 0,
+                            fields: Rc::new(vec![Value::F64(v)]),
+                        },
+                        Err(_) => Value::Adt {
+                            variant: 1,
+                            fields: Rc::new(vec![]),
+                        },
+                    }
+                }
+            }
+            HExpr::Slurp(p) => {
+                let pv = self.eval(p, env)?;
+                let path = match pv {
+                    Value::Str(t) => t.as_ref().clone(),
+                    o => panic!("interp: slurp on {:?}", o),
+                };
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                Value::Str(Rc::new(text))
+            }
+            HExpr::Spit { path, data } => {
+                let pv = self.eval(path, env)?;
+                let dv = self.eval(data, env)?;
+                let path = match pv {
+                    Value::Str(t) => t.as_ref().clone(),
+                    o => panic!("interp: spit path on {:?}", o),
+                };
+                let data = match dv {
+                    Value::Str(t) => t.as_ref().clone(),
+                    o => panic!("interp: spit data on {:?}", o),
+                };
+                let _ = std::fs::write(&path, data.as_bytes());
+                Value::Int(0)
+            }
+            HExpr::Args => Value::Vec(Rc::new(
+                self.program_args
+                    .iter()
+                    .map(|a| Value::Str(Rc::new(a.clone())))
+                    .collect(),
+            )),
+            HExpr::Exit(c) => {
+                let code = int_of(&self.eval(c, env)?);
+                // Flush the captured output first: the CLI writes it to
+                // stdout at the end of a normal run.
+                use std::io::Write;
+                let mut out = std::io::stdout();
+                let _ = out.write_all(self.out.as_bytes());
+                let _ = out.flush();
+                std::process::exit(code as i32);
+            }
             HExpr::Get { src, idx, default, ty } => {
                 let _ = ty;
                 let sv = self.eval(src, env)?;
@@ -1007,7 +1104,16 @@ fn fmt_f64(v: f64) -> String {
 
 /// The interpreter backend: `emit` executes the program and returns the
 /// captured stdout as the artifact.
-pub struct InterpBackend;
+pub struct InterpBackend {
+    /// Arguments visible to `(args)` (everything after the source file).
+    pub program_args: Vec<String>,
+}
+
+impl Default for InterpBackend {
+    fn default() -> Self {
+        InterpBackend { program_args: Vec::new() }
+    }
+}
 
 impl Backend for InterpBackend {
     fn name(&self) -> &'static str {
@@ -1015,7 +1121,9 @@ impl Backend for InterpBackend {
     }
 
     fn emit(&self, program: &Program) -> Result<String, String> {
-        Interpreter::new(program).run()
+        let mut interp = Interpreter::new(program);
+        interp.set_program_args(self.program_args.clone());
+        interp.run()
     }
 }
 

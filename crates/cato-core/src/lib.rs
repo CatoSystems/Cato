@@ -115,6 +115,9 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
 /// dispatches on the static type of `x`; examples use `print` instead of
 /// the per-type builtins (which remain as the method bodies' primitives).
 const PRELUDE: &str = r#"
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
 (defgeneric print [x])
 (defmethod print [x :- i64] (print-i64 x))
 (defmethod print [x :- f64] (print-f64 x))

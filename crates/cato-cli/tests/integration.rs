@@ -255,6 +255,16 @@ fn compiles_trees_to_expected_output() {
 }
 
 #[test]
+fn compiles_host_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/host.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("host", &src),
+        "123\n-1\n2.5\n42 3.5 18\n15\n0\nnone\n"
+    );
+}
+
+#[test]
 fn compiles_loops_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/loops.cato")).unwrap();

@@ -140,6 +140,9 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
     c.line("entry:");
     c.open("entry");
     if defn.name == "main" {
+        // S3: argv plumbing — `(args)` reads through the runtime.
+        mdl.ensure_decl("declare void @cato_args_init(i32, ptr)");
+        c.line("  call void @cato_args_init(i32 %argc, ptr %argv)");
         for form in seq_forms(&defn.body) {
             emit_stmt(&form, &mut c, mdl, sigs);
         }
@@ -222,6 +225,12 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
     };
     let mut text = format!("define {} @{}(", ret_ll, mangle(&defn.name));
     text.push_str(&params.join(", "));
+    if defn.name == "main" {
+        if !params.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str("i32 %argc, ptr %argv");
+    }
     text.push_str(") {\n");
     text.push_str(&FnCtx::with_prelude(c.lines, &c.prelude).join("\n"));
     if defn.name == "main" {
@@ -305,6 +314,22 @@ pub(crate) fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
         HExpr::Call(name, args) if name == "print-i64" => {
             let v = emit_int(&args[0], c, mdl, sigs);
             c.line(&format!("  call void @cato_print_i64(i64 {})", v));
+        }
+        HExpr::Call(name, args) if name == "print-str" => {
+            let v = emit_str_val(&args[0], c, mdl, sigs);
+            mdl.ensure_decl("declare void @cato_print_str_raw(ptr)");
+            c.line(&format!("  call void @cato_print_str_raw(ptr {})", v));
+        }
+        HExpr::Spit { path, data } => {
+            let pv = emit_str_val(path, c, mdl, sigs);
+            let dv = emit_str_val(data, c, mdl, sigs);
+            mdl.ensure_decl("declare void @cato_spit(ptr, ptr)");
+            c.line(&format!("  call void @cato_spit(ptr {}, ptr {})", pv, dv));
+        }
+        HExpr::Exit(c2) => {
+            let v = emit_int(c2, c, mdl, sigs);
+            mdl.ensure_decl("declare void @cato_exit(i64)");
+            c.line(&format!("  call void @cato_exit(i64 {})", v));
         }
         _ => {
             emit_for_ret(e, c, mdl, sigs, Ty::I64);

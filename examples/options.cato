@@ -6,9 +6,7 @@
 ; enters where recursion requires it, S1b). ADTs are move types: passing
 ; one consumes it, `clone` keeps the source usable.
 
-(deftype (Option a)
-  (Some [v :- a])
-  (None))
+; the prelude provides (Option a) as a builtin type.
 
 (defn get-or [o :- (Option i64) d :- i64] :- i64
   (match o

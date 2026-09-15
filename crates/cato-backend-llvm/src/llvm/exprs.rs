@@ -494,6 +494,22 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         }
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::Recur(_) => panic!("codegen: recur outside loop (validation bug)"),
+        HExpr::Spit { path, data } => {
+            let pv = emit_str_val(path, c, mdl, sigs);
+            let dv = emit_str_val(data, c, mdl, sigs);
+            mdl.declare("declare void @cato_spit(ptr, ptr)".to_string());
+            c.line(&format!("  call void @cato_spit(ptr {}, ptr {})", pv, dv));
+            "0".to_string()
+        }
+        HExpr::Exit(c2) => {
+            let v = emit_int(c2, c, mdl, sigs);
+            mdl.declare("declare void @cato_exit(i64)".to_string());
+            c.line(&format!("  call void @cato_exit(i64 {})", v));
+            "0".to_string()
+        }
+        HExpr::ToStr(_, _) | HExpr::ParseNum { .. } | HExpr::Slurp(_) | HExpr::Args => panic!(
+            "codegen: string/Option/vector result must be bound with let"
+        ),
         HExpr::StrNth { s, idx } => {
             // Bounds-checked byte load, branchless: clamp the index with a
             // select before the GEP so out-of-range reads (and negatives)

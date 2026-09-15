@@ -11,7 +11,7 @@ use cato_interp::InterpBackend;
 
 fn run_with(src: &str, optimize: bool) -> String {
     let program = compile_named_with("opt_parity.cato", src, optimize).expect("compile");
-    InterpBackend
+    InterpBackend::default()
         .emit(&program)
         .expect("interp emit")
 }
@@ -75,7 +75,7 @@ fn unfolded_division_still_traps() {
     let trap = |optimize: bool| {
         let program = compile_named_with("div0.cato", src, optimize).expect("compile");
         std::panic::catch_unwind(move || {
-            let _ = InterpBackend.emit(&program);
+            let _ = InterpBackend::default().emit(&program);
         })
         .is_err()
     };

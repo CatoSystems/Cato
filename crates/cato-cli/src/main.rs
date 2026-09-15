@@ -115,7 +115,11 @@ fn main() {
             // The interpreter's artifact is the program output. Runtime
             // panics (malformed programs reaching interp invariants) are
             // reported as errors, not raw backtraces.
-            crate::ui::guard(|| InterpBackend.emit(&program)).unwrap_or_else(|e| {
+            let program_args = cli.interp_args.clone();
+            crate::ui::guard(|| {
+                InterpBackend { program_args }.emit(&program)
+            })
+            .unwrap_or_else(|e| {
                 eprintln!("{} {}", ui::error_lead(), e);
                 std::process::exit(1);
             })

@@ -10,6 +10,7 @@ const EXAMPLES: &[&str] = &[
     "generic",
     "heap",
     "hamt",
+    "host",
     "loops",
     "maps",
     "normalize",
@@ -130,9 +131,6 @@ fn interp_evaluates_nth_and_char_str() {
 #[test]
 fn interp_evaluates_generic_adts() {
     let src = r#"
-(deftype (Option a)
-  (Some [v :- a])
-  (None))
 (defn get-or [o :- (Option i64) d :- i64] :- i64
   (match o
     (Some [v] v)

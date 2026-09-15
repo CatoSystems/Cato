@@ -259,6 +259,19 @@ pub enum HExpr {
     /// `(recur e ...)` — re-bind the innermost loop's variables and jump to
     /// its head. Validated tail-only at lowering.
     Recur(Vec<HExpr>),
+    /// `(str n)` over a numeric/bool operand: the runtime's decimal text.
+    ToStr(Box<HExpr>, Ty),
+    /// `(parse-i64 s)` / `(parse-f64 s)` — `res` is the `(Option T)`
+    /// instance index synthesized by the lowering.
+    ParseNum { s: Box<HExpr>, int: bool, res: Ty },
+    /// `(slurp path)` — whole-file read; empty string on failure.
+    Slurp(Box<HExpr>),
+    /// `(spit path content)` — writes (creates/truncates); yields 0.
+    Spit { path: Box<HExpr>, data: Box<HExpr> },
+    /// `(args)` — process arguments as a `(Vector str)`; let-bound.
+    Args,
+    /// `(exit n)` — terminate the process with a status.
+    Exit(Box<HExpr>),
     Reduce(Box<HReduce>),
     /// `(fn [x :- ty] body)` — a closure value capturing free locals by
     /// value. The body stays in the node (the interpreter evaluates it

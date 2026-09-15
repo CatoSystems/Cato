@@ -25,6 +25,12 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
             binds.iter().any(|(_, _, e2)| has_ctl(e2)) || has_ctl(body)
         }
         HExpr::Recur(args) => args.iter().any(has_ctl),
+        HExpr::ToStr(e, _) => has_ctl(e),
+        HExpr::ParseNum { s, .. } => has_ctl(s),
+        HExpr::Slurp(p) => has_ctl(p),
+        HExpr::Spit { path, data } => has_ctl(path) || has_ctl(data),
+        HExpr::Args => false,
+        HExpr::Exit(c) => has_ctl(c),
         HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::CmpW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::BinF(_, a, b) => has_ctl(a) || has_ctl(b),
@@ -192,6 +198,15 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(a, f);
             }
         }
+        HExpr::ToStr(e, _) => collect_vars(e, f),
+        HExpr::ParseNum { s, .. } => collect_vars(s, f),
+        HExpr::Slurp(p) => collect_vars(p, f),
+        HExpr::Spit { path, data } => {
+            collect_vars(path, f);
+            collect_vars(data, f);
+        }
+        HExpr::Args => {}
+        HExpr::Exit(c) => collect_vars(c, f),
         HExpr::StrCat(args) => {
             for a in args {
                 collect_vars(a, f);
