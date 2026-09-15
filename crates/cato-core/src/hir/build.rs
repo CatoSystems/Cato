@@ -40,9 +40,18 @@ pub fn build_program_located(
         }
     }
 
+    // Monomorphized ADT instances accumulate here while parsing annotations
+    // and lowering ctor calls; the cell moves into the Ctx for lowering.
+    let adt_insts = RefCell::new(AdtInsts::default());
+    let tcx = TypeCx {
+        adts: &adts,
+        adt_by_name: &adt_by_name,
+        insts: &adt_insts,
+    };
+
     // Generic functions (multimethods): collect the method table and
     // strip the forms; call sites resolve during lowering.
-    let (prog, gens) = collect_generics(prog, &adts, &adt_by_name)?;
+    let (prog, gens) = collect_generics(prog, &tcx)?;
 
     // Pass 1: parse every defn into a raw (un-lowered) form without lowering,
     // so map/filter and calls can resolve any function regardless of order.
@@ -53,9 +62,9 @@ pub fn build_program_located(
             continue;
         }
         let raw = if is_extern(form) {
-            parse_extern(form, &adt_by_name, &mut fn_sigs)
+            parse_extern(form, &tcx, &mut fn_sigs)
         } else {
-            parse_raw(form, &adt_by_name, &mut fn_sigs)
+            parse_raw(form, &tcx, &mut fn_sigs)
         }
         .map_err(|e| locate(*span, &e))?;
         raws.push((raw, *span));
@@ -68,6 +77,7 @@ pub fn build_program_located(
         raw_by_name: &raw_by_name,
         adts: &adts,
         inst: RefCell::new(InstState::default()),
+        adt_insts,
         gens: RefCell::new(gens),
         fn_sigs: RefCell::new(fn_sigs),
         lambdas: RefCell::new(Vec::new()),
@@ -142,7 +152,16 @@ pub fn build_program_located(
             }
         })
         .collect();
+    // Drain the monomorphized ADT instances; appended below so every
+    // Ty::Adt(i) baked into the lowered program indexes the combined table.
+    // Template placeholders (instances whose arguments still mention a
+    // defn's type parameters, e.g. `(Option T)` in a generic signature)
+    // never appear in emitted code; their declarations are inert.
+    let extra_adts: Vec<AdtDef> = ctx.adt_insts.borrow_mut().extra.drain(..).collect();
     let fn_sigs = ctx.fn_sigs.borrow().clone();
+
+    let mut adts = adts;
+    adts.extend(extra_adts);
 
     // Ownership / borrow check: needs every callee's borrow kinds.
     let sigs: HashMap<String, Vec<Borrow>> = out

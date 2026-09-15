@@ -56,6 +56,12 @@ pub(crate) fn emit_adt(
                         let v = emit_int(arg, c, mdl, sigs);
                         c.line(&format!("  store i64 {}, ptr {}, align 8", v, t_f));
                     }
+                    Ty::I32 => {
+                        let v = emit_int(arg, c, mdl, sigs);
+                        let x = c.temp();
+                        c.line(&format!("  {} = sext i32 {} to i64", x, v));
+                        c.line(&format!("  store i64 {}, ptr {}, align 8", x, t_f));
+                    }
                     Ty::F64 => {
                         let v = emit_float(arg, c, mdl, sigs);
                         let b = c.temp();
@@ -161,6 +167,13 @@ pub(crate) fn emit_match_node(
                         let t_l = c.temp();
                         c.line(&format!("  {} = load i64, ptr {}, align 8", t_l, t_f));
                         c.scalar.insert(binder.clone(), (t_l, Ty::I64));
+                    }
+                    Ty::I32 => {
+                        let t_l = c.temp();
+                        c.line(&format!("  {} = load i64, ptr {}, align 8", t_l, t_f));
+                        let t_i = c.temp();
+                        c.line(&format!("  {} = trunc i64 {} to i32", t_i, t_l));
+                        c.scalar.insert(binder.clone(), (t_i, Ty::I32));
                     }
                     Ty::F64 => {
                         let t_l = c.temp();

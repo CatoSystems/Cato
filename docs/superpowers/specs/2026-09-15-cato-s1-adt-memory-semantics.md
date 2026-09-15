@@ -115,6 +115,11 @@ syntax:
 ## 4. Sub-slices
 
 **S1a — Generic, non-recursive ADTs (this slice).**
+Let-binding type ascription (`[x :- (Option i64) (None)]`) lands with this
+slice: monomorphized nullary ctors (`(None)`) carry no value to infer their
+parameter from, so a binding can pin the expected type — the same role as
+Rust's `let x: Option<i64> = None;`. Full unification-based inference stays
+out of scope.
 `deftype` type parameters; annotations `(Option i64)` resolve eagerly at
 parse time to concrete instances (no new `Ty` variant — `Ty` is matched in
 ~50 places, and monomorphized instances are ordinary concrete ADTs);

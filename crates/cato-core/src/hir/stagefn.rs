@@ -107,7 +107,7 @@ pub(crate) fn resolve_function_ref(
                 }),
                 _ => actual,
             };
-            unify(*pat, actual, &mut subs)
+            unify(*pat, actual, &mut subs, ctx)
                 .ok_or_else(|| format!("cannot use {} over {:?} elements", name, actual))?;
         }
         subs
@@ -127,7 +127,7 @@ pub(crate) fn resolve_function_ref(
     let ret = if subs.is_empty() {
         raw.ret
     } else {
-        subst_ty(raw.ret, &subs)
+        subst_ty(raw.ret, &subs, ctx)
     };
     Ok((el, el2, body, ret))
 }

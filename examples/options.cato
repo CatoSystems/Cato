@@ -1,0 +1,36 @@
+; options.cato — S1a reference program: generic ADTs.
+;
+; Type parameters on deftype, monomorphized like generic defns: every use
+; of `(Option a)` resolves to a concrete instance (`Option__i64`,
+; `Option__f64`) — the inline tagged-union layout, no boxing (boxing only
+; enters where recursion requires it, S1b). ADTs are move types: passing
+; one consumes it, `clone` keeps the source usable.
+
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
+
+(defn get-or [o :- (Option i64) d :- i64] :- i64
+  (match o
+    (Some [v] v)
+    (None [] d)))
+
+; A generic defn over the generic ADT: `(Option T)` unifies field-wise and
+; monomorphizes per call-site payload type.
+(defn opt-or [o :- (Option T) d :- T] :- T
+  (match o
+    (Some [v] v)
+    (None [] d)))
+
+; Nullary ctors carry no value to infer from — ascribe the binding.
+(defn main []
+  (let [a (Some 41)
+        n :- (Option i64) (None)
+        f (Some 1.5)]
+    (do
+      (print (get-or a 0))              ; 41
+      (print (get-or (clone n) 7))      ; 7
+      (print (opt-or (clone n) 99))     ; 99
+      (print (opt-or f 0.0))            ; 1.5
+      (print (match (Some 5) (Some [v] (* v 2)) (None [] 0)))  ; 10
+      (print (= (count "ok") 2)))))

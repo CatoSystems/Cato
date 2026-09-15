@@ -267,6 +267,31 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
         let Expr::LitSym(name) = &binds[i] else {
             return Err("let binding name must be a symbol or a [a b] pattern".into());
         };
+        // Optional type ascription: [x :- ty value] — pins the binding's
+        // type and lets nullary ctors of generic ADTs (`(None)`) infer.
+        if let Some(Expr::LitSym(sep)) = binds.get(i + 1) {
+            if sep == ":-" {
+                let Some(ann) = binds.get(i + 2) else {
+                    return Err(format!("let binding {} expects a type after :-", name));
+                };
+                let Some(value_form) = binds.get(i + 3) else {
+                    return Err(format!("let binding {} expects a value after the type", name));
+                };
+                let t = resolve_ann_ty(ann, ctx)?;
+                let value = lower_expect(value_form, &mut child, ctx, Some(t))?;
+                let vt = ty_of(&value, &child, ctx);
+                if vt != t && !(t == Ty::F64 && vt == Ty::I64) {
+                    return Err(format!(
+                        "let binding {} ascribed {:?} but the value is {:?}",
+                        name, t, vt
+                    ));
+                }
+                child.insert(name.clone(), t);
+                resolved.push((name.clone(), value, t));
+                i += 4;
+                continue;
+            }
+        }
         let value = lower(&binds[i + 1], &mut child, ctx)?;
         let t = ty_of(&value, &child, ctx);
         child.insert(name.clone(), t);

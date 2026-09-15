@@ -1,5 +1,14 @@
 use super::*;
 
+/// Shared type-resolution state for parsing: the declared ADT table, the
+/// name map, and the monomorphized-instance table (filled eagerly as
+/// annotations like `(Option i64)` resolve — S1a).
+pub(crate) struct TypeCx<'a> {
+    pub adts: &'a [AdtDef],
+    pub adt_by_name: &'a HashMap<String, u32>,
+    pub insts: &'a RefCell<AdtInsts>,
+}
+
 pub(crate) fn is_extern(form: &Expr) -> bool {
     matches!(
         form,
@@ -10,7 +19,7 @@ pub(crate) fn is_extern(form: &Expr) -> bool {
 /// (extern name [param :- ty ...] :- ret) — a direct C FFI declaration.
 pub(crate) fn parse_extern(
     form: &Expr,
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
@@ -26,7 +35,7 @@ pub(crate) fn parse_extern(
         return Err("extern params must be a vector".into());
     };
     let mut ty_params = Vec::new();
-    let (params, _borrows) = parse_params(params, adt_by_name, &mut ty_params, fnsigs)?;
+    let (params, _borrows) = parse_params(params, tcx, &mut ty_params, fnsigs)?;
     if !ty_params.is_empty() {
         return Err("extern declarations must have concrete types".into());
     }
@@ -35,7 +44,7 @@ pub(crate) fn parse_extern(
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params, fnsigs)?;
+                ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
                 body_start += 2;
             }
         }
@@ -62,6 +71,7 @@ pub(crate) fn is_deftype(form: &Expr) -> bool {
 }
 
 /// (deftype Name (Variant [field :- ty ...]) ...)
+/// (deftype (Name a b) (Variant [field :- ty ...]) ...) — generic template
 pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
     let Expr::List(items) = form else {
         return Err("expected (deftype ...)".into());
@@ -69,8 +79,25 @@ pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
     if items.len() < 2 {
         return Err("deftype expects a name and at least one variant".into());
     }
-    let Expr::LitSym(name) = &items[1] else {
-        return Err("deftype name must be a symbol".into());
+    let (name, ty_params) = match &items[1] {
+        Expr::LitSym(s) => (s.clone(), Vec::new()),
+        Expr::List(hitems) => {
+            let Some(Expr::LitSym(s)) = hitems.first() else {
+                return Err("deftype name must be a symbol".into());
+            };
+            let mut ps = Vec::new();
+            for p in &hitems[1..] {
+                let Expr::LitSym(pn) = p else {
+                    return Err(format!("deftype {} type parameter must be a symbol", s));
+                };
+                if ps.iter().any(|x| x == pn) {
+                    return Err(format!("deftype {} repeats type parameter {}", s, pn));
+                }
+                ps.push(pn.clone());
+            }
+            (s.clone(), ps)
+        }
+        _ => return Err("deftype name must be a symbol".into()),
     };
     let mut variants = Vec::new();
     for v in &items[2..] {
@@ -102,16 +129,36 @@ pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
                 let Some(Expr::LitSym(ty)) = fitems.get(i + 2) else {
                     return Err(format!("variant {} field {} expects a type", vname, fname));
                 };
-                fields.push(parse_scalar_ty(ty)?);
+                fields.push(parse_adt_field_ty(ty, &ty_params)?);
                 i += 3;
             }
         }
         variants.push((vname.clone(), fields));
     }
     Ok(AdtDef {
-        name: name.clone(),
+        name,
+        ty_params,
         variants,
     })
+}
+
+/// A deftype field type: a scalar or one of the deftype's own type
+/// parameters (indexed by the parameter list, so instantiation substitutes
+/// positionally). Other ADTs arrive in S1b with the boxing rule.
+fn parse_adt_field_ty(s: &str, ty_params: &[String]) -> Result<Ty, String> {
+    match s {
+        "i64" => Ok(Ty::I64),
+        "i32" => Ok(Ty::I32),
+        "f64" => Ok(Ty::F64),
+        "bool" => Ok(Ty::Bool),
+        other => match ty_params.iter().position(|p| p == other) {
+            Some(i) => Ok(Ty::Param(i as u32)),
+            None => Err(format!(
+                "ADT field type must be i64, i32, f64, bool or a type parameter of this deftype, got '{}'",
+                other
+            )),
+        },
+    }
 }
 
 /// Lower a raw defn body (an implicit `do` when it holds multiple forms).
@@ -133,7 +180,7 @@ pub(crate) fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr
 /// data) are Copy.
 pub(crate) fn parse_raw(
     form: &Expr,
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<RawDefn, String> {
     let Expr::List(items) = form else {
@@ -152,14 +199,14 @@ pub(crate) fn parse_raw(
         return Err("defn params must be a vector".into());
     };
     let mut ty_params: Vec<String> = Vec::new();
-    let (params, borrows) = parse_params(params, adt_by_name, &mut ty_params, fnsigs)?;
+    let (params, borrows) = parse_params(params, tcx, &mut ty_params, fnsigs)?;
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], adt_by_name, &mut ty_params, fnsigs)?;
+                ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
                 body_start += 2;
             }
         }
@@ -191,7 +238,7 @@ pub(crate) fn parse_raw(
 
 pub(crate) fn parse_params(
     params: &[Expr],
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
     ty_params: &mut Vec<String>,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<(Vec<(String, Ty)>, Vec<Borrow>), String> {
@@ -213,11 +260,11 @@ pub(crate) fn parse_params(
                     let (ty_borrow, ty) = match &params[i + 2] {
                         Expr::LitSym(ty_sym) => {
                             let (b, rest) = split_borrow(ty_sym);
-                            (b, parse_ty_sym(rest, adt_by_name, ty_params)?)
+                            (b, parse_ty_sym(rest, tcx.adt_by_name, ty_params)?)
                         }
                         other => (
                             Borrow::Owned,
-                            parse_ty(other, adt_by_name, ty_params, fnsigs)?,
+                            parse_ty(other, tcx, ty_params, fnsigs)?,
                         ),
                     };
                     let borrow = if name_borrow != Borrow::Owned {
@@ -241,7 +288,7 @@ pub(crate) fn parse_params(
 /// parameter name, `(Vector i64|f64|T)`, or `(Fn [t1 t2] ret)`.
 pub(crate) fn parse_ty(
     e: &Expr,
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
     ty_params: &mut Vec<String>,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<Ty, String> {
@@ -258,9 +305,9 @@ pub(crate) fn parse_ty(
                 };
                 let mut ptys = Vec::new();
                 for p in pitems {
-                    ptys.push(parse_scalar_or_vec(p, adt_by_name, ty_params, fnsigs)?);
+                    ptys.push(parse_scalar_or_vec(p, tcx, ty_params, fnsigs)?);
                 }
-                let ret = parse_scalar_or_vec(&items[2], adt_by_name, ty_params, fnsigs)?;
+                let ret = parse_scalar_or_vec(&items[2], tcx, ty_params, fnsigs)?;
                 let sig = match fnsigs
                     .iter()
                     .position(|(p, r)| *p == ptys && *r == ret)
@@ -272,6 +319,21 @@ pub(crate) fn parse_ty(
                     }
                 };
                 return Ok(Ty::Fn(sig));
+            }
+            if h != "Vector" && tcx.adt_by_name.contains_key(h.as_str()) {
+                // Applied ADT type: `(Name arg ...)` instantiates a generic
+                // ADT eagerly (S1a). Arguments are type symbols — scalars or
+                // this defn's own type parameters.
+                let args: Vec<Ty> = items[1..]
+                    .iter()
+                    .map(|a| parse_ty(a, tcx, ty_params, fnsigs))
+                    .collect::<Result<_, _>>()?;
+                let tpl = *tcx
+                    .adt_by_name
+                    .get(h.as_str())
+                    .filter(|&i| !tcx.adts[*i as usize].ty_params.is_empty())
+                    .ok_or_else(|| format!("{} takes no type parameters", h))?;
+                return Ok(Ty::Adt(instantiate_adt(tcx.adts, tcx.insts, tpl, &args)?));
             }
             if h != "Vector" || items.len() != 2 {
                 return Err(format!(
@@ -288,7 +350,7 @@ pub(crate) fn parse_ty(
             };
             Ok(Ty::Vec(el))
         }
-        Expr::LitSym(s) => parse_ty_sym(s, adt_by_name, ty_params),
+        Expr::LitSym(s) => parse_ty_sym(s, tcx.adt_by_name, ty_params),
         _ => Err("type annotation must be a symbol or (Vector ty)".into()),
     }
 }
@@ -338,14 +400,14 @@ pub(crate) fn parse_ty_sym(
 /// closures of closure params are not in the slice).
 fn parse_scalar_or_vec(
     e: &Expr,
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
     ty_params: &mut Vec<String>,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
 ) -> Result<Ty, String> {
     match e {
-        Expr::LitSym(s) => parse_ty_sym(s, adt_by_name, ty_params),
+        Expr::LitSym(s) => parse_ty_sym(s, tcx.adt_by_name, ty_params),
         Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "Vector") => {
-            parse_ty(e, adt_by_name, ty_params, fnsigs)
+            parse_ty(e, tcx, ty_params, fnsigs)
         }
         _ => Err("Fn param/ret types must be scalars, str, or (Vector ty)".into()),
     }
@@ -357,20 +419,6 @@ pub(crate) fn register_ty_param(name: &str, ty_params: &mut Vec<String>) -> u32 
     }
     ty_params.push(name.to_string());
     (ty_params.len() - 1) as u32
-}
-
-/// Substitute type parameters with concrete types.
-pub(crate) fn parse_scalar_ty(s: &str) -> Result<Ty, String> {
-    match s {
-        "i64" => Ok(Ty::I64),
-        "i32" => Ok(Ty::I32),
-        "f64" => Ok(Ty::F64),
-        "bool" => Ok(Ty::Bool),
-        other => Err(format!(
-            "ADT field type must be i64, f64 or bool, got '{}'",
-            other
-        )),
-    }
 }
 
 pub(crate) fn vec_lit_i64(items: &[Expr]) -> Vec<i64> {

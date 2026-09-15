@@ -906,3 +906,93 @@ fn print_is_a_generic_multimethod() {
     // No method exists for maps: clean error.
     assert!(cato_core::compile_to_program("(defn main [] :- i64 (print {1 2}))").is_err());
 }
+
+#[test]
+fn generic_adts_parse_instantiate_and_match() {
+    let src = r#"
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
+(defn get-or [o :- (Option i64) d :- i64] :- i64
+  (match o
+    (Some [v] v)
+    (None [] d)))
+(defn main [] (get-or (Some 1) 0))
+"#;
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = build_program(&exprs).unwrap();
+    // Template + one concrete instance.
+    assert_eq!(adts[0].name, "Option");
+    assert_eq!(adts[0].ty_params, vec!["a".to_string()]);
+    assert_eq!(adts.len(), 2, "expected the Option__i64 instance: {:?}", adts);
+    assert_eq!(adts[1].name, "Option__i64");
+    assert!(adts[1].ty_params.is_empty());
+    assert_eq!(adts[1].variants[0].1, vec![Ty::I64]);
+
+    // The match in get-or resolves against the instance's variants.
+    let get_or = fns.iter().find(|d| d.name == "get-or").unwrap();
+    // The match in get-or resolves against the instance's variants; the
+    // parameter is the concrete (Option i64) instance.
+    assert_eq!(get_or.params[0].1, Ty::Adt(1));
+    let HExpr::Match { arms, .. } = &get_or.body else {
+        panic!("expected match, got {:?}", get_or.body)
+    };
+    assert_eq!(arms.len(), 2);
+}
+
+#[test]
+fn generic_adts_monomorphize_per_payload() {
+    let src = r#"
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
+(defn opt-or [o :- (Option T) d :- T] :- T
+  (match o
+    (Some [v] v)
+    (None [] d)))
+(defn main []
+  (do
+    (opt-or (Some 1) 0)
+    (opt-or (Some 2.5) 0.5)))
+"#;
+    let exprs = read_all(src).unwrap();
+    let (adts, _) = build_program(&exprs).unwrap();
+    let names: Vec<&str> = adts.iter().map(|a| a.name.as_str()).collect();
+    assert!(names.contains(&"Option__i64"), "{:?}", names);
+    assert!(names.contains(&"Option__f64"), "{:?}", names);
+}
+
+#[test]
+fn generic_adt_errors() {
+    // Arity mismatch.
+    let err = build_err("(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option)] 0)");
+    assert!(err.contains("type argument"), "got: {}", err);
+    // A non-scalar type argument is out of S1a scope.
+    let err = build_err(
+        "(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option (Vector i64))] 0)",
+    );
+    assert!(err.contains("i64/i32/f64/bool"), "got: {}", err);
+    // A nullary ctor with no way to infer its parameter.
+    let err = build_err(
+        "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n (None)] 0))",
+    );
+    assert!(err.contains("cannot infer"), "got: {}", err);
+}
+
+#[test]
+fn let_ascription_pins_nullary_ctors() {
+    let src = r#"
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
+(defn main [] (let [n :- (Option i64) (None)] (match n (Some [v] v) (None [] 0))))
+"#;
+    let exprs = read_all(src).unwrap();
+    let (adts, _) = build_program(&exprs).unwrap();
+    assert!(adts.iter().any(|a| a.name == "Option__i64"), "{:?}", adts);
+    // Ascription mismatch is an error.
+    let err = build_err(
+        "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n :- (Option i64) (Some 2.5)] 0))",
+    );
+    assert!(err.contains("ascribed"), "got: {}", err);
+}

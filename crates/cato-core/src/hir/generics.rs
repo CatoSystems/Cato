@@ -202,8 +202,7 @@ enum Slot {
 /// them, and return the remaining forms plus the method table.
 pub(crate) fn collect_generics(
     prog: &[(Expr, Span)],
-    adts: &[AdtDef],
-    adt_by_name: &HashMap<String, u32>,
+    tcx: &TypeCx,
 ) -> Result<(Vec<(Expr, Span)>, GenState), String> {
     use crate::diagnostics::locate;
     let mut rest = Vec::new();
@@ -212,7 +211,7 @@ pub(crate) fn collect_generics(
 
     // Variant name -> (adt, variant); first declaration wins, like ctors.
     let mut variant_of: HashMap<&str, (u32, u32)> = HashMap::new();
-    for (ai, adt) in adts.iter().enumerate() {
+    for (ai, adt) in tcx.adts.iter().enumerate() {
         for (vi, (vn, _)) in adt.variants.iter().enumerate() {
             variant_of.entry(vn.as_str()).or_insert((ai as u32, vi as u32));
         }
@@ -236,7 +235,7 @@ pub(crate) fn collect_generics(
                 if sep == ":-" {
                     match items.get(4) {
                         Some(Expr::LitSym(t)) => {
-                            ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                            ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
                             next = 5;
                         }
                         _ => return Err(bad("defgeneric :- expects a return type")),
@@ -285,7 +284,7 @@ pub(crate) fn collect_generics(
                 if sep == ":-" {
                     match items.get(4) {
                         Some(Expr::LitSym(t)) => {
-                            ret = Some(parse_ty_sym(t, adt_by_name, &mut Vec::new())?);
+                            ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
                             si = 5;
                         }
                         _ => return Err(bad("defmethod :- expects a return type")),
@@ -325,7 +324,7 @@ pub(crate) fn collect_generics(
                                 _ => String::new(),
                             })
                             .collect();
-                        let nfields = adts[a as usize].variants[v as usize].1.len();
+                        let nfields = tcx.adts[a as usize].variants[v as usize].1.len();
                         if binders.len() != nfields {
                             return Err(bad(&format!(
                                 "variant {} has {} field(s) but the specializer binds {}",
@@ -359,13 +358,13 @@ pub(crate) fn collect_generics(
                             },
                             Expr::LitSym(tyname) => {
                                 if let Ok(Ty::Adt(a)) =
-                                    parse_ty_sym(tyname, adt_by_name, &mut Vec::new())
+                                    parse_ty_sym(tyname, tcx.adt_by_name, &mut Vec::new())
                                 {
                                     Spec::Adt(a)
                                 } else if let Some(&(a, v)) = variant_of.get(tyname.as_str()) {
                                     Spec::Variant(a, v)
                                 } else {
-                                    match parse_ty_sym(tyname, adt_by_name, &mut Vec::new()) {
+                                    match parse_ty_sym(tyname, tcx.adt_by_name, &mut Vec::new()) {
                                         Ok(t) if is_dispatchable_ty(t) => Spec::Builtin(t),
                                         _ => {
                                             return Err(bad(&format!(
@@ -436,13 +435,13 @@ pub(crate) fn collect_generics(
                         &format!(
                             "duplicate method for {}: ({})",
                             name,
-                            display_specs(&m.specs, adts)
+                            display_specs(&m.specs, tcx.adts)
                         ),
                     ));
                 }
             }
         }
-        check_unreachable(name, g, adts)?;
+        check_unreachable(name, g, tcx.adts)?;
     }
 
     Ok((rest, gens))
@@ -599,7 +598,14 @@ pub(crate) fn generic_call(
         }
         for t in &arg_tys {
             match t {
-                Ty::Adt(_) => {}
+                Ty::Adt(a) => {
+                    if ctx.is_adt_inst(*a) {
+                        return Err(format!(
+                            "generic {} cannot dispatch on a monomorphized ADT instance yet (declare a concrete deftype for the specializer)",
+                            name
+                        ));
+                    }
+                }
                 Ty::Vec(Elem::Param(_)) => {
                     return Err(format!(
                         "generic {} cannot dispatch on a (Vector T) — methods take concrete vector types",
@@ -863,7 +869,7 @@ fn display_combo(combo: &[(usize, u32)], arg_tys: &[Ty], ctx: &Ctx) -> String {
             let Ty::Adt(a) = arg_tys[*pos] else {
                 unreachable!()
             };
-            ctx.adts[a as usize].variants[*v as usize].0.clone()
+            ctx.adt_def(a).variants[*v as usize].0.clone()
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -873,7 +879,7 @@ fn display_combo(combo: &[(usize, u32)], arg_tys: &[Ty], ctx: &Ctx) -> String {
 /// identifiers — no spaces or brackets).
 fn ty_key(t: Ty, ctx: &Ctx) -> String {
     match t {
-        Ty::Adt(a) => ctx.adts[a as usize].name.clone(),
+        Ty::Adt(a) => ctx.adt_def(a).name.clone(),
         Ty::Vec(el) => format!("vec_{}", elem_key(el)),
         Ty::Map => "map".into(),
         Ty::Set => "set".into(),
@@ -991,7 +997,7 @@ fn resolve_method_instance(
         };
         for (b, t) in binders
             .iter()
-            .zip(ctx.adts[a as usize].variants[*variant as usize].1.iter())
+            .zip(ctx.adt_def(a).variants[*variant as usize].1.iter())
         {
             child.insert(b.clone(), *t);
         }

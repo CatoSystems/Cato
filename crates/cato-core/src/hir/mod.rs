@@ -4,7 +4,7 @@ use crate::ast::Expr;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Ty {
     I64,
     /// 32-bit signed integer (narrow width slice).
@@ -42,7 +42,7 @@ pub enum Ty {
 }
 
 /// Vector element types of the monomorphization slice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Elem {
     I64,
     F64,
@@ -95,10 +95,30 @@ pub const VEC_F64: Ty = Ty::Vec(Elem::F64);
 
 /// A user-defined algebraic data type: variants with scalar (or other-ADT)
 /// payload fields, in declaration order (the order is the runtime tag).
+/// Generic ADTs are templates (`ty_params` non-empty, fields may name the
+/// parameters); concrete instances are monomorphized copies with empty
+/// `ty_params` (see `AdtInsts`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AdtDef {
     pub name: String,
+    /// Type parameter names, in declaration order (indexed by the field
+    /// `Ty::Param`s). Empty for concrete ADTs.
+    pub ty_params: Vec<String>,
     pub variants: Vec<(String, Vec<Ty>)>,
+}
+
+/// Monomorphized ADT instances. Indices are `base + offset` where `base` is
+/// the program's declared (`deftype`) ADT count; `build` appends `extra` to
+/// the table after lowering, so every `Ty::Adt(i)` — declared or
+/// instantiated — indexes the combined table everywhere downstream.
+#[derive(Default)]
+pub(crate) struct AdtInsts {
+    /// (template index, type args) -> instance index. Dedupes instances.
+    pub(crate) map: HashMap<(u32, Vec<Ty>), u32>,
+    /// instance index -> (template index, type args). Lets substitution
+    /// re-instantiate `(Option T)` once `T` is bound.
+    pub(crate) rev: HashMap<u32, (u32, Vec<Ty>)>,
+    pub(crate) extra: Vec<AdtDef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +420,8 @@ pub(crate) struct Ctx<'a> {
     pub(crate) raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
     pub(crate) adts: &'a [AdtDef],
     pub(crate) inst: RefCell<InstState>,
+    /// Monomorphized ADT instances (S1a).
+    pub(crate) adt_insts: RefCell<AdtInsts>,
     /// Generic-function (multimethod) state: method table, hidden defns.
     pub(crate) gens: RefCell<GenState>,
     /// Closure signature table `(param tys, ret ty)`, deduped structurally;
@@ -460,6 +482,9 @@ impl Borrow {
 
 impl<'a> Ctx<'a> {
     /// Resolve a constructor name to (adt index, variant index, field types).
+    /// Searches the declared (template) table only — instantiated ADTs share
+    /// their template's constructor names, and ctor calls instantiate on the
+    /// fly (see `lower`).
     fn lookup_ctor(&self, name: &str) -> Option<(u32, u32, Vec<Ty>)> {
         for (ai, adt) in self.adts.iter().enumerate() {
             for (vi, (vname, fields)) in adt.variants.iter().enumerate() {
@@ -470,6 +495,121 @@ impl<'a> Ctx<'a> {
         }
         None
     }
+
+    /// The ADT definition at combined-table index `i` (declared or
+    /// instantiated). Returns a clone: instances live behind the RefCell.
+    pub(crate) fn adt_def(&self, i: u32) -> AdtDef {
+        let base = self.adts.len();
+        if (i as usize) < base {
+            return self.adts[i as usize].clone();
+        }
+        self.adt_insts.borrow().extra[i as usize - base].clone()
+    }
+
+    /// Is this combined-table index an instantiated (not declared) ADT?
+    pub(crate) fn is_adt_inst(&self, i: u32) -> bool {
+        (i as usize) >= self.adts.len()
+    }
+
+    pub(crate) fn instantiate_adt(&self, template: u32, args: &[Ty]) -> Result<u32, String> {
+        instantiate_adt(self.adts, &self.adt_insts, template, args)
+    }
+}
+
+/// Substitute an ADT template field with the instantiation's type arguments.
+/// S1a fields are flat: a parameter binds directly to its argument.
+fn subst_adt_field(f: Ty, args: &[Ty]) -> Ty {
+    match f {
+        Ty::Param(k) => args
+            .get(k as usize)
+            .copied()
+            .unwrap_or(Ty::I64),
+        other => other,
+    }
+}
+
+/// Mangle one type argument for an instance name (defns use the same
+/// convention; ADT arguments contribute their own mangled name).
+fn adt_arg_suffix(t: Ty, base: &[AdtDef], insts: &RefCell<AdtInsts>) -> String {
+    match ty_suffix(t) {
+        Some(s) => s.to_string(),
+        None => match t {
+            Ty::Adt(i) => {
+                let b = base.len();
+                if (i as usize) < b {
+                    base[i as usize].name.clone()
+                } else {
+                    insts.borrow().extra[i as usize - b].name.clone()
+                }
+            }
+            // Template placeholders stay in the (index-stable) table but
+            // never reach emitted code; the name just has to be LLVM-safe.
+            Ty::Param(k) => format!("t{}", k),
+            _ => "unk".to_string(),
+        },
+    }
+}
+
+/// Resolve an instantiation of a (possibly generic) ADT template for the
+/// given concrete (or still-generic) type arguments. Deduped: the same
+/// (template, args) pair returns the same combined-table index. S1a
+/// restricts concrete fields to scalars — a parameter bound to a
+/// non-scalar is a clear error, not a miscompile.
+pub(crate) fn instantiate_adt(
+    base: &[AdtDef],
+    insts: &RefCell<AdtInsts>,
+    template: u32,
+    args: &[Ty],
+) -> Result<u32, String> {
+    let tpl = base
+        .get(template as usize)
+        .ok_or_else(|| format!("bad ADT index {}", template))?;
+    if tpl.ty_params.len() != args.len() {
+        return Err(format!(
+            "{} expects {} type argument(s), got {}",
+            tpl.name,
+            tpl.ty_params.len(),
+            args.len()
+        ));
+    }
+    let key = (template, args.to_vec());
+    if let Some(&i) = insts.borrow().map.get(&key) {
+        return Ok(i);
+    }
+    let name = format!(
+        "{}__{}",
+        tpl.name,
+        args.iter()
+            .map(|t| adt_arg_suffix(*t, base, insts))
+            .collect::<Vec<_>>()
+            .join("_")
+    );
+    let mut variants = Vec::new();
+    for (vn, fields) in &tpl.variants {
+        let fs: Vec<Ty> = fields.iter().map(|f| subst_adt_field(*f, args)).collect();
+        for f in &fs {
+            // Param fields are the placeholders in a template instance
+            // (`(Option T)` inside a generic defn's signature); mono
+            // re-instantiates them once the parameter is bound.
+            if !matches!(f, Ty::I64 | Ty::I32 | Ty::F64 | Ty::Bool | Ty::Param(_)) {
+                return Err(format!(
+                    "{} instance field must be i64/i32/f64/bool in this slice, got {:?}",
+                    tpl.name, f
+                ));
+            }
+        }
+        variants.push((vn.clone(), fs));
+    }
+    let mut insts = insts.borrow_mut();
+    let idx = base.len() as u32 + insts.extra.len() as u32;
+    insts.map.insert(key, idx);
+    insts.rev.insert(idx, (template, args.to_vec()));
+    insts.extra.push(AdtDef {
+        name,
+        ty_params: Vec::new(),
+        variants,
+    });
+    Ok(idx)
 }
 
 

@@ -12,6 +12,7 @@ const EXAMPLES: &[&str] = &[
     "hamt",
     "maps",
     "normalize",
+    "options",
     "own",
     "parallel",
     "sets",
@@ -122,6 +123,36 @@ fn interp_evaluates_nth_and_char_str() {
     let out = cato_interp::Interpreter::new(&program).run().expect("run");
     // Out-of-range nth yields 0; char->str 300 truncates to ',' (300 & 0xFF).
     assert_eq!(out, "104\n111\n0\n0\nA\n1\n1\n122\n,\n");
+}
+
+#[test]
+fn interp_evaluates_generic_adts() {
+    let src = r#"
+(deftype (Option a)
+  (Some [v :- a])
+  (None))
+(defn get-or [o :- (Option i64) d :- i64] :- i64
+  (match o
+    (Some [v] v)
+    (None [] d)))
+(defn opt-or [o :- (Option T) d :- T] :- T
+  (match o
+    (Some [v] v)
+    (None [] d)))
+(defn main []
+  (let [a (Some 41)
+        n :- (Option i64) (None)
+        f (Some 1.5)]
+    (do
+      (print (get-or a 0))
+      (print (get-or (clone n) 7))
+      (print (opt-or (clone n) 99))
+      (print (opt-or f 0.0))
+      (print (match (Some 5) (Some [v] (* v 2)) (None [] 0))))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "41\n7\n99\n1.5\n10\n");
 }
 
 #[test]

@@ -30,11 +30,13 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
         let Ty::Adt(adt) = ty_of(&scrut_probe, env, ctx) else {
             return Err("guard arms require an ADT scrutinee".into());
         };
-        let all: Vec<&str> = ctx.adts[adt as usize]
+        let all: Vec<String> = ctx
+            .adt_def(adt)
             .variants
             .iter()
-            .map(|(n, _)| n.as_str())
+            .map(|(n, _)| n.clone())
             .collect();
+        let all: Vec<&str> = all.iter().map(|s| s.as_str()).collect();
         let rest_heads: Vec<&str> = rest
             .iter()
             .filter_map(|r| match r {
@@ -83,7 +85,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
     let Ty::Adt(adt) = ty_of(&scrut, env, ctx) else {
         return Err("match scrutinee must be an ADT value".into());
     };
-    let adt_def = &ctx.adts[adt as usize];
+    let adt_def = ctx.adt_def(adt);
 
     let mut covered = vec![false; adt_def.variants.len()];
     let mut wildcard = false;

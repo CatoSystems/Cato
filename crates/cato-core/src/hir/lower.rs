@@ -1,6 +1,60 @@
 use super::*;
 
 pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    lower_expect(expr, env, ctx, None)
+}
+
+/// Resolve a type annotation appearing in source position (let ascription):
+/// a scalar name, a concrete ADT name, or an applied ADT `(Name ty ...)`.
+/// Unlike `parse_ty`, this resolves through the Ctx (annotations are
+/// lowered after parsing, where the instance table lives).
+pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
+    match e {
+        Expr::LitSym(s) => match s.as_str() {
+            "i64" => Ok(Ty::I64),
+            "i32" => Ok(Ty::I32),
+            "f64" => Ok(Ty::F64),
+            "bool" => Ok(Ty::Bool),
+            "str" => Ok(Ty::Str),
+            other => {
+                // A declared ADT name: concrete passes through; a generic
+                // template needs type arguments.
+                if let Some(i) = ctx.adts.iter().position(|a| a.name == other) {
+                    if ctx.adts[i].ty_params.is_empty() {
+                        return Ok(Ty::Adt(i as u32));
+                    }
+                    return Err(format!(
+                        "{} expects {} type argument(s)",
+                        other,
+                        ctx.adts[i].ty_params.len()
+                    ));
+                }
+                Err(format!("unknown type name {}", other))
+            }
+        },
+        Expr::List(items) => {
+            let Some(Expr::LitSym(h)) = items.first() else {
+                return Err("type annotation must be a symbol or applied ADT".into());
+            };
+            let Some(i) = ctx.adts.iter().position(|a| &a.name == h) else {
+                return Err(format!("unknown type name {}", h));
+            };
+            let args: Vec<Ty> = items[1..]
+                .iter()
+                .map(|a| resolve_ann_ty(a, ctx))
+                .collect::<Result<_, _>>()?;
+            Ok(Ty::Adt(ctx.instantiate_adt(i as u32, &args)?))
+        }
+        _ => Err("type annotation must be a symbol or applied ADT".into()),
+    }
+}
+
+pub(crate) fn lower_expect(
+    expr: &Expr,
+    env: &Env,
+    ctx: &Ctx,
+    expected: Option<Ty>,
+) -> Result<HExpr, String> {
     match expr {
         Expr::LitI64(v) => Ok(HExpr::ConstI64(*v)),
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
@@ -573,6 +627,7 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                     }
                     // Constructors resolve before user functions.
                     if let Some((adt, variant, fields)) = ctx.lookup_ctor(head) {
+                        let nparams = ctx.adts[adt as usize].ty_params.len();
                         if items.len() - 1 != fields.len() {
                             return Err(format!(
                                 "constructor {} expects {} argument(s), got {}",
@@ -581,21 +636,72 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                                 items.len() - 1
                             ));
                         }
+                        // Generic template: unify argument types against the
+                        // template fields (field Param(k) binds type param k),
+                        // then monomorphize into a concrete instance.
+                        let mut subs: Vec<Option<Ty>> = vec![None; nparams];
                         let mut args = Vec::new();
                         for (it, fty) in items[1..].iter().zip(fields.iter()) {
                             let a = lower(it, env, ctx)?;
                             let at = ty_of(&a, env, ctx);
-                            if *fty == Ty::F64 && at == Ty::I64 {
+                            let at = if *fty == Ty::F64 && at == Ty::I64 {
+                                // Literal-friendly: an i64 argument widens
+                                // where the field is f64 (as before).
                                 args.push(HExpr::ConvF64(Box::new(a)));
-                            } else if at != *fty {
+                                Ty::F64
+                            } else {
+                                args.push(a);
+                                at
+                            };
+                            if unify(*fty, at, &mut subs, ctx).is_none() {
                                 return Err(format!(
                                     "constructor {} field expects {:?}, got {:?}",
                                     head, fty, at
                                 ));
-                            } else {
-                                args.push(a);
                             }
                         }
+                        let adt = if nparams == 0 {
+                            adt
+                        } else {
+                            let mut ty_args: Vec<Ty> = Vec::new();
+                            let mut inferred = true;
+                            for i in 0..ctx.adts[adt as usize].ty_params.len() {
+                                match subs.get(i).copied().flatten() {
+                                    Some(t) => ty_args.push(t),
+                                    None => inferred = false,
+                                }
+                            }
+                            if !inferred {
+                                // Nullary ctors of generic ADTs (`(None)`)
+                                // carry no value to infer from; a type
+                                // ascription on the binding pins them.
+                                let Some(Ty::Adt(e)) = expected else {
+                                    return Err(format!(
+                                        "cannot infer the type argument(s) of {} — ascribe the binding, e.g. [x :- ({} ty) ({} ...)]",
+                                        head,
+                                        ctx.adts[adt as usize].name,
+                                        head
+                                    ));
+                                };
+                                // The expected instance must belong to the
+                                // same template; adopt its type arguments.
+                                let rev = ctx.adt_insts.borrow().rev.get(&e).map(|(t, a)| (*t, a.clone()));
+                                let Some((tpl, exp_args)) = rev else {
+                                    return Err(format!(
+                                        "cannot infer the type argument(s) of {} for the expected type",
+                                        head
+                                    ));
+                                };
+                                if tpl != adt {
+                                    return Err(format!(
+                                        "cannot infer the type argument(s) of {} for the expected type",
+                                        head
+                                    ));
+                                }
+                                ty_args = exp_args;
+                            }
+                            ctx.instantiate_adt(adt, &ty_args)?
+                        };
                         return Ok(HExpr::Ctor { adt, variant, args });
                     }
                     let mut args = Vec::new();
