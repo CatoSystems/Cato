@@ -50,24 +50,25 @@ pub fn optimize(program: &mut Program) -> Result<(), String> {
 /// frontend's conservative annotation (leaks are possible, double-frees
 /// are not). Also drops dangling entries left behind by removed bindings.
 fn recompute_frees(program: &mut Program) {
+    let facts = crate::hir::compute_adt_facts(&program.adts);
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
         }
-        clear_and_annotate(&mut d.body);
+        clear_and_annotate(&mut d.body, &facts);
     }
     for lam in program.lambdas.iter_mut() {
-        clear_and_annotate(&mut lam.body);
+        clear_and_annotate(&mut lam.body, &facts);
     }
 }
 
-fn clear_and_annotate(body: &mut HExpr) {
+fn clear_and_annotate(body: &mut HExpr, facts: &crate::hir::AdtFacts) {
     let taken = std::mem::replace(body, HExpr::ConstI64(0));
     *body = walk::rewrite(taken, &mut |e| match e {
         HExpr::Let(binds, body, _) => HExpr::Let(binds, body, Vec::new()),
         other => other,
     });
-    crate::hir::annotate_frees(body);
+    crate::hir::annotate_frees(body, facts);
 }
 
 /// Safety net: the ownership checker ran on the pre-optimization program;

@@ -5,6 +5,18 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
         HExpr::ConstF64(v) => llvm_f64(*v),
         HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
+        HExpr::Let(binds, body, frees) => {
+            emit_let(binds, c, mdl, sigs);
+            let v = emit_float(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_float(vs.last().unwrap(), c, mdl, sigs)
+        }
         HExpr::Var(v) => {
             let (r, _) = c.scalar.get(v).expect("known f64 var");
             r.clone()

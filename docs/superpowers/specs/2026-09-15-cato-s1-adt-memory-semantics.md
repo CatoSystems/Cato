@@ -49,9 +49,11 @@ COMPILER IMPLEMENTATION  kernel architecture, never language
   bounded, known size — today's `%ADT_N = { i64 tag, [N x i64] }` stack-slot
   layout, unchanged. `Option i64`, `Result i64 str`, scalar enums: no heap
   allocation, ever.
-- An ADT is **boxed** only when recursion requires it: a type is boxed iff it
-  transitively contains an ADT-typed field (through its own or another ADT's
-  fields). A boxed ADT's value is a pointer to a heap `{ i64 tag, fields... }`;
+- An ADT is **boxed** when indirection is required, from either of two
+  causes: it is **recursive** (on a cycle of ADT-typed fields), or it
+  **owns heap** (has string/vector fields, transitively) — ownership needs
+  a unique address, so owning values move by pointer exactly like boxed
+  ones. A boxed ADT's value is a pointer to a heap `{ i64 tag, fields... }`;
   the constructor allocates; `match` and field access dereference.
 - Boxing is computed per concrete (monomorphized) ADT — never applied
   conservatively to a whole family.
@@ -137,7 +139,19 @@ ADT — which is what *makes* recursion expressible); ownership treats boxed
 ADTs and heap-holding fields as moving/owning; ctors allocate, `match`
 dereferences.
 
-**S1c — Drop glue & strings.**
+**S1c — Drop glue & strings** *(shipped)*: `compute_adt_facts` derives
+boxing and ownership jointly (boxed = cycle ∨ owning). Free annotation is
+value-shape based: only *fresh* allocations free at scope exit (subs/split/
+join/str/char->str, collections, boxed ctors, fresh returns) — aliases,
+element loads, and literals (static) never free; anything uncertain leaks,
+nothing double-frees. Owned move-type parameters free at body exit unless
+tail-escaped. ADT string fields are `strdup`'d at construction and deep-
+cloned; per-owning-ADT drop glue frees transitively. One optimizer rule was
+tightened: clone elision now requires a transferable free-list entry (or a
+static source) — eliding a clone of a drop-glue-owned child previously
+shared a dying buffer. Validated: `trees`/`options`/`strings2`/`own`/
+`heap`/`hamt`/`strings` all ASAN-clean with unchanged output, opt on and
+off.
 Transitive owns-heap analysis; scope-exit drop emission for boxed ADTs and
 heap-holding fields; heap strings join the owned world; ASAN-verified
 (reference: a program that builds and discards trees in a loop with flat

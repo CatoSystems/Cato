@@ -4,10 +4,13 @@ use cato_core::Lambda;
 pub(crate) struct Mdl {
     pub(crate) vec_globals: Vec<String>,
     pub(crate) adts: Vec<AdtDef>,
-    /// Per-ADT: heap-boxed (recursive) or inline. Boxed ADT values are heap
-    /// pointers; inline ADT values are pointers to stack slots of the named
-    /// struct. Emission paths consult this to pick the convention.
+    /// Per-ADT: heap-boxed (recursive or owning) or inline. Boxed ADT
+    /// values are heap pointers; inline ADT values are pointers to stack
+    /// slots of the named struct. Emission paths consult this to pick the
+    /// convention.
     pub(crate) boxed: Vec<bool>,
+    /// Per-ADT: owns heap memory (needs drop glue).
+    pub(crate) owns: Vec<bool>,
     pub(crate) counter: usize,
     /// Emit `llvm.loop.vectorize.enable` metadata on fused loops (--fast).
     pub(crate) fast: bool,
@@ -30,11 +33,14 @@ impl Mdl {
         lambdas: Vec<Lambda>,
         threads: usize,
     ) -> Self {
-        let boxed = cato_core::compute_boxed(&adts);
+        let facts = cato_core::compute_adt_facts(&adts);
+        let owns = facts.owns;
+        let boxed = facts.boxed;
         Mdl {
             vec_globals: Vec::new(),
             adts,
             boxed,
+            owns,
             counter: 0,
             fast,
             decls: Vec::new(),
@@ -52,9 +58,13 @@ impl Mdl {
     pub(crate) fn adt_name(&self, idx: u32) -> String {
         format!("%{}", self.adts[idx as usize].name)
     }
-    /// Is this ADT heap-boxed (recursive)?
+    /// Is this ADT heap-boxed (recursive or owning)?
     pub(crate) fn adt_boxed(&self, idx: u32) -> bool {
         self.boxed.get(idx as usize).copied().unwrap_or(false)
+    }
+    /// Does this ADT own heap memory (needs drop glue)?
+    pub(crate) fn adt_owns(&self, idx: u32) -> bool {
+        self.owns.get(idx as usize).copied().unwrap_or(false)
     }
     /// Payload slots of ADT `idx` (the [N x i64] of its struct).
     pub(crate) fn adt_slots(&self, idx: u32) -> usize {

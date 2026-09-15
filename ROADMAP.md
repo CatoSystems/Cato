@@ -80,7 +80,7 @@ failing codegen.
   `\t` and `\\` escapes in the reader.
 - Reference: `examples/strings2.cato`; interp↔LLVM parity.
 
-## Phase S1 — Generic & recursive ADTs + drop glue
+## Phase S1 — Generic & recursive ADTs + drop glue *(shipped — see `docs/superpowers/specs/2026-09-15-cato-s1-adt-memory-semantics.md`)*
 
 The biggest language slice; every compiler data structure depends on it.
 

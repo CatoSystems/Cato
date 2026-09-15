@@ -67,6 +67,9 @@ pub fn build_program_located(
         insts: &adt_insts,
     };
 
+    // Representation facts (boxing/ownership) drive free annotation.
+    let facts = crate::hir::compute_adt_facts(&adts);
+
     // Generic functions (multimethods): collect the method table and
     // strip the forms; call sites resolve during lowering.
     let (prog, gens) = collect_generics(prog, &tcx)?;
@@ -121,7 +124,7 @@ pub fn build_program_located(
         }
         .map_err(|e| locate(*span, &e))?;
         let mut body = body;
-        annotate_frees(&mut body);
+        annotate_frees(&mut body, &facts);
         out.push(Defn {
             name: raw.name.clone(),
             params: raw.params.clone(),
@@ -151,7 +154,7 @@ pub fn build_program_located(
     // Multimethod hidden/dispatch defns generated during lowering; their
     // bodies get the same scope-exit free annotation as plain defns.
     for mut d in ctx.gens.borrow_mut().extra.drain(..) {
-        annotate_frees(&mut d.body);
+        annotate_frees(&mut d.body, &facts);
         out.push(d);
     }
 
@@ -161,7 +164,7 @@ pub fn build_program_located(
         .borrow_mut()
         .drain(..)
         .map(|(mangled, captures, params, ret, mut body)| {
-            annotate_frees(&mut body);
+            annotate_frees(&mut body, &facts);
             crate::Lambda {
                 mangled,
                 captures,

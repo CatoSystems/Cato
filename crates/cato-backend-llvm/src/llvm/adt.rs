@@ -247,9 +247,14 @@ pub(crate) fn emit_field_store(
             c.line(&format!("  store i64 {}, ptr {}, align 8", z, t_f));
         }
         Ty::Str => {
+            // The ADT owns its own copy of the bytes (strdup), so the
+            // source binding can be freed without dangling the field.
             let v = emit_str_val(arg, c, mdl, sigs);
+            mdl.ensure_decl("declare ptr @strdup(ptr)");
+            let copy = c.temp();
+            c.line(&format!("  {} = call ptr @strdup(ptr {})", copy, v));
             let x = c.temp();
-            c.line(&format!("  {} = ptrtoint ptr {} to i64", x, v));
+            c.line(&format!("  {} = ptrtoint ptr {} to i64", x, copy));
             c.line(&format!("  store i64 {}, ptr {}, align 8", x, t_f));
         }
         Ty::Vec(elem) => {
@@ -512,6 +517,25 @@ pub(crate) fn emit_adt_clone_fn(adts: &[AdtDef], boxed: &[bool], i: u32) -> Stri
 /// Field copy inside `@clone__`: loads from %src at `off`, stores to %box.
 fn copy_field(out: &mut String, f: &Ty, off: usize, name: &str, adts: &[AdtDef], boxed: &[bool]) {
     match f {
+        Ty::Str => {
+            // Owning copy of the bytes.
+            out.push_str(&format!(
+                "  %sp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
+                off, off, name
+            ));
+            out.push_str(&format!("  %sl{0} = load i64, ptr %sp{0}\n", off));
+            out.push_str(&format!("  %sptr{0} = inttoptr i64 %sl{0} to ptr\n", off));
+            out.push_str(&format!("  %sdup{0} = call ptr @strdup(ptr %sptr{0})\n", off));
+            out.push_str(&format!(
+                "  %dp{0} = getelementptr inbounds {2}, ptr %box, i32 0, i32 1, i32 {1}\n",
+                off, off, name
+            ));
+            out.push_str(&format!(
+                "  %ni{0} = ptrtoint ptr %sdup{0} to i64\n",
+                off
+            ));
+            out.push_str(&format!("  store i64 %ni{}, ptr %dp{}\n", off, off));
+        }
         Ty::Adt(j)
             if boxed.get(*j as usize).copied().unwrap_or(false) =>
         {
@@ -561,6 +585,146 @@ fn copy_field(out: &mut String, f: &Ty, off: usize, name: &str, adts: &[AdtDef],
                 ));
                 out.push_str(&format!("  store i64 %sl{0}, ptr %dp{0}\n", off + k));
             }
+        }
+    }
+}
+
+/// The drop-glue helper emitted for every owning ADT: free the heap its
+/// fields own (string bytes, vector buffers, child boxes via their own
+/// glue), then — for boxed ADTs — the box itself. Inline owning children
+/// are freed in place through their own glue at the embedded offset.
+pub(crate) fn emit_adt_drop_fn(adts: &[AdtDef], owns: &[bool], boxed: &[bool], i: u32) -> String {
+    let def = &adts[i as usize];
+    let name = format!("%{}", def.name);
+    let mut out = String::new();
+    out.push_str(&format!("define void @drop__{}(ptr %src) {{\n", def.name));
+    out.push_str("entry:\n");
+    if boxed[i as usize] {
+        out.push_str("  %tag = load i64, ptr %src\n");
+        let cases: Vec<String> = def
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(vi, (vn, _))| format!("    i64 {}, label %v{}", vi, vn))
+            .collect();
+        let default = if def.variants.is_empty() {
+            "freebox".to_string()
+        } else {
+            "bad".to_string()
+        };
+        out.push_str(&format!(
+            "  switch i64 %tag, label %{} [\n{}\n  ]\n",
+            default,
+            cases.join("\n")
+        ));
+        if !def.variants.is_empty() {
+            out.push_str("bad:\n  unreachable\n\n");
+        }
+        for (vn, fields) in def.variants.iter() {
+            out.push_str(&format!("v{}:\n", vn));
+            let mut at = 0usize;
+            for f in fields {
+                free_field(&mut out, f, at, &name, adts, owns, boxed);
+                at += cato_core::field_slot_count(f, boxed, adts);
+            }
+            out.push_str("  br label %freebox\n\n");
+        }
+        out.push_str("freebox:\n  call void @free(ptr %src)\n  ret void\n}\n");
+    } else {
+        // Inline owning ADT: free fields in place; the storage itself is
+        // the caller's slot (or an embedded region) and is not freed here.
+        // The variant is unknown at compile time, so switch on the tag.
+        out.push_str("  %tag = load i64, ptr %src\n");
+        let cases: Vec<String> = def
+            .variants
+            .iter()
+            .enumerate()
+            .map(|(vi, (vn, _))| format!("    i64 {}, label %v{}", vi, vn))
+            .collect();
+        let default = if def.variants.is_empty() {
+            "done".to_string()
+        } else {
+            "bad".to_string()
+        };
+        out.push_str(&format!(
+            "  switch i64 %tag, label %{} [\n{}\n  ]\n",
+            default,
+            cases.join("\n")
+        ));
+        if !def.variants.is_empty() {
+            out.push_str("bad:\n  unreachable\n\n");
+        }
+        for (vn, fields) in def.variants.iter() {
+            out.push_str(&format!("v{}:\n", vn));
+            let mut at = 0usize;
+            for f in fields {
+                free_field(&mut out, f, at, &name, adts, owns, boxed);
+                at += cato_core::field_slot_count(f, boxed, adts);
+            }
+            out.push_str("  br label %done\n\n");
+        }
+        out.push_str("done:\n  ret void\n}\n");
+    }
+    out
+}
+
+/// Field free inside `@drop__`: `nofree_box` marks the inline-variant where
+/// the storage itself is not freed.
+fn free_field(
+    out: &mut String,
+    f: &Ty,
+    off: usize,
+    name: &str,
+    adts: &[AdtDef],
+    owns: &[bool],
+    boxed: &[bool],
+) {
+    match f {
+        Ty::Str => {
+            out.push_str(&format!(
+                "  %fp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
+                off, off, name
+            ));
+            out.push_str(&format!("  %fl{0} = load i64, ptr %fp{0}\n", off));
+            out.push_str(&format!("  %fv{0} = inttoptr i64 %fl{0} to ptr\n", off));
+            out.push_str(&format!("  call void @free(ptr %fv{})\n", off));
+        }
+        Ty::Vec(_) => {
+            out.push_str(&format!(
+                "  %vp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
+                off, off, name
+            ));
+            out.push_str(&format!("  %vl{0} = load i64, ptr %vp{0}\n", off));
+            out.push_str(&format!("  %vv{0} = inttoptr i64 %vl{0} to ptr\n", off));
+            out.push_str(&format!("  call void @free(ptr %vv{})\n", off));
+        }
+        Ty::Adt(j) if owns.get(*j as usize).copied().unwrap_or(false) => {
+            if boxed.get(*j as usize).copied().unwrap_or(false) {
+                // Owning boxed child: load the pointer, drop it.
+                out.push_str(&format!(
+                    "  %cp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
+                    off, off, name
+                ));
+                out.push_str(&format!("  %cl{0} = load i64, ptr %cp{0}\n", off));
+                out.push_str(&format!("  %cv{0} = inttoptr i64 %cl{0} to ptr\n", off));
+                out.push_str(&format!(
+                    "  call void @drop__{}(ptr %cv{})\n",
+                    adts[*j as usize].name, off
+                ));
+            } else {
+                // Owning inline child: free in place at the embedded offset.
+                out.push_str(&format!(
+                    "  %ep{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
+                    off, off, name
+                ));
+                out.push_str(&format!(
+                    "  call void @drop__{}(ptr %ep{})\n",
+                    adts[*j as usize].name, off
+                ));
+            }
+        }
+        _ => {
+            let _ = name;
         }
     }
 }

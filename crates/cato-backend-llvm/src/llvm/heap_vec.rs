@@ -448,6 +448,26 @@ pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
     }
     mdl.ensure_decl("declare void @free(ptr)");
     for name in frees {
+        // Strings and owning ADTs bind in the scalar table: free the bytes
+        // / call the drop glue directly, then fall through to the next name.
+        if let Some((reg, ty)) = c.scalar.get(name).cloned() {
+            match ty {
+                Ty::Str => {
+                    mdl.ensure_decl("declare void @free(ptr)");
+                    c.line(&format!("  call void @free(ptr {})", reg));
+                }
+                Ty::Adt(i) if mdl.adt_owns(i) => {
+                    c.line(&format!(
+                        "  call void @drop__{}(ptr {})",
+                        mdl.adts[i as usize].name, reg
+                    ));
+                }
+                _ => {}
+            }
+            if !matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
+                continue;
+            }
+        }
         let slot = if let Some((s, _)) = c.grow.get(name) {
             s.clone()
         } else if let Some((s, _)) = c.growm.get(name) {

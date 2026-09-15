@@ -13,7 +13,7 @@ pub mod opt;
 pub mod reader;
 
 pub use ast::Expr;
-pub use hir::{adt_total_slots, compute_boxed, field_slot_count, AdtDef, Defn};
+pub use hir::{adt_total_slots, compute_adt_facts, compute_boxed, field_slot_count, AdtDef, AdtFacts, Defn};
 
 /// A closure body emitted out-of-line by code backends: the calling
 /// convention is `@lambda_N(ptr env, params...) -> ret`, where `env` points
@@ -103,6 +103,10 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
         if optimize {
             opt::optimize(&mut program)?;
         }
+        // S1c: owned move-type parameters free at body exit (after all
+        // passes, so none of them rewrites the wrapper away).
+        let facts = hir::compute_adt_facts(&program.adts);
+        hir::annotate_param_frees(&mut program, &facts);
         Ok(program)
     })
 }

@@ -1,4 +1,5 @@
 use super::*;
+use crate::Program;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn is_non_copy(ty: Ty) -> bool {
@@ -306,13 +307,48 @@ impl<'a> BCheck<'a> {
 
 
 // ---------------------------------------------------------------------------
-// Phase 13: scope-exit frees
+// Phase 13 + S1c: scope-exit frees
 // ---------------------------------------------------------------------------
 
 /// Heap-owning types: bindings of these types hold a malloc'd buffer that
-/// can be released at binding scope exit.
-fn heap_owning(ty: Ty) -> bool {
-    matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set)
+/// can be released at binding scope exit. Strings and owning ADTs joined
+/// the model in S1c; their frees additionally require a fresh (allocating)
+/// value shape — see `fresh_owning_value`.
+fn heap_owning(ty: Ty, facts: &AdtFacts) -> bool {
+    match ty {
+        Ty::Vec(_) | Ty::Map | Ty::Set => true,
+        Ty::Str => true,
+        Ty::Adt(i) => facts.owns.get(i as usize).copied().unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// Does this value expression allocate a fresh heap buffer that the binding
+/// uniquely owns? Aliases (`Var`), element loads (`Get`), literals, and
+/// control-flow results are deliberately excluded — anything uncertain
+/// leaks, nothing double-frees.
+fn fresh_owning_value(value: &HExpr, facts: &AdtFacts) -> bool {
+    match value {
+        // Fresh heap strings.
+        HExpr::Subs { .. }
+        | HExpr::Split { .. }
+        | HExpr::Join { .. }
+        | HExpr::StrCat(_)
+        | HExpr::CharStr(_) => true,
+        // Fresh collections.
+        HExpr::Conj { .. }
+        | HExpr::Subvec { .. }
+        | HExpr::For { .. }
+        | HExpr::MapLit(_)
+        | HExpr::MapAssoc { .. }
+        | HExpr::SetLit(_)
+        | HExpr::SetConj { .. }
+        | HExpr::SetDisj { .. } => true,
+        // A fresh box for boxed/owning ADTs; a fresh collection from a call.
+        HExpr::Ctor { adt, .. } => facts.boxed.get(*adt as usize).copied().unwrap_or(false),
+        HExpr::Call(_, _) => true,
+        _ => false,
+    }
 }
 
 fn annotate_walk(
@@ -320,12 +356,14 @@ fn annotate_walk(
     consumed: &HashSet<String>,
     escaped: &HashSet<String>,
     shadowed: &HashSet<String>,
+    facts: &AdtFacts,
 ) {
     match e {
         HExpr::Let(binds, body, frees) => {
-            annotate_walk(body, consumed, escaped, shadowed);
-            for (name, _value, ty) in binds.iter() {
-                if heap_owning(*ty)
+            annotate_walk(body, consumed, escaped, shadowed, facts);
+            for (name, value, ty) in binds.iter() {
+                if heap_owning(*ty, facts)
+                    && fresh_owning_value(value, facts)
                     && !consumed.contains(name)
                     && !escaped.contains(name)
                     && !shadowed.contains(name)
@@ -336,13 +374,13 @@ fn annotate_walk(
         }
         HExpr::Seq(vs) => {
             for v in vs {
-                annotate_walk(v, consumed, escaped, shadowed);
+                annotate_walk(v, consumed, escaped, shadowed, facts);
             }
         }
         HExpr::If(c, t, f, _) => {
-            annotate_walk(c, consumed, escaped, shadowed);
-            annotate_walk(t, consumed, escaped, shadowed);
-            annotate_walk(f, consumed, escaped, shadowed);
+            annotate_walk(c, consumed, escaped, shadowed, facts);
+            annotate_walk(t, consumed, escaped, shadowed, facts);
+            annotate_walk(f, consumed, escaped, shadowed, facts);
         }
         _ => {}
     }
@@ -357,7 +395,7 @@ fn annotate_walk(
 /// - it is not shadowed by another binding of the same name (which would
 ///   alias the same env slot at codegen).
 /// Conservative by design: anything uncertain leaks, nothing double-frees.
-pub(crate) fn annotate_frees(body: &mut HExpr) {
+pub(crate) fn annotate_frees(body: &mut HExpr, facts: &AdtFacts) {
     let mut consumed: HashSet<String> = HashSet::new();
     let mut escaped: HashSet<String> = HashSet::new();
 
@@ -406,20 +444,6 @@ pub(crate) fn annotate_frees(body: &mut HExpr) {
         }
     }
 
-    fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
-        match e {
-            HExpr::Let(_, body, _) => tail_escape(body, escaped),
-            HExpr::Seq(vs) => {
-                if let Some(last) = vs.last() {
-                    tail_escape(last, escaped);
-                }
-            }
-            HExpr::Var(v) => {
-                escaped.insert(v.clone());
-            }
-            _ => {}
-        }
-    }
 
     let mut counts: HashMap<String, usize> = HashMap::new();
     collect(body, &mut consumed, &mut counts);
@@ -429,5 +453,56 @@ pub(crate) fn annotate_frees(body: &mut HExpr) {
         .filter(|(_, c)| *c > 1)
         .map(|(n, _)| n)
         .collect();
-    annotate_walk(body, &consumed, &escaped, &shadowed);
+    annotate_walk(body, &consumed, &escaped, &shadowed, facts);
+}
+
+/// Vars referenced in tail position of a body (the returned value chain).
+fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
+    match e {
+        HExpr::Let(_, body, _) => tail_escape(body, escaped),
+        HExpr::Seq(vs) => {
+            if let Some(last) = vs.last() {
+                tail_escape(last, escaped);
+            }
+        }
+        HExpr::Var(v) => {
+            escaped.insert(v.clone());
+        }
+        _ => {}
+    }
+}
+
+/// Free a function's owned move-type parameters at body exit: owned
+/// vectors/maps/sets and boxed ADTs whose parameter is not the returned
+/// value. String (Copy) and inline scalar-ADT params are never freed —
+/// value copies share their bytes. The wrapper is an empty-binds `Let`
+/// whose free list the backends already emit at scope exit.
+pub fn annotate_param_frees(program: &mut Program, facts: &AdtFacts) {
+    for d in program.defns.iter_mut() {
+        if d.is_extern {
+            continue;
+        }
+        let mut escaped: HashSet<String> = HashSet::new();
+        tail_escape(&d.body, &mut escaped);
+        let frees: Vec<String> = d
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(k, (n, ty))| {
+                let moves = match ty {
+                    Ty::Vec(_) | Ty::Map | Ty::Set => true,
+                    Ty::Adt(i) => facts.boxed.get(*i as usize).copied().unwrap_or(false),
+                    _ => false,
+                };
+                moves
+                    && !escaped.contains(n)
+                    && d.borrows.get(*k).copied().unwrap_or(Borrow::Owned).is_owned()
+            })
+            .map(|(_, (n, _))| n.clone())
+            .collect();
+        if !frees.is_empty() {
+            let body = std::mem::replace(&mut d.body, HExpr::ConstI64(0));
+            d.body = HExpr::Let(Vec::new(), Box::new(body), frees);
+        }
+    }
 }

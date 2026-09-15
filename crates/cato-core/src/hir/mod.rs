@@ -456,6 +456,7 @@ pub(crate) use generics::*;
 pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
+pub use ownership::annotate_param_frees;
 pub(crate) use ownership::*;
 pub(crate) use parse::*;
 pub(crate) use pipeline::*;
@@ -638,6 +639,58 @@ fn subst_field_ty(
 /// Everything off the cycle stays inline/unboxed, including ADTs that
 /// merely *contain* a boxed one (the boxed child is one pointer slot).
 pub fn compute_boxed(adts: &[AdtDef]) -> Vec<bool> {
+    compute_adt_facts(adts).boxed
+}
+
+/// Representation facts per combined-table ADT index.
+/// - `boxed`: the ADT's value is a heap pointer. True for recursive types
+///   (on an ADT-field cycle) AND for owning types — ownership requires a
+///   unique address, so owning ADTs move by pointer like boxed ones.
+/// - `owns`: the ADT owns heap memory (its box, or fields holding strings,
+///   vectors, or owning ADTs) and needs drop glue.
+pub struct AdtFacts {
+    pub boxed: Vec<bool>,
+    pub owns: Vec<bool>,
+}
+
+pub fn compute_adt_facts(adts: &[AdtDef]) -> AdtFacts {
+    let n = adts.len();
+    let mut boxed = cycle_boxed(adts);
+    // owns = boxed ∨ direct-owning-data-field ∨ ADT-field(owns) — to fixpoint.
+    let mut owns = boxed.clone();
+    for _ in 0..=n {
+        let mut changed = false;
+        for (t, d) in adts.iter().enumerate() {
+            if owns[t] {
+                continue;
+            }
+            for (_, fields) in &d.variants {
+                for f in fields {
+                    let direct = matches!(f, Ty::Str | Ty::Vec(_) | Ty::Map | Ty::Set);
+                    let via_adt = matches!(f, Ty::Adt(j) if owns.get(*j as usize).copied().unwrap_or(false));
+                    if direct || via_adt {
+                        owns[t] = true;
+                        changed = true;
+                    }
+                }
+            }
+        }
+        // A newly-owning ADT must also be boxed (unique address for its
+        // fields); and its box makes it owning — owns already covers that.
+        for b in boxed.iter_mut().zip(owns.iter()) {
+            if *b.1 && !*b.0 {
+                *b.0 = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    AdtFacts { boxed, owns }
+}
+
+fn cycle_boxed(adts: &[AdtDef]) -> Vec<bool> {
     let n = adts.len();
     // Edges: t -> u for every ADT-typed field u.
     let mut edges: Vec<Vec<u32>> = vec![Vec::new(); n];

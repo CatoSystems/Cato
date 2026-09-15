@@ -43,10 +43,37 @@ fn elide_in_body(body: &mut HExpr) -> bool {
         }
     });
 
+    // Names with an actual scope-exit free entry: only these can transfer
+    // ownership. A match binder over an owned parameter, for instance, has
+    // no entry of its own (its buffer is freed by the parent's drop glue) —
+    // eliding its clone would share a buffer that dies with the source.
+    let mut freeable: HashSet<String> = HashSet::new();
+    visit_nodes(body, &mut |n| {
+        if let HExpr::Let(_, _, frees) = n {
+            for f in frees {
+                freeable.insert(f.clone());
+            }
+        }
+    });
+    // Static literals bind no heap: aliasing them is always sound.
+    let mut static_bound: HashSet<String> = HashSet::new();
+    visit_nodes(body, &mut |n| {
+        if let HExpr::Let(binds, _, _) = n {
+            for (n2, v, _) in binds {
+                if matches!(v, HExpr::VecLit(_) | HExpr::StrLit(_)) {
+                    static_bound.insert(n2.clone());
+                }
+            }
+        }
+    });
+
     let candidates: HashSet<String> = site_counts
         .into_iter()
         .filter(|(name, sites)| {
             if *sites != 1 {
+                return false;
+            }
+            if !freeable.contains(name) && !static_bound.contains(name) {
                 return false;
             }
             // Bound exactly once (params count as zero in-body bindings) and

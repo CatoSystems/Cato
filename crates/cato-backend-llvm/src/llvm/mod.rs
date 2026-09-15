@@ -107,12 +107,25 @@ pub fn emit_module_fast(
         output.push(format!("%{} = type {{ i64, [{} x i64] }}", adt.name, n));
     }
     output.push(String::new());
+    // Heap helpers used by clone/drop glue and allocating constructors.
+    mdl.ensure_decl("declare ptr @malloc(i64)");
+    mdl.ensure_decl("declare void @free(ptr)");
+    mdl.ensure_decl("declare ptr @strdup(ptr)");
     // Deep-clone helpers for boxed (recursive) ADTs: clone must produce an
     // owning copy, so a boxed value's children are cloned recursively.
     for (i, adt) in adts.iter().enumerate() {
         if boxed[i] {
             output.push(String::new());
             output.push(emit_adt_clone_fn(adts, &boxed, i as u32));
+        }
+    }
+    // Drop glue for every owning ADT (frees transitively; boxed ADTs also
+    // free their box). Free-list reuse at the call sites keeps this cheap.
+    let owns = mdl.owns.clone();
+    for (i, adt) in adts.iter().enumerate() {
+        if owns[i] {
+            output.push(String::new());
+            output.push(emit_adt_drop_fn(adts, &owns, &boxed, i as u32));
         }
     }
 

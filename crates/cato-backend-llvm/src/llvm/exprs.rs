@@ -191,6 +191,18 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             let (r, _) = c.scalar.get(v).unwrap_or_else(|| panic!("codegen: unknown bool var {}", v));
             r.clone()
         }
+        HExpr::Let(binds, body, frees) => {
+            emit_let(binds, c, mdl, sigs);
+            let v = emit_bool(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_bool(vs.last().unwrap(), c, mdl, sigs)
+        }
         HExpr::If(cond, then, els, Ty::Bool) => emit_if_node(cond, then, els, Ty::Bool, c, mdl, sigs),
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(name, args) if name == "even?" => {
