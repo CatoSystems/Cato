@@ -222,6 +222,14 @@ pub(crate) fn lower_expect(
                 "abs" => lower_abs(items, env, ctx),
                 "min" | "max" => lower_min_max(head, items, env, ctx),
                 "match" => lower_match(items, env, ctx),
+                "loop" => lower_loop(items, env, ctx),
+                "recur" => {
+                    let args = items[1..]
+                        .iter()
+                        .map(|a| lower(a, env, ctx))
+                        .collect::<Result<_, _>>()?;
+                    Ok(HExpr::Recur(args))
+                }
                 "get" => lower_get(items, env, ctx),
                 "contains?" => {
                     if items.len() != 3 {
@@ -794,6 +802,14 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::StrOrd(..) => Ty::Bool,
         HExpr::StrNth { .. } => Ty::I64,
         HExpr::CharStr(_) => Ty::Str,
+        HExpr::Loop { binds, body, .. } => {
+            let mut child = env.clone();
+            for (n, t, _) in binds.iter() {
+                child.insert(n.clone(), *t);
+            }
+            ty_of(body, &child, ctx)
+        }
+        HExpr::Recur(_) => Ty::I64,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,
             VLit::F64(_) => Elem::F64,
@@ -1083,16 +1099,8 @@ pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExp
     let mut seen = Vec::new();
     let mut caps = Vec::new();
     collect_captures(&body, env, &pnames, &mut seen, &mut caps);
-    // Captures must be scalar or string in this slice (env slots are 8
-    // bytes; vectors are two words).
-    for (n, t) in &caps {
-        if matches!(t, Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Adt(_) | Ty::Fn(_)) {
-            return Err(format!(
-                "capturing {} of type {:?} is not supported yet (scalar or str captures only)",
-                n, t
-            ));
-        }
-    }
+    // S2: captures of any value type by move (the ownership checker
+    // already treats non-Copy captures as moves); strings stay Copy.
 
     let ptys: Vec<Ty> = params.iter().map(|(_, t)| *t).collect();
     let mut sigs = ctx.fn_sigs.borrow_mut();
@@ -1130,4 +1138,181 @@ fn ty_name_len(pitems: &[Expr], i: usize) -> usize {
     } else {
         1
     }
+}
+
+// ---------------------------------------------------------------------------
+// S2: loop / recur
+// ---------------------------------------------------------------------------
+
+/// `(loop [x :- ty init ...] body...)` — Copy-typed variables (the codegen
+/// keeps one slot per variable and re-binds via `recur`). The ascription is
+/// required: there is nothing to infer from on the first iteration.
+pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+    if items.len() < 3 {
+        return Err("loop expects (loop [x :- ty init ...] body...)".into());
+    }
+    let Expr::Vector(binds) = &items[1] else {
+        return Err("loop bindings must be a vector".into());
+    };
+    let mut parsed: Vec<(String, Ty, HExpr)> = Vec::new();
+    let mut child = env.clone();
+    let mut i = 0;
+    while i < binds.len() {
+        let Expr::LitSym(name) = &binds[i] else {
+            return Err("loop binding name must be a symbol".into());
+        };
+        let matches_sep = binds
+            .get(i + 1)
+            .map(|e| matches!(e, Expr::LitSym(s2) if s2 == ":-"))
+            .unwrap_or(false);
+        if !matches_sep {
+            return Err(format!(
+                "loop binding {} needs a type ascription (x :- ty init) — loop variables are typed, not inferred",
+                name
+            ));
+        }
+        let Some(Expr::LitSym(tyname)) = binds.get(i + 2) else {
+            return Err(format!("loop binding {} expects a type after :-", name));
+        };
+        let ty = resolve_ann_ty(&Expr::LitSym(tyname.clone()), ctx)?;
+        if !ty.is_copy_ty() {
+            return Err(format!(
+                "loop variable {} has non-Copy type {:?} — loop variables are numeric/bool/str in this slice",
+                name, ty
+            ));
+        }
+        let Some(init_form) = binds.get(i + 3) else {
+            return Err(format!("loop binding {} expects an initial value", name));
+        };
+        let init = lower_expect(init_form, &mut child, ctx, Some(ty))?;
+        let it = ty_of(&init, &child, ctx);
+        if it != ty && !(ty == Ty::F64 && it == Ty::I64) {
+            return Err(format!(
+                "loop binding {} ascribed {:?} but the initial value is {:?}",
+                name, ty, it
+            ));
+        }
+        let init = if ty == Ty::F64 && it == Ty::I64 {
+            HExpr::ConvF64(Box::new(init))
+        } else {
+            init
+        };
+        child.insert(name.clone(), ty);
+        parsed.push((name.clone(), ty, init));
+        i += 4;
+    }
+    let body = if items.len() == 3 {
+        lower(&items[2], &child, ctx)?
+    } else {
+        let mut seq = Vec::new();
+        for f in &items[2..] {
+            seq.push(lower(f, &child, ctx)?);
+        }
+        HExpr::Seq(seq)
+    };
+    let arity = parsed.len();
+    validate_recurs(&body, arity, true, false)
+        .map_err(|e| format!("loop: {}", e))?;
+    let ty = ty_of(&body, &child, ctx);
+    Ok(HExpr::Loop {
+        binds: parsed,
+        body: Box::new(body),
+        ty,
+    })
+}
+
+/// `recur` must sit in tail position of its loop: the loop body tail, an
+/// `if` branch, a `match` arm body, or a `let`/`do` tail. Crossing a
+/// closure or fused-loop boundary is an error; a nested `loop` was already
+/// validated during its own lowering.
+fn validate_recurs(
+    e: &HExpr,
+    arity: usize,
+    in_loop: bool,
+    crossed: bool,
+) -> Result<(), String> {
+    let recurred = |where_: &str| {
+        Err(format!(
+            "recur in {} is not in tail position (recur may end the loop body, an if branch, a match arm, or a let/do tail)",
+            where_
+        ))
+    };
+    match e {
+        HExpr::Recur(args) => {
+            if crossed {
+                return Err("recur cannot cross a closure boundary".into());
+            }
+            if !in_loop {
+                return recurred("this position");
+            }
+            if args.len() != arity {
+                return Err(format!(
+                    "recur expects {} argument(s) to match the loop bindings, got {}",
+                    arity,
+                    args.len()
+                ));
+            }
+            Ok(())
+        }
+        HExpr::If(c, t, f, _) => {
+            validate_recurs(c, arity, false, crossed)?;
+            validate_recurs(t, arity, in_loop, crossed)?;
+            validate_recurs(f, arity, in_loop, crossed)
+        }
+        HExpr::Let(binds, body, _) => {
+            for (_, v, _) in binds {
+                validate_recurs(v, arity, false, crossed)?;
+            }
+            validate_recurs(body, arity, in_loop, crossed)
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len().saturating_sub(1)] {
+                validate_recurs(v, arity, false, crossed)?;
+            }
+            match vs.last() {
+                Some(l) => validate_recurs(l, arity, in_loop, crossed),
+                None => Ok(()),
+            }
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            validate_recurs(scrut, arity, false, crossed)?;
+            for arm in arms {
+                validate_recurs(&arm.body, arity, in_loop, crossed)?;
+            }
+            Ok(())
+        }
+        HExpr::Loop { .. } => Ok(()), // nested loops validated themselves
+        HExpr::Closure { .. } | HExpr::Reduce(_) => {
+            let mut found = false;
+            visit_nodes_shallow(e, &mut |n| {
+                if matches!(n, HExpr::Recur(_)) {
+                    found = true;
+                }
+            });
+            if found {
+                Err("recur cannot cross a closure or fused-loop boundary".into())
+            } else {
+                Ok(())
+            }
+        }
+        other => {
+            let mut found = false;
+            visit_nodes_shallow(other, &mut |n| {
+                if matches!(n, HExpr::Recur(_)) {
+                    found = true;
+                }
+            });
+            if found {
+                recurred("this position")
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Cheap containment probe (no position tracking).
+fn visit_nodes_shallow(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
+    f(e);
+    crate::opt::walk::visit_nodes(e, f);
 }

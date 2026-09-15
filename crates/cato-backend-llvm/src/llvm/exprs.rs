@@ -40,6 +40,7 @@ pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String
 pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
         HExpr::ConstB(v) => (if *v { "true" } else { "false" }).to_string(),
+        HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::CmpW(op, a, b, ty) => {
             let av = emit_typed(a, *ty, c, mdl, sigs);
             let bv = emit_typed(b, *ty, c, mdl, sigs);
@@ -397,7 +398,15 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 let (_, l, _) = vec_arg(v, c, mdl);
                 l
             }
-            other => panic!("codegen: count of {:?}", other),
+            // Str-typed value expressions (loop results, bound heap
+            // strings): the byte length via strlen.
+            other => {
+                let p = emit_str_val(other, c, mdl, sigs);
+                mdl.declare("declare i64 @strlen(ptr)".to_string());
+                let t = c.temp();
+                c.line(&format!("  {} = call i64 @strlen(ptr {})", t, p));
+                t
+            }
         },
         HExpr::Call(name, args) => {
             let v = call_user(name, args, c, mdl, sigs);
@@ -483,6 +492,8 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
             t
         }
+        HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
+        HExpr::Recur(_) => panic!("codegen: recur outside loop (validation bug)"),
         HExpr::StrNth { s, idx } => {
             // Bounds-checked byte load, branchless: clamp the index with a
             // select before the GEP so out-of-range reads (and negatives)

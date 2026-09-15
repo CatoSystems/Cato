@@ -107,6 +107,8 @@ pub(crate) fn emit_str_val(
             let p = emit_subs(s, start, end, c, mdl, sigs);
             p
         }
+        HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
+        HExpr::StrCat(args) => emit_strcat(args, c, mdl, sigs),
         HExpr::CharStr(inner) => {
             // A fresh 2-byte allocation: the character byte plus NUL. The
             // value is the low byte of the operand (i8 trunc semantics).

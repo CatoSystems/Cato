@@ -43,8 +43,16 @@ pub(crate) fn lower_if(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, St
     }
     let then = lower(&items[2], env, ctx)?;
     let els = lower(&items[3], env, ctx)?;
-    let tt = ty_of(&then, env, ctx);
-    let et = ty_of(&els, env, ctx);
+    let mut tt = ty_of(&then, env, ctx);
+    let mut et = ty_of(&els, env, ctx);
+    // A `recur` branch carries no type of its own: it takes the other
+    // branch's type (validation guarantees recur is the branch tail).
+    if matches!(then, HExpr::Recur(_)) {
+        tt = et;
+    }
+    if matches!(els, HExpr::Recur(_)) {
+        et = tt;
+    }
     if tt != et && tt != Ty::F64 && et != Ty::F64 {
         return Err(format!(
             "if branches must be the same type, got {:?} and {:?}",

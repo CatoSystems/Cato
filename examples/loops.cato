@@ -1,0 +1,32 @@
+; loops.cato — S2 reference program: loop/recur + rich closures.
+;
+; `loop` binds Copy-typed variables; `recur` re-binds them and jumps to the
+; loop head (tail position only). Closures capture any value type by move —
+; the closure below captures a vector.
+
+(defn fib [n :- i64] :- i64
+  (loop [a :- i64 0 b :- i64 1 i :- i64 0]
+    (if (< i n)
+      (recur b (+ a b) (+ i 1))
+      a)))
+
+; Iterative string building: strings are Copy loop variables.
+(defn repeat-str [s :- str n :- i64] :- str
+  (loop [acc :- str "" i :- i64 0]
+    (if (< i n)
+      (recur (str acc s) (+ i 1))
+      acc)))
+
+; A closure capturing a vector by move.
+(defn total-with [xs :- (Vector i64) extra :- i64] :- i64
+  (let [add-total (fn [base :- i64] (+ base (+ (get xs 0) (get xs 1))))]
+    (add-total extra)))
+
+(defn main []
+  (let [xs (vec-i64 10 20 30)]
+    (do
+      (print (fib 10))                       ; 55
+      (print (fib 20))                       ; 6765
+      (print-string (repeat-str "ab" 3))     ; ababab (+ newline)
+      (print (total-with xs 5))              ; 35
+      (print (count (repeat-str "z" 7))))))  ; 7

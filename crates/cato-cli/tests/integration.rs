@@ -255,6 +255,13 @@ fn compiles_trees_to_expected_output() {
 }
 
 #[test]
+fn compiles_loops_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/loops.cato")).unwrap();
+    assert_eq!(compile_and_run("loops", &src), "55\n6765\nababab\n35\n7\n");
+}
+
+#[test]
 fn compiles_options_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/options.cato")).unwrap();

@@ -14,6 +14,9 @@ pub(crate) struct FnCtx {
     pub(crate) grow: HashMap<String, (String, Elem)>,
     /// Growable map bindings: name -> header slot (entries are 16 bytes).
     pub(crate) growm: HashMap<String, (String, Ty)>,
+    /// Innermost `loop` (S2): variable slots `(name, alloca, ty)` and the
+    /// head block label that `recur` branches back to.
+    pub(crate) loop_frame: Option<(Vec<(String, String, Ty)>, String)>,
 }
 
 impl FnCtx {
@@ -28,6 +31,7 @@ impl FnCtx {
             vecs: HashMap::new(),
             grow: HashMap::new(),
             growm: HashMap::new(),
+            loop_frame: None,
         }
     }
     pub(crate) fn temp(&mut self) -> String {
@@ -59,6 +63,7 @@ impl FnCtx {
             vecs: self.vecs.clone(),
             grow: self.grow.clone(),
             growm: self.growm.clone(),
+            loop_frame: self.loop_frame.clone(),
         }
     }
     /// Splice hoisted entry allocas directly after the `entry:` label.

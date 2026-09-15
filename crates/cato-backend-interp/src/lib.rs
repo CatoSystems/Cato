@@ -78,6 +78,9 @@ fn wrap(v: i64, ty: cato_core::hir::Ty) -> i64 {
 pub struct Interpreter<'p> {
     defns: HashMap<String, &'p cato_core::Defn>,
     out: String,
+    /// Stash for the innermost loop's `recur` arguments (S2). Validation
+    /// guarantees the nearest loop is the target, so one slot suffices.
+    recur_sink: Option<Vec<Value>>,
 }
 
 type R<T> = Result<T, String>;
@@ -91,6 +94,7 @@ impl<'p> Interpreter<'p> {
                 .map(|d| (d.name.clone(), d))
                 .collect(),
             out: String::new(),
+            recur_sink: None,
         }
     }
 
@@ -559,6 +563,37 @@ impl<'p> Interpreter<'p> {
                 let cv = int_of(&self.eval(c, env)?);
                 // Low byte only, mirroring LLVM's trunc to i8.
                 Value::Str(Rc::new(((cv as u8) as char).to_string()))
+            }
+            HExpr::Loop { binds, body, .. } => {
+                // Initial bindings, then iterate: recur re-binds and jumps
+                // to the head; a completing body value ends the loop.
+                let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
+                for (n, _, init) in binds {
+                    let v = self.eval(init, env)?;
+                    env.insert(n.clone(), v);
+                }
+                loop {
+                    self.recur_sink = None;
+                    let v = self.eval(body, env)?;
+                    match self.recur_sink.take() {
+                        Some(args) => {
+                            for (n, a) in names.iter().zip(args) {
+                                env.insert(n.clone(), a);
+                            }
+                        }
+                        None => return Ok(v),
+                    }
+                }
+            }
+            HExpr::Recur(args) => {
+                let mut out = Vec::new();
+                for a in args {
+                    out.push(self.eval(a, env)?);
+                }
+                self.recur_sink = Some(out);
+                // Sentinel: validation guarantees the enclosing loop reads
+                // the sink before anything else observes this value.
+                return Ok(Value::Int(0));
             }
             HExpr::Get { src, idx, default, ty } => {
                 let _ = ty;

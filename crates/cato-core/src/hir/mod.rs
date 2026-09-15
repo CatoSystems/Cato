@@ -78,6 +78,12 @@ impl Ty {
         self.is_int() || self.is_float()
     }
 
+    /// Copy semantics: assignment/argument passing copies instead of moves.
+    /// Strings are Copy (aliasing); boxed ADTs are not (unique owner).
+    pub fn is_copy_ty(self) -> bool {
+        !matches!(self, Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_) | Ty::Param(_))
+    }
+
     /// Bits of an integer width (unsigned types share the signed width).
     pub fn int_bits(self) -> u32 {
         match self {
@@ -243,6 +249,16 @@ pub enum HExpr {
     /// `(char->str c)` — a fresh one-byte heap string of c's low byte.
     /// Must be bound with `let` (allocates, like `subs`).
     CharStr(Box<HExpr>),
+    /// `(loop [x :- ty init ...] body)` — Copy-typed variables, re-bound by
+    /// `recur`; the loop's value is the body's completing value.
+    Loop {
+        binds: Vec<(String, Ty, HExpr)>,
+        body: Box<HExpr>,
+        ty: Ty,
+    },
+    /// `(recur e ...)` — re-bind the innermost loop's variables and jump to
+    /// its head. Validated tail-only at lowering.
+    Recur(Vec<HExpr>),
     Reduce(Box<HReduce>),
     /// `(fn [x :- ty] body)` — a closure value capturing free locals by
     /// value. The body stays in the node (the interpreter evaluates it

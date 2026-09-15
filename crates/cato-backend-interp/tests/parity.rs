@@ -10,6 +10,7 @@ const EXAMPLES: &[&str] = &[
     "generic",
     "heap",
     "hamt",
+    "loops",
     "maps",
     "normalize",
     "options",

@@ -186,6 +186,8 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         } else {
             let ret_ll = if defn.ret == Ty::Bool {
                 "i1"
+            } else if defn.ret == Ty::Str {
+                "ptr"
             } else if defn.ret.is_int() || defn.ret.is_float() {
                 Mdl::ll_scalar(defn.ret)
             } else {
@@ -201,6 +203,10 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         "i1".to_string()
     } else if defn.ret == Ty::F64 {
         "double".to_string()
+    } else if defn.ret == Ty::Str {
+        "ptr".to_string()
+    } else if defn.ret == Ty::F32 {
+        "float".to_string()
     } else if let Ty::Adt(i) = defn.ret {
         if mdl.adt_boxed(i) {
             "ptr".to_string()

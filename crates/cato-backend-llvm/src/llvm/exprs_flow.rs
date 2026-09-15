@@ -5,6 +5,7 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
         HExpr::ConstF64(v) => llvm_f64(*v),
         HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
+        HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
             let v = emit_float(body, c, mdl, sigs);
@@ -83,10 +84,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             v
         }
         HExpr::Seq(vs) => {
-            for v in vs {
+            for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
             }
-            "0.0".to_string()
+            emit_float(vs.last().unwrap(), c, mdl, sigs)
         }
         HExpr::ConstI64(v) => {
             let t = c.temp();
@@ -128,5 +129,181 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             "0.0".to_string()
         }
         other => panic!("codegen: unsupported node in f64 context: {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S2: loop / recur — general while-loop codegen
+// ---------------------------------------------------------------------------
+
+/// The LLVM type of a loop variable slot (Copy types only).
+fn loop_slot_ty(ty: Ty) -> &'static str {
+    match ty {
+        Ty::F64 => "double",
+        Ty::F32 => "float",
+        Ty::Bool => "i1",
+        Ty::Str => "ptr",
+        t if t.is_int() => Mdl::ll_scalar(t),
+        o => panic!("codegen: loop variable of non-Copy type {:?}", o),
+    }
+}
+
+/// `(loop [x :- ty init ...] body)`: one alloca per variable, inits stored
+/// before the head; each iteration loads fresh registers at the head;
+/// `recur` stores its arguments and branches back; the completing path
+/// branches to the merge block.
+pub(crate) fn emit_loop_node(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let HExpr::Loop { binds, body, ty } = e else {
+        panic!("codegen: emit_loop_node on non-loop")
+    };
+    // Slots hoisted to the entry prelude: the loop may execute any number
+    // of times, and allocas in loops would stack up.
+    let mut slots: Vec<(String, String, Ty)> = Vec::new();
+    for (name, ty, init) in binds {
+        let llt = loop_slot_ty(*ty);
+        let slot = c.temp();
+        c.prelude
+            .push(format!("  {} = alloca {}, align 8", slot, llt));
+        let v = emit_typed(init, *ty, c, mdl, sigs);
+        c.line(&format!("  store {} {}, ptr {}, align 8", llt, v, slot));
+        slots.push((name.clone(), slot, *ty));
+    }
+    let head = c.block_name();
+    c.line(&format!("  br label %{}", head));
+    let l = c.open(&head);
+    c.line(&format!("{}:", l));
+    // Each iteration reads the variables into fresh registers.
+    for (name, slot, ty) in &slots {
+        let r = c.temp();
+        c.line(&format!(
+            "  {} = load {}, ptr {}, align 8",
+            r,
+            loop_slot_ty(*ty),
+            slot
+        ));
+        c.scalar.insert(name.clone(), (r, *ty));
+    }
+    let saved = c.loop_frame.take();
+    c.loop_frame = Some((slots, head));
+    let completing = emit_loop_tail(body, *ty, c, mdl, sigs);
+    c.loop_frame = saved;
+    let after = c.block_name();
+    match completing {
+        Some(v) => {
+            c.line(&format!("  br label %{}", after));
+            let l = c.open(&after);
+            c.line(&format!("{}:", l));
+            // Single completing path chain: the value dominates the merge.
+            v
+        }
+        None => {
+            // Every path recurs: the merge is unreachable.
+            let l = c.open(&after);
+            c.line(&format!("{}:", l));
+            c.line("  unreachable");
+            "undef".to_string()
+        }
+    }
+}
+
+/// Emit a loop body in tail position. `Some(register)` = the path completes
+/// with this value (no terminator emitted; the caller branches to its
+/// merge). `None` = every path in this expression already branched back to
+/// the loop head.
+fn emit_loop_tail(
+    e: &HExpr,
+    ty: Ty,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> Option<String> {
+    let (slots, head) = c.loop_frame.clone().expect("codegen: loop tail outside loop");
+    match e {
+        HExpr::Recur(args) => {
+            for (a, (name, slot, vty)) in args.iter().zip(slots.iter()) {
+                let _ = name;
+                let v = emit_typed(a, *vty, c, mdl, sigs);
+                c.line(&format!(
+                    "  store {} {}, ptr {}, align 8",
+                    loop_slot_ty(*vty),
+                    v,
+                    slot
+                ));
+            }
+            c.line(&format!("  br label %{}", head));
+            None
+        }
+        HExpr::If(cond, then, els, ity) => {
+            let lc = emit_bool(cond, c, mdl, sigs);
+            let bt = c.block_name();
+            let be = c.block_name();
+            let bm = c.block_name();
+            c.line(&format!("  br i1 {}, label %{}, label %{}", lc, bt, be));
+            let l = c.open(&bt);
+            c.line(&format!("{}:", l));
+            let tv = emit_loop_tail(then, *ity, c, mdl, sigs);
+            let tp = if tv.is_some() {
+                c.line(&format!("  br label %{}", bm));
+                Some(c.cur.clone())
+            } else {
+                None
+            };
+            let l = c.open(&be);
+            c.line(&format!("{}:", l));
+            let ev = emit_loop_tail(els, *ity, c, mdl, sigs);
+            let ep = if ev.is_some() {
+                c.line(&format!("  br label %{}", bm));
+                Some(c.cur.clone())
+            } else {
+                None
+            };
+            let l = c.open(&bm);
+            c.line(&format!("{}:", l));
+            match (tv, ev) {
+                (Some(tv), Some(ev)) => {
+                    let lty = match ity {
+                        Ty::F64 => "double",
+                        Ty::F32 => "float",
+                        Ty::Bool => "i1",
+                        Ty::Str => "ptr",
+                        t if t.is_int() => Mdl::ll_scalar(*t),
+                        o => panic!("codegen: loop if on {:?}", o),
+                    };
+                    let r = c.temp();
+                    c.line(&format!(
+                        "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
+                        r, lty, tv, tp.unwrap(), ev, ep.unwrap()
+                    ));
+                    Some(r)
+                }
+                (Some(v), None) | (None, Some(v)) => Some(v),
+                (None, None) => {
+                    c.line("  unreachable");
+                    None
+                }
+            }
+        }
+        HExpr::Let(binds, body, frees) => {
+            emit_let(binds, c, mdl, sigs);
+            let v = emit_loop_tail(body, ty, c, mdl, sigs);
+            // Scope-exit frees run only on the completing path — a `recur`
+            // leaves this scope and must not release anything.
+            if v.is_some() {
+                emit_let_frees(frees, c, mdl);
+            }
+            v
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_loop_tail(vs.last().unwrap(), ty, c, mdl, sigs)
+        }
+        other => Some(emit_typed(other, ty, c, mdl, sigs)),
     }
 }

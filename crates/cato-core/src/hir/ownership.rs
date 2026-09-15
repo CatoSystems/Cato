@@ -3,7 +3,9 @@ use crate::Program;
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn is_non_copy(ty: Ty) -> bool {
-    matches!(ty, Ty::Adt(_) | Ty::Vec(_))
+    // Closures stay Copy: their env allocation lives until process exit
+    // (no frees), so header copies aliasing it are observationally sound.
+    matches!(ty, Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,6 +83,35 @@ impl<'a> BCheck<'a> {
             HExpr::StrNth { s, idx } => {
                 self.check(s, tys, st);
                 self.check(idx, tys, st);
+            }
+            // Loop variables are Copy in this slice: no moves, no frees.
+            // Recur arguments are non-moving reads of Copy values, so the
+            // once-per-body check stays sound across iterations.
+            HExpr::Loop { binds, body, .. } => {
+                let mut shadowed_vars: Vec<(String, Option<VState>)> = Vec::new();
+                for (n, ty, init) in binds.iter() {
+                    self.check(init, tys, st);
+                    shadowed_vars.push((n.clone(), st.get(n).copied()));
+                    tys.insert(n.clone(), *ty);
+                    st.insert(n.clone(), VState::Owned);
+                }
+                self.check(body, tys, st);
+                for (n, prev) in shadowed_vars.iter().rev() {
+                    match prev {
+                        Some(v) => {
+                            st.insert(n.clone(), *v);
+                        }
+                        None => {
+                            tys.remove(n);
+                            st.remove(n);
+                        }
+                    }
+                }
+            }
+            HExpr::Recur(args) => {
+                for a in args {
+                    self.check(a, tys, st);
+                }
             }
             HExpr::StrCat(args) => {
                 for a in args {
@@ -382,6 +413,17 @@ fn annotate_walk(
             annotate_walk(t, consumed, escaped, shadowed, facts);
             annotate_walk(f, consumed, escaped, shadowed, facts);
         }
+        HExpr::Loop { binds, body, .. } => {
+            for (_, _, e2) in binds {
+                annotate_walk(e2, consumed, escaped, shadowed, facts);
+            }
+            annotate_walk(body, consumed, escaped, shadowed, facts);
+        }
+        HExpr::Recur(args) => {
+            for a in args {
+                annotate_walk(a, consumed, escaped, shadowed, facts);
+            }
+        }
         _ => {}
     }
 }
@@ -435,6 +477,17 @@ pub(crate) fn annotate_frees(body: &mut HExpr, facts: &AdtFacts) {
                 collect(c, consumed, shadowed);
                 collect(t, consumed, shadowed);
                 collect(f, consumed, shadowed);
+            }
+            HExpr::Loop { binds, body, .. } => {
+                for (_, _, e) in binds {
+                    collect(e, consumed, shadowed);
+                }
+                collect(body, consumed, shadowed);
+            }
+            HExpr::Recur(args) => {
+                for a in args {
+                    collect(a, consumed, shadowed);
+                }
             }
             HExpr::And(c, t) | HExpr::Or(c, t) => {
                 collect(c, consumed, shadowed);

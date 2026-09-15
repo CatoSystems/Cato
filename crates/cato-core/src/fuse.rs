@@ -41,6 +41,15 @@ pub fn check(h: &HExpr) -> HExpr {
             idx: Box::new(check(idx)),
         },
         HExpr::CharStr(c) => HExpr::CharStr(Box::new(check(c))),
+        HExpr::Loop { binds, body, ty } => HExpr::Loop {
+            binds: binds
+                .iter()
+                .map(|(n, t, e)| (n.clone(), *t, check(e)))
+                .collect(),
+            body: Box::new(check(body)),
+            ty: *ty,
+        },
+        HExpr::Recur(args) => HExpr::Recur(args.iter().map(check).collect()),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::If(c, t, e, ty) => HExpr::If(

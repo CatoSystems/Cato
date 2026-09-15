@@ -18,6 +18,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         | HExpr::StrLit(_) => false,
         HExpr::StrNth { s, idx } => has_ctl(s) || has_ctl(idx),
         HExpr::CharStr(c) => has_ctl(c),
+        HExpr::Loop { .. } | HExpr::Recur(_) => true,
         HExpr::Conj { .. } => true,
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true,

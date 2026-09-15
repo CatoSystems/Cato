@@ -29,6 +29,25 @@ pub(crate) fn rewrite_body(
             loops,
             sigs,
         )?)),
+        HExpr::Loop { binds, body, ty } => HExpr::Loop {
+            binds: binds
+                .iter()
+                .map(|(n, t, e2)| {
+                    Ok((
+                        n.clone(),
+                        *t,
+                        rewrite_body(e2, fnprefix, params, idmap, loops, sigs)?,
+                    ))
+                })
+                .collect::<Result<Vec<(String, Ty, HExpr)>, String>>()?,
+            body: Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
+            ty: *ty,
+        },
+        HExpr::Recur(args) => HExpr::Recur(
+            args.iter()
+                .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
+                .collect::<Result<Vec<HExpr>, String>>()?,
+        ),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::Bin(op, a, b) => HExpr::Bin(

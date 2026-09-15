@@ -744,9 +744,13 @@ fn closures_capture_and_move() {
     assert!(build(&read_all(
         "(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))"
     ).unwrap()).is_ok());
-    // Non-Copy captures are not in the slice yet.
+    // S2: non-Copy captures are legal and move the source binding —
+    // using the vector after the capture is rejected.
     assert!(build(&read_all(
         "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0)))] (f 5)))"
+    ).unwrap()).is_ok());
+    assert!(build(&read_all(
+        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0)))] (do (f 5) (count v))))"
     ).unwrap()).is_err());
     // Capturing moves a non-Copy binding: use after capture is rejected.
     assert!(build(&read_all(

@@ -165,13 +165,13 @@ fn inlines_small_functions_and_folds_through() {
 #[test]
 fn does_not_inline_recursion() {
     let src = r#"
-(defn loop [n :- i64] (if (< n 1) 0 (loop (- n 1))))
-(defn main [] (print-i64 (loop 3)))
+(defn count-down [n :- i64] (if (< n 1) 0 (count-down (- n 1))))
+(defn main [] (print-i64 (count-down 3)))
 "#;
     let p = compile_opt(src, true);
-    let loop_fn = p.defns.iter().find(|d| d.name == "loop").unwrap();
+    let loop_fn = p.defns.iter().find(|d| d.name == "count-down").unwrap();
     assert!(
-        cato_core::opt::walk::calls_name(&loop_fn.body, "loop"),
+        cato_core::opt::walk::calls_name(&loop_fn.body, "count-down"),
         "recursive callee must not be inlined away"
     );
 }
