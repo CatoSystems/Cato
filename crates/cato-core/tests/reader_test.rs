@@ -29,6 +29,18 @@ fn reads_bool_literals() {
 }
 
 #[test]
+fn unescapes_strings_sequentially() {
+    expr_eq("\"a\\tb\"", Expr::LitStr("a\tb".to_string()));
+    expr_eq("\"a\\\\nb\"", Expr::LitStr("a\\nb".to_string()));
+    expr_eq("\"a\\\"b\"", Expr::LitStr("a\"b".to_string()));
+    expr_eq("\"a\\nb\"", Expr::LitStr("a\nb".to_string()));
+    // Unknown escapes keep both characters verbatim.
+    expr_eq("\"a\\db\"", Expr::LitStr("a\\db".to_string()));
+    // A trailing backslash survives (lenient).
+    expr_eq("\"a\\\\\"", Expr::LitStr("a\\".to_string()));
+}
+
+#[test]
 fn reads_sym_special() {
     expr_eq("even?", Expr::LitSym("even?".to_string()));
     expr_eq("+", Expr::LitSym("+".to_string()));
