@@ -75,7 +75,7 @@ impl<'a> BCheck<'a> {
     ) {
         match e {
             HExpr::Var(v) => self.use_var(v, tys, st),
-            HExpr::StrLit(_) | HExpr::StrCmp(..) | HExpr::ConstB(..) => {}
+            HExpr::StrLit(_) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::ConstB(..) => {}
             HExpr::StrCat(args) => {
                 for a in args {
                     self.check(a, tys, st);

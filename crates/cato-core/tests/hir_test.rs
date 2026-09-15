@@ -569,11 +569,17 @@ fn string_literals_and_equality() {
 }
 
 #[test]
-fn strings_reject_arithmetic_and_ordering() {
+fn strings_reject_arithmetic_but_order() {
     let err = build_err("(defn f [s :- str] :- str (+ s s))");
     assert!(err.contains("cannot be used in arithmetic"), "got: {}", err);
-    let err = build_err("(defn f [a :- str b :- str] :- bool (< a b))");
-    assert!(err.contains("strings support only"), "got: {}", err);
+    // S0: string ordering is legal (strcmp sign test) — it lowers to StrOrd.
+    let exprs = read_all("(defn f [a :- str b :- str] :- bool (< a b))").unwrap();
+    let fns = build(&exprs).unwrap();
+    let f = fns.iter().find(|d| d.name == "f").unwrap();
+    assert!(matches!(f.body, HExpr::StrOrd(..)), "got: {:?}", f.body);
+    // Mixed str/scalar comparisons remain errors.
+    let err = build_err("(defn f [a :- str] :- bool (< a 1))");
+    assert!(err.contains("mixed widths") || !err.is_empty(), "got: {}", err);
 }
 
 #[test]

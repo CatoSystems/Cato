@@ -73,6 +73,33 @@ fn interp_evaluates_bool_literals() {
 }
 
 #[test]
+fn interp_orders_strings() {
+    let src = r#"
+(defn main []
+  (let [a "apple"
+        b "banana"]
+    (do
+      (print (< a b))
+      (print (> a b))
+      (print (<= "apple" "apple"))
+      (print (>= a b))
+      (print (< "b" "apple"))
+      (print (if (< a b) "a-first" "b-first"))))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "1\n0\n1\n0\n0\na-first\n");
+}
+
+#[test]
+fn string_ordering_rejects_mixed_operands() {
+    let src = r#"
+(defn main [] (print (< "a" 1)))
+"#;
+    assert!(cato_core::compile_to_program(src).is_err());
+}
+
+#[test]
 fn interp_evaluates_sets_strings_and_closures() {
     let src = r#"
 (defn main []

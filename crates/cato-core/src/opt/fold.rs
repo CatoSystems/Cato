@@ -225,6 +225,10 @@ fn fold_one(e: HExpr) -> HExpr {
             (HExpr::StrLit(x), HExpr::StrLit(y)) => const_bool_node((x == y) == p),
             _ => HExpr::StrCmp(p, a, b),
         },
+        HExpr::StrOrd(op, a, b) => match (&*a, &*b) {
+            (HExpr::StrLit(x), HExpr::StrLit(y)) => const_bool_node(const_str_ord(op, x, y)),
+            _ => HExpr::StrOrd(op, a, b),
+        },
         HExpr::SetContains { s, x } => match (&*s, as_i64(&x)) {
             (HExpr::SetLit(vs), Some(k)) => {
                 // Set literals are sorted and deduped at lowering.
@@ -382,6 +386,16 @@ fn apply_cmp(op: CmpOp, eq: bool, lt: bool, gt: bool, le: bool, ge: bool) -> boo
     }
 }
 
+/// Byte-wise string order (the strcmp sign test both backends implement);
+/// Eq/Ne never reach a StrOrd node but are folded anyway for totality.
+fn const_str_ord(op: CmpOp, x: &str, y: &str) -> bool {
+    match x.cmp(y) {
+        std::cmp::Ordering::Equal => matches!(op, CmpOp::Eq | CmpOp::Le | CmpOp::Ge),
+        std::cmp::Ordering::Less => matches!(op, CmpOp::Lt | CmpOp::Le),
+        std::cmp::Ordering::Greater => matches!(op, CmpOp::Gt | CmpOp::Ge),
+    }
+}
+
 /// Normalize a (possibly out-of-range) i64 into `ty`'s value range; mirrors
 /// the interpreter's `wrap` (LLVM trunc/sext semantics).
 fn wrap_bits(v: i64, ty: Ty) -> i64 {
@@ -458,6 +472,10 @@ fn const_bool(e: &HExpr) -> Option<bool> {
         HExpr::StrCmp(p, a, b) => {
             let (x, y) = (as_str(a)?, as_str(b)?);
             Some((x == y) == *p)
+        }
+        HExpr::StrOrd(op, a, b) => {
+            let (x, y) = (as_str(a)?, as_str(b)?);
+            Some(const_str_ord(*op, x, y))
         }
         HExpr::SetContains { s, x } => {
             let k = as_i64(x)?;

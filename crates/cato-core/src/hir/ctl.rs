@@ -13,8 +13,9 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
             has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
         }
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
-        HExpr::Cmp(..) | HExpr::StrCmp(..) | HExpr::Var(_) | HExpr::ConstI64(_)
-        | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) | HExpr::StrLit(_) => false,
+        HExpr::Cmp(..) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::Var(_)
+        | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_)
+        | HExpr::StrLit(_) => false,
         HExpr::Conj { .. } => true,
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true,

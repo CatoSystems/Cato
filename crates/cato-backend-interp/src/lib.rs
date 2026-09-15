@@ -516,6 +516,28 @@ impl<'p> Interpreter<'p> {
                     _ => panic!("interp: string compare on non-strings"),
                 }
             }
+            HExpr::StrOrd(op, a, b) => {
+                let x = self.eval(a, env)?;
+                let y = self.eval(b, env)?;
+                match (x, y) {
+                    (Value::Str(a), Value::Str(b)) => {
+                        // Byte-wise order; matches strcmp's sign test.
+                        let ord = a.as_bytes().cmp(b.as_bytes());
+                        use std::cmp::Ordering::*;
+                        let r = match op {
+                            cato_core::hir::CmpOp::Lt => ord == Less,
+                            cato_core::hir::CmpOp::Gt => ord == Greater,
+                            cato_core::hir::CmpOp::Le => ord != Greater,
+                            cato_core::hir::CmpOp::Ge => ord != Less,
+                            cato_core::hir::CmpOp::Eq | cato_core::hir::CmpOp::Ne => {
+                                panic!("interp: StrOrd carries an ordering op")
+                            }
+                        };
+                        Value::Bool(r)
+                    }
+                    _ => panic!("interp: string compare on non-strings"),
+                }
+            }
             HExpr::Get { src, idx, default, ty } => {
                 let _ = ty;
                 let sv = self.eval(src, env)?;

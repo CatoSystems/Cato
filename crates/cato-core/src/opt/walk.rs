@@ -72,6 +72,9 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         HExpr::StrCmp(p, a, b) => {
             HExpr::StrCmp(p, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
         }
+        HExpr::StrOrd(op, a, b) => {
+            HExpr::StrOrd(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
+        }
         HExpr::MapLit(pairs) => HExpr::MapLit(
             pairs
                 .into_iter()
@@ -360,6 +363,10 @@ fn count_walk(
         | HExpr::Clone(a)
         | HExpr::DropStmt(a) => count_walk(a, targets, shadowed, counts),
         HExpr::StrCmp(_, a, b) => {
+            count_walk(a, targets, shadowed, counts);
+            count_walk(b, targets, shadowed, counts);
+        }
+        HExpr::StrOrd(_, a, b) => {
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
@@ -707,6 +714,7 @@ pub fn is_drop_safe(e: &HExpr) -> bool {
         | HExpr::Max(..)
         | HExpr::Count(_)
         | HExpr::StrCmp(..)
+        | HExpr::StrOrd(..)
         | HExpr::Clone(_)
         | HExpr::Get { .. }
         | HExpr::MapLit(_)
@@ -755,6 +763,7 @@ pub fn is_dup_safe(e: &HExpr) -> bool {
         | HExpr::Max(..)
         | HExpr::Count(_)
         | HExpr::StrCmp(..)
+        | HExpr::StrOrd(..)
         | HExpr::Get { .. } => true,
         HExpr::And(a, b) | HExpr::Or(a, b) => is_dup_safe(a) && is_dup_safe(b),
         HExpr::StrCat(args) => args.iter().all(is_dup_safe),
@@ -859,6 +868,10 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
         | HExpr::Clone(a)
         | HExpr::DropStmt(a) => visit_nodes(a, f),
         HExpr::StrCmp(_, a, b) => {
+            visit_nodes(a, f);
+            visit_nodes(b, f);
+        }
+        HExpr::StrOrd(_, a, b) => {
             visit_nodes(a, f);
             visit_nodes(b, f);
         }

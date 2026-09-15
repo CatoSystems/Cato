@@ -90,6 +90,25 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             ));
             z
         }
+        HExpr::StrOrd(op, a, b) => {
+            // Byte-wise order via the strcmp sign: the i32 result compares
+            // against zero (signed).
+            let av = emit_str_val(a, c, mdl, sigs);
+            let bv = emit_str_val(b, c, mdl, sigs);
+            mdl.declare("declare i32 @strcmp(ptr, ptr)".to_string());
+            let t = c.temp();
+            c.line(&format!("  {} = call i32 @strcmp(ptr {}, ptr {})", t, av, bv));
+            let cc = match op {
+                CmpOp::Lt => "slt",
+                CmpOp::Gt => "sgt",
+                CmpOp::Le => "sle",
+                CmpOp::Ge => "sge",
+                CmpOp::Eq | CmpOp::Ne => unreachable!("StrOrd carries an ordering op"),
+            };
+            let z = c.temp();
+            c.line(&format!("  {} = icmp {} i32 {}, 0", z, cc, t));
+            z
+        }
         HExpr::SetContains { .. } => emit_set_contains(e, c, mdl, sigs),
         HExpr::Cmp(op, a, b, is_f64) => {
             if *is_f64 {
@@ -218,6 +237,8 @@ pub(crate) fn emit_if_node(
         Ty::F64 => "double".to_string(),
         Ty::Bool => "i1".to_string(),
         Ty::Adt(_) => "ptr".to_string(),
+        Ty::Str => "ptr".to_string(),
+        Ty::F32 => "float".to_string(),
         _ => "i64".to_string(),
     };
     c.line(&format!(
@@ -451,7 +472,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             t
         }
         HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..)
-        | HExpr::StrCmp(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
+        | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
         | HExpr::ConstB(..) => {
             // Bool value in i64 position: widen 0/1 (e.g. print-i64 of a test).
             let b = emit_bool(e, c, mdl, sigs);

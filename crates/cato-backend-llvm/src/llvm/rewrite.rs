@@ -12,6 +12,11 @@ pub(crate) fn rewrite_body(
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
         HExpr::ConstB(v) => HExpr::ConstB(*v),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
+        HExpr::StrOrd(op, a, b) => HExpr::StrOrd(
+            *op,
+            Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
+            Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
+        ),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::Bin(op, a, b) => HExpr::Bin(

@@ -107,6 +107,19 @@ pub(crate) fn emit_str_val(
             let p = emit_subs(s, start, end, c, mdl, sigs);
             p
         }
+        HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
+        HExpr::Let(binds, body, frees) => {
+            emit_let(binds, c, mdl, sigs);
+            let v = emit_str_val(body, c, mdl, sigs);
+            emit_let_frees(frees, c, mdl);
+            v
+        }
+        HExpr::Seq(vs) => {
+            for v in &vs[..vs.len() - 1] {
+                emit_stmt(v, c, mdl, sigs);
+            }
+            emit_str_val(vs.last().unwrap(), c, mdl, sigs)
+        }
         HExpr::Join { sep, xs } => emit_join(sep, xs, c, mdl, sigs),
         HExpr::Get {
             src,

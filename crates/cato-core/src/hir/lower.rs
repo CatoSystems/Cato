@@ -630,6 +630,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Split { .. } => Ty::Vec(Elem::Str),
         HExpr::Join { .. } => Ty::Str,
         HExpr::StrCmp(..) => Ty::Bool,
+        HExpr::StrOrd(..) => Ty::Bool,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,
             VLit::F64(_) => Elem::F64,
@@ -792,6 +793,10 @@ fn collect_captures(
             collect_captures(body, env, params, seen, caps);
         }
         HExpr::StrCmp(_, a, b) => {
+            collect_captures(a, env, params, seen, caps);
+            collect_captures(b, env, params, seen, caps);
+        }
+        HExpr::StrOrd(_, a, b) => {
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }

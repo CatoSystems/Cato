@@ -215,6 +215,8 @@ pub enum HExpr {
     /// `(= s1 s2)` on strings: content comparison via the runtime.
     /// The bool is the expected polarity (true for `=`).
     StrCmp(bool, Box<HExpr>, Box<HExpr>),
+    /// `(< s1 s2)` (and `>`/`<=`/`>=`) on strings: `strcmp` sign test.
+    StrOrd(CmpOp, Box<HExpr>, Box<HExpr>),
     Reduce(Box<HReduce>),
     /// `(fn [x :- ty] body)` — a closure value capturing free locals by
     /// value. The body stays in the node (the interpreter evaluates it

@@ -67,17 +67,20 @@ pub(crate) fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Resul
     };
     let a = lower(&items[1], env, ctx)?;
     let b = lower(&items[2], env, ctx)?;
-    // String (in)equality compares content via the runtime; ordering of
-    // strings is not part of the language.
+    // String comparisons compare content via the runtime: = //= by
+    // equality, ordering ops by the strcmp sign.
     if ty_of(&a, env, ctx) == Ty::Str && ty_of(&b, env, ctx) == Ty::Str {
-        if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
-            return Err("strings support only = and /=".into());
+        match op {
+            CmpOp::Eq => {
+                return Ok(HExpr::StrCmp(true, Box::new(a), Box::new(b)));
+            }
+            CmpOp::Ne => {
+                return Ok(HExpr::StrCmp(false, Box::new(a), Box::new(b)));
+            }
+            CmpOp::Lt | CmpOp::Gt | CmpOp::Le | CmpOp::Ge => {
+                return Ok(HExpr::StrOrd(op, Box::new(a), Box::new(b)));
+            }
         }
-        return Ok(HExpr::StrCmp(
-            op == CmpOp::Eq,
-            Box::new(a),
-            Box::new(b),
-        ));
     }
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
