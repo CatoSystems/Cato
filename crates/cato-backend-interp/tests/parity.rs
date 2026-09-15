@@ -84,7 +84,7 @@ fn interp_orders_strings() {
       (print (<= "apple" "apple"))
       (print (>= a b))
       (print (< "b" "apple"))
-      (print (if (< a b) "a-first" "b-first"))))))
+      (print (if (< a b) "a-first" "b-first")))))
 "#;
     let program = cato_core::compile_to_program(src).expect("compile");
     let out = cato_interp::Interpreter::new(&program).run().expect("run");
@@ -97,6 +97,30 @@ fn string_ordering_rejects_mixed_operands() {
 (defn main [] (print (< "a" 1)))
 "#;
     assert!(cato_core::compile_to_program(src).is_err());
+}
+
+#[test]
+fn interp_evaluates_nth_and_char_str() {
+    let src = r#"
+(defn main []
+  (let [s "hello"
+        c (char->str 65)
+        t (char->str 9)]
+    (do
+      (print (nth s 0))
+      (print (nth s 4))
+      (print (nth s 99))
+      (print (nth s (- 0 1)))
+      (print-string c)
+      (print (count c))
+      (print (= t "\t"))
+      (print (nth (char->str 122) 0))
+      (print (char->str 300)))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    // Out-of-range nth yields 0; char->str 300 truncates to ',' (300 & 0xFF).
+    assert_eq!(out, "104\n111\n0\n0\nA\n1\n1\n122\n,\n");
 }
 
 #[test]

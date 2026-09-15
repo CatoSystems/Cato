@@ -538,6 +538,28 @@ impl<'p> Interpreter<'p> {
                     _ => panic!("interp: string compare on non-strings"),
                 }
             }
+            HExpr::StrNth { s, idx } => {
+                let sv = self.eval(s, env)?;
+                let iv = int_of(&self.eval(idx, env)?);
+                match sv {
+                    Value::Str(s) => {
+                        // Out-of-range reads yield 0 (matches the LLVM
+                        // branchless select).
+                        let b = if iv >= 0 {
+                            s.as_bytes().get(iv as usize).copied().unwrap_or(0)
+                        } else {
+                            0
+                        };
+                        Value::Int(b as i64)
+                    }
+                    o => panic!("interp: nth on {:?}", o),
+                }
+            }
+            HExpr::CharStr(c) => {
+                let cv = int_of(&self.eval(c, env)?);
+                // Low byte only, mirroring LLVM's trunc to i8.
+                Value::Str(Rc::new(((cv as u8) as char).to_string()))
+            }
             HExpr::Get { src, idx, default, ty } => {
                 let _ = ty;
                 let sv = self.eval(src, env)?;

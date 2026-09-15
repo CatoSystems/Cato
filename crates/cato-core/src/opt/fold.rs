@@ -229,6 +229,18 @@ fn fold_one(e: HExpr) -> HExpr {
             (HExpr::StrLit(x), HExpr::StrLit(y)) => const_bool_node(const_str_ord(op, x, y)),
             _ => HExpr::StrOrd(op, a, b),
         },
+        HExpr::StrNth { s, idx } => match (&*s, as_i64(&idx)) {
+            // Fold only in-bounds reads; OOB must stay a runtime 0.
+            (HExpr::StrLit(x), Some(i)) if i >= 0 && (i as usize) < x.len() => {
+                HExpr::ConstI64(x.as_bytes()[i as usize] as i64)
+            }
+            _ => HExpr::StrNth { s, idx },
+        },
+        HExpr::CharStr(c) => match as_i64(&c) {
+            // A constant byte folds to the equivalent static literal.
+            Some(v) => HExpr::StrLit(((v as u8) as char).to_string()),
+            None => HExpr::CharStr(c),
+        },
         HExpr::SetContains { s, x } => match (&*s, as_i64(&x)) {
             (HExpr::SetLit(vs), Some(k)) => {
                 // Set literals are sorted and deduped at lowering.

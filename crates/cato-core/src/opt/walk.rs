@@ -75,6 +75,11 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         HExpr::StrOrd(op, a, b) => {
             HExpr::StrOrd(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
         }
+        HExpr::StrNth { s, idx } => HExpr::StrNth {
+            s: Box::new(rewrite(*s, f)),
+            idx: Box::new(rewrite(*idx, f)),
+        },
+        HExpr::CharStr(c) => HExpr::CharStr(Box::new(rewrite(*c, f))),
         HExpr::MapLit(pairs) => HExpr::MapLit(
             pairs
                 .into_iter()
@@ -370,6 +375,11 @@ fn count_walk(
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
+        HExpr::StrNth { s, idx } => {
+            count_walk(s, targets, shadowed, counts);
+            count_walk(idx, targets, shadowed, counts);
+        }
+        HExpr::CharStr(c) => count_walk(c, targets, shadowed, counts),
         HExpr::If(c, t, f, _) => {
             count_walk(c, targets, shadowed, counts);
             count_walk(t, targets, shadowed, counts);
@@ -875,6 +885,11 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(a, f);
             visit_nodes(b, f);
         }
+        HExpr::StrNth { s, idx } => {
+            visit_nodes(s, f);
+            visit_nodes(idx, f);
+        }
+        HExpr::CharStr(c) => visit_nodes(c, f),
         HExpr::If(c, t, f2, _) => {
             visit_nodes(c, f);
             visit_nodes(t, f);

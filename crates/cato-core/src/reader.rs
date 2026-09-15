@@ -110,7 +110,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     return Err(rerr("unterminated string", Span { lo: open, hi: bytes.len() }));
                 }
                 let raw = &input[start..j];
-                let unescaped = raw.replace("\\n", "\n").replace("\\\"", "\"");
+                let unescaped = unescape(raw);
                 let span = Span { lo: open, hi: j + 1 };
                 push_node(Expr::LitStr(unescaped), span, &mut stack, &mut top, &mut spans);
                 i = j + 1;
@@ -154,8 +154,32 @@ fn push_node(
     }
 }
 
-fn parse_atom(tok: &str) -> Result<Expr, String> {
-    if let Ok(v) = tok.parse::<i64>() {
+/// Single left-to-right unescape pass: `\n` `\t` `\\` `\"`; any other
+/// `\x` keeps both characters verbatim (lenient, as before).
+fn unescape(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut it = raw.chars();
+    while let Some(c) = it.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('n') => out.push('\n'),
+            Some('t') => out.push('\t'),
+            Some('\\') => out.push('\\'),
+            Some('"') => out.push('"'),
+            Some(other) => {
+                out.push('\\');
+                out.push(other);
+            }
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+fn parse_atom(tok: &str) -> Result<Expr, String> {    if let Ok(v) = tok.parse::<i64>() {
         return Ok(Expr::LitI64(v));
     }
     if tok == "true" {

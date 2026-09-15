@@ -107,6 +107,22 @@ pub(crate) fn emit_str_val(
             let p = emit_subs(s, start, end, c, mdl, sigs);
             p
         }
+        HExpr::CharStr(inner) => {
+            // A fresh 2-byte allocation: the character byte plus NUL. The
+            // value is the low byte of the operand (i8 trunc semantics).
+            let cv = emit_int(inner, c, mdl, sigs);
+            let p = emit_malloc(c, mdl, "2");
+            let b = c.temp();
+            c.line(&format!("  {} = trunc i64 {} to i8", b, cv));
+            c.line(&format!("  store i8 {}, ptr {}", b, p));
+            let np = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds i8, ptr {}, i64 1",
+                np, p
+            ));
+            c.line(&format!("  store i8 0, ptr {}", np));
+            p
+        }
         HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
         HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);

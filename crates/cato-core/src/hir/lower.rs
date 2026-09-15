@@ -219,6 +219,33 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
                         end: Box::new(end),
                     })
                 }
+                "nth" => {
+                    if items.len() != 3 {
+                        return Err("nth expects (nth <s> <idx>)".into());
+                    }
+                    let s = lower(&items[1], env, ctx)?;
+                    if ty_of(&s, env, ctx) != Ty::Str {
+                        return Err("nth source must be a string".into());
+                    }
+                    let idx = lower(&items[2], env, ctx)?;
+                    if ty_of(&idx, env, ctx) != Ty::I64 {
+                        return Err("nth index must be i64".into());
+                    }
+                    Ok(HExpr::StrNth {
+                        s: Box::new(s),
+                        idx: Box::new(idx),
+                    })
+                }
+                "char->str" => {
+                    if items.len() != 2 {
+                        return Err("char->str expects exactly 1 argument".into());
+                    }
+                    let c = lower(&items[1], env, ctx)?;
+                    if ty_of(&c, env, ctx) != Ty::I64 {
+                        return Err("char->str expects an i64 byte value".into());
+                    }
+                    Ok(HExpr::CharStr(Box::new(c)))
+                }
                 "split" => {
                     if items.len() != 3 {
                         return Err("split expects (split <s> <sep>)".into());
@@ -631,6 +658,8 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Join { .. } => Ty::Str,
         HExpr::StrCmp(..) => Ty::Bool,
         HExpr::StrOrd(..) => Ty::Bool,
+        HExpr::StrNth { .. } => Ty::I64,
+        HExpr::CharStr(_) => Ty::Str,
         HExpr::VecLit(vl) => Ty::Vec(match vl {
             VLit::I64(_) => Elem::I64,
             VLit::F64(_) => Elem::F64,
@@ -800,6 +829,11 @@ fn collect_captures(
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }
+        HExpr::StrNth { s, idx } => {
+            collect_captures(s, env, params, seen, caps);
+            collect_captures(idx, env, params, seen, caps);
+        }
+        HExpr::CharStr(c) => collect_captures(c, env, params, seen, caps),
         HExpr::Match { scrut, arms, .. } => {
             collect_captures(scrut, env, params, seen, caps);
             for arm in arms {

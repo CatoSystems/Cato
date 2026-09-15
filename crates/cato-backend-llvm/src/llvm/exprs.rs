@@ -471,6 +471,32 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
             t
         }
+        HExpr::StrNth { s, idx } => {
+            // Bounds-checked byte load, branchless: clamp the index with a
+            // select before the GEP so out-of-range reads (and negatives)
+            // yield 0, never a fault.
+            let sp = emit_str_val(s, c, mdl, sigs);
+            mdl.declare("declare i64 @strlen(ptr)".to_string());
+            let len = c.temp();
+            c.line(&format!("  {} = call i64 @strlen(ptr {})", len, sp));
+            let iv = emit_int(idx, c, mdl, sigs);
+            let inb = c.temp();
+            c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, len));
+            let safe = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+            let p = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+                p, sp, safe
+            ));
+            let b = c.temp();
+            c.line(&format!("  {} = load i8, ptr {}, align 1", b, p));
+            let z = c.temp();
+            c.line(&format!("  {} = zext i8 {} to i64", z, b));
+            let r = c.temp();
+            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, z));
+            r
+        }
         HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..)
         | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
         | HExpr::ConstB(..) => {
@@ -529,7 +555,8 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         | HExpr::SetDisj { .. }
         | HExpr::Subs { .. }
         | HExpr::Split { .. }
-        | HExpr::Join { .. } => {
+        | HExpr::Join { .. }
+        | HExpr::CharStr(..) => {
             panic!("codegen: heap value must be bound with let")
         }
         HExpr::Get { ty, .. } => panic!(

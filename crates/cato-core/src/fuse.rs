@@ -36,6 +36,11 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::StrOrd(op, a, b) => {
             HExpr::StrOrd(op.clone(), Box::new(check(a)), Box::new(check(b)))
         }
+        HExpr::StrNth { s, idx } => HExpr::StrNth {
+            s: Box::new(check(s)),
+            idx: Box::new(check(idx)),
+        },
+        HExpr::CharStr(c) => HExpr::CharStr(Box::new(check(c))),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::If(c, t, e, ty) => HExpr::If(

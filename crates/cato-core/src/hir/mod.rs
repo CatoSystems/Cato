@@ -217,6 +217,12 @@ pub enum HExpr {
     StrCmp(bool, Box<HExpr>, Box<HExpr>),
     /// `(< s1 s2)` (and `>`/`<=`/`>=`) on strings: `strcmp` sign test.
     StrOrd(CmpOp, Box<HExpr>, Box<HExpr>),
+    /// `(nth s i)` — the byte at index `i` as an i64; runtime-bounds-checked
+    /// (0 out of range, branchless select in codegen).
+    StrNth { s: Box<HExpr>, idx: Box<HExpr> },
+    /// `(char->str c)` — a fresh one-byte heap string of c's low byte.
+    /// Must be bound with `let` (allocates, like `subs`).
+    CharStr(Box<HExpr>),
     Reduce(Box<HReduce>),
     /// `(fn [x :- ty] body)` — a closure value capturing free locals by
     /// value. The body stays in the node (the interpreter evaluates it

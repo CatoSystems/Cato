@@ -17,6 +17,18 @@ pub(crate) fn rewrite_body(
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
+        HExpr::StrNth { s, idx } => HExpr::StrNth {
+            s: Box::new(rewrite_body(s, fnprefix, params, idmap, loops, sigs)?),
+            idx: Box::new(rewrite_body(idx, fnprefix, params, idmap, loops, sigs)?),
+        },
+        HExpr::CharStr(c) => HExpr::CharStr(Box::new(rewrite_body(
+            c,
+            fnprefix,
+            params,
+            idmap,
+            loops,
+            sigs,
+        )?)),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
         HExpr::Bin(op, a, b) => HExpr::Bin(
