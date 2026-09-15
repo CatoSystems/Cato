@@ -1,0 +1,42 @@
+; strings2.cato — S0 scalar floor reference program (self-hosting phase).
+;
+; Exercises the floor the self-hosted kernel's reader and emitter stand on:
+; boolean literals, string ordering (the strcmp sign test), byte access with
+; (nth), byte construction with (char->str), and the reader's \t \\ \"
+; escapes.
+
+(defn sign [a :- str b :- str] :- i64
+  (cond (< a b) (- 0 1)
+        (> a b) 1
+        0))
+
+(defn main []
+  (let [t true
+        f false
+        s "cato"
+        comma (char->str 300)]       ; 300 truncates to the low byte: ','
+    (do
+      ; Boolean literals flow through if/and/or/not and print 1/0 through
+      ; the same bool method as comparison results.
+      (print t)                      ; 1
+      (print f)                      ; 0
+      (print (and t (or f (not f)))) ; 1
+      (print (if f "yes" "no"))      ; no
+      ; String ordering: byte-wise lexicographic, exactly strcmp's sign.
+      (print (< "apple" "banana"))   ; 1
+      (print (sign "banana" "apple")) ; 1
+      (print (sign "same" "same"))   ; 0
+      (print (>= "zz" "aa"))         ; 1
+      ; Byte access: nth is bounds-checked; out of range yields 0.
+      (print (nth s 0))              ; 99  (c)
+      (print (nth s 3))              ; 111 (o)
+      (print (nth s 99))             ; 0
+      (print (nth s (- 0 1)))        ; 0
+      ; Byte construction: a fresh one-byte heap string.
+      (print-string (char->str 67))  ; C
+      (print (count comma))          ; 1
+      (print (= comma ","))          ; 1
+      ; Reader escapes: \t \\ and \" match their byte values.
+      (print (= "\t" (char->str 9)))   ; 1
+      (print (= "x\\y" (str "x" (char->str 92) "y"))) ; 1
+      (print (= "\"" (char->str 34)))))) ; 1

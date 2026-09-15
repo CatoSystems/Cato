@@ -248,6 +248,16 @@ fn compiles_own_to_expected_output() {
 }
 
 #[test]
+fn compiles_strings2_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/strings2.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("strings2", &src),
+        "1\n0\n1\nno\n1\n1\n0\n1\n99\n111\n0\n0\nC\n1\n1\n1\n1\n1\n"
+    );
+}
+
+#[test]
 fn compiles_strings_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/strings.cato")).unwrap();

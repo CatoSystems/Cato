@@ -63,9 +63,15 @@ its own suites (differential against the seed where representations overlap).
 - Zero external crates; everything above is the space the kernel must
   eventually cover or explicitly retire.
 
-## Phase S0 — Scalar floor
+## Phase S0 — Scalar floor *(shipped)*
 
-Small, pure language additions every later slice leans on.
+Small, pure language additions every later slice leans on. Shipped:
+`true`/`false` literals, string ordering via the strcmp sign test,
+`(nth s i)` / `(char->str c)`, sequential-scan string escapes (`\t`, `\\`),
+and the reference program `examples/strings2.cato` with full interp↔LLVM
+parity, ASAN-clean. Also fixed along the way: bool bindings emitted as raw
+i1 registers in i64 position, and string-valued `if`/`let`/`seq` expressions
+failing codegen.
 
 - `true`/`false` literals (today bools arise only from comparison forms).
 - String ordering: `<` `<=` `>` `>=` on `str` via `strcmp` semantics (the

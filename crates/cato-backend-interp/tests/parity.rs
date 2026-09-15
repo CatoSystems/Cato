@@ -18,6 +18,7 @@ const EXAMPLES: &[&str] = &[
     "shape",
     "slice",
     "strings",
+    "strings2",
     "widths",
     "widths2",
     "ffi",
