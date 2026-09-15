@@ -54,7 +54,8 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Cmp(..) => false,
-        HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => false,
+        HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_)
+        | HExpr::VecLit(_) => false,
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline { init, maps, filters, src, .. } => {
@@ -158,7 +159,8 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(v, f);
             }
         }
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) | HExpr::StrLit(_) => {}
+        HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_)
+        | HExpr::StrLit(_) => {}
         HExpr::StrCmp(_, a, b) => {
             collect_vars(a, f);
             collect_vars(b, f);

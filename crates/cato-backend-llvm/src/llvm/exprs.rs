@@ -39,6 +39,7 @@ pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String
 
 pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     match e {
+        HExpr::ConstB(v) => (if *v { "true" } else { "false" }).to_string(),
         HExpr::CmpW(op, a, b, ty) => {
             let av = emit_typed(a, *ty, c, mdl, sigs);
             let bv = emit_typed(b, *ty, c, mdl, sigs);
@@ -236,8 +237,16 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::ConstI64(v) => v.to_string(),
         HExpr::Reduce(_) => panic!("codegen: Reduce in i64 context (rewrite bug)"),
         HExpr::Var(v) => {
-            if let Some((r, _)) = c.scalar.get(v) {
-                r.clone()
+            let found = c.scalar.get(v).map(|(r, ty)| (r.clone(), *ty));
+            if let Some((r, ty)) = found {
+                if ty == Ty::Bool {
+                    // Bool binding in i64 position: widen 0/1.
+                    let t = c.temp();
+                    c.line(&format!("  {} = zext i1 {} to i64", t, r));
+                    t
+                } else {
+                    r
+                }
             } else {
                 // vector var used in length context
                 let (_, l, _) = c.vecs.get(v).expect("known var");
@@ -280,9 +289,8 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 // Same bits: the i64 register already holds the value.
                 v
             } else if w == Ty::Bool {
-                let t = c.temp();
-                c.line(&format!("  {} = zext i1 {} to i64", t, v));
-                t
+                // emit_int already widened the bool read to 0/1.
+                v
             } else if w.is_float() {
                 let t = c.temp();
                 c.line(&format!(
@@ -443,7 +451,8 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             t
         }
         HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..)
-        | HExpr::StrCmp(..) | HExpr::CmpW(..) | HExpr::SetContains { .. } => {
+        | HExpr::StrCmp(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
+        | HExpr::ConstB(..) => {
             // Bool value in i64 position: widen 0/1 (e.g. print-i64 of a test).
             let b = emit_bool(e, c, mdl, sigs);
             let t = c.temp();

@@ -380,6 +380,7 @@ pub(crate) fn emit_vec_pair(
 pub(crate) fn static_int_width(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> Ty {
     match e {
         HExpr::ConstI64(_) => Ty::I64,
+        HExpr::ConstB(_) => Ty::Bool,
         HExpr::ConstF64(_) => Ty::F64,
         HExpr::ConvF64(_) => Ty::F64,
         HExpr::ICast(_, t) => *t,

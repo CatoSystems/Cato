@@ -175,6 +175,7 @@ impl<'p> Interpreter<'p> {
         use cato_core::hir::{BinOp, HExpr, Ty, VLit};
         Ok(match e {
             HExpr::ConstI64(v) => Value::Int(*v),
+            HExpr::ConstB(v) => Value::Bool(*v),
             HExpr::ConstF64(v) => Value::F64(*v),
             HExpr::StrLit(s) => Value::Str(Rc::new(s.clone())),
             HExpr::Var(v) => env

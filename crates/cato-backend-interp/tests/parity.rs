@@ -53,6 +53,26 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
 }
 
 #[test]
+fn interp_evaluates_bool_literals() {
+    let src = r#"
+(defn main []
+  (let [flag true
+        off false]
+    (do
+      (print flag)
+      (print off)
+      (print (if true 10 20))
+      (print (if off "yes" "no"))
+      (print (and true false))
+      (print (or true false))
+      (print (not true)))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "1\n0\n10\nno\n0\n1\n0\n");
+}
+
+#[test]
 fn interp_evaluates_sets_strings_and_closures() {
     let src = r#"
 (defn main []

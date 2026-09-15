@@ -10,6 +10,7 @@ pub(crate) fn rewrite_body(
 ) -> Result<HExpr, String> {
     Ok(match h {
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
+        HExpr::ConstB(v) => HExpr::ConstB(*v),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),

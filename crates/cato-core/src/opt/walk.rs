@@ -16,8 +16,8 @@ use std::collections::{HashMap, HashSet};
 /// codegen relies on stays intact.
 pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
     let e = match e {
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::Var(_) | HExpr::StrLit(_)
-        | HExpr::VecLit(_) => return f(e),
+        HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::Var(_)
+        | HExpr::StrLit(_) | HExpr::VecLit(_) => return f(e),
         HExpr::Bin(op, a, b) => {
             HExpr::Bin(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
         }
@@ -337,7 +337,8 @@ fn count_walk(
                 *counts.entry(v.clone()).or_insert(0) += 1;
             }
         }
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::StrLit(_) | HExpr::VecLit(_) => {}
+        HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::StrLit(_)
+        | HExpr::VecLit(_) => {}
         HExpr::Bin(_, a, b) | HExpr::BinW(_, a, b, _) | HExpr::BinF(_, a, b) => {
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
@@ -832,6 +833,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
     f(e);
     match e {
         HExpr::ConstI64(_)
+        | HExpr::ConstB(_)
         | HExpr::ConstF64(_)
         | HExpr::Var(_)
         | HExpr::StrLit(_)

@@ -31,6 +31,7 @@ pub fn check(h: &HExpr) -> HExpr {
         ),
         HExpr::Seq(vs) => HExpr::Seq(vs.iter().map(check).collect()),
         HExpr::Var(v) => HExpr::Var(v.clone()),
+        HExpr::ConstB(v) => HExpr::ConstB(*v),
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
         HExpr::ConstF64(v) => HExpr::ConstF64(*v),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),

@@ -123,6 +123,8 @@ pub enum BinOp {
 pub enum HExpr {
     ConstI64(i64),
     ConstF64(f64),
+    /// `true` / `false`.
+    ConstB(bool),
     Var(String),
     Bin(BinOp, Box<HExpr>, Box<HExpr>),
     /// f32 arithmetic (f32 is a closed width like i32).

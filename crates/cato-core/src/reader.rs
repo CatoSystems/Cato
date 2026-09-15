@@ -158,6 +158,12 @@ fn parse_atom(tok: &str) -> Result<Expr, String> {
     if let Ok(v) = tok.parse::<i64>() {
         return Ok(Expr::LitI64(v));
     }
+    if tok == "true" {
+        return Ok(Expr::LitBool(true));
+    }
+    if tok == "false" {
+        return Ok(Expr::LitBool(false));
+    }
     if tok.contains('.') {
         if let Ok(v) = tok.parse::<f64>() {
             return Ok(Expr::LitF64(v));

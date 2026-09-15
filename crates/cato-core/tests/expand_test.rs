@@ -5,6 +5,7 @@ use cato_core::reader::read_all;
 fn pp(e: &Expr) -> String {
     match e {
         Expr::LitI64(v) => v.to_string(),
+        Expr::LitBool(v) => (if *v { "true" } else { "false" }).to_string(),
         Expr::LitF64(v) => format!("{}", v),
         Expr::LitStr(s) => format!("{:?}", s),
         Expr::LitSym(s) => s.clone(),

@@ -17,6 +17,18 @@ fn reads_atoms() {
 }
 
 #[test]
+fn reads_bool_literals() {
+    expr_eq("true", Expr::LitBool(true));
+    expr_eq("false", Expr::LitBool(false));
+    expr_eq("(if true 1 2)", Expr::List(vec![
+        Expr::LitSym("if".to_string()),
+        Expr::LitBool(true),
+        Expr::LitI64(1),
+        Expr::LitI64(2),
+    ]));
+}
+
+#[test]
 fn reads_sym_special() {
     expr_eq("even?", Expr::LitSym("even?".to_string()));
     expr_eq("+", Expr::LitSym("+".to_string()));

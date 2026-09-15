@@ -4,6 +4,7 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
     match expr {
         Expr::LitI64(v) => Ok(HExpr::ConstI64(*v)),
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
+        Expr::LitBool(v) => Ok(HExpr::ConstB(*v)),
         Expr::LitStr(s) => Ok(HExpr::StrLit(s.clone())),
         Expr::LitSym(s) => Ok(HExpr::Var(s.to_string())),
         Expr::MapLit(pairs) => {
@@ -600,6 +601,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
     match e {
         HExpr::ConstI64(_) => Ty::I64,
         HExpr::ConstF64(_) => Ty::F64,
+        HExpr::ConstB(_) => Ty::Bool,
         HExpr::Var(s) => env.get(s).copied().unwrap_or(Ty::I64),
         HExpr::Bin(_, a, b) => {
             if ty_of(a, env, ctx) == Ty::F64 || ty_of(b, env, ctx) == Ty::F64 {
