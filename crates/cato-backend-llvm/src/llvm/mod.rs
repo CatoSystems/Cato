@@ -101,11 +101,20 @@ pub fn emit_module_fast(
     output.push("; cato: generated LLVM IR (vertical slice)".to_string());
     output.push("%VecI64 = type { ptr, i64, i64 }".to_string());
     output.push("%Closure = type { ptr, ptr }".to_string());
-    for adt in adts {
-        let n = adt.variants.iter().map(|(_, f)| f.len()).max().unwrap_or(0);
+    let boxed = mdl.boxed.clone();
+    for (i, adt) in adts.iter().enumerate() {
+        let n = cato_core::adt_total_slots(adts, &boxed, i as u32);
         output.push(format!("%{} = type {{ i64, [{} x i64] }}", adt.name, n));
     }
     output.push(String::new());
+    // Deep-clone helpers for boxed (recursive) ADTs: clone must produce an
+    // owning copy, so a boxed value's children are cloned recursively.
+    for (i, adt) in adts.iter().enumerate() {
+        if boxed[i] {
+            output.push(String::new());
+            output.push(emit_adt_clone_fn(adts, &boxed, i as u32));
+        }
+    }
 
     output.push("declare void @cato_print_f64(double)".to_string());
     output.push("declare void @cato_print_i64(i64)".to_string());

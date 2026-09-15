@@ -248,6 +248,13 @@ fn compiles_own_to_expected_output() {
 }
 
 #[test]
+fn compiles_trees_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/trees.cato")).unwrap();
+    assert_eq!(compile_and_run("trees", &src), "17\n25\n");
+}
+
+#[test]
 fn compiles_options_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/options.cato")).unwrap();

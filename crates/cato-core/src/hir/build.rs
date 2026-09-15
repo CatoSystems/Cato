@@ -25,19 +25,37 @@ pub fn build_program_located(
     String,
 > {
     use crate::diagnostics::locate;
-    // Pass 0: collect deftype forms into the ADT table so every defn (in any
-    // order) can refer to the types.
-    let mut adts: Vec<AdtDef> = Vec::new();
+    // Pass 0a: collect deftype headers so field types can reference any
+    // declared template regardless of declaration order.
+    let mut decl_forms: Vec<(&Expr, &crate::ast::Span)> = Vec::new();
+    let mut decls: HashMap<String, (u32, Vec<String>)> = HashMap::new();
+    let mut decl_names: Vec<(String, Vec<String>)> = Vec::new();
     for (form, span) in prog.iter() {
         if is_deftype(form) {
-            adts.push(parse_deftype(form).map_err(|e| locate(*span, &e))?);
+            let (name, params) =
+                parse_deftype_header(form).map_err(|e| locate(*span, &e))?;
+            let idx = decl_names.len() as u32;
+            if decls.insert(name.clone(), (idx, params.clone())).is_some() {
+                return Err(locate(*span, &format!("duplicate deftype {}", name)));
+            }
+            decl_names.push((name, params));
+            decl_forms.push((form, span));
         }
+    }
+    // Pass 0b: parse variants with the full template table.
+    let mut adts: Vec<AdtDef> = Vec::new();
+    for ((form, span), (name, params)) in decl_forms.iter().zip(decl_names.iter()) {
+        let variants = parse_deftype_variants(form, name, params, &decls)
+            .map_err(|e| locate(**span, &e))?;
+        adts.push(AdtDef {
+            name: name.clone(),
+            ty_params: params.clone(),
+            variants,
+        });
     }
     let mut adt_by_name: HashMap<String, u32> = HashMap::new();
     for (i, adt) in adts.iter().enumerate() {
-        if adt_by_name.insert(adt.name.clone(), i as u32).is_some() {
-            return Err(format!("duplicate deftype {}", adt.name));
-        }
+        adt_by_name.insert(adt.name.clone(), i as u32);
     }
 
     // Monomorphized ADT instances accumulate here while parsing annotations
@@ -94,11 +112,12 @@ pub fn build_program_located(
         for (pname, pty) in &raw.params {
             env.insert(pname.clone(), *pty);
         }
+        let ret = raw.ret;
         let body = match &raw.body {
             Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
-                lower_body_forms(items, &env, &ctx)
+                lower_body_forms(items, &env, &ctx, Some(ret))
             }
-            _ => lower(&raw.body, &env, &ctx),
+            _ => lower_expect(&raw.body, &env, &ctx, Some(ret)),
         }
         .map_err(|e| locate(*span, &e))?;
         let mut body = body;

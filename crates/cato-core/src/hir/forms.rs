@@ -1,15 +1,27 @@
 use super::*;
 
-pub(crate) fn lower_body_forms(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+pub(crate) fn lower_body_forms(
+    items: &[Expr],
+    env: &Env,
+    ctx: &Ctx,
+    expected: Option<Ty>,
+) -> Result<HExpr, String> {
     // items is either [LitSym("do"), form...] for multiple bodies, or we
     // receive a single list whose first element is the actual body head.
+    // The expected type (the defn's declared return) applies to the last
+    // form — it lets nullary ctors of generic ADTs infer.
     let Some(Expr::LitSym(head)) = items.first() else {
         return Err("expected body".into());
     };
     if head == "do" {
         let mut seq = Vec::new();
-        for f in &items[1..] {
-            seq.push(lower(f, env, ctx)?);
+        let last = items.len().saturating_sub(1);
+        for (idx, f) in items[1..].iter().enumerate() {
+            if idx + 1 == last {
+                seq.push(lower_expect(f, env, ctx, expected)?);
+            } else {
+                seq.push(lower(f, env, ctx)?);
+            }
         }
         Ok(if seq.len() == 1 {
             seq.pop().unwrap()

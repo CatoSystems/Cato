@@ -123,7 +123,7 @@ pub(crate) fn resolve_function_ref(
     if let Some(e2) = &el2 {
         child.insert(e2.clone(), el2_ty);
     }
-    let body = lower_body_expr(&raw.body, &child, ctx)?;
+    let body = lower_body_expr(&raw.body, &child, ctx, None)?;
     let ret = if subs.is_empty() {
         raw.ret
     } else {

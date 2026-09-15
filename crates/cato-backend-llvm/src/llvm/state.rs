@@ -4,6 +4,10 @@ use cato_core::Lambda;
 pub(crate) struct Mdl {
     pub(crate) vec_globals: Vec<String>,
     pub(crate) adts: Vec<AdtDef>,
+    /// Per-ADT: heap-boxed (recursive) or inline. Boxed ADT values are heap
+    /// pointers; inline ADT values are pointers to stack slots of the named
+    /// struct. Emission paths consult this to pick the convention.
+    pub(crate) boxed: Vec<bool>,
     pub(crate) counter: usize,
     /// Emit `llvm.loop.vectorize.enable` metadata on fused loops (--fast).
     pub(crate) fast: bool,
@@ -26,9 +30,11 @@ impl Mdl {
         lambdas: Vec<Lambda>,
         threads: usize,
     ) -> Self {
+        let boxed = cato_core::compute_boxed(&adts);
         Mdl {
             vec_globals: Vec::new(),
             adts,
+            boxed,
             counter: 0,
             fast,
             decls: Vec::new(),
@@ -45,6 +51,18 @@ impl Mdl {
     }
     pub(crate) fn adt_name(&self, idx: u32) -> String {
         format!("%{}", self.adts[idx as usize].name)
+    }
+    /// Is this ADT heap-boxed (recursive)?
+    pub(crate) fn adt_boxed(&self, idx: u32) -> bool {
+        self.boxed.get(idx as usize).copied().unwrap_or(false)
+    }
+    /// Payload slots of ADT `idx` (the [N x i64] of its struct).
+    pub(crate) fn adt_slots(&self, idx: u32) -> usize {
+        cato_core::adt_total_slots(&self.adts, &self.boxed, idx)
+    }
+    /// Per-variant, per-field slot offsets of ADT `idx`.
+    pub(crate) fn adt_field_offsets(&self, idx: u32) -> Vec<Vec<usize>> {
+        self.adts[idx as usize].field_slots(&self.boxed, &self.adts)
     }
     /// LLVM scalar/pointer type for a Ty in value position. ADT values are
     /// always `ptr` to a stack slot (the named struct is only used for

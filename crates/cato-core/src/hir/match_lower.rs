@@ -107,7 +107,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
                 return Err("wildcard arm expects (_ body)".into());
             }
             wildcard = true;
-            let body = lower(&arm_items[1], env, ctx)?;
+            let body = lower_expect(&arm_items[1], env, ctx, Some(Ty::Adt(adt)))?;
             arm_tys.push(ty_of(&body, env, ctx));
             arm_exprs.push((None, Vec::new(), body));
             continue;
@@ -162,7 +162,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
                 bindernames.push(bn.clone());
             }
         }
-            let body = lower(&arm_items[2], &child, ctx)?;
+            let body = lower_expect(&arm_items[2], &child, ctx, Some(Ty::Adt(adt)))?;
             let bty = ty_of(&body, &child, ctx);
             arm_tys.push(bty);
             arm_exprs.push((Some(vi as u32), bindernames, body));

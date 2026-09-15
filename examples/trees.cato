@@ -1,0 +1,34 @@
+; trees.cato — S1b reference program: recursive ADTs with selective boxing.
+;
+; (Tree a) references itself, so the Tree instances are heap-boxed: values
+; are owning pointers, constructors allocate, match dereferences, and clone
+; deep-copies through the compiler-generated clone helper. Everything about
+; the source stays ordinary ADT syntax — the representation is the
+; compiler's decision, and non-recursive ADTs (S1a's Option) stay unboxed.
+
+(deftype (Tree a)
+  (Node [v :- a l :- (Tree a) r :- (Tree a)])
+  (Leaf))
+
+(defn sum [t :- (Tree i64)] :- i64
+  (match t
+    (Node [v l r] (+ v (+ (sum (clone l)) (sum (clone r)))))
+    (Leaf [] 0)))
+
+(defn insert [t :- (Tree i64) x :- i64] :- (Tree i64)
+  (match t
+    (Node [v l r]
+      (if (< x v)
+        (Node v (insert (clone l) x) (clone r))
+        (Node v (clone l) (insert (clone r) x))))
+    (Leaf [] (Node x (Leaf) (Leaf)))))
+
+(defn main []
+  (let [t0 :- (Tree i64) (Leaf)
+        t1 (insert t0 5)
+        t2 (insert t1 3)
+        t3 (insert t2 8)
+        t4 (insert t3 1)]
+    (do
+      (print (sum (clone t4)))
+      (print (sum (insert (clone t4) 8))))))

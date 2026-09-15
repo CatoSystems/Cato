@@ -20,6 +20,7 @@ const EXAMPLES: &[&str] = &[
     "slice",
     "strings",
     "strings2",
+    "trees",
     "widths",
     "widths2",
     "ffi",
@@ -153,6 +154,28 @@ fn interp_evaluates_generic_adts() {
     let program = cato_core::compile_to_program(src).expect("compile");
     let out = cato_interp::Interpreter::new(&program).run().expect("run");
     assert_eq!(out, "41\n7\n99\n1.5\n10\n");
+}
+
+#[test]
+fn interp_evaluates_recursive_trees() {
+    let src = r#"
+(deftype (Tree a)
+  (Node [v :- a l :- (Tree a) r :- (Tree a)])
+  (Leaf))
+(defn sum [t :- (Tree i64)] :- i64
+  (match t
+    (Node [v l r] (+ v (+ (sum (clone l)) (sum (clone r)))))
+    (Leaf [] 0)))
+(defn main []
+  (let [t :- (Tree i64)
+        (Node 5 (Node 3 (Leaf) (Leaf)) (Node 8 (Leaf) (Leaf)))]
+    (sum (clone t))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let (v, _) = cato_interp::Interpreter::new(&program)
+        .run_entry("main")
+        .expect("run");
+    assert!(matches!(v, cato_interp::Value::Int(16)), "got {:?}", v);
 }
 
 #[test]

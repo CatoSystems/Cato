@@ -130,7 +130,7 @@ their signatures (`ty_suffix` learns ADT names for mangling). Backend work:
 none for layout (instances are today's inline ADTs) plus the missing `i32`
 field arm in `adt.rs`. Fields in S1a: `i64 i32 f64 bool` + type parameters.
 
-**S1b — Recursion, selective boxing, full field types.**
+**S1b — Recursion, selective boxing, full field types** *(shipped)*: field grammar widened (str, (Vector t), applied-template references with the positional-parameter rule); recursive instantiation terminates through the instance cache (registered before fields resolve); boxing = exactly the ADTs on a cycle of ADT-field edges (`compute_boxed`), discovered by DFS — everything else, including ADTs that merely *contain* a boxed one, stays inline; boxed values are owning heap pointers that pass/return by pointer and deep-clone through a compiler-generated per-type helper; match-arm bodies and ctor arguments infer from the expected instance's concrete fields; a defn's declared return type threads into body lowering as the expected type. Reference: `examples/trees.cato` (boxed, recursive) next to `examples/options.cato` (unboxed, S1a). Interim memory contract for boxed ADTs: boxes live until process exit until S1c lands the frees.
 Recursion detection over the instantiated ADT graph; boxed representation
 for exactly the recursive set; fields widen to any type (`str`, `(Vector t)`,
 ADT — which is what *makes* recursion expressible); ownership treats boxed

@@ -628,6 +628,31 @@ pub(crate) fn lower_expect(
                     // Constructors resolve before user functions.
                     if let Some((adt, variant, fields)) = ctx.lookup_ctor(head) {
                         let nparams = ctx.adts[adt as usize].ty_params.len();
+                        // When the expected type is already a concrete
+                        // instance of this template (e.g. the scrutinee's ADT
+                        // in a match arm), use its fields: nested nullary
+                        // ctors then infer concretely.
+                        let mut inst_expected: Option<u32> = None;
+                        if nparams > 0 {
+                            if let Some(Ty::Adt(e)) = expected {
+                                let tpl = ctx.adt_insts.borrow().rev.get(&e).map(|(t, _)| *t);
+                                if tpl == Some(adt) {
+                                    inst_expected = Some(e);
+                                }
+                            }
+                        }
+                        let (adt, fields) = match inst_expected {
+                            Some(e) => {
+                                let def = ctx.adt_def(e);
+                                (e, def.variants[variant as usize].1.clone())
+                            }
+                            None => (adt, fields),
+                        };
+                        let nparams = if inst_expected.is_some() {
+                            0
+                        } else {
+                            nparams
+                        };
                         if items.len() - 1 != fields.len() {
                             return Err(format!(
                                 "constructor {} expects {} argument(s), got {}",
@@ -642,7 +667,10 @@ pub(crate) fn lower_expect(
                         let mut subs: Vec<Option<Ty>> = vec![None; nparams];
                         let mut args = Vec::new();
                         for (it, fty) in items[1..].iter().zip(fields.iter()) {
-                            let a = lower(it, env, ctx)?;
+                            // A field's type is the expected type of its
+                            // argument: nested nullary ctors (`(Leaf)` inside
+                            // `(Node ...)`) infer from the field.
+                            let a = lower_expect(it, env, ctx, Some(*fty))?;
                             let at = ty_of(&a, env, ctx);
                             let at = if *fty == Ty::F64 && at == Ty::I64 {
                                 // Literal-friendly: an i64 argument widens

@@ -72,15 +72,17 @@ pub(crate) fn is_deftype(form: &Expr) -> bool {
 
 /// (deftype Name (Variant [field :- ty ...]) ...)
 /// (deftype (Name a b) (Variant [field :- ty ...]) ...) — generic template
-pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
+/// Pass 0a: collect just the header (name + type parameters) so field types
+/// may reference any declared template regardless of declaration order.
+pub(crate) fn parse_deftype_header(form: &Expr) -> Result<(String, Vec<String>), String> {
     let Expr::List(items) = form else {
         return Err("expected (deftype ...)".into());
     };
     if items.len() < 2 {
         return Err("deftype expects a name and at least one variant".into());
     }
-    let (name, ty_params) = match &items[1] {
-        Expr::LitSym(s) => (s.clone(), Vec::new()),
+    match &items[1] {
+        Expr::LitSym(s) => Ok((s.clone(), Vec::new())),
         Expr::List(hitems) => {
             let Some(Expr::LitSym(s)) = hitems.first() else {
                 return Err("deftype name must be a symbol".into());
@@ -95,9 +97,26 @@ pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
                 }
                 ps.push(pn.clone());
             }
-            (s.clone(), ps)
+            Ok((s.clone(), ps))
         }
-        _ => return Err("deftype name must be a symbol".into()),
+        _ => Err("deftype name must be a symbol".into()),
+    }
+}
+
+/// Pass 0b: parse the variants now that every declared template is known.
+///
+/// A field type may be: a scalar, `str`, one of this deftype's own type
+/// parameters, `(Vector scalar|str|param)`, a bare ADT name (concrete, or a
+/// template applied to this deftype's parameters in order), or an applied
+/// template `(Name a b ...)` with the same positional-parameter rule.
+pub(crate) fn parse_deftype_variants(
+    form: &Expr,
+    name: &str,
+    ty_params: &[String],
+    decls: &HashMap<String, (u32, Vec<String>)>,
+) -> Result<Vec<(String, Vec<Ty>)>, String> {
+    let Expr::List(items) = form else {
+        return Err("expected (deftype ...)".into());
     };
     let mut variants = Vec::new();
     for v in &items[2..] {
@@ -126,48 +145,128 @@ pub(crate) fn parse_deftype(form: &Expr) -> Result<AdtDef, String> {
                 if sep != ":-" {
                     return Err(format!("variant {} field {} expects (name :- ty)", vname, fname));
                 }
-                let Some(Expr::LitSym(ty)) = fitems.get(i + 2) else {
+                let Some(ty_expr) = fitems.get(i + 2) else {
                     return Err(format!("variant {} field {} expects a type", vname, fname));
                 };
-                fields.push(parse_adt_field_ty(ty, &ty_params)?);
+                fields.push(parse_field_ty(ty_expr, ty_params, decls)?);
                 i += 3;
             }
         }
         variants.push((vname.clone(), fields));
     }
-    Ok(AdtDef {
-        name,
-        ty_params,
-        variants,
-    })
+    Ok(variants)
 }
 
-/// A deftype field type: a scalar or one of the deftype's own type
-/// parameters (indexed by the parameter list, so instantiation substitutes
-/// positionally). Other ADTs arrive in S1b with the boxing rule.
-fn parse_adt_field_ty(s: &str, ty_params: &[String]) -> Result<Ty, String> {
-    match s {
-        "i64" => Ok(Ty::I64),
-        "i32" => Ok(Ty::I32),
-        "f64" => Ok(Ty::F64),
-        "bool" => Ok(Ty::Bool),
-        other => match ty_params.iter().position(|p| p == other) {
-            Some(i) => Ok(Ty::Param(i as u32)),
-            None => Err(format!(
-                "ADT field type must be i64, i32, f64, bool or a type parameter of this deftype, got '{}'",
-                other
-            )),
+/// A deftype field type (see `parse_deftype_variants` for the grammar).
+fn parse_field_ty(
+    e: &Expr,
+    ty_params: &[String],
+    decls: &HashMap<String, (u32, Vec<String>)>,
+) -> Result<Ty, String> {
+    match e {
+        Expr::LitSym(s) => match s.as_str() {
+            "i64" => Ok(Ty::I64),
+            "i32" => Ok(Ty::I32),
+            "f64" => Ok(Ty::F64),
+            "bool" => Ok(Ty::Bool),
+            "str" => Ok(Ty::Str),
+            other => {
+                if let Some(k) = ty_params.iter().position(|p| p == other) {
+                    return Ok(Ty::Param(k as u32));
+                }
+                match decls.get(other) {
+                    Some((idx, params)) if params.is_empty() => Ok(Ty::Adt(*idx)),
+                    Some((_, params)) => Err(format!(
+                        "generic ADT {} needs type arguments in a field type — apply it to this deftype's parameters: ({} {})",
+                        other,
+                        other,
+                        params
+                            .iter()
+                            .map(|_| "...")
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )),
+                    None => Err(format!(
+                        "ADT field type must be i64, i32, f64, bool, str, a type parameter of this deftype, or a declared ADT name, got '{}'",
+                        other
+                    )),
+                }
+            }
         },
+        Expr::List(items) => {
+            let Some(Expr::LitSym(h)) = items.first() else {
+                return Err("field type must be a symbol or an applied ADT name".into());
+            };
+            if h == "Vector" && items.len() == 2 {
+                let el = match &items[1] {
+                    Expr::LitSym(s) if s == "i64" => Elem::I64,
+                    Expr::LitSym(s) if s == "f64" => Elem::F64,
+                    Expr::LitSym(s) if s == "str" => Elem::Str,
+                    Expr::LitSym(p) => {
+                        let k = ty_params
+                            .iter()
+                            .position(|x| x == p)
+                            .ok_or_else(|| {
+                                format!("(Vector {}) element must be i64, f64, str or a type parameter of this deftype", p)
+                            })?;
+                        Elem::Param(k as u32)
+                    }
+                    _ => {
+                        return Err(
+                            "(Vector ...) element must be i64, f64, str or a type parameter of this deftype"
+                                .into(),
+                        )
+                    }
+                };
+                return Ok(Ty::Vec(el));
+            }
+            // Applied template: (Name arg ...) — the positional-parameter
+            // rule: the arguments must be this deftype's parameters in
+            // order, so instantiation can pass its own arguments through.
+            let Some(&(idx, ref tpl_params)) = decls.get(h.as_str()) else {
+                return Err(format!("unknown ADT name {} in field type", h));
+            };
+            let args: Vec<&Expr> = items[1..].iter().collect();
+            if args.len() != tpl_params.len() {
+                return Err(format!(
+                    "{} expects {} type argument(s) in a field type, got {}",
+                    h,
+                    tpl_params.len(),
+                    args.len()
+                ));
+            }
+            for (a, p) in args.iter().zip(tpl_params.iter()) {
+                let Expr::LitSym(sym) = a else {
+                    return Err(format!(
+                        "{} type argument must be a parameter name of this deftype",
+                        h
+                    ));
+                };
+                if sym != p {
+                    return Err(format!(
+                        "field type ({} ...) must apply {} to this deftype's parameters in order (expected {})",
+                        h, h, p
+                    ));
+                }
+            }
+            Ok(Ty::Adt(idx))
+        }
+        _ => Err("field type must be a symbol or an applied ADT name".into()),
     }
 }
 
 /// Lower a raw defn body (an implicit `do` when it holds multiple forms).
-pub(crate) fn lower_body_expr(body: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+pub(crate) fn lower_body_expr(
+    body: &Expr,
+    env: &Env,
+    ctx: &Ctx,
+    expected: Option<Ty>,
+) -> Result<HExpr, String> {
     match body {
         Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
-            lower_body_forms(items, env, ctx)
+            lower_body_forms(items, env, ctx, expected)
         }
-        _ => lower(body, env, ctx),
+        _ => lower_expect(body, env, ctx, expected),
     }
 }
 

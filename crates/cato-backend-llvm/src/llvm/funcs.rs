@@ -111,6 +111,13 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 c.scalar.insert(pname.clone(), (slot, *pty));
             }
             Ty::Param(_) => panic!("codegen: unresolved type parameter in params"),
+            Ty::Adt(i) if mdl.adt_boxed(*i) => {
+                // Boxed ADT: the value IS the owning heap pointer; moves
+                // transfer it, no copy at the boundary.
+                let r = format!("%{}", mangle(pname));
+                params.push(format!("ptr {}", r));
+                c.scalar.insert(pname.clone(), (r, *pty));
+            }
             Ty::Adt(i) => {
                 // By-value boundary: the incoming struct is copied into an
                 // entry slot; all internal uses go through the ptr.
@@ -161,15 +168,21 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
     } else {
         let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
         if let Ty::Adt(i) = defn.ret {
-            // Copy the result slot out by value; a returned ptr would dangle.
-            let lv = c.temp();
-            c.line(&format!(
-                "  {} = load {}, ptr {}, align 8",
-                lv,
-                mdl.adt_name(i),
-                val
-            ));
-            c.line(&format!("  ret {} {}", mdl.adt_name(i), lv));
+            if mdl.adt_boxed(i) {
+                // Boxed: the pointer itself is returned; ownership moves.
+                c.line(&format!("  ret ptr {}", val));
+            } else {
+                // Copy the result slot out by value; a returned ptr would
+                // dangle.
+                let lv = c.temp();
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align 8",
+                    lv,
+                    mdl.adt_name(i),
+                    val
+                ));
+                c.line(&format!("  ret {} {}", mdl.adt_name(i), lv));
+            }
         } else {
             let ret_ll = if defn.ret == Ty::Bool {
                 "i1"
@@ -189,7 +202,11 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
     } else if defn.ret == Ty::F64 {
         "double".to_string()
     } else if let Ty::Adt(i) = defn.ret {
-        mdl.adt_name(i)
+        if mdl.adt_boxed(i) {
+            "ptr".to_string()
+        } else {
+            mdl.adt_name(i)
+        }
     } else if matches!(defn.ret, Ty::Vec(_) | Ty::Map | Ty::Set) {
         "%VecI64".to_string()
     } else if defn.ret.is_int() || defn.ret.is_float() {

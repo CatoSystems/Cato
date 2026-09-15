@@ -13,7 +13,7 @@ pub mod opt;
 pub mod reader;
 
 pub use ast::Expr;
-pub use hir::{AdtDef, Defn};
+pub use hir::{adt_total_slots, compute_boxed, field_slot_count, AdtDef, Defn};
 
 /// A closure body emitted out-of-line by code backends: the calling
 /// convention is `@lambda_N(ptr env, params...) -> ret`, where `env` points

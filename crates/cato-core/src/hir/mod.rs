@@ -516,18 +516,6 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// Substitute an ADT template field with the instantiation's type arguments.
-/// S1a fields are flat: a parameter binds directly to its argument.
-fn subst_adt_field(f: Ty, args: &[Ty]) -> Ty {
-    match f {
-        Ty::Param(k) => args
-            .get(k as usize)
-            .copied()
-            .unwrap_or(Ty::I64),
-        other => other,
-    }
-}
-
 /// Mangle one type argument for an instance name (defns use the same
 /// convention; ADT arguments contribute their own mangled name).
 fn adt_arg_suffix(t: Ty, base: &[AdtDef], insts: &RefCell<AdtInsts>) -> String {
@@ -552,9 +540,13 @@ fn adt_arg_suffix(t: Ty, base: &[AdtDef], insts: &RefCell<AdtInsts>) -> String {
 
 /// Resolve an instantiation of a (possibly generic) ADT template for the
 /// given concrete (or still-generic) type arguments. Deduped: the same
-/// (template, args) pair returns the same combined-table index. S1a
-/// restricts concrete fields to scalars — a parameter bound to a
-/// non-scalar is a clear error, not a miscompile.
+/// (template, args) pair returns the same combined-table index.
+///
+/// A template field naming another (or the same) template is applied to the
+/// enclosing instantiation's arguments — the positional-parameter rule from
+/// `parse_deftype_variants` — so recursive types instantiate through the
+/// cache: the instance is registered *before* its fields resolve, and the
+/// self-reference re-enters to a cache hit.
 pub(crate) fn instantiate_adt(
     base: &[AdtDef],
     insts: &RefCell<AdtInsts>,
@@ -584,32 +576,181 @@ pub(crate) fn instantiate_adt(
             .collect::<Vec<_>>()
             .join("_")
     );
+    // Register the (empty) instance before resolving fields: recursion
+    // through the template's own name re-enters the cache and terminates.
+    let base_len = base.len();
+    let idx = {
+        let mut insts = insts.borrow_mut();
+        let idx = base_len as u32 + insts.extra.len() as u32;
+        insts.map.insert(key, idx);
+        insts.rev.insert(idx, (template, args.to_vec()));
+        insts.extra.push(AdtDef {
+            name,
+            ty_params: Vec::new(),
+            variants: Vec::new(),
+        });
+        idx
+    };
     let mut variants = Vec::new();
     for (vn, fields) in &tpl.variants {
-        let fs: Vec<Ty> = fields.iter().map(|f| subst_adt_field(*f, args)).collect();
-        for f in &fs {
-            // Param fields are the placeholders in a template instance
-            // (`(Option T)` inside a generic defn's signature); mono
-            // re-instantiates them once the parameter is bound.
-            if !matches!(f, Ty::I64 | Ty::I32 | Ty::F64 | Ty::Bool | Ty::Param(_)) {
-                return Err(format!(
-                    "{} instance field must be i64/i32/f64/bool in this slice, got {:?}",
-                    tpl.name, f
-                ));
-            }
-        }
+        let fs: Vec<Ty> = fields
+            .iter()
+            .map(|f| subst_field_ty(*f, args, base, insts))
+            .collect::<Result<_, _>>()?;
         variants.push((vn.clone(), fs));
     }
-    let mut insts = insts.borrow_mut();
-    let idx = base.len() as u32 + insts.extra.len() as u32;
-    insts.map.insert(key, idx);
-    insts.rev.insert(idx, (template, args.to_vec()));
-    insts.extra.push(AdtDef {
-        name,
-        ty_params: Vec::new(),
-        variants,
-    });
+    insts.borrow_mut().extra[idx as usize - base_len].variants = variants;
     Ok(idx)
+}
+
+/// Substitute a template field with the instantiation's type arguments. A
+/// field naming a generic template re-instantiates that template with the
+/// same arguments (positional-parameter rule).
+fn subst_field_ty(
+    f: Ty,
+    args: &[Ty],
+    base: &[AdtDef],
+    insts: &RefCell<AdtInsts>,
+) -> Result<Ty, String> {
+    let f = match f {
+        Ty::Param(k) => args
+            .get(k as usize)
+            .copied()
+            .unwrap_or(Ty::I64),
+        Ty::Adt(j) => {
+            let j_params = base
+                .get(j as usize)
+                .map(|d| d.ty_params.len())
+                .unwrap_or(0);
+            if j_params > 0 {
+                Ty::Adt(instantiate_adt(base, insts, j, args)?)
+            } else {
+                Ty::Adt(j)
+            }
+        }
+        other => other,
+    };
+    Ok(f)
+}
+
+/// Is this ADT (combined-table index) recursive — on a cycle of
+/// "contains an ADT-typed field" edges — and therefore heap-boxed?
+/// Everything off the cycle stays inline/unboxed, including ADTs that
+/// merely *contain* a boxed one (the boxed child is one pointer slot).
+pub fn compute_boxed(adts: &[AdtDef]) -> Vec<bool> {
+    let n = adts.len();
+    // Edges: t -> u for every ADT-typed field u.
+    let mut edges: Vec<Vec<u32>> = vec![Vec::new(); n];
+    for (t, d) in adts.iter().enumerate() {
+        for (_, fields) in &d.variants {
+            for f in fields {
+                if let Ty::Adt(u) = f {
+                    if (*u as usize) < n {
+                        edges[t].push(*u);
+                    }
+                }
+            }
+        }
+    }
+    // Iterative DFS with colors; a back edge boxes every node on the cycle
+    // path from the target to the current node.
+    const WHITE: u8 = 0;
+    const GRAY: u8 = 1;
+    const BLACK: u8 = 2;
+    let mut color = vec![WHITE; n];
+    let mut boxed = vec![false; n];
+    for start in 0..n {
+        if color[start] != WHITE {
+            continue;
+        }
+        let mut path: Vec<usize> = Vec::new();
+        let mut on_path = vec![false; n];
+        // Explicit stack of (node, next-edge-index).
+        let mut stack: Vec<(usize, usize)> = vec![(start, 0)];
+        color[start] = GRAY;
+        on_path[start] = true;
+        path.push(start);
+        while let Some(&mut (node, ref mut ei)) = stack.last_mut() {
+            if *ei < edges[node].len() {
+                let next = edges[node][*ei] as usize;
+                *ei += 1;
+                match color[next] {
+                    WHITE => {
+                        color[next] = GRAY;
+                        on_path[next] = true;
+                        path.push(next);
+                        stack.push((next, 0));
+                    }
+                    GRAY => {
+                        // Cycle: box everything from `next` up the path.
+                        if let Some(pos) = path.iter().position(|&p| p == next) {
+                            for &p in &path[pos..] {
+                                boxed[p] = true;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            } else {
+                color[node] = BLACK;
+                on_path[node] = false;
+                path.pop();
+                stack.pop();
+            }
+        }
+    }
+    boxed
+}
+
+impl AdtDef {
+    /// Payload slot count (i64 words) for each field of each variant.
+    /// Scalars/bool/str/boxed-ADT fields take one slot, `(Vector _)` three,
+    /// and an inline ADT child embeds its whole struct (tag + payload) —
+    /// recursion terminates because inline children are cycle-free.
+    pub fn field_slots(&self, boxed: &[bool], adts: &[AdtDef]) -> Vec<Vec<usize>> {
+        let mut offsets = Vec::new();
+        for (_, fields) in &self.variants {
+            let mut per = Vec::new();
+            let mut at = 0usize;
+            for f in fields {
+                per.push(at);
+                at += field_slot_count(f, boxed, adts);
+            }
+            offsets.push(per);
+        }
+        offsets
+    }
+}
+
+/// Payload slots a single field occupies.
+pub fn field_slot_count(f: &Ty, boxed: &[bool], adts: &[AdtDef]) -> usize {
+    match f {
+        Ty::Vec(_) => 3,
+        Ty::Adt(j) => {
+            if boxed.get(*j as usize).copied().unwrap_or(false) {
+                1
+            } else {
+                // Inline child: its largest variant embeds whole.
+                adts.get(*j as usize).map(|d| adt_payload_slots(d, boxed, adts)).unwrap_or(1)
+            }
+        }
+        _ => 1,
+    }
+}
+
+fn adt_payload_slots(d: &AdtDef, boxed: &[bool], adts: &[AdtDef]) -> usize {
+    d.variants
+        .iter()
+        .map(|(_, fields)| fields.iter().map(|f| field_slot_count(f, boxed, adts)).sum::<usize>())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Total payload slots for ADT `i` (the `[N x i64]` of its LLVM type).
+pub fn adt_total_slots(adts: &[AdtDef], boxed: &[bool], i: u32) -> usize {
+    adts.get(i as usize)
+        .map(|d| adt_payload_slots(d, boxed, adts))
+        .unwrap_or(0)
 }
 
 

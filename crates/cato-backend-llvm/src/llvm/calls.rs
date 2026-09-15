@@ -98,16 +98,21 @@ pub(crate) fn call_user(
                 ll_args.push(format!("ptr {}", v));
             }
             Ty::Adt(i) => {
-                // By-value boundary: load the caller's slot into the arg.
                 let v = emit_adt(expr, c, mdl, sigs);
-                let lv = c.temp();
-                c.line(&format!(
-                    "  {} = load {}, ptr {}, align 8",
-                    lv,
-                    mdl.adt_name(*i),
-                    v
-                ));
-                ll_args.push(format!("{} {}", mdl.adt_name(*i), lv));
+                if mdl.adt_boxed(*i) {
+                    // Boxed: the owning pointer moves into the callee.
+                    ll_args.push(format!("ptr {}", v));
+                } else {
+                    // By-value boundary: load the caller's slot into the arg.
+                    let lv = c.temp();
+                    c.line(&format!(
+                        "  {} = load {}, ptr {}, align 8",
+                        lv,
+                        mdl.adt_name(*i),
+                        v
+                    ));
+                    ll_args.push(format!("{} {}", mdl.adt_name(*i), lv));
+                }
             }
         }
     }
@@ -117,7 +122,11 @@ pub(crate) fn call_user(
     } else if ret_ty.is_int() || ret_ty.is_float() {
         Mdl::ll_scalar(*ret_ty).to_string()
     } else if let Ty::Adt(i) = *ret_ty {
-        mdl.adt_name(i)
+        if mdl.adt_boxed(i) {
+            "ptr".to_string()
+        } else {
+            mdl.adt_name(i)
+        }
     } else if *ret_ty == Ty::Str {
         "ptr".to_string()
     } else if matches!(ret_ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
@@ -136,12 +145,16 @@ pub(crate) fn call_user(
     if !adt_ret {
         return t;
     }
-    // ADT return: store the by-value struct into a fresh caller slot and
-    // hand out the ptr (internal representation stays ptr-based).
+    // ADT return: boxed values come back as owning pointers directly; an
+    // inline by-value struct is stored into a fresh caller slot so the
+    // internal ptr-based representation holds.
     let i = match ret_ty {
         Ty::Adt(i) => *i,
         _ => unreachable!(),
     };
+    if mdl.adt_boxed(i) {
+        return t;
+    }
     let slot = c.temp();
     c.prelude
         .push(format!("  {} = alloca {}, align 8", slot, mdl.adt_name(i)));

@@ -967,11 +967,20 @@ fn generic_adt_errors() {
     // Arity mismatch.
     let err = build_err("(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option)] 0)");
     assert!(err.contains("type argument"), "got: {}", err);
-    // A non-scalar type argument is out of S1a scope.
-    let err = build_err(
+    // S1b widened fields: an Option holding a vector is now legal, and its
+    // instance carries the (Vector i64) field.
+    let exprs = read_all(
         "(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option (Vector i64))] 0)",
+    )
+    .unwrap();
+    let (adts, _) = build_program(&exprs).unwrap();
+    let inst = adts.iter().find(|a| a.name == "Option__vec_i64");
+    assert!(inst.is_some(), "{:?}", adts.iter().map(|a| a.name.clone()).collect::<Vec<_>>());
+    // Wrong arity in an applied field/annotation is an error.
+    let err = build_err(
+        "(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option i64 i64)] 0)",
     );
-    assert!(err.contains("i64/i32/f64/bool"), "got: {}", err);
+    assert!(err.contains("type argument"), "got: {}", err);
     // A nullary ctor with no way to infer its parameter.
     let err = build_err(
         "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n (None)] 0))",
@@ -990,9 +999,9 @@ fn let_ascription_pins_nullary_ctors() {
     let exprs = read_all(src).unwrap();
     let (adts, _) = build_program(&exprs).unwrap();
     assert!(adts.iter().any(|a| a.name == "Option__i64"), "{:?}", adts);
-    // Ascription mismatch is an error.
+    // Ascription mismatch is an error (the ctor field check fires).
     let err = build_err(
         "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n :- (Option i64) (Some 2.5)] 0))",
     );
-    assert!(err.contains("ascribed"), "got: {}", err);
+    assert!(err.contains("expects") || err.contains("ascribed"), "got: {}", err);
 }
