@@ -1,0 +1,30 @@
+; reader_ref.cato — S5 reference driver.
+;
+; Concatenated after the lib and reader files by the test harness (one
+; namespace); this file defines the only `main`. The path to read comes
+; from `(args)` index 0 (S3: trailing positionals are the program's
+; arguments); a missing path slurps the empty string and prints nothing.
+;
+; Output is the S5 acceptance artifact: the serialization of the file's
+; forms, one line per top-level form, or `err @line:col+len msg` — byte
+; identical to the seed reader's rendering over the same file, and byte
+; identical between the interpreter and the clang-compiled LLVM backend.
+
+(defn main []
+  (let [a (args)
+        path (get a 0 "")
+        src (slurp path)
+        r (read-all src)]
+    ; Extraction clones: the RRes box's drop glue frees the originals at
+    ; scope exit, so the arm works on deep copies.
+    (match r
+      (ROk [forms tab]
+        (let [s (sb-str (dump-forms (clone tab) (clone forms) (sb-new)))
+              ; dump-forms ends every line with \n; print-string appends
+              ; the final one, so the body sheds its trailing newline.
+              body (subs s 0 (- (count s) 1))]
+          (if (> (count s) 0)
+            (print-string body)
+            0)))
+      (RErr [msg at]
+        (print-string (str "err " (spat at) " " msg))))))

@@ -1,0 +1,3 @@
+"plain" "with\nescape" "tab\there" "back\\slash"
+"quote\"inside" "lenient\xkept" "multi
+line" "trailing\\"
