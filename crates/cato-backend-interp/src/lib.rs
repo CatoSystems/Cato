@@ -1101,7 +1101,9 @@ fn apply_fcmp(op: cato_core::hir::CmpOp, x: f64, y: f64) -> bool {
 
 /// `%g` formatting to match the C runtime's printf("%g\n"): 6 significant
 /// digits, trailing zeros trimmed, exponent form outside 1e-4..1e7.
-fn fmt_f64(v: f64) -> String {
+/// Public: the S5 differential oracle renders kernel-reader f64 atoms
+/// through this same function, so both sides share one float contract.
+pub fn fmt_f64(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
     }

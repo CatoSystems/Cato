@@ -531,17 +531,17 @@ pub(crate) fn emit_vec_header(
         }
         HExpr::Call(..) => {
             // A call returning a vector: the %VecI64 struct comes back by
-            // value; extract the header fields.
+            // value; extract the header fields. The data pointer stays
+            // ptr-typed — consumers ptrtoint it themselves when storing a
+            // slot (an i64 here made the ctor's memcpy source ill-typed).
             let st = call_user_node(arg, c, mdl, sigs);
             let p = c.temp();
             c.line(&format!("  {} = extractvalue %VecI64 {}, 0", p, st));
-            let pp = c.temp();
-            c.line(&format!("  {} = ptrtoint ptr {} to i64", pp, p));
             let l = c.temp();
             c.line(&format!("  {} = extractvalue %VecI64 {}, 1", l, st));
             let cap = c.temp();
             c.line(&format!("  {} = extractvalue %VecI64 {}, 2", cap, st));
-            (pp, l, cap)
+            (p, l, cap)
         }
         other => {
             // Control-flow / clone / conj values in field position flow

@@ -115,11 +115,26 @@ fn main() {
             // The interpreter's artifact is the program output. Runtime
             // panics (malformed programs reaching interp invariants) are
             // reported as errors, not raw backtraces.
+            //
+            // The tree-walking interpreter recurses once per Cato call
+            // frame, and debug-build eval frames are large — the 8MB main
+            // stack dies around ~100 nested Cato calls. Run it on a thread
+            // with a real stack (the same fix rustc applies for itself);
+            // the reservation is virtual, so untouched pages cost nothing
+            // and shallow programs behave exactly as before.
             let program_args = cli.interp_args.clone();
-            crate::ui::guard(|| {
-                InterpBackend { program_args }.emit(&program)
-            })
-            .unwrap_or_else(|e| {
+            let result = std::thread::Builder::new()
+                .stack_size(512 * 1024 * 1024)
+                .spawn(move || {
+                    crate::ui::guard(|| InterpBackend { program_args }.emit(&program))
+                })
+                .expect("spawn interp thread")
+                .join()
+                .unwrap_or_else(|_| {
+                    eprintln!("{} interp thread panicked", ui::error_lead());
+                    std::process::exit(1);
+                });
+            result.unwrap_or_else(|e| {
                 eprintln!("{} {}", ui::error_lead(), e);
                 std::process::exit(1);
             })

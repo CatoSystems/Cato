@@ -805,8 +805,9 @@ fn cycle_boxed(adts: &[AdtDef]) -> Vec<bool> {
 impl AdtDef {
     /// Payload slot count (i64 words) for each field of each variant.
     /// Scalars/bool/str/boxed-ADT fields take one slot, `(Vector _)` three,
-    /// and an inline ADT child embeds its whole struct (tag + payload) —
-    /// recursion terminates because inline children are cycle-free.
+    /// and an inline ADT child embeds its whole struct — tag plus payload —
+    /// exactly the words its values materialize with (recursion terminates
+    /// because inline children are cycle-free).
     pub fn field_slots(&self, boxed: &[bool], adts: &[AdtDef]) -> Vec<Vec<usize>> {
         let mut offsets = Vec::new();
         for (_, fields) in &self.variants {
@@ -830,8 +831,13 @@ pub fn field_slot_count(f: &Ty, boxed: &[bool], adts: &[AdtDef]) -> usize {
             if boxed.get(*j as usize).copied().unwrap_or(false) {
                 1
             } else {
-                // Inline child: its largest variant embeds whole.
-                adts.get(*j as usize).map(|d| adt_payload_slots(d, boxed, adts)).unwrap_or(1)
+                // Inline child: its tag plus its largest variant's fields —
+                // the struct a value of that type materializes as. Without
+                // the tag slot the child's by-value stores spill one word
+                // past the parent box and every later field misreads.
+                adts.get(*j as usize)
+                    .map(|d| 1 + adt_payload_slots(d, boxed, adts))
+                    .unwrap_or(1)
             }
         }
         _ => 1,
