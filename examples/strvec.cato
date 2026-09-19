@@ -1,0 +1,21 @@
+; strvec.cato — string vectors: conj with element ownership.
+;
+; (Vector str) owns a heap copy of every element string: conj strdups the
+; appended value, a persistent conj (source still read afterwards) deep-
+; copies all live elements, an in-place conj (source never read again)
+    ; reuses the buffer, and the vector's drop frees each element. The
+; source snapshot stays valid and unchanged across every conj.
+
+(defn main [] :- i64
+  (let [parts (split "a,b,c" ",")       ; [a b c]
+        more  (conj parts "d")          ; persistent: parts still [a b c]
+        last  (conj more "!")           ; more is never read again: in place
+        n     (count parts)]            ; 3 — the original snapshot
+    (do
+      (print (count parts))             ; 3
+      (print (count more))              ; 4
+      (print (count last))              ; 5
+      (print (get more 3 "x"))          ; d
+      (print (get last 4 "x"))          ; !
+      (print (get parts 0 "x"))         ; a
+      n)))

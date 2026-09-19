@@ -24,6 +24,7 @@ fn assert_same(src: &str) {
 
 const EXAMPLES: &[&str] = &[
     "closures",
+    "strvec",
     "collection_generics",
     "collections",
     "generic",

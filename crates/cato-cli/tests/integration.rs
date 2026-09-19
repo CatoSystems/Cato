@@ -473,6 +473,41 @@ fn compiles_options2_to_expected_output() {
 }
 
 #[test]
+fn compiles_strvec_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/strvec.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("strvec", &src),
+        "3\n4\n5\nd\n!\na\n"
+    );
+}
+
+#[test]
+fn strvec_is_sanitizer_clean() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rt = manifest.join("../../runtime/runtime.c");
+    let src = manifest.join("../../examples/strvec.cato");
+    let out_ll = manifest.join("../../target/strvec.ll");
+    let exe = manifest.join("../../target/strvec_bin");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .args(["-fsanitize=address"])
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    assert!(out.status.success(), "binary failed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+}
+
+#[test]
 fn vec_field_adt_is_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");

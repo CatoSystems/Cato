@@ -4,6 +4,7 @@
 use std::process::Command;
 
 const EXAMPLES: &[&str] = &[
+    "strvec",
     "options2",
     "closures",
     "collection_generics",

@@ -67,8 +67,18 @@ pub(crate) fn emit_conj(
         }
     };
 
-    // The appended value, in the buffer's element type.
-    let xv = emit_typed(x, elem_ty_of(elem), c, mdl, sigs);
+    // The appended value, in the buffer's element type. String vectors
+    // own their elements: strdup the appended string (the str rule —
+    // static literals and caller-owned bytes alike).
+    let xv = if elem == Elem::Str {
+        let sv = emit_str_val(x, c, mdl, sigs);
+        mdl.ensure_decl("declare ptr @strdup(ptr)");
+        let cp = c.temp();
+        c.line(&format!("  {} = call ptr @strdup(ptr {})", cp, sv));
+        cp
+    } else {
+        emit_typed(x, elem_ty_of(elem), c, mdl, sigs)
+    };
     let one = c.temp();
     c.line(&format!("  {} = add i64 {}, 1", one, len));
 
@@ -104,7 +114,8 @@ pub(crate) fn emit_conj(
     match elem {
         Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, tail)),
         Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, tail)),
-        Elem::Str => panic!("codegen: conj over string vectors not supported"),
+        // Element strings are already owned copies (strdup above).
+        Elem::Str => c.line(&format!("  store ptr {}, ptr {}, align 8", xv, tail)),
         Elem::Param(_) => panic!("unresolved element"),
     }
     let slot_out = c.temp();
@@ -144,16 +155,29 @@ pub(crate) fn emit_conj(
         "  {} = select i1 {}, i64 {}, i64 {}",
         newcap, ge, dbl, one
     ));
-    let nbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, 8", nbytes, newcap));
-    let np = emit_malloc(c, mdl, &nbytes);
-    let cbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, 8", cbytes, len));
-    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
-    c.line(&format!(
-        "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
-        np, ptr, cbytes
-    ));
+    let np = if elem == Elem::Str && !freeable {
+        // Persistent copy: the source stays live and keeps its elements,
+        // so the new buffer owns deep copies of them.
+        mdl.ensure_decl("declare ptr @cato_str_vec_copy(ptr, i64, i64)");
+        let dp = c.temp();
+        c.line(&format!(
+            "  {} = call ptr @cato_str_vec_copy(ptr {}, i64 {}, i64 {})",
+            dp, ptr, len, newcap
+        ));
+        dp
+    } else {
+        let nbytes = c.temp();
+        c.line(&format!("  {} = mul i64 {}, 8", nbytes, newcap));
+        let np = emit_malloc(c, mdl, &nbytes);
+        let cbytes = c.temp();
+        c.line(&format!("  {} = mul i64 {}, 8", cbytes, len));
+        mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+        c.line(&format!(
+            "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+            np, ptr, cbytes
+        ));
+        np
+    };
     let gp = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
@@ -162,7 +186,7 @@ pub(crate) fn emit_conj(
     match elem {
         Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, gp)),
         Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, gp)),
-        Elem::Str => panic!("codegen: conj over string vectors not supported"),
+        Elem::Str => c.line(&format!("  store ptr {}, ptr {}, align 8", xv, gp)),
         Elem::Param(_) => panic!("unresolved element"),
     }
     if freeable {

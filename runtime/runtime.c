@@ -249,6 +249,21 @@ int64_t cato_hamt_find(void *t, int64_t k, void *found_out) {
     return out;
 }
 
+/* (Vector str) ownership: a string vector owns a heap copy of every
+   element string. conj strdups the appended value; a persistent copy
+   strdups all live elements (each vector owns its own); release frees
+   each element, then the array. */
+char **cato_str_vec_copy(char **src, int64_t len, int64_t cap) {
+    char **out = malloc(cap * sizeof(char *));
+    for (int64_t i = 0; i < len; i++) out[i] = strdup(src[i]);
+    return out;
+}
+
+void cato_str_vec_free(char **arr, int64_t len) {
+    for (int64_t i = 0; i < len; i++) free(arr[i]);
+    free(arr);
+}
+
 /* Release a map's heap: `cap` is the header's cap word (tag bit 1 = HAMT
    root, 0 = flat sorted array). Called by generated drop glue. */
 void cato_map_release_pair(void *root, int64_t cap) {
