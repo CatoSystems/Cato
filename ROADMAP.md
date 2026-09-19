@@ -80,8 +80,12 @@ two-argument `get`/`nth` return `Option`.
 `docs/superpowers/specs/2026-09-19-cato-s4-compiler-stdlib.md`): symbol
 interning, string builder, span/AST ADTs, sid-keyed assoc-lists, and Result
 plumbing — ordinary Cato built by the seed, ASAN-clean, guarded in the test
-suite from this phase onward. S5–S9 are designed but un-attempted. The
-phases below are the plan, not a record.
+suite from this phase onward. **S5 is shipped** (`selfhost/cato/reader/`,
+spec `docs/superpowers/specs/2026-09-19-cato-s5-kernel-reader.md`): the
+kernel reader — tokenizer + iterative scan producing the span-carrying AST,
+byte-matching the seed reader over every `examples/` file and an edge-case
+fixture corpus, with interp↔LLVM parity of the driver itself. S6–S9 are
+designed but un-attempted. The phases below are the plan, not a record.
 
 ## Phase S0 — Scalar floor *(shipped)*
 
