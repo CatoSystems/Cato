@@ -139,7 +139,9 @@ ADT — which is what *makes* recursion expressible); ownership treats boxed
 ADTs and heap-holding fields as moving/owning; ctors allocate, `match`
 dereferences.
 
-**S1c — Drop glue & strings** *(shipped)*: `compute_adt_facts` derives
+**S1c — Drop glue & strings** *(shipped; drop planning superseded by
+ownership-driven `plan_drops` — see `2026-09-18-cato-ownership-model-revised.md`)*:
+`compute_adt_facts` derives
 boxing and ownership jointly (boxed = cycle ∨ owning). Free annotation is
 value-shape based: only *fresh* allocations free at scope exit (subs/split/
 join/str/char->str, collections, boxed ctors, fresh returns) — aliases,

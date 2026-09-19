@@ -417,7 +417,7 @@ pub(crate) fn loop_init(r: &HReduce) -> f64 {
         HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => match init {
             HExpr::ConstF64(v) => *v,
             HExpr::ConstI64(v) => *v as f64,
-            HExpr::ConvF64(inner) => match &**inner {
+            HExpr::ICast(inner, _, Ty::F64) => match &**inner {
                 HExpr::ConstI64(v) => *v as f64,
                 _ => 0.0,
             },

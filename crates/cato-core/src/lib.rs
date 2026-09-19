@@ -103,10 +103,43 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
         if optimize {
             opt::optimize(&mut program)?;
         }
-        // S1c: owned move-type parameters free at body exit (after all
-        // passes, so none of them rewrites the wrapper away).
+        // Ownership-driven destruction: after all passes (so none of them
+        // rewrites the drop annotations away), plan scope-exit drops from
+        // the ownership states and free still-owned move-type params.
         let facts = hir::compute_adt_facts(&program.adts);
-        hir::annotate_param_frees(&mut program, &facts);
+        let sigs: std::collections::HashMap<String, Vec<hir::Borrow>> = program
+            .defns
+            .iter()
+            .map(|d| (d.name.clone(), d.borrows.clone()))
+            .collect();
+        for d in program.defns.iter_mut() {
+            if d.is_extern {
+                continue;
+            }
+            hir::plan_drops(
+                &d.name,
+                &d.params,
+                &d.borrows,
+                &mut d.body,
+                &sigs,
+                &facts,
+                true,
+            )?;
+        }
+        for lam in program.lambdas.iter_mut() {
+            // Lambda params are values inside the (interim, leaked) env;
+            // plan their scope-exit drops but no param-free wrapper.
+            let sig = format!("<lambda {}>", lam.mangled);
+            hir::plan_drops(
+                &sig,
+                &lam.params,
+                &[],
+                &mut lam.body,
+                &sigs,
+                &facts,
+                false,
+            )?;
+        }
         Ok(program)
     })
 }

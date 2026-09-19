@@ -152,19 +152,22 @@ pub enum HExpr {
     /// `true` / `false`.
     ConstB(bool),
     Var(String),
-    Bin(BinOp, Box<HExpr>, Box<HExpr>),
     /// f32 arithmetic (f32 is a closed width like i32).
     BinF(BinOp, Box<HExpr>, Box<HExpr>),
-    ConvF64(Box<HExpr>),
     Count(Box<HExpr>),
     VecLit(VLit),
     /// A string literal; codegen mints a private `[N x i8]` constant.
     StrLit(String),
-    /// `(conj v x)` — a fresh heap vector with x appended (v is copied).
+    /// `(conj v x)` — the persistent sequence with x appended. Vectors are
+    /// values: `v` remains valid and unchanged. When the planner proves `v`
+    /// is never read again it sets `in_place`, and codegen appends into v's
+    /// buffer instead of copying — an unobservable optimization, not a
+    /// semantic consume.
     Conj {
         v: Box<HExpr>,
         x: Box<HExpr>,
         elem: Elem,
+        in_place: bool,
     },
     /// `(subvec v start end)` — a fresh heap slice copy, bounds-clamped.
     Subvec {
@@ -185,9 +188,12 @@ pub enum HExpr {
     BinW(BinOp, Box<HExpr>, Box<HExpr>, Ty),
     /// Comparisons over closed widths: the Ty selects the LLVM type,
     /// signedness (signed vs `ult` family) and float vs int comparison.
+    /// The only comparison form: width and signedness live in the node.
     CmpW(CmpOp, Box<HExpr>, Box<HExpr>, Ty),
-    /// `(i32 e)` / `(i64 e)` — explicit widening/narrowing casts.
-    ICast(Box<HExpr>, Ty),
+    /// Explicit cast. Both widths are carried: `from` selects signedness
+    /// for int→float and float→int conversion, `to` the target — neither
+    /// backend reconstructs semantics from runtime values.
+    ICast(Box<HExpr>, Ty, Ty),
     /// `{k v ...}` — a map literal; constant keys are sorted at compile time.
     MapLit(Vec<(HExpr, HExpr)>),
     /// `#{x ...}` — a set literal; constant elements are sorted and deduped
@@ -229,6 +235,10 @@ pub enum HExpr {
         src: Box<HExpr>,
         key: Box<HExpr>,
         default: Option<Box<HExpr>>,
+        /// `Some(instance)` — the two-argument form returns `(Option V)`
+        /// (the instance index of the prelude's Option). `None` — the
+        /// explicit-default form returns V directly.
+        res: Option<Ty>,
     },
     /// `(assoc m k v)` — a fresh map with the binding added/replaced.
     MapAssoc {
@@ -245,7 +255,12 @@ pub enum HExpr {
     StrOrd(CmpOp, Box<HExpr>, Box<HExpr>),
     /// `(nth s i)` — the byte at index `i` as an i64; runtime-bounds-checked
     /// (0 out of range, branchless select in codegen).
-    StrNth { s: Box<HExpr>, idx: Box<HExpr> },
+    StrNth {
+        s: Box<HExpr>,
+        idx: Box<HExpr>,
+        /// Option-instance result for the two-argument form (see MapGet).
+        res: Option<Ty>,
+    },
     /// `(char->str c)` — a fresh one-byte heap string of c's low byte.
     /// Must be bound with `let` (allocates, like `subs`).
     CharStr(Box<HExpr>),
@@ -284,6 +299,11 @@ pub enum HExpr {
         params: Vec<(String, Ty)>,
         /// Free locals captured at creation, in env-slot order.
         captures: Vec<(String, Ty)>,
+        /// Per-capture heap ownership (same order): a capture whose binding
+        /// held static data (a literal) or an alias is NOT owned by the env,
+        /// so the env's drop glue must not free it. Written by the drop
+        /// planner from the binding's ownership state.
+        capture_owns: Vec<bool>,
         body: Box<HExpr>,
     },
     /// `(f args...)` where `f` is a closure value.
@@ -306,7 +326,6 @@ pub enum HExpr {
     And(Box<HExpr>, Box<HExpr>),
     Or(Box<HExpr>, Box<HExpr>),
     Not(Box<HExpr>),
-    Cmp(CmpOp, Box<HExpr>, Box<HExpr>, bool),
     Abs(Box<HExpr>, Ty),
     Min(Box<HExpr>, Box<HExpr>, Ty),
     Max(Box<HExpr>, Box<HExpr>, Ty),
@@ -333,6 +352,8 @@ pub enum HExpr {
         idx: Box<HExpr>,
         default: Option<Box<HExpr>>,
         ty: Ty,
+        /// Option-instance result for the two-argument form (see MapGet).
+        res: Option<Ty>,
     },
 }
 
@@ -485,7 +506,7 @@ pub(crate) use generics::*;
 pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
-pub use ownership::annotate_param_frees;
+pub(crate) use ownership::plan_drops;
 pub(crate) use ownership::*;
 pub(crate) use parse::*;
 pub(crate) use pipeline::*;
@@ -497,9 +518,6 @@ pub enum Borrow {
     Owned,
     /// Immutable borrow: the caller keeps the value.
     Shared,
-    /// Exclusive borrow: the caller keeps the value, but no other borrow of
-    /// the same binding may appear in the same call.
-    Exclusive,
 }
 
 impl Borrow {
@@ -646,7 +664,7 @@ fn subst_field_ty(
         Ty::Param(k) => args
             .get(k as usize)
             .copied()
-            .unwrap_or(Ty::I64),
+            .ok_or_else(|| format!("unresolved type parameter {} in ADT field", k))?,
         Ty::Adt(j) => {
             let j_params = base
                 .get(j as usize)

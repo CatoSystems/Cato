@@ -12,6 +12,7 @@ pub(crate) fn emit_closure_creation(
     mangled: &str,
     sig: u32,
     captures: &[(String, Ty)],
+    capture_owns: &[bool],
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
@@ -19,14 +20,28 @@ pub(crate) fn emit_closure_creation(
     let _ = sig;
     let mangled = mangled.to_string();
 
-    // Env block: capture-dependent slot counts.
-    let n: i64 = captures.iter().map(|(_, t)| capture_slots(t)).sum();
+    // Env block: one ownership-bitmap word, then the captures. Bit i records
+    // whether the env owns capture i's heap (static literals and aliases are
+    // excluded by the drop planner) so the glue frees only what it must.
+    let n: i64 = 1 + captures.iter().map(|(_, t)| capture_slots(t)).sum::<i64>();
     let nreg = c.temp();
     c.line(&format!("  {} = add i64 {}, 0", nreg, n));
     let nbytes = c.temp();
     c.line(&format!("  {} = mul i64 {}, 8", nbytes, nreg));
     let env = emit_malloc(c, mdl, &nbytes);
-    let mut at: i64 = 0;
+    let mut bm: i64 = 0;
+    for (i, owns_i) in capture_owns.iter().enumerate() {
+        if *owns_i {
+            bm |= 1 << i;
+        }
+    }
+    let bword = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr {}, i64 0",
+        bword, env
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", bm, bword));
+    let mut at: i64 = 1;
     for (name, ty) in captures.iter() {
         at += store_capture(env.clone(), at, name, *ty, c, mdl, sigs);
     }
@@ -45,15 +60,23 @@ pub(crate) fn emit_closure_creation(
         envf, slot
     ));
     c.line(&format!("  store ptr {}, ptr {}, align 8", env, envf));
+    let dropf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 2",
+        dropf, slot
+    ));
+    c.line(&format!(
+        "  store ptr @drop__{}, ptr {}, align 8",
+        mangled, dropf
+    ));
     slot
 }
 
 /// Env slots a capture occupies: 1 for scalars/bool/str/boxed ADT, 3 for
-/// collection headers, 2 for a captured closure's {code, env}.
+/// collection headers and for a captured closure's {code, env, drop}.
 pub(crate) fn capture_slots(ty: &Ty) -> i64 {
     match ty {
-        Ty::Vec(_) | Ty::Map | Ty::Set => 3,
-        Ty::Fn(_) => 2,
+        Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_) => 3,
         _ => 1,
     }
 }
@@ -93,25 +116,18 @@ fn store_capture(
                 .get(name)
                 .map(|(r, _)| r.clone())
                 .unwrap_or_else(|| panic!("codegen: {} is not a closure binding", name));
-            let c0 = c.temp();
-            c.line(&format!(
-                "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 0",
-                c0, slot
-            ));
-            let code = c.temp();
-            c.line(&format!("  {} = load ptr, ptr {}, align 8", code, c0));
-            let e0 = c.temp();
-            c.line(&format!(
-                "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 1",
-                e0, slot
-            ));
-            let envp = c.temp();
-            c.line(&format!("  {} = load ptr, ptr {}, align 8", envp, e0));
-            let g0 = gep(c, 0);
-            c.line(&format!("  store ptr {}, ptr {}, align 8", code, g0));
-            let g1 = gep(c, 1);
-            c.line(&format!("  store ptr {}, ptr {}, align 8", envp, g1));
-            2
+            for (k, field) in [0usize, 1usize, 2usize].iter().enumerate() {
+                let f = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 {}",
+                    f, slot, field
+                ));
+                let w = c.temp();
+                c.line(&format!("  {} = load ptr, ptr {}, align 8", w, f));
+                let g = gep(c, k as i64);
+                c.line(&format!("  store ptr {}, ptr {}, align 8", w, g));
+            }
+            3
         }
         _ => {
             let v = read_capture(name, ty, c, mdl, sigs);
@@ -276,26 +292,22 @@ pub(crate) fn emit_closure_call(
         o => panic!("codegen: closure ret {:?} not supported", o),
     };
     let r = c.temp();
-    let pl = ptys
-        .iter()
-        .map(|t| match t {
-            t if t.is_int() => Mdl::ll_scalar(*t).to_string(),
-            Ty::F64 => "double".to_string(),
-            Ty::F32 => "float".to_string(),
-            Ty::Bool => "i1".to_string(),
-            Ty::Str => "ptr".to_string(),
-            o => panic!("codegen: closure param {:?} not supported", o),
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let mut pl = vec!["ptr".to_string()];
+    pl.extend(ptys.iter().map(|t| match t {
+        t if t.is_int() => Mdl::ll_scalar(*t).to_string(),
+        Ty::F64 => "double".to_string(),
+        Ty::F32 => "float".to_string(),
+        Ty::Bool => "i1".to_string(),
+        Ty::Str => "ptr".to_string(),
+        o => panic!("codegen: closure param {:?} not supported", o),
+    }));
     c.line(&format!(
-        "  {} = call {} (ptr, {}) {}(ptr {}, {})",
+        "  {} = call {} ({}) {}({})",
         r,
         ret_ll,
-        pl,
+        pl.join(", "),
         code,
-        env,
-        ll_args[1..].join(", ")
+        ll_args.join(", ")
     ));
     r
 }
@@ -325,7 +337,7 @@ pub(crate) fn emit_lambda(
     }
     // Load captures from the env block into the scalar map under their
     // original names (params never shadow captures: captures exclude them).
-    let mut at: i64 = 0;
+    let mut at: i64 = 1; /* env[0] is the ownership bitmap */
     for (cname, ty) in lambda.captures.iter() {
         match ty {
             Ty::Vec(_) | Ty::Map | Ty::Set => {
@@ -370,7 +382,7 @@ pub(crate) fn emit_lambda(
                 let slot = c.temp();
                 c.prelude
                     .push(format!("  {} = alloca %Closure, align 8", slot));
-                for k in 0..2i64 {
+                for k in 0..3i64 {
                     let f = c.temp();
                     c.line(&format!(
                         "  {} = getelementptr inbounds i64, ptr %env, i64 {}",
@@ -433,4 +445,112 @@ pub(crate) fn emit_lambda(
     // Bool returns widen back from i8 loads; ret_ll already i1 and val is i1.
     text.push_str(&format!("{} {}\n}}\n", ret_ll, val));
     text
+}
+
+fn c_temp_label(prefix: &str, n: usize) -> String {
+    format!("%{}{}", prefix, n)
+}
+
+/// The drop-glue helper for a closure: `@drop__lambda_N(ptr env)`. Frees the
+/// captures the env owns (per the ownership bitmap) in reverse slot order —
+/// each through its type's own mechanism: string bytes, collection buffers,
+/// boxed-ADT glue, a captured closure's own drop function — then frees the
+/// env. The closure value is move-only: exactly one live header is
+/// responsible for calling this.
+pub(crate) fn emit_lambda_drop(
+    lambda: &Lambda,
+    mdl: &mut Mdl,
+    _sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "define void @drop__{}(ptr %env) {{\nentry:\n",
+        lambda.mangled
+    ));
+    // The ownership bitmap at env[0]: bit i set = the env owns capture i's
+    // heap. Per capture (reverse slot order), branch to the free sequence
+    // only when the bit is set.
+    out.push_str("  %bm = load i64, ptr %env\n");
+    let mut at: i64 = 1;
+    let mut slots: Vec<(Ty, i64, usize)> = Vec::new();
+    for (i, (_, ty)) in lambda.captures.iter().enumerate() {
+        slots.push((*ty, at, i));
+        at += capture_slots(ty);
+    }
+    let mut label: usize = 0;
+    for (ty, off, bit) in slots.iter().rev() {
+        let mask = format!("%m{}", label);
+        out.push_str(&format!(
+            "  {} = and i64 %bm, {}\n",
+            mask,
+            1i64 << bit
+        ));
+        let cond = format!("%c{}", label);
+        out.push_str(&format!(
+            "  {} = icmp ne i64 {}, 0\n",
+            cond, mask
+        ));
+        let free_lbl = format!("own{}", label);
+        let done_lbl = format!("done{}", label);
+        label += 1;
+        out.push_str(&format!(
+            "  br i1 {}, label %{}, label %{}\n",
+            cond, free_lbl, done_lbl
+        ));
+        out.push_str(&format!("{}:\n", free_lbl));
+        let word = |k: i64, out: &mut String| {
+            let f = format!(
+                "  %w{}_{} = getelementptr inbounds i64, ptr %env, i64 {}\n",
+                label, k, off + k
+            );
+            let l = format!("  %v{}_{} = load ptr, ptr %w{}_{}\n", label, k, label, k);
+            out.push_str(&f);
+            out.push_str(&l);
+            format!("%v{}_{}", label, k)
+        };
+        match ty {
+            Ty::Str | Ty::Vec(_) | Ty::Set => {
+                let p = word(0, &mut out);
+                mdl.ensure_decl("declare void @free(ptr)");
+                out.push_str(&format!("  call void @free(ptr {})\n", p));
+            }
+            Ty::Map => {
+                // Flat buffer or HAMT root: the runtime release decides.
+                let p = word(0, &mut out);
+                let capw = format!(
+                    "  %cw{} = getelementptr inbounds i64, ptr %env, i64 {}\n",
+                    label,
+                    off + 2
+                );
+                let capl =
+                    format!("  %cv{} = load i64, ptr %cw{}\n", label, label);
+                out.push_str(&capw);
+                out.push_str(&capl);
+                mdl.ensure_decl("declare void @cato_map_release_pair(ptr, i64)");
+                out.push_str(&format!(
+                    "  call void @cato_map_release_pair(ptr {}, i64 %cv{})\n",
+                    p, label
+                ));
+            }
+            Ty::Adt(i) if mdl.adt_owns(*i) => {
+                let p = word(0, &mut out);
+                out.push_str(&format!(
+                    "  call void @drop__{}(ptr {})\n",
+                    mdl.adts[*i as usize].name, p
+                ));
+            }
+            Ty::Fn(_) => {
+                // {code, env, drop}: call the captured closure's own glue.
+                let e = word(1, &mut out);
+                let d = word(2, &mut out);
+                out.push_str(&format!("  call void {}(ptr {})\n", d, e));
+            }
+            _ => {}
+        }
+        out.push_str(&format!("  br label %{}\n", done_lbl));
+        out.push_str(&format!("{}:\n", done_lbl));
+    }
+    mdl.ensure_decl("declare void @free(ptr)");
+    out.push_str("  call void @free(ptr %env)\n  ret void\n}\n");
+    out
 }

@@ -1,0 +1,21 @@
+; moved_param_return.cato — ownership-driven destruction reference.
+;
+; `pass` moves its owned parameter into a `let` and returns the heir: the
+; callee must NOT free the box (the duty transferred), and the final
+; consumer (`n-of`, an owned param) frees it exactly once. Under the
+; pre-S2 shape-based planner this program double-freed under `--no-opt`
+; (the callee freed the returned box; the caller's next callee freed it
+; again) — this is the regression reference for state-driven drops.
+
+(deftype Box (Box [n :- i64 s :- str]))
+
+(defn pass [b :- Box] :- Box
+  (let [y b] y))
+
+(defn n-of [b :- Box] :- i64
+  (match b (Box [n s] n) (_ 0)))
+
+(defn main [] :- i64
+  (let [x (Box 41 "hello")
+        z (pass x)]
+    (print (n-of z))))

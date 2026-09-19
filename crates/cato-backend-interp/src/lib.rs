@@ -202,30 +202,18 @@ impl<'p> Interpreter<'p> {
                 .get(v)
                 .cloned()
                 .unwrap_or_else(|| panic!("interp: unbound var {}", v)),
-            HExpr::Bin(op, a, b) => {
-                let (x, y) = (self.eval(a, env)?, self.eval(b, env)?);
-                // Bin carries no width: floats when either operand is one
-                // (the i64 auto-promotion rule), wrapping ints otherwise.
-                if matches!(x, Value::F64(_) | Value::F32(_))
-                    || matches!(y, Value::F64(_) | Value::F32(_))
-                {
-                    Value::F64(apply_fbin(*op, f64_of(&x), f64_of(&y)))
-                } else {
-                    let (xi, yi) = (int_of(&x), int_of(&y));
-                    Value::Int(match op {
-                        BinOp::Add => xi.wrapping_add(yi),
-                        BinOp::Sub => xi.wrapping_sub(yi),
-                        BinOp::Mul => xi.wrapping_mul(yi),
-                        BinOp::Div => xi.wrapping_div(yi),
-                    })
-                }
-            }
             HExpr::BinF(op, a, b) => {
                 let x = f32_of(&self.eval(a, env)?);
                 let y = f32_of(&self.eval(b, env)?);
                 Value::F32(apply_f32bin(*op, x, y))
             }
             HExpr::BinW(op, a, b, ty) => {
+                if ty.is_float() {
+                    // f64 arithmetic: the node's width is the semantics.
+                    let x = f64_of(&self.eval(a, env)?);
+                    let y = f64_of(&self.eval(b, env)?);
+                    return Ok(Value::F64(apply_fbin(*op, x, y)));
+                }
                 let x = int_of(&self.eval(a, env)?);
                 let y = int_of(&self.eval(b, env)?);
                 let v = match op {
@@ -242,13 +230,12 @@ impl<'p> Interpreter<'p> {
                 };
                 Value::Int(wrap(v, *ty))
             }
-            HExpr::ConvF64(a) => Value::F64(int_of(&self.eval(a, env)?) as f64),
-            HExpr::ICast(a, target) => {
+            HExpr::ICast(a, from, target) => {
                 let v = self.eval(a, env)?;
                 match target {
                     Ty::F64 => Value::F64(match v {
                         Value::Int(i) => {
-                            if ty_of_val(&v).is_uint() {
+                            if from.is_uint() {
                                 i as u64 as f64
                             } else {
                                 i as f64
@@ -260,7 +247,7 @@ impl<'p> Interpreter<'p> {
                     }),
                     Ty::F32 => Value::F32(match v {
                         Value::Int(i) => {
-                            if ty_of_val(&v).is_uint() {
+                            if from.is_uint() {
                                 i as u64 as f32
                             } else {
                                 i as f32
@@ -294,24 +281,28 @@ impl<'p> Interpreter<'p> {
                     o => panic!("interp: bad cast target {:?}", o),
                 }
             }
-            HExpr::Cmp(op, a, b, is_f64) => {
-                let r = if *is_f64 {
-                    let (x, y) = (f64_of(&self.eval(a, env)?), f64_of(&self.eval(b, env)?));
-                    apply_fcmp(*op, x, y)
-                } else {
-                    let (x, y) = (int_of(&self.eval(a, env)?), int_of(&self.eval(b, env)?));
-                    apply_icmp(*op, x, y)
-                };
-                Value::Bool(r)
-            }
             HExpr::CmpW(op, a, b, ty) => {
-                let (x, y) = (int_of(&self.eval(a, env)?), int_of(&self.eval(b, env)?));
                 if ty.is_float() {
                     let (x, y) = (f64_of(&self.eval(a, env)?), f64_of(&self.eval(b, env)?));
                     Value::Bool(apply_fcmp(*op, x, y))
                 } else {
+                let (x, y) = (int_of(&self.eval(a, env)?), int_of(&self.eval(b, env)?));
+                if ty.is_uint() {
+                    // Top-bit values must order like the backend's `ult`
+                    // family: compare the bit patterns as unsigned.
+                    let (xu, yu) = (x as u64, y as u64);
+                    Value::Bool(match op {
+                        cato_core::hir::CmpOp::Eq => xu == yu,
+                        cato_core::hir::CmpOp::Ne => xu != yu,
+                        cato_core::hir::CmpOp::Lt => xu < yu,
+                        cato_core::hir::CmpOp::Gt => xu > yu,
+                        cato_core::hir::CmpOp::Le => xu <= yu,
+                        cato_core::hir::CmpOp::Ge => xu >= yu,
+                    })
+                } else {
                     // Values are already width-normalized; plain i64 compare.
                     Value::Bool(apply_icmp(*op, x, y))
+                }
                 }
             }
             HExpr::And(a, b) => {
@@ -418,24 +409,48 @@ impl<'p> Interpreter<'p> {
                     panic!("interp: assoc on non-map")
                 }
             }
-            HExpr::MapGet { src, key, default } => {
+            HExpr::MapGet { src, key, default, res } => {
                 let mv = self.eval(src, env)?;
                 let kv = int_of(&self.eval(key, env)?);
-                let mut res = match default {
-                    Some(d) => int_of(&self.eval(d, env)?),
-                    None => 0,
-                };
-                if let Value::Map(entries) = mv {
-                    // Last match wins (assoc replaces).
-                    for (ek, ev) in entries.iter() {
-                        if *ek == kv {
-                            res = *ev;
+                if let Some(opt_ty) = res {
+                    // Two-argument form: (Option i64), Some on a hit.
+                    let found = match &mv {
+                        Value::Map(entries) => {
+                            entries.iter().any(|(ek, _)| *ek == kv)
                         }
-                    }
+                        o => panic!("interp: map get on non-map {:?}", o),
+                    };
+                    let v = if found {
+                        match &mv {
+                            Value::Map(entries) => entries
+                                .iter()
+                                .find(|(ek, _)| *ek == kv)
+                                .map(|(_, ev)| *ev)
+                                .unwrap_or(0),
+                            _ => 0,
+                        }
+                    } else {
+                        0
+                    };
+                    let _ = opt_ty;
+                    some_none(found, v)
                 } else {
-                    panic!("interp: map get on non-map")
+                    let mut res = match default {
+                        Some(d) => int_of(&self.eval(d, env)?),
+                        None => 0,
+                    };
+                    if let Value::Map(entries) = mv {
+                        // Last match wins (assoc replaces).
+                        for (ek, ev) in entries.iter() {
+                            if *ek == kv {
+                                res = *ev;
+                            }
+                        }
+                    } else {
+                        panic!("interp: map get on non-map")
+                    }
+                    Value::Int(res)
                 }
-                Value::Int(res)
             }
             HExpr::SetConj { s, x } => {
                 let sv = self.eval(s, env)?;
@@ -558,19 +573,21 @@ impl<'p> Interpreter<'p> {
                     _ => panic!("interp: string compare on non-strings"),
                 }
             }
-            HExpr::StrNth { s, idx } => {
+            HExpr::StrNth { s, idx, res } => {
                 let sv = self.eval(s, env)?;
                 let iv = int_of(&self.eval(idx, env)?);
                 match sv {
                     Value::Str(s) => {
-                        // Out-of-range reads yield 0 (matches the LLVM
-                        // branchless select).
-                        let b = if iv >= 0 {
-                            s.as_bytes().get(iv as usize).copied().unwrap_or(0)
+                        let found = iv >= 0 && (iv as usize) < s.len();
+                        let b = if found {
+                            s.as_bytes()[iv as usize] as i64
                         } else {
                             0
                         };
-                        Value::Int(b as i64)
+                        match res {
+                            Some(_) => some_none(found, b),
+                            None => Value::Int(b),
+                        }
                     }
                     o => panic!("interp: nth on {:?}", o),
                 }
@@ -692,18 +709,27 @@ impl<'p> Interpreter<'p> {
                 let _ = out.flush();
                 std::process::exit(code as i32);
             }
-            HExpr::Get { src, idx, default, ty } => {
+            HExpr::Get { src, idx, default, ty, res } => {
                 let _ = ty;
                 let sv = self.eval(src, env)?;
                 let iv = int_of(&self.eval(idx, env)?);
                 match sv {
                     Value::Vec(xs) => {
-                        if iv >= 0 && (iv as usize) < xs.len() {
-                            xs[iv as usize].clone()
-                        } else {
-                            match default {
-                                Some(d) => self.eval(d, env)?,
-                                None => Value::Int(0),
+                        let found = iv >= 0 && (iv as usize) < xs.len();
+                        match res {
+                            Some(_) => {
+                                let v = if found { xs[iv as usize].clone() } else { Value::Int(0) };
+                                some_none(found, int_of(&v))
+                            }
+                            None => {
+                                if found {
+                                    xs[iv as usize].clone()
+                                } else {
+                                    match default {
+                                        Some(d) => self.eval(d, env)?,
+                                        None => Value::Int(0),
+                                    }
+                                }
                             }
                         }
                     }
@@ -1022,12 +1048,12 @@ fn bool_of(v: &Value) -> bool {
     }
 }
 
-fn ty_of_val(v: &Value) -> cato_core::hir::Ty {
-    use cato_core::hir::Ty;
-    match v {
-        Value::F64(_) => Ty::F64,
-        Value::F32(_) => Ty::F32,
-        _ => Ty::I64,
+/// Build the interpreter's `(Option i64)` value: variant 0 = Some, 1 = None
+/// (declaration order in the prelude).
+fn some_none(found: bool, v: i64) -> Value {
+    Value::Adt {
+        variant: if found { 0 } else { 1 },
+        fields: Rc::new(vec![Value::Int(v)]),
     }
 }
 

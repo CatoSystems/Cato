@@ -10,10 +10,10 @@ const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/errors");
 const CASES: &[(&str, &str, usize, &str)] = &[
     ("use_moved.cato", "E301", 3, "use of moved value xs"),
     (
-        "double_exclusive.cato",
-        "E302",
-        4,
-        "exclusively more than once",
+        "exclusive_sigil.cato",
+        "E202",
+        3,
+        "unsupported borrow sigil `&!`",
     ),
     ("nonexhaustive_match.cato", "E401", 5, "does not cover: Circle"),
     ("bad_arity.cato", "E201", 2, "expects 2 operands"),
@@ -41,6 +41,20 @@ const CASES: &[(&str, &str, usize, &str)] = &[
         "E205",
         8,
         "can never be selected",
+    ),
+    ("unbound_variable.cato", "E206", 2, "unbound variable undefined-var"),
+    ("unknown_function.cato", "E207", 2, "unknown function mystery-fn"),
+    (
+        "unknown_type_name.cato",
+        "E208",
+        3,
+        "unknown type name il64",
+    ),
+    (
+        "move_borrowed.cato",
+        "E303",
+        8,
+        "cannot move b: it is a borrowed parameter",
     ),
 ];
 
@@ -96,7 +110,6 @@ fn explain_docs_exist_for_all_codes() {
 fn classify_maps_pipeline_messages_to_codes() {
     let f = cato_core::diagnostics::classify;
     assert_eq!(f("use of moved value xs"), "E301");
-    assert_eq!(f("cannot borrow xs exclusively more than once in the same call"), "E302");
     assert_eq!(f("match on Shape does not cover: Circle (add arms or a _ wildcard)"), "E401");
     assert_eq!(f("binary op + expects 2 operands"), "E201");
     assert_eq!(f("conj source must be a vector, got I64"), "E202");
@@ -104,5 +117,12 @@ fn classify_maps_pipeline_messages_to_codes() {
     assert_eq!(f("unterminated string"), "E002");
     assert_eq!(f("map literal must have key/value pairs"), "E003");
     assert_eq!(f("unclosed delimiter"), "E004");
+    assert_eq!(f("unbound variable undefined-var"), "E206");
+    assert_eq!(f("unknown function mystery-fn"), "E207");
+    assert_eq!(f("unknown type name il64"), "E208");
+    assert_eq!(
+        f("cannot move b: it is a borrowed parameter and still belongs to the caller"),
+        "E303"
+    );
     assert_eq!(f("mystery failure"), "E000");
 }

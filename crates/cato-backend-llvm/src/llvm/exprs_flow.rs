@@ -35,7 +35,7 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             c.line(&format!("  {} = {} float {}, {}", t, op, av, bv));
             t
         }
-        HExpr::Bin(op, a, b) => {
+        HExpr::BinW(op, a, b, Ty::F64) => {
             let av = emit_float(a, c, mdl, sigs);
             let bv = emit_float(b, c, mdl, sigs);
             let op = match op {
@@ -48,16 +48,9 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             c.line(&format!("  {} = {} double {}, {}", t, op, av, bv));
             t
         }
-        HExpr::ICast(inner, target) if *target == Ty::F64 || *target == Ty::F32 => {
-            let src = static_int_width(inner, c, sigs);
-            let iv = emit_typed(inner, src, c, mdl, sigs);
-            emit_cast(iv, src, *target, c)
-        }
-        HExpr::ConvF64(v) => {
-            let iv = emit_int(v, c, mdl, sigs);
-            let t = c.temp();
-            c.line(&format!("  {} = sitofp i64 {} to double", t, iv));
-            t
+        HExpr::ICast(inner, from, target) if *target == Ty::F64 || *target == Ty::F32 => {
+            let iv = emit_typed(inner, *from, c, mdl, sigs);
+            emit_cast(iv, *from, *target, c)
         }
         HExpr::Call(name, args) => {
             if name == "print-f64" {

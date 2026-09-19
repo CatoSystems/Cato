@@ -1,0 +1,36 @@
+; options2.cato — Option-returning lookups (the absence contract).
+;
+; Two-argument `get`/`nth` return `(Option V)`: `Some` on a hit, `None`
+; on a miss — absence is a value you match on, never a silent 0. The
+; three-argument forms keep an explicit default for the C-style read.
+
+(deftype Box (Box [n :- i64 s :- str]))
+
+(defn describe [o :- (Option i64)] :- i64
+  (match o
+    (Some [v] (+ v 100))
+    (None [] (- 0 1))))
+
+(defn main [] :- i64
+  (let [m    {1 10 2 20}
+        xs   (vec-i64 5 6 7)
+        s    "hey"
+        hit  (get m 2)          ; (Option i64) — Some 20
+        miss (get m 9)          ; (Option i64) — None
+        el   (get xs 1)         ; (Option i64) — Some 6
+        oob  (get xs 99)        ; (Option i64) — None
+        byte (nth s 1)          ; (Option i64) — Some 101 ('e')
+        far  (nth s 99)         ; (Option i64) — None
+        dflt (get m 9 77)]      ; explicit default form: 77
+    (do
+      (print (describe hit))    ; 120
+      (print (describe miss))   ; -1
+      (print (describe oob))    ; -1
+      (print (describe byte))   ; 201
+      (print (describe far))    ; -1
+      (print dflt)              ; 77
+      (print (match el          ; match borrows: el is still owned here
+        (Some [v] v)
+        (None [] 0)))
+      (print (describe el))     ; 106
+      0)))

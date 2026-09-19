@@ -19,7 +19,7 @@
 
 ; A closure capturing a vector by move.
 (defn total-with [xs :- (Vector i64) extra :- i64] :- i64
-  (let [add-total (fn [base :- i64] (+ base (+ (get xs 0) (get xs 1))))]
+  (let [add-total (fn [base :- i64] (+ base (+ (get xs 0 0) (get xs 1 0))))]
     (add-total extra)))
 
 (defn main []

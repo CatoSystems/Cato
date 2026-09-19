@@ -15,10 +15,11 @@ fn builds_literal_and_binary_expr() {
     let body = build_one("f", "(defn f [x :- i64] (+ x 1))");
     assert_eq!(
         body,
-        HExpr::Bin(
+        HExpr::BinW(
             BinOp::Add,
             Box::new(HExpr::Var("x".to_string())),
-            Box::new(HExpr::ConstI64(1))
+            Box::new(HExpr::ConstI64(1)),
+            Ty::I64
         )
     );
 }
@@ -38,7 +39,7 @@ fn requires_typed_params() {
 fn builds_reduce_closure() {
     let body = build_one(
         "ss",
-        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
+        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- (f64 x) mu) (- (f64 x) mu)))) 0.0 xs))",
     );
     match body {
         HExpr::Reduce(r) => match *r {
@@ -49,7 +50,7 @@ fn builds_reduce_closure() {
                 assert_eq!(acc, "acc".to_string());
                 assert_eq!(el, "x".to_string());
                 assert!(matches!(src, HSource::Var(_)));
-                assert!(matches!(body, HExpr::Bin(BinOp::Add, _, _)));
+                assert!(matches!(body, HExpr::BinW(BinOp::Add, _, _, _)));
             }
             _ => panic!("expected closure reduce"),
         },
@@ -83,10 +84,19 @@ fn builds_pipeline_reduce_from_chain() {
 
 #[test]
 fn builds_vec_literal_and_print_call() {
-    let body = build_one(
-        "main",
-        "(defn main [] (print-f64 (variance (vec-i64 1 2 3 4 5))))",
-    );
+    // `variance` must exist for the call to lower: unknown callees are a
+    // compile error now, not a runtime lookup.
+    let exprs = read_all(
+        "(extern variance [xs :- (Vector i64)] :- f64)\n\
+         (defn main [] (print-f64 (variance (vec-i64 1 2 3 4 5))))",
+    )
+    .unwrap();
+    let fns = build(&exprs).unwrap();
+    let body = fns
+        .iter()
+        .find(|d| d.name == "main")
+        .map(|d| d.body.clone())
+        .expect("fn found");
     let HExpr::Call(name, args) = body else {
         panic!("expected call")
     };
@@ -95,6 +105,12 @@ fn builds_vec_literal_and_print_call() {
         panic!("expected inner call to variance")
     };
     assert_eq!(inner, "variance");
+}
+
+#[test]
+fn rejects_unknown_callee() {
+    let err = build_err("(defn main [] (variance (vec-i64 1 2 3)))");
+    assert!(err.contains("unknown function variance"), "got: {}", err);
 }
 
 fn build_err(src: &str) -> String {
@@ -138,7 +154,7 @@ fn builds_multi_type_let_sequence() {
     match body {
         HExpr::Let(binds, inner, _) => {
             assert_eq!(binds.len(), 2);
-            let HExpr::Bin(BinOp::Add, _, _) = *inner else {
+            let HExpr::BinW(BinOp::Add, _, _, Ty::F64) = *inner else {
                 panic!("expected f64 add body after both bindings")
             };
         }
@@ -148,33 +164,37 @@ fn builds_multi_type_let_sequence() {
 
 #[test]
 fn lowers_if_with_promotion() {
-    // then branch is i64, else is f64 -> result f64, i64 wrapped in ConvF64
+    // then branch is i64, else is f64 -> result f64, i64 side cast
+    // explicitly by the expected-type coercion.
     let body = build_one("f", "(defn f [x :- i64] :- f64 (if (< x 2) x 1.0))");
     let HExpr::If(cond, then, els, ty) = body else {
         panic!("expected if")
     };
     assert_eq!(ty, Ty::F64);
-    assert!(matches!(*cond, HExpr::Cmp(CmpOp::Lt, _, _, _)));
-    assert!(matches!(*then, HExpr::ConvF64(_)));
+    assert!(matches!(*cond, HExpr::CmpW(CmpOp::Lt, _, _, Ty::I64)));
+    assert!(matches!(*then, HExpr::ICast(_, Ty::I64, Ty::F64)));
     assert!(matches!(*els, HExpr::ConstF64(_)));
 }
 
 #[test]
 fn lowers_comparison_int() {
     let body = build_one("gt", "(defn gt [a :- i64 b :- i64] :- bool (> a b))");
-    assert!(matches!(body, HExpr::Cmp(CmpOp::Gt, _, _, false)));
+    assert!(matches!(body, HExpr::CmpW(CmpOp::Gt, _, _, Ty::I64)));
 }
 
 #[test]
-fn lowers_mixed_comparison_promotes_f64() {
-    // i64 < f64: the i64 side wraps in ConvF64, the f64 constant stays put
-    let body = build_one("f", "(defn f [a :- i64] :- bool (< a 2.5))");
-    let HExpr::Cmp(_, a, b, f64flag) = body else {
-        panic!("expected cmp")
-    };
-    assert!(f64flag);
-    assert!(matches!(*a, HExpr::ConvF64(_)));
-    assert!(matches!(*b, HExpr::ConstF64(_)));
+fn rejects_mixed_comparison() {
+    // i64 vs f64 is a compile error: widths are explicit, no promotion.
+    let exprs = read_all("(defn f [a :- i64] :- bool (< a 2.5))").unwrap();
+    let err = build(&exprs).unwrap_err();
+    assert!(err.contains("must share a width"), "got: {}", err);
+}
+
+#[test]
+fn rejects_mixed_arithmetic() {
+    let exprs = read_all("(defn f [a :- i64] :- f64 (+ a 1.0))").unwrap();
+    let err = build(&exprs).unwrap_err();
+    assert!(err.contains("cast explicitly"), "got: {}", err);
 }
 
 #[test]
@@ -523,15 +543,16 @@ fn shared_borrows_keep_the_value_usable() {
 }
 
 #[test]
-fn overlapping_exclusive_borrows_are_rejected() {
+fn exclusive_borrow_sigil_is_rejected() {
+    // `&!` was removed pre-1.0: uniqueness-driven in-place updates need no
+    // user-facing exclusive lend.
     let exprs = read_all(&format!(
-        "{}\n(defn f [a :- &!Box b :- &!Box] :- i64 a)
-         (defn main [] (let [b (Box 1)] (f b b)))",
+        "{}\n(defn f [a :- &!Box] :- i64 a)",
         BOX_DEFTYPE
     ))
     .unwrap();
     let err = build(&exprs).unwrap_err();
-    assert!(err.contains("exclusively more than once"), "got: {}", err);
+    assert!(err.contains("unsupported borrow sigil"), "got: {}", err);
 }
 
 #[test]
@@ -622,24 +643,40 @@ fn conj_subvec_str_on_literals_fold_at_compile_time() {
 }
 
 #[test]
-fn conj_moves_its_source() {
-    let err = build_err(
-        "(defn main []
-           (let [v (vec-i64 1 2)]
-             (do (conj v 3) (print-i64 (count v)))))",
-    );
-    // conj consumes the buffer (in-place growth); using v afterwards is a
-    // use-after-move... count borrows, so this is allowed; a conj of a moved
-    // value is not.
-    let _ = err;
+fn conj_is_persistent_and_last_use_updates_in_place() {
+    // Persistent semantics: v stays valid across every conj. The planner
+    // marks only the LAST conj in_place (the source is never read again);
+    // earlier conjs copy so v keeps its own buffer.
     let exprs = read_all(
         "(defn main []
-           (let [v (vec-i64 1 2)]
-             (do (conj v 3) (conj v 4))))",
+           (let [v (vec-i64 1 2)
+                 v2 (conj v 3)
+                 v3 (conj v2 4)]
+             (count v3)))",
     )
     .unwrap();
-    let err = build(&exprs).unwrap_err();
-    assert!(err.contains("use of moved value v"), "got: {}", err);
+    let fns = build(&exprs).unwrap();
+    let mut flags: Vec<bool> = Vec::new();
+    fn walk(e: &HExpr, flags: &mut Vec<bool>) {
+        match e {
+            HExpr::Conj { in_place, v, x, .. } => {
+                flags.push(*in_place);
+                walk(v, flags);
+                walk(x, flags);
+            }
+            HExpr::Let(binds, body, _) => {
+                binds.iter().for_each(|(_, v2, _)| walk(v2, flags));
+                walk(body, flags);
+            }
+            HExpr::Seq(vs) => vs.iter().for_each(|v2| walk(v2, flags)),
+            HExpr::Call(_, args) => args.iter().for_each(|a| walk(a, flags)),
+            _ => {}
+        }
+    }
+    for d in &fns {
+        walk(&d.body, &mut flags);
+    }
+    assert_eq!(flags, vec![false, true], "copy first, in-place last");
 }
 
 #[test]
@@ -654,7 +691,7 @@ fn for_requires_control_flow_free_body() {
 
 #[test]
 fn map_literals_sort_keys_at_compile_time() {
-    let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1))");
+    let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1 0))");
     let HExpr::MapGet { src, .. } = body else { panic!("mapget") };
     let HExpr::MapLit(pairs) = &*src else { panic!("maplit") };
     let keys: Vec<i64> = pairs
@@ -747,10 +784,10 @@ fn closures_capture_and_move() {
     // S2: non-Copy captures are legal and move the source binding —
     // using the vector after the capture is rejected.
     assert!(build(&read_all(
-        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0)))] (f 5)))"
+        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (f 5)))"
     ).unwrap()).is_ok());
     assert!(build(&read_all(
-        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0)))] (do (f 5) (count v))))"
+        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (do (f 5) (count v))))"
     ).unwrap()).is_err());
     // Capturing moves a non-Copy binding: use after capture is rejected.
     assert!(build(&read_all(
@@ -829,7 +866,7 @@ fn generics_dispatch_over_collection_types() {
 
     // Mixed ADT x vector dispatch synthesizes a dispatch defn with a
     // symbol-safe name.
-    let mixed = "(deftype Shape (Circle [r :- f64]))\n(defgeneric fits [s :- Shape box :- (Vector f64)] :- bool)\n(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0)))\n(defn main [] :- bool (fits (Circle 2.0) [3.0]))";
+    let mixed = "(deftype Shape (Circle [r :- f64]))\n(defgeneric fits [s :- Shape box :- (Vector f64)] :- bool)\n(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0 0.0)))\n(defn main [] :- bool (fits (Circle 2.0) [3.0]))";
     let defns = build(&read_all(mixed).unwrap()).unwrap();
     assert!(
         defns.iter().any(|d| d.name == "fits__Shape_vec_f64"),
@@ -861,7 +898,7 @@ fn generics_dispatch_over_collection_types() {
     );
 
     // Mixed ADT x map dispatch synthesizes a symbol-safe dispatch defn.
-    let mixed_map = "(deftype Ent (Bolt [v :- i64]))\n(defgeneric tag [e :- Ent m :- map] :- i64)\n(defmethod tag [e :- Bolt m :- map] :- i64 (get m 1))\n(defn main [] :- i64 (tag (Bolt 1) {5 6}))";
+    let mixed_map = "(deftype Ent (Bolt [v :- i64]))\n(defgeneric tag [e :- Ent m :- map] :- i64)\n(defmethod tag [e :- Bolt m :- map] :- i64 (get m 1 0))\n(defn main [] :- i64 (tag (Bolt 1) {5 6}))";
     let defns = build(&read_all(mixed_map).unwrap()).unwrap();
     assert!(
         defns.iter().any(|d| d.name == "tag__Ent_map"),

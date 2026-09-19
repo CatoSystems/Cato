@@ -15,11 +15,10 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Match { .. } => {
             true
         }
-        HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::StrLit(_) => false,
         HExpr::StrCmp(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::StrOrd(_, a, b) => has_ctl(a) || has_ctl(b),
-        HExpr::StrNth { s, idx } => has_ctl(s) || has_ctl(idx),
+        HExpr::StrNth { s, idx, .. } => has_ctl(s) || has_ctl(idx),
         HExpr::CharStr(c) => has_ctl(c),
         HExpr::Loop { binds, body, .. } => {
             binds.iter().any(|(_, _, e2)| has_ctl(e2)) || has_ctl(body)
@@ -34,13 +33,13 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::CmpW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::BinF(_, a, b) => has_ctl(a) || has_ctl(b),
-        HExpr::ICast(inner, _) => has_ctl(inner),
+        HExpr::ICast(inner, _, _) => has_ctl(inner),
         HExpr::StrCat(args) => args.iter().any(has_ctl),
         HExpr::MapLit(pairs) => pairs
             .iter()
             .any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, res } => {
             has_ctl(src)
                 || has_ctl(key)
                 || default.as_deref().map(has_ctl).unwrap_or(false)
@@ -57,7 +56,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Conj { .. } => true, // growth branches
         HExpr::Subvec { v, start, end, .. } => has_ctl(v) || has_ctl(start) || has_ctl(end),
         HExpr::For { .. } => true, // fill loop
-        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
+        HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
         HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
@@ -66,7 +65,6 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         }
         HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
-        HExpr::Cmp(..) => false,
         HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_)
         | HExpr::VecLit(_) => false,
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
@@ -92,11 +90,6 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
 pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
     match h {
         HExpr::Var(v) => f(v.clone()),
-        HExpr::Bin(_, a, b) => {
-            collect_vars(a, f);
-            collect_vars(b, f);
-        }
-        HExpr::ConvF64(e) => collect_vars(e, f),
         HExpr::Count(e) => collect_vars(e, f),
         HExpr::If(c, t, e, _) => {
             collect_vars(c, f);
@@ -108,10 +101,6 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(b, f);
         }
         HExpr::Not(v) => collect_vars(v, f),
-        HExpr::Cmp(_, a, b, _) => {
-            collect_vars(a, f);
-            collect_vars(b, f);
-        }
         HExpr::Abs(v, _) => collect_vars(v, f),
         HExpr::Clone(v) | HExpr::DropStmt(v) => collect_vars(v, f),
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
@@ -182,7 +171,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(a, f);
             collect_vars(b, f);
         }
-        HExpr::StrNth { s, idx } => {
+        HExpr::StrNth { s, idx, .. } => {
             collect_vars(s, f);
             collect_vars(idx, f);
         }
@@ -224,7 +213,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(a, f);
             collect_vars(b, f);
         }
-        HExpr::ICast(inner, _) => collect_vars(inner, f),
+        HExpr::ICast(inner, _, _) => collect_vars(inner, f),
         HExpr::MapLit(pairs) => {
             for (k, v) in pairs {
                 collect_vars(k, f);
@@ -236,7 +225,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(k, f);
             collect_vars(v, f);
         }
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, res } => {
             collect_vars(src, f);
             collect_vars(key, f);
             if let Some(d) = default {

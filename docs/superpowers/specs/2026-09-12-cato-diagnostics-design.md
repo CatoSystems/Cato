@@ -64,8 +64,14 @@ substring rules), so no error site needs editing:
 | E101  | macro expansion shape error |
 | E201  | arity error |
 | E202  | invalid form / argument type |
+| E203  | ambiguous generic-function dispatch |
+| E204  | uncovered generic-function dispatch |
+| E205  | unreachable / duplicate generic-function method |
+| E206  | unbound variable |
+| E207  | unknown function |
+| E208  | unknown type name (lowercase unknowns are typos, not type parameters) |
 | E301  | use of moved value |
-| E302  | binding borrowed exclusively more than once |
+| E303  | move of a borrowed parameter (the caller still owns it) |
 | E401  | non-exhaustive match |
 | E000  | uncategorized |
 

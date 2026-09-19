@@ -83,8 +83,8 @@ pub fn classify(msg: &str) -> &'static str {
     let m = msg;
     if m.contains("use of moved value") {
         "E301"
-    } else if m.contains("exclusively more than once") {
-        "E302"
+    } else if m.contains("borrowed parameter and still belongs to the caller") {
+        "E303"
     } else if m.contains("non-exhaustive") || m.contains("does not cover") {
         "E401"
     } else if m.contains("unbalanced delimiter") {
@@ -95,6 +95,17 @@ pub fn classify(msg: &str) -> &'static str {
         "E003"
     } else if m.contains("unclosed delimiter") {
         "E004"
+    } else if m.contains("unsupported borrow sigil") || m.contains("mixed widths")
+        || m.contains("must share a width") || m.contains("in arithmetic")
+    {
+        // Width/sigil misuse: an explicit cast or syntax fix is required.
+        "E202"
+    } else if m.contains("unbound variable") {
+        "E206"
+    } else if m.contains("unknown function") {
+        "E207"
+    } else if m.contains("unknown type name") {
+        "E208"
     } else if m.contains("expects exactly") || m.contains("expects 2 operands")
         || m.contains("expects 1 argument") || m.contains("expects 2 arguments")
         || m.contains("expects 3 arguments")
@@ -123,11 +134,14 @@ const EXPLAIN: &[(&str, &str)] = &[
     ("E201", "Arity error.\n\nA form received the wrong number of operands. Builtins fix\ntheir arity (`(+ a b)`, `(count xs)`, ...); check the call."),
     ("E202", "Invalid form or argument type.\n\nThe form is shaped right but an operand has the wrong type\n(e.g. `conj` on a scalar), or the form itself is malformed."),
     ("E301", "Use of moved value.\n\nNon-Copy values (vectors, ADTs, maps) move when passed to an\nowned parameter or bound again. After the move the binding is\ndead. Clone it first (`(clone x)`) or borrow it (`&x`)."),
-    ("E302", "Conflicting exclusive borrows.\n\n`&!` borrows must be unique: the same binding was passed\nexclusively twice in one call. Reorder the calls or clone."),
     ("E401", "Non-exhaustive match.\n\nA `match` over an ADT did not cover every variant and had no\n`_` wildcard arm. Add the missing variants or a default arm."),
     ("E203", "Ambiguous generic-function dispatch.\n\nTwo applicable methods are incomparable in specificity\n(e.g. `Circle × Shape` and `Shape × Circle`): neither is more\nspecific, so the method to run is undecidable. Add a method for\nthe exact combination (e.g. `Circle × Circle`)."),
     ("E204", "Uncovered generic-function dispatch.\n\nNo method applies to some type combination at a call site —\na variant combination, or a builtin/collection type like\n`(Vector str)`. Add a method for the missing type or a default\nmethod specializing the whole ADT."),
     ("E205", "Unreachable or duplicate generic-function method.\n\nA method can never be selected because a more specific method\ncovers every input it applies to, or two methods share the same\nspecializers. Remove one."),
+    ("E206", "Unbound variable.\n\nA symbol in value position has no binding in scope: a typo, or\nuse before the binding. Every name must be introduced by a\n`let`, a parameter, a loop binder, or a match binder before use."),
+    ("E207", "Unknown function.\n\nThe called name is not a `defn`, `extern`, builtin, generic,\nconstructor, or a closure binding. Check the spelling, or add\nthe `defn`."),
+    ("E208", "Unknown type name.\n\nAn annotation named a type that is not a builtin, a declared\n`deftype`, or a type parameter. Type parameters are introduced\nby uppercase spelling (e.g. `T`) in a `defn` annotation; a\nlowercase unknown name is treated as a typo."),
+    ("E303", "Move of a borrowed value.\n\n`&` / `&!` parameters do not own their value — the caller does.\nPassing one to an owned parameter (or `conj`-ing, capturing, or\ndropping it) would let the callee free a buffer the caller still\nreads. Clone it first, or take the parameter by value."),
 ];
 
 /// Long-form documentation for a diagnostic code.

@@ -1,0 +1,14 @@
+; vec_field_adt.cato — owning ADTs with vector fields.
+;
+; Construction deep-copies the field buffer (the str strdup rule, widened
+; to vectors), so the box owns its own data and drop glue frees exactly
+; what it owns — even when the source was a static literal.
+
+(deftype Box (Box [n :- i64 v :- (Vector i64)]))
+
+(defn main [] :- i64
+  (let [w (vec-i64 1 2 3)
+        b (Box 41 w)]
+    (do
+      (print (match b (Box [n v] n) (_ 0)))
+      0)))

@@ -100,7 +100,7 @@ pub fn emit_module_fast(
 
     output.push("; cato: generated LLVM IR (vertical slice)".to_string());
     output.push("%VecI64 = type { ptr, i64, i64 }".to_string());
-    output.push("%Closure = type { ptr, ptr }".to_string());
+    output.push("%Closure = type { ptr, ptr, ptr }".to_string());
     let boxed = mdl.boxed.clone();
     for (i, adt) in adts.iter().enumerate() {
         let n = cato_core::adt_total_slots(adts, &boxed, i as u32);
@@ -165,6 +165,7 @@ pub fn emit_module_fast(
         l.body = body;
         output.push(String::new());
         output.push(emit_lambda(&l, &mut mdl, &sigs));
+        output.push(emit_lambda_drop(&l, &mut mdl, &sigs));
     }
 
     if fast {

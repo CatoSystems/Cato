@@ -51,7 +51,7 @@ fn emits_sum_of_squares_loop_with_capture() {
     let ir = emit(
         "(defn square [x :- i64] :- i64 (* x x))
          (defn sum-of-squares [xs :- vec mu :- f64] :- f64
-           (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
+           (reduce (fn [acc x] (+ acc (* (- (f64 x) mu) (- (f64 x) mu)))) 0.0 xs))",
     );
     // helper has a double capture param
     assert!(ir.contains("define double @sum_of_squares("));
@@ -97,7 +97,7 @@ fn emits_variadic_let_chaining() {
     let ir = emit(
         "(defn foo [xs :- vec] :- f64
            (let [n  (count xs)
-                 mu (/ (reduce + 0 xs) (f64 n))
+                 mu (/ (f64 (reduce + 0 xs)) (f64 n))
                  ss mu]
              (/ ss (f64 n))))",
     );

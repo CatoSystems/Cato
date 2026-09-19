@@ -1,22 +1,27 @@
 use super::*;
 
-pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Ty {
+/// Substitute bound type parameters through a (possibly generic) type.
+/// Every parameter must be bound: `instantiate` rejects unresolved
+/// parameters before calling this, so an unbound one here is a caller bug.
+pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Result<Ty, String> {
     match ty {
         Ty::Param(i) => subs
             .get(i as usize)
             .copied()
             .flatten()
-            .unwrap_or(Ty::I64),
-        Ty::Vec(e) => Ty::Vec(match e {
+            .ok_or_else(|| format!("unresolved type parameter {}", i)),
+        Ty::Vec(e) => Ok(Ty::Vec(match e {
             // `(Vector T)`: T was bound to the element type at unification.
             Elem::Param(i) => match subs.get(i as usize).copied().flatten() {
                 Some(Ty::I64) => Elem::I64,
                 Some(Ty::F64) => Elem::F64,
                 Some(Ty::Vec(el)) => el,
-                _ => Elem::I64,
+                other => {
+                    return Err(format!("unresolved vector element parameter {} ({:?})", i, other))
+                }
             },
             other => other,
-        }),
+        })),
         Ty::Adt(i) => {
             // A template instance (`(Option T)` in a generic defn's
             // signature): once T is bound, re-instantiate into the concrete
@@ -28,18 +33,21 @@ pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Ty {
                 .get(&i)
                 .map(|(t, a)| (*t, a.clone()));
             let Some((tpl, args)) = tpl_args else {
-                return ty;
+                return Ok(ty);
             };
             if !args.iter().any(|a| matches!(a, Ty::Param(_))) {
-                return ty;
+                return Ok(ty);
             }
-            let new_args: Vec<Ty> = args.iter().map(|a| subst_ty(*a, subs, ctx)).collect();
+            let new_args: Vec<Ty> = args
+                .iter()
+                .map(|a| subst_ty(*a, subs, ctx))
+                .collect::<Result<_, _>>()?;
             match ctx.instantiate_adt(tpl, &new_args) {
-                Ok(j) => Ty::Adt(j),
-                Err(_) => ty,
+                Ok(j) => Ok(Ty::Adt(j)),
+                Err(_) => Ok(ty),
             }
         }
-        other => other,
+        other => Ok(other),
     }
 }
 
@@ -209,14 +217,14 @@ pub(crate) fn instantiate(
             .collect::<Vec<_>>()
             .join("_")
     );
-    let ret = subst_ty(raw.ret, &subs, ctx);
+    let ret = subst_ty(raw.ret, &subs, ctx)?;
     let already = ctx.inst.borrow().cache.contains_key(&mangled);
     if !already {
         // Insert before lowering so recursive calls resolve to this name.
         ctx.inst.borrow_mut().cache.insert(mangled.clone(), ret);
         let mut env = Env::new();
         for (pname, pty) in &raw.params {
-            env.insert(pname.clone(), subst_ty(*pty, &subs, ctx));
+            env.insert(pname.clone(), subst_ty(*pty, &subs, ctx)?);
         }
         let body = lower_body_expr(&raw.body, &env, ctx, Some(ret))?;
         ctx.inst.borrow_mut().extra.push(Defn {
@@ -224,8 +232,8 @@ pub(crate) fn instantiate(
             params: raw
                 .params
                 .iter()
-                .map(|(n, t)| (n.clone(), subst_ty(*t, &subs, ctx)))
-                .collect(),
+                .map(|(n, t)| Ok((n.clone(), subst_ty(*t, &subs, ctx)?)))
+                .collect::<Result<Vec<_>, String>>()?,
             ret,
             body,
             borrows: raw.borrows.clone(),

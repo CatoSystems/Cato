@@ -5,18 +5,17 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::If(..) | HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Match { .. } => {
             true
         }
-        HExpr::Bin(_, a, b) => has_ctl(a) || has_ctl(b),
-        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
+        HExpr::Count(x) | HExpr::Abs(x, _) => has_ctl(x),
         HExpr::Call(_, args) => args.iter().any(has_ctl),
         HExpr::Ctor { args, .. } => args.iter().any(has_ctl),
         HExpr::Get { idx, default, .. } => {
             has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
         }
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
-        HExpr::Cmp(..) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::Var(_)
+        HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::Var(_)
         | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_)
         | HExpr::StrLit(_) => false,
-        HExpr::StrNth { s, idx } => has_ctl(s) || has_ctl(idx),
+        HExpr::StrNth { s, idx, .. } => has_ctl(s) || has_ctl(idx),
         HExpr::CharStr(c) => has_ctl(c),
         HExpr::Loop { .. } | HExpr::Recur(_) => true,
         HExpr::ToStr(e, _) => has_ctl(e),
@@ -32,10 +31,10 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::BinW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::CmpW(_, a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::BinF(_, a, b) => has_ctl(a) || has_ctl(b),
-        HExpr::ICast(inner, _) => has_ctl(inner),
+        HExpr::ICast(inner, _, _) => has_ctl(inner),
         HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, .. } => {
             has_ctl(src)
                 || has_ctl(key)
                 || default.as_deref().map(has_ctl).unwrap_or(false)

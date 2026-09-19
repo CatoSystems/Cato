@@ -1,15 +1,17 @@
 ; closures.cato — Phase 14 reference program: first-class closures.
 ;
 ; (fn ...) is usable anywhere an expression is: closures capture free
-; locals by value, pass as `(Fn [t1 t2] ret)` params to higher-order
-; functions, and are called like any function. Statically resolvable
+ ; locals by value, pass to higher-order functions (move-only values:
+; lend them with `&` params to keep the caller's binding usable), and
+; are called like any function. Their environments are owned and freed
+; deterministically at the owner's scope exit. Statically resolvable
 ; pipelines (map/filter/reduce) stay defunctionalized — closures here hit
 ; the calling-convention path.
 
-(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64
+(defn twice [&f :- (Fn [i64] i64) x :- i64] :- i64
   (f (f x)))
 
-(defn compose-call [f :- (Fn [i64] i64) g :- (Fn [i64] i64) x :- i64] :- i64
+(defn compose-call [&f :- (Fn [i64] i64) &g :- (Fn [i64] i64) x :- i64] :- i64
   (f (g x)))
 
 (defn main []

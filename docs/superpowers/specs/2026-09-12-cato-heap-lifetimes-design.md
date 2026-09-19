@@ -20,7 +20,12 @@ Naive scope-exit frees are unsound in Cato today for two reasons:
 
 ## Design: annotated, conservative frees
 
-A frontend pass (`annotate_frees`, in the ownership module) walks each
+> **Status update.** The shape-based `annotate_frees` pass is superseded by the
+> ownership-driven `plan_drops` (see `2026-09-18-cato-ownership-model-revised.md`):
+> drops are derived from per-binding buffer ownership through the move checker, and
+> moved values transfer their drop duty. The rules below are the historical design.
+
+A frontend pass (originally `annotate_frees`, in the ownership module) walks each
 defn and annotates every `HIR::Let` with a `frees` list. A binding is
 included only when *all* of the following hold:
 

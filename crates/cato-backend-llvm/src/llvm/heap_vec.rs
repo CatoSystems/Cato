@@ -15,15 +15,20 @@ pub(crate) fn emit_conj(
     v: &HExpr,
     x: &HExpr,
     elem: Elem,
+    in_place: bool,
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     let ll = mdl.elem_ll(elem);
+    // `in_place` is the planner's verdict: the source is a last use of a
+    // binding that owns its buffer. Without it the append must copy — the
+    // source stays valid and unchanged (persistent semantics).
     // Source header: live loads for growable bindings; static sources get
     // capacity == length (their data is read-only, forcing the copy path).
     // Only growable (heap) sources may be freed after the copy.
     let mut freeable = false;
+    let may_update_in_place = in_place;
     let (ptr, len, cap) = match v {
         HExpr::Var(name) => {
             if let Some((slot, _)) = c.grow.get(name) {
@@ -67,16 +72,26 @@ pub(crate) fn emit_conj(
     let one = c.temp();
     c.line(&format!("  {} = add i64 {}, 1", one, len));
 
-    // Fast path when len < cap; grow otherwise.
+    // Fast path when len < cap and the planner approved in-place update;
+    // otherwise always take the copy path (the old buffer is not freed —
+    // persistent semantics keep it alive for the source).
+    if !may_update_in_place {
+        freeable = false;
+    }
     let has_room = c.temp();
-    c.line(&format!("  {} = icmp ult i64 {}, {}", has_room, len, cap));
     let bfast = c.block_name();
     let bgrow = c.block_name();
     let bmerge = c.block_name();
-    c.line(&format!(
-        "  br i1 {}, label %{}, label %{}",
-        has_room, bfast, bgrow
-    ));
+    if may_update_in_place {
+        c.line(&format!("  {} = icmp ult i64 {}, {}", has_room, len, cap));
+        c.line(&format!(
+            "  br i1 {}, label %{}, label %{}",
+            has_room, bfast, bgrow
+        ));
+    } else {
+        // Constant-false condition: always the copy path.
+        c.line(&format!("  br i1 0, label %{}, label %{}", bfast, bgrow));
+    }
 
     let lbl = c.open(&bfast);
     c.line(&format!("{}:", lbl));
@@ -442,76 +457,51 @@ pub(crate) fn emit_join(
 /// Phase 13: free the still-owned heap bindings of a `let` scope at its
 /// exit. The frontend's `annotate_frees` guarantees each name here is
 /// unique, unconsumed, and un-escaped, so a plain load+free is sound.
-pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
-    if frees.is_empty() {
-        return;
+/// Free the heap a binding currently owns, per its storage class: strings
+/// and owning ADTs bind in the scalar table, collections in the grow
+/// tables, closures as `%Closure` allocas with a drop-function word.
+/// Returns false when the binding carries no heap (or is unknown).
+pub(crate) fn free_binding_storage(name: &str, c: &mut FnCtx, mdl: &mut Mdl) -> bool {
+    if let Some((reg, ty)) = c.scalar.get(name).cloned() {
+        match ty {
+            Ty::Str => {
+                mdl.ensure_decl("declare void @free(ptr)");
+                c.line(&format!("  call void @free(ptr {})", reg));
+                return true;
+            }
+            Ty::Adt(i) if mdl.adt_owns(i) => {
+                c.line(&format!(
+                    "  call void @drop__{}(ptr {})",
+                    mdl.adts[i as usize].name, reg
+                ));
+                return true;
+            }
+            Ty::Fn(_) => {
+                // {code, env, drop}: the drop word knows the captures.
+                let ef = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 1",
+                    ef, reg
+                ));
+                let env = c.temp();
+                c.line(&format!("  {} = load ptr, ptr {}, align 8", env, ef));
+                let df = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 2",
+                    df, reg
+                ));
+                let dfn = c.temp();
+                c.line(&format!("  {} = load ptr, ptr {}, align 8", dfn, df));
+                c.line(&format!("  call void {}(ptr {})", dfn, env));
+                return true;
+            }
+            _ => {}
+        }
+        if !matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
+            return false;
+        }
     }
-    mdl.ensure_decl("declare void @free(ptr)");
-    for name in frees {
-        // Strings and owning ADTs bind in the scalar table: free the bytes
-        // / call the drop glue directly, then fall through to the next name.
-        if let Some((reg, ty)) = c.scalar.get(name).cloned() {
-            match ty {
-                Ty::Str => {
-                    mdl.ensure_decl("declare void @free(ptr)");
-                    c.line(&format!("  call void @free(ptr {})", reg));
-                }
-                Ty::Adt(i) if mdl.adt_owns(i) => {
-                    c.line(&format!(
-                        "  call void @drop__{}(ptr {})",
-                        mdl.adts[i as usize].name, reg
-                    ));
-                }
-                _ => {}
-            }
-            if !matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
-                continue;
-            }
-        }
-        let slot = if let Some((s, _)) = c.grow.get(name) {
-            s.clone()
-        } else if let Some((s, _)) = c.growm.get(name) {
-            s.clone()
-        } else {
-            continue;
-        };
-        // Maps may hold a HAMT root (cap tag bit 0 set, Phase 15): shared
-        // trie nodes must not be freed, so only flat buffers are.
-        let is_map = c.growm.contains_key(name);
-        if is_map {
-            let cf = c.temp();
-            c.line(&format!(
-                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
-                cf, slot
-            ));
-            let capv = c.temp();
-            c.line(&format!("  {} = load i64, ptr {}, align 8", capv, cf));
-            let tag = c.temp();
-            c.line(&format!("  {} = and i64 {}, 1", tag, capv));
-            let isflat = c.temp();
-            c.line(&format!("  {} = icmp eq i64 {}, 0", isflat, tag));
-            let bfree = c.block_name();
-            let bskip = c.block_name();
-            let bdone = c.block_name();
-            c.line(&format!("  br i1 {}, label %{}, label %{}", isflat, bfree, bskip));
-            let lbl = c.open(&bfree);
-            c.line(&format!("{}:", lbl));
-            let pf = c.temp();
-            c.line(&format!(
-                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
-                pf, slot
-            ));
-            let p = c.temp();
-            c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
-            c.line(&format!("  call void @free(ptr {})", p));
-            c.line(&format!("  br label %{}", bdone));
-            let lbl = c.open(&bskip);
-            c.line(&format!("{}:", lbl));
-            c.line(&format!("  br label %{}", bdone));
-            let lbl = c.open(&bdone);
-            c.line(&format!("{}:", lbl));
-            continue;
-        }
+    if let Some((slot, _)) = c.grow.get(name).cloned() {
         let pf = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -519,6 +509,97 @@ pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
         ));
         let p = c.temp();
         c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+        mdl.ensure_decl("declare void @free(ptr)");
         c.line(&format!("  call void @free(ptr {})", p));
+        return true;
+    }
+    if let Some((slot, ty)) = c.growm.get(name).cloned() {
+        if ty == Ty::Set {
+            // Sets are flat sorted arrays: the cap word holds the length,
+            // not a tag — always a plain buffer free.
+            let pf = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+                pf, slot
+            ));
+            let p = c.temp();
+            c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+            mdl.ensure_decl("declare void @free(ptr)");
+            c.line(&format!("  call void @free(ptr {})", p));
+            return true;
+        }
+        // Maps may hold a HAMT root (cap tag bit set): the runtime release
+        // frees flat buffers directly and walks refcounted trie nodes.
+        let cf = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+            cf, slot
+        ));
+        let capv = c.temp();
+        c.line(&format!("  {} = load i64, ptr {}, align 8", capv, cf));
+        let pf = c.temp();
+        c.line(&format!(
+            "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+            pf, slot
+        ));
+        let p = c.temp();
+        c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+        mdl.ensure_decl("declare void @cato_map_release_pair(ptr, i64)");
+        c.line(&format!(
+            "  call void @cato_map_release_pair(ptr {}, i64 {})",
+            p, capv
+        ));
+        return true;
+    }
+    false
+}
+
+/// Materialize an `(Option T)` instance (inline `{tag, payload}`) from a
+/// runtime `found` flag and a payload register. Returns the slot pointer —
+/// the same convention as inline ADT values.
+pub(crate) fn materialize_option(
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    adt: u32,
+    found: &str,
+    payload: &str,
+) -> String {
+    let name = mdl.adt_name(adt);
+    let slot = c.temp();
+    c.prelude
+        .push(format!("  {} = alloca {}, align 8", slot, name));
+    let tf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 0",
+        tf, name, slot
+    ));
+    // Some is variant 0 in the prelude's declaration: tag = found ? 0 : 1.
+    let tag = c.temp();
+    c.line(&format!(
+        "  {} = select i1 {}, i64 0, i64 1",
+        tag, found
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", tag, tf));
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 0",
+        pf, name, slot
+    ));
+    let pv = c.temp();
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 0",
+        pv, found, payload
+    ));
+    c.line(&format!("  store i64 {}, ptr {}, align 8", pv, pf));
+    slot
+}
+
+pub(crate) fn emit_let_frees(frees: &[String], c: &mut FnCtx, mdl: &mut Mdl) {
+    if frees.is_empty() {
+        return;
+    }
+    mdl.ensure_decl("declare void @free(ptr)");
+    for name in frees {
+        free_binding_storage(name, c, mdl);
     }
 }

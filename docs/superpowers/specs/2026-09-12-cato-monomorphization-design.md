@@ -12,10 +12,13 @@ trade for zero-cost runtime.
 - `Ty::VecI64` becomes `Ty::Vec(Elem)` with `Elem ∈ {I64, F64}`.
 - Annotations accept `(Vector i64)` / `(Vector f64)` / `(Vector T)`; `vec`
   remains an alias for `(Vector i64)`.
-- Any unknown type symbol in an annotation is a **type parameter** (e.g. the
-  `T` in `(defn gsum [xs :- (Vector T)] :- T ...)`), indexed as
+- An unknown type symbol in an annotation is a **type parameter** only when
+  it is spelled like one — uppercase-initial (e.g. the `T` in
+  `(defn gsum [xs :- (Vector T)] :- T ...)`) — indexed as
   `Ty::Param(i)` / `Elem::Param(i)` against the defn's ordered `ty_params`.
-  Type parameters never survive lowering: templates are only lowered through
+  Any other unknown symbol is a compile error (`unknown type name`), so a
+  typo like `(Vector il64)` cannot silently genericize the defn. Type
+  parameters never survive lowering: templates are only lowered through
   instantiation.
 - `(Vector T)` binds `T` to the **element type** (f64), not the vector type —
   so `:- T` returns the scalar element and `:- (Vector T)` returns a vector

@@ -25,6 +25,16 @@ Complete the collection story on top of the heap slice: immutable i64 sets
 
 Strings are NUL-terminated `ptr`s (static literals or heap). New nodes:
 
+> **Status update (S1c).** Strings joined the ownership model in
+> `2026-09-15-cato-s1-adt-memory-semantics.md`: runtime string *results*
+> (`subs`/`split`/`join`/`str-cat`/`char->str`) are owned heap values whose
+> buffers free at scope exit; string *literals* stay static data (never
+> freed). FFI arguments remain raw NUL-terminated `ptr`s. There is no single
+> growable `{ptr, len, cap}` string header — unifying the representation
+> (one owned header, literals distinguished by provenance) is open work;
+> until then capture layouts and drop glue key on value freshness, not on
+> the type alone.
+
 - `(subs s start end)` — malloc + `memcpy` of the byte range + NUL. A fresh
   copy (same semantics as `subvec`), so the result outlives any source.
 - `(split s sep)` — runtime helper `cato_str_split` returns a malloc'd array

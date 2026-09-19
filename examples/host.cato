@@ -20,4 +20,4 @@
       (print (count (slurp "/tmp/cato_s3_host.txt"))) ; 15
       ; Arguments: the parity harness runs with none.
       (print (count argv))                            ; 0
-      (print (if (> (count argv) 0) (get argv 0) "none")))))
+      (print (if (> (count argv) 0) (get argv 0 "none") "none")))))

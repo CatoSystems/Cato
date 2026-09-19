@@ -1,0 +1,5 @@
+;; E208: a typo'd type name silently genericizing is a compile error now;
+;; type parameters must be spelled uppercase (e.g. T).
+(defn count-all [xs :- (Vector il64)] :- i64
+  (count xs))
+(defn main [] :- i64 0)

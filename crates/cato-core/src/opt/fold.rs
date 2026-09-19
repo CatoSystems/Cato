@@ -41,39 +41,44 @@ fn fold_body(body: &mut HExpr) -> bool {
 
 fn fold_one(e: HExpr) -> HExpr {
     match e {
-        HExpr::Bin(op, a, b) => {
-            // `Bin` covers i64 arithmetic and the historical i64→f64
-            // auto-promotion, so try both constant shapes.
-            if let (Some(x), Some(y)) = (as_i64(&a), as_i64(&b)) {
-                if let Some(v) = fold_i64(op, x, y) {
-                    return HExpr::ConstI64(v);
-                }
-                return HExpr::Bin(op, a, b);
-            }
-            if let (Some(x), Some(y)) = (as_f64(&a), as_f64(&b)) {
-                if let Some(v) = fold_f64(op, x, y) {
-                    return HExpr::ConstF64(v);
-                }
-            }
-            HExpr::Bin(op, a, b)
-        }
-        HExpr::BinW(op, a, b, ty) => match (as_i64(&a), as_i64(&b)) {
-            (Some(x), Some(y)) if ty.is_int() => {
-                let v = match op {
-                    BinOp::Add => x.wrapping_add(y),
-                    BinOp::Sub => x.wrapping_sub(y),
-                    BinOp::Mul => x.wrapping_mul(y),
-                    BinOp::Div => {
-                        if y == 0 {
-                            return HExpr::BinW(op, a, b, ty);
+        HExpr::BinW(op, a, b, ty) => {
+            if ty == Ty::F64 {
+                // f64 arithmetic in f64 precision.
+                return match (as_f64(&a), as_f64(&b)) {
+                    (Some(x), Some(y)) => {
+                        let v = match op {
+                            BinOp::Add => x + y,
+                            BinOp::Sub => x - y,
+                            BinOp::Mul => x * y,
+                            BinOp::Div => x / y,
+                        };
+                        if v.is_finite() {
+                            HExpr::ConstF64(v)
+                        } else {
+                            HExpr::BinW(op, a, b, ty)
                         }
-                        x.wrapping_div(y)
                     }
+                    _ => HExpr::BinW(op, a, b, ty),
                 };
-                HExpr::ConstI64(wrap_bits(v, ty))
             }
-            _ => HExpr::BinW(op, a, b, ty),
-        },
+            match (as_i64(&a), as_i64(&b)) {
+                (Some(x), Some(y)) if ty.is_int() => {
+                    let v = match op {
+                        BinOp::Add => x.wrapping_add(y),
+                        BinOp::Sub => x.wrapping_sub(y),
+                        BinOp::Mul => x.wrapping_mul(y),
+                        BinOp::Div => {
+                            if y == 0 || (x == i64::MIN && y == -1) {
+                                return HExpr::BinW(op, a, b, ty);
+                            }
+                            x.wrapping_div(y)
+                        }
+                    };
+                    HExpr::ConstI64(wrap_bits(v, ty))
+                }
+                _ => HExpr::BinW(op, a, b, ty),
+            }
+        }
         HExpr::BinF(op, a, b) => {
             // f32 arithmetic in f32 precision (both operands are f32-typed;
             // constants carry their value as f64).
@@ -97,45 +102,47 @@ fn fold_one(e: HExpr) -> HExpr {
                 _ => HExpr::BinF(op, a, b),
             }
         }
-        HExpr::ConvF64(inner) => match as_i64(&inner) {
-            Some(v) => HExpr::ConstF64(v as f64),
-            None => HExpr::ConvF64(inner),
-        },
-        HExpr::ICast(inner, ty) => match (&*inner, ty) {
+        HExpr::ICast(inner, from, to) => match (&*inner, to) {
             (HExpr::ConstI64(v), t) if t.is_int() => HExpr::ConstI64(wrap_bits(*v, t)),
-            _ => HExpr::ICast(inner, ty),
-        },
-        HExpr::Cmp(op, a, b, is_f64) => {
-            let r = if is_f64 {
-                match (as_f64(&a), as_f64(&b)) {
-                    (Some(x), Some(y)) if !x.is_nan() && !y.is_nan() => apply_cmp(op, x == y, x < y, x > y, x <= y, x >= y),
-                    _ => return HExpr::Cmp(op, a, b, is_f64),
-                }
+            (HExpr::ConstI64(v), Ty::F64) => HExpr::ConstF64(if from.is_uint() {
+                *v as u64 as f64
             } else {
-                match (as_i64(&a), as_i64(&b)) {
-                    (Some(x), Some(y)) => apply_cmp(op, x == y, x < y, x > y, x <= y, x >= y),
-                    _ => return HExpr::Cmp(op, a, b, is_f64),
-                }
-            };
-            const_bool_node(r)
-        }
-        HExpr::CmpW(op, a, b, ty) => match (as_i64(&a), as_i64(&b), ty.is_float()) {
-            (Some(x), Some(y), false) => {
-                // Width-normalized values: plain i64 compare is exact except
-                // for 64-bit unsigned ordering (bit patterns invert order).
-                let ordered_ok = !ty.is_uint() || ty.int_bits() < 64;
-                if op == CmpOp::Eq {
-                    const_bool_node(x == y)
-                } else if op == CmpOp::Ne {
-                    const_bool_node(x != y)
-                } else if ordered_ok {
-                    const_bool_node(apply_cmp(op, x == y, x < y, x > y, x <= y, x >= y))
-                } else {
-                    HExpr::CmpW(op, a, b, ty)
-                }
-            }
-            _ => HExpr::CmpW(op, a, b, ty),
+                *v as f64
+            }),
+            (HExpr::ConstI64(v), Ty::F32) => HExpr::ConstF64(if from.is_uint() {
+                *v as u64 as f32 as f64
+            } else {
+                *v as f32 as f64
+            }),
+            _ => HExpr::ICast(inner, from, to),
         },
+        HExpr::CmpW(op, a, b, ty) => {
+            if ty.is_float() {
+                return match (as_f64(&a), as_f64(&b)) {
+                    (Some(x), Some(y)) if !x.is_nan() && !y.is_nan() => {
+                        const_bool_node(apply_cmp(op, x == y, x < y, x > y, x <= y, x >= y))
+                    }
+                    _ => HExpr::CmpW(op, a, b, ty),
+                };
+            }
+            match (as_i64(&a), as_i64(&b)) {
+                (Some(x), Some(y)) => {
+                    // Width-normalized values: plain i64 compare is exact except
+                    // for 64-bit unsigned ordering (bit patterns invert order).
+                    let ordered_ok = !ty.is_uint() || ty.int_bits() < 64;
+                    if op == CmpOp::Eq {
+                        const_bool_node(x == y)
+                    } else if op == CmpOp::Ne {
+                        const_bool_node(x != y)
+                    } else if ordered_ok {
+                        const_bool_node(apply_cmp(op, x == y, x < y, x > y, x <= y, x >= y))
+                    } else {
+                        HExpr::CmpW(op, a, b, ty)
+                    }
+                }
+                _ => HExpr::CmpW(op, a, b, ty),
+            }
+        }
         HExpr::Not(inner) => match const_bool(&inner) {
             Some(b) => const_bool_node(!b),
             None => HExpr::Not(inner),
@@ -172,8 +179,10 @@ fn fold_one(e: HExpr) -> HExpr {
             idx,
             default,
             ty,
-        } => match (&*src, as_i64(&idx)) {
-            (HExpr::VecLit(VLit::I64(vs)), Some(i)) => {
+            res,
+        } => match (&*src, as_i64(&idx), res) {
+            (_, _, Some(_)) => HExpr::Get { src, idx, default, ty, res },
+            (HExpr::VecLit(VLit::I64(vs)), Some(i), _) => {
                 if i >= 0 && (i as usize) < vs.len() {
                     // Dropping an evaluated-by-default expression could
                     // remove work only if it had effects; require pure.
@@ -184,15 +193,15 @@ fn fold_one(e: HExpr) -> HExpr {
                     if default_ok {
                         HExpr::ConstI64(vs[i as usize])
                     } else {
-                        HExpr::Get { src, idx, default, ty }
+                        HExpr::Get { src, idx, default, ty, res }
                     }
                 } else if let Some(d) = default {
                     *d
                 } else {
-                    HExpr::Get { src, idx, default, ty }
+                    HExpr::Get { src, idx, default, ty, res }
                 }
             }
-            (HExpr::VecLit(VLit::F64(vs)), Some(i)) => {
+            (HExpr::VecLit(VLit::F64(vs)), Some(i), _) => {
                 if i >= 0 && (i as usize) < vs.len() {
                     let default_ok = default
                         .as_deref()
@@ -201,15 +210,15 @@ fn fold_one(e: HExpr) -> HExpr {
                     if default_ok {
                         HExpr::ConstF64(vs[i as usize])
                     } else {
-                        HExpr::Get { src, idx, default, ty }
+                        HExpr::Get { src, idx, default, ty, res }
                     }
                 } else if let Some(d) = default {
                     *d
                 } else {
-                    HExpr::Get { src, idx, default, ty }
+                    HExpr::Get { src, idx, default, ty, res }
                 }
             }
-            _ => HExpr::Get { src, idx, default, ty },
+            _ => HExpr::Get { src, idx, default, ty, res },
         },
         HExpr::StrCat(args) => {
             let mut all = String::new();
@@ -229,12 +238,12 @@ fn fold_one(e: HExpr) -> HExpr {
             (HExpr::StrLit(x), HExpr::StrLit(y)) => const_bool_node(const_str_ord(op, x, y)),
             _ => HExpr::StrOrd(op, a, b),
         },
-        HExpr::StrNth { s, idx } => match (&*s, as_i64(&idx)) {
-            // Fold only in-bounds reads; OOB must stay a runtime 0.
-            (HExpr::StrLit(x), Some(i)) if i >= 0 && (i as usize) < x.len() => {
+        HExpr::StrNth { s, idx, res } => match (&*s, as_i64(&idx), res) {
+            // Fold only in-bounds scalar reads; OOB and Option forms stay.
+            (HExpr::StrLit(x), Some(i), None) if i >= 0 && (i as usize) < x.len() => {
                 HExpr::ConstI64(x.as_bytes()[i as usize] as i64)
             }
-            _ => HExpr::StrNth { s, idx },
+            _ => HExpr::StrNth { s, idx, res },
         },
         HExpr::CharStr(c) => match as_i64(&c) {
             // A constant byte folds to the equivalent static literal.
@@ -248,7 +257,10 @@ fn fold_one(e: HExpr) -> HExpr {
             }
             _ => HExpr::SetContains { s, x },
         },
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, res } => {
+            if res.is_some() {
+                return HExpr::MapGet { src, key, default, res };
+            }
             if let (HExpr::MapLit(pairs), Some(k)) = (&*src, as_i64(&key)) {
                 // Last match wins; fold only when the key is unambiguous.
                 let hits: Vec<&HExpr> = pairs
@@ -266,7 +278,7 @@ fn fold_one(e: HExpr) -> HExpr {
                     }
                 }
             }
-            HExpr::MapGet { src, key, default }
+            HExpr::MapGet { src, key, default, res }
         }
         HExpr::Subs { s, start, end } => {
             let folded = match (&*s, as_i64(&start), as_i64(&end)) {
@@ -288,39 +300,6 @@ fn fold_one(e: HExpr) -> HExpr {
             HExpr::Call(name, args)
         }
         other => other,
-    }
-}
-
-/// i64 folding with backend-exact semantics: wrapping ops, division only
-/// when it cannot trap or be UB (nonzero divisor; `MIN / -1` skipped).
-fn fold_i64(op: BinOp, x: i64, y: i64) -> Option<i64> {
-    match op {
-        BinOp::Add => Some(x.wrapping_add(y)),
-        BinOp::Sub => Some(x.wrapping_sub(y)),
-        BinOp::Mul => Some(x.wrapping_mul(y)),
-        BinOp::Div => {
-            if y == 0 || (x == i64::MIN && y == -1) {
-                None
-            } else {
-                Some(x.wrapping_div(y))
-            }
-        }
-    }
-}
-
-/// f64 folding; only well-defined finite results are folded so no backend
-/// ever sees an unusual floating-point constant.
-fn fold_f64(op: BinOp, x: f64, y: f64) -> Option<f64> {
-    let v = match op {
-        BinOp::Add => x + y,
-        BinOp::Sub => x - y,
-        BinOp::Mul => x * y,
-        BinOp::Div => x / y,
-    };
-    if v.is_finite() {
-        Some(v)
-    } else {
-        None
     }
 }
 
@@ -379,11 +358,11 @@ fn as_f64(e: &HExpr) -> Option<f64> {
 /// of two constants, which every consumer (both backends' branch emitters,
 /// further folding rounds) understands.
 fn const_bool_node(b: bool) -> HExpr {
-    HExpr::Cmp(
+    HExpr::CmpW(
         if b { CmpOp::Eq } else { CmpOp::Ne },
         Box::new(HExpr::ConstI64(1)),
         Box::new(HExpr::ConstI64(1)),
-        false,
+        Ty::I64,
     )
 }
 
@@ -443,18 +422,6 @@ fn wrap_bits(v: i64, ty: Ty) -> i64 {
 /// Structurally evaluate a boolean expression to a constant, if possible.
 fn const_bool(e: &HExpr) -> Option<bool> {
     match e {
-        HExpr::Cmp(op, a, b, is_f64) => {
-            if *is_f64 {
-                let (x, y) = (as_f64(a)?, as_f64(b)?);
-                if x.is_nan() || y.is_nan() {
-                    return None;
-                }
-                Some(apply_cmp(*op, x == y, x < y, x > y, x <= y, x >= y))
-            } else {
-                let (x, y) = (as_i64(a)?, as_i64(b)?);
-                Some(apply_cmp(*op, x == y, x < y, x > y, x <= y, x >= y))
-            }
-        }
         HExpr::CmpW(op, a, b, ty) if !ty.is_float() => {
             let (x, y) = (as_i64(a)?, as_i64(b)?);
             let ordered_ok = !ty.is_uint() || ty.int_bits() < 64;

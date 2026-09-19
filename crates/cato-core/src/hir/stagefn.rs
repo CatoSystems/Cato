@@ -127,7 +127,7 @@ pub(crate) fn resolve_function_ref(
     let ret = if subs.is_empty() {
         raw.ret
     } else {
-        subst_ty(raw.ret, &subs, ctx)
+        subst_ty(raw.ret, &subs, ctx)?
     };
     Ok((el, el2, body, ret))
 }

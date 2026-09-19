@@ -60,7 +60,15 @@ pub(crate) fn lower_expect(
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
         Expr::LitBool(v) => Ok(HExpr::ConstB(*v)),
         Expr::LitStr(s) => Ok(HExpr::StrLit(s.clone())),
-        Expr::LitSym(s) => Ok(HExpr::Var(s.to_string())),
+        Expr::LitSym(s) => {
+            // A symbol in value position is always a local binding. Anything
+            // else (a typo, a function used as a value) is a scope error, not
+            // a guess — unbound names must never reach the backends.
+            if !env.contains_key(s.as_str()) {
+                return Err(format!("unbound variable {}", s));
+            }
+            Ok(HExpr::Var(s.to_string()))
+        }
         Expr::MapLit(pairs) => {
             let mut out = Vec::new();
             for (k, v) in pairs {
@@ -177,10 +185,14 @@ pub(crate) fn lower_expect(
                         return Err("f64 expects exactly 1 argument".into());
                     }
                     let inner = lower(&items[1], env, ctx)?;
-                    if ty_of(&inner, env, ctx) == Ty::F32 {
-                        return Ok(HExpr::ICast(Box::new(inner), Ty::F64));
+                    let src_ty = ty_of(&inner, env, ctx);
+                    if src_ty == Ty::F64 {
+                        return Ok(inner);
                     }
-                    Ok(HExpr::ConvF64(Box::new(inner)))
+                    if !src_ty.is_numeric() {
+                        return Err(format!("f64 cast expects a numeric operand, got {:?}", src_ty));
+                    }
+                    Ok(HExpr::ICast(Box::new(inner), src_ty, Ty::F64))
                 }
                 "f32" => {
                     if items.len() != 2 {
@@ -194,7 +206,7 @@ pub(crate) fn lower_expect(
                     if !src_ty.is_numeric() {
                         return Err(format!("f32 cast expects a numeric operand, got {:?}", src_ty));
                     }
-                    Ok(HExpr::ICast(Box::new(inner), Ty::F32))
+                    Ok(HExpr::ICast(Box::new(inner), src_ty, Ty::F32))
                 }
                 "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "usize" => {
                     if items.len() != 2 {
@@ -213,7 +225,7 @@ pub(crate) fn lower_expect(
                             head, src_ty
                         ));
                     }
-                    Ok(HExpr::ICast(Box::new(inner), target))
+                    Ok(HExpr::ICast(Box::new(inner), src_ty, target))
                 }
                 "if" => lower_if(items, env, ctx),
                 "and" | "or" => lower_and_or(head, items, env, ctx),
@@ -282,8 +294,8 @@ pub(crate) fn lower_expect(
                     })
                 }
                 "nth" => {
-                    if items.len() != 3 {
-                        return Err("nth expects (nth <s> <idx>)".into());
+                    if items.len() > 4 {
+                        return Err("nth expects (nth <s> <idx>) or (nth <s> <idx> <default>)".into());
                     }
                     let s = lower(&items[1], env, ctx)?;
                     if ty_of(&s, env, ctx) != Ty::Str {
@@ -293,9 +305,33 @@ pub(crate) fn lower_expect(
                     if ty_of(&idx, env, ctx) != Ty::I64 {
                         return Err("nth index must be i64".into());
                     }
-                    Ok(HExpr::StrNth {
+                    // Two-argument nth returns (Option i64); the
+                    // explicit-default form desugars to a match over it.
+                    let opt = Ty::Adt(option_instance(ctx, Ty::I64)?);
+                    let nth = HExpr::StrNth {
                         s: Box::new(s),
                         idx: Box::new(idx),
+                        res: Some(opt),
+                    };
+                    if items.len() == 3 {
+                        return Ok(nth);
+                    }
+                    let dflt = lower(&items[3], env, ctx)?;
+                    Ok(HExpr::Match {
+                        scrut: Box::new(nth),
+                        ty: Ty::I64,
+                        arms: vec![
+                            crate::hir::HArm {
+                                variant: Some(0),
+                                binders: vec!["$b".to_string()],
+                                body: HExpr::Var("$b".to_string()),
+                            },
+                            crate::hir::HArm {
+                                variant: None,
+                                binders: vec![],
+                                body: dflt,
+                            },
+                        ],
                     })
                 }
                 "char->str" => {
@@ -410,11 +446,12 @@ pub(crate) fn lower_expect(
                         return Err(format!("conj element expects {:?}, got {:?}", want, xt));
                     }
                     let x = if want == Ty::F64 && xt == Ty::I64 {
-                        HExpr::ConvF64(Box::new(x))
+                        HExpr::ICast(Box::new(x), Ty::I64, Ty::F64)
                     } else {
                         x
                     };
                     Ok(HExpr::Conj {
+                        in_place: false,
                         v: Box::new(v),
                         x: Box::new(x),
                         elem,
@@ -764,7 +801,7 @@ pub(crate) fn lower_expect(
                             let at = if *fty == Ty::F64 && at == Ty::I64 {
                                 // Literal-friendly: an i64 argument widens
                                 // where the field is f64 (as before).
-                                args.push(HExpr::ConvF64(Box::new(a)));
+                                args.push(HExpr::ICast(Box::new(a), Ty::I64, Ty::F64));
                                 Ty::F64
                             } else {
                                 args.push(a);
@@ -840,6 +877,11 @@ pub(crate) fn lower_expect(
                             return Ok(HExpr::Call(mangled, args));
                         }
                     }
+                    // Everything else must be a known callee. `even?` is the
+                    // one builtin lowered through the generic call path.
+                    if head != "even?" && !ctx.raw_by_name.contains_key(head.as_str()) {
+                        return Err(format!("unknown function {}", head));
+                    }
                     Ok(HExpr::Call(head.clone(), args))
                 }
             }
@@ -852,27 +894,27 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::ConstI64(_) => Ty::I64,
         HExpr::ConstF64(_) => Ty::F64,
         HExpr::ConstB(_) => Ty::Bool,
-        HExpr::Var(s) => env.get(s).copied().unwrap_or(Ty::I64),
-        HExpr::Bin(_, a, b) => {
-            if ty_of(a, env, ctx) == Ty::F64 || ty_of(b, env, ctx) == Ty::F64 {
-                Ty::F64
-            } else {
-                Ty::I64
-            }
-        }
-        HExpr::ConvF64(_) => Ty::F64,
+        // Lowering rejects unbound symbols, so every Var in typed HIR is
+        // env-bound; an expect here keeps the invariant honest.
+        HExpr::Var(s) => env
+            .get(s)
+            .copied()
+            .expect("lowering guarantees bound vars"),
+        HExpr::BinW(.., t) => *t,
         HExpr::Count(_) => Ty::I64,
         HExpr::StrLit(_) => Ty::Str,
         HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } => Ty::Vec(*elem),
         HExpr::For { res_elem, .. } => Ty::Vec(*res_elem),
         HExpr::StrCat(_) => Ty::Str,
-        HExpr::BinW(.., t) => *t,
         HExpr::BinF(..) => Ty::F32,
         HExpr::CmpW(..) => Ty::Bool,
-        HExpr::ICast(_, t) => *t,
+        HExpr::ICast(_, _, to) => *to,
         HExpr::MapLit(_) => Ty::Map,
         HExpr::MapAssoc { .. } => Ty::Map,
-        HExpr::MapGet { .. } => Ty::I64,
+        HExpr::MapGet { res, .. } => match res {
+            Some(t) => *t,
+            None => Ty::I64,
+        },
         HExpr::SetLit(_) => Ty::Set,
         HExpr::SetConj { .. } | HExpr::SetDisj { .. } => Ty::Set,
         HExpr::SetContains { .. } => Ty::Bool,
@@ -881,7 +923,10 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Join { .. } => Ty::Str,
         HExpr::StrCmp(..) => Ty::Bool,
         HExpr::StrOrd(..) => Ty::Bool,
-        HExpr::StrNth { .. } => Ty::I64,
+        HExpr::StrNth { res, .. } => match res {
+            Some(t) => *t,
+            None => Ty::I64,
+        },
         HExpr::CharStr(_) => Ty::Str,
         HExpr::Loop { binds, body, .. } => {
             let mut child = env.clone();
@@ -930,11 +975,14 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::Let(_, b, _) => ty_of(b, env, ctx),
         HExpr::Seq(v) => v.last().map(|x| ty_of(x, env, ctx)).unwrap_or(Ty::I64),
         HExpr::If(_, _, _, t) => *t,
-        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(_) | HExpr::Cmp(..) => Ty::Bool,
+        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(_) => Ty::Bool,
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
         HExpr::Ctor { adt, .. } => Ty::Adt(*adt),
         HExpr::Match { ty, .. } => *ty,
-        HExpr::Get { ty, .. } => *ty,
+        HExpr::Get { ty, res, .. } => match res {
+            Some(t) => *t,
+            None => *ty,
+        },
         HExpr::Clone(inner) => ty_of(inner, env, ctx),
         HExpr::Closure { sig, .. } => Ty::Fn(*sig),
         HExpr::ClosureCall { sig, .. } => ctx
@@ -972,7 +1020,7 @@ fn collect_captures(
     }
     match e {
         HExpr::Var(v) => var(env, params, seen, caps, v),
-        HExpr::Bin(_, a, b) | HExpr::And(a, b) | HExpr::Or(a, b) | HExpr::Min(a, b, _) | HExpr::Max(a, b, _) | HExpr::Cmp(_, a, b, _) => {
+        HExpr::And(a, b) | HExpr::Or(a, b) | HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }
@@ -980,8 +1028,8 @@ fn collect_captures(
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }
-        HExpr::ConvF64(x) | HExpr::Count(x) | HExpr::Abs(x, _) | HExpr::Not(x)
-        | HExpr::Clone(x) | HExpr::DropStmt(x) | HExpr::ICast(x, _) => {
+        HExpr::Count(x) | HExpr::Abs(x, _) | HExpr::Not(x)
+        | HExpr::Clone(x) | HExpr::DropStmt(x) | HExpr::ICast(x, _, _) => {
             collect_captures(x, env, params, seen, caps)
         }
         HExpr::Call(_, args) | HExpr::StrCat(args) | HExpr::SetLit(args) => {
@@ -1034,7 +1082,7 @@ fn collect_captures(
             collect_captures(m, env, params, seen, caps);
             collect_captures(k, env, params, seen, caps);
         }
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, .. } => {
             collect_captures(src, env, params, seen, caps);
             collect_captures(key, env, params, seen, caps);
             if let Some(d) = default {
@@ -1066,7 +1114,7 @@ fn collect_captures(
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }
-        HExpr::StrNth { s, idx } => {
+        HExpr::StrNth { s, idx, .. } => {
             collect_captures(s, env, params, seen, caps);
             collect_captures(idx, env, params, seen, caps);
         }
@@ -1221,6 +1269,7 @@ pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExp
         sig,
         mangled,
         params,
+        capture_owns: caps.iter().map(|_| true).collect(),
         captures: caps,
         body: Box::new(body),
     })
@@ -1288,7 +1337,7 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
             ));
         }
         let init = if ty == Ty::F64 && it == Ty::I64 {
-            HExpr::ConvF64(Box::new(init))
+            HExpr::ICast(Box::new(init), Ty::I64, Ty::F64)
         } else {
             init
         };

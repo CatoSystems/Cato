@@ -331,6 +331,14 @@ pub(crate) fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             mdl.ensure_decl("declare void @cato_exit(i64)");
             c.line(&format!("  call void @cato_exit(i64 {})", v));
         }
+        HExpr::DropStmt(inner) => {
+            // An explicit `drop` releases the binding's heap now (the
+            // ownership planner already suppressed its scope-exit free,
+            // so this is the one destruction point).
+            if let HExpr::Var(v) = &**inner {
+                free_binding_storage(v, c, mdl);
+            }
+        }
         _ => {
             emit_for_ret(e, c, mdl, sigs, Ty::I64);
         }
@@ -430,8 +438,7 @@ pub(crate) fn static_int_width(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty,
         HExpr::ConstI64(_) => Ty::I64,
         HExpr::ConstB(_) => Ty::Bool,
         HExpr::ConstF64(_) => Ty::F64,
-        HExpr::ConvF64(_) => Ty::F64,
-        HExpr::ICast(_, t) => *t,
+        HExpr::ICast(_, _, t) => *t,
         HExpr::BinW(.., t) => *t,
         HExpr::BinF(..) => Ty::F32,
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,

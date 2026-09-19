@@ -808,7 +808,12 @@ pub(crate) fn generic_call(
         instance_rets[*mi] = Some(r);
     }
 
-    // Every selected method must agree on the return type.
+    if chosen.is_empty() {
+        return Err(format!(
+            "no method {} applies — the dispatch space is empty",
+            name
+        ));
+    }
     let mut ret: Option<Ty> = None;
     for (_, mi) in &chosen {
         let r = instance_rets[*mi]
@@ -824,7 +829,7 @@ pub(crate) fn generic_call(
             _ => {}
         }
     }
-    let ret = ret.unwrap_or(Ty::I64);
+    let ret = ret.expect("chosen methods have return types");
     if let Some(gr) = declared_ret {
         if gr != ret {
             return Err(format!(

@@ -57,11 +57,18 @@ its own suites (differential against the seed where representations overlap).
   middle end (fold, DCE/copy-prop, devirt, inline, clone elision).
 - Backends: LLVM IR text emission (tagged unions, fused loops, closures,
   collections) and the tree-walking interpreter, byte-identical on all of
-  `examples/`; ~140 tests.
+  `examples/`; ~220 tests.
 - Tooling: `cato build/run/repl/lsp`, wasm32 emission, coded diagnostics,
   `runtime/runtime.c` helpers linked by every native build.
 - Zero external crates; everything above is the space the kernel must
   eventually cover or explicitly retire.
+
+**Status (September 2026):** S0–S3 are shipped, plus the typed-HIR /
+ownership-driven-destruction revision (`docs/superpowers/specs/
+2026-09-18-cato-ownership-model-revised.md`: widths live in the IR,
+destruction derives from ownership states, `&!` removed).
+`selfhost/` does not exist in the tree yet — S4–S9 are designed but
+un-attempted. The phases below are the plan, not a record.
 
 ## Phase S0 — Scalar floor *(shipped)*
 

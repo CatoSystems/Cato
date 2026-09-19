@@ -46,45 +46,86 @@ pub fn optimize(program: &mut Program) -> Result<(), String> {
     verify_ownership(program)
 }
 
-/// Rebuild every `Let` free list from scratch: clear, then re-run the
-/// frontend's conservative annotation (leaks are possible, double-frees
-/// are not). Also drops dangling entries left behind by removed bindings.
+/// Rebuild every `Let` free list from scratch: clear, then re-plan drops
+/// from the ownership states (a binding frees iff it still owns its heap
+/// buffer at scope exit). Errors are tolerated here — `verify_ownership`
+/// reports them loudly once at the end.
 fn recompute_frees(program: &mut Program) {
     let facts = crate::hir::compute_adt_facts(&program.adts);
+    let sigs: HashMap<String, Vec<Borrow>> = program
+        .defns
+        .iter()
+        .map(|d| (d.name.clone(), d.borrows.clone()))
+        .collect();
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
         }
-        clear_and_annotate(&mut d.body, &facts);
+        clear_frees(&mut d.body);
+        let _ = crate::hir::plan_drops(
+            &d.name,
+            &d.params,
+            &d.borrows,
+            &mut d.body,
+            &sigs,
+            &facts,
+            false,
+        );
     }
     for lam in program.lambdas.iter_mut() {
-        clear_and_annotate(&mut lam.body, &facts);
+        clear_frees(&mut lam.body);
+        let name = format!("<lambda {}>", lam.mangled);
+        let _ = crate::hir::plan_drops(
+            &name,
+            &lam.params,
+            &[],
+            &mut lam.body,
+            &sigs,
+            &facts,
+            false,
+        );
     }
 }
 
-fn clear_and_annotate(body: &mut HExpr, facts: &crate::hir::AdtFacts) {
+fn clear_frees(body: &mut HExpr) {
     let taken = std::mem::replace(body, HExpr::ConstI64(0));
     *body = walk::rewrite(taken, &mut |e| match e {
         HExpr::Let(binds, body, _) => HExpr::Let(binds, body, Vec::new()),
         other => other,
     });
-    crate::hir::annotate_frees(body, facts);
 }
 
 /// Safety net: the ownership checker ran on the pre-optimization program;
 /// run it again so a pass bug surfaces as a loud compile error instead of
 /// a miscompile.
 fn verify_ownership(program: &Program) -> Result<(), String> {
+    // plan_drops re-checks move semantics while planning; the final
+    // post-optimization verification runs it for the errors alone.
+    let mut program = Program {
+        adts: program.adts.clone(),
+        defns: program.defns.clone(),
+        lambdas: program.lambdas.clone(),
+        fn_sigs: program.fn_sigs.clone(),
+    };
+    let facts = crate::hir::compute_adt_facts(&program.adts);
     let sigs: HashMap<String, Vec<Borrow>> = program
         .defns
         .iter()
         .map(|d| (d.name.clone(), d.borrows.clone()))
         .collect();
-    for d in &program.defns {
+    for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
         }
-        crate::hir::check_ownership(d, &sigs)?;
+        crate::hir::plan_drops(
+            &d.name,
+            &d.params,
+            &d.borrows,
+            &mut d.body,
+            &sigs,
+            &facts,
+            false,
+        )?;
     }
     Ok(())
 }

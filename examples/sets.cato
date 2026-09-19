@@ -18,6 +18,6 @@
       (print (contains? s3 5))   ; 0
       (print (contains? s3 2))   ; 1
       (print (count parts))      ; 3
-      (print (get parts 1))   ; b
+      (print (get parts 1 ""))   ; b
       (print joined)          ; a-b-c
       (print piece))))        ; b-

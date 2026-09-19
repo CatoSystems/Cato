@@ -12,6 +12,9 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
             Some((Ty::Adt(i), _)) => *i,
             _ => panic!("codegen: call {} does not return an ADT", name),
         },
+        HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
+        | HExpr::Get { res: Some(Ty::Adt(i)), .. }
+        | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => *i,
         other => panic!("codegen: expected an ADT value, got {:?}", other),
     }
 }
@@ -29,6 +32,26 @@ pub(crate) fn emit_adt(
             .get(v)
             .map(|(r, _)| r.clone())
             .unwrap_or_else(|| panic!("codegen: unknown ADT var {}", v)),
+        // Option-returning lookups are inline ADT values in any position
+        // (e.g. a match scrutinee).
+        HExpr::StrNth { s, idx, res: Some(res_ty) } => {
+            if let Ty::Adt(adt) = res_ty {
+                return emit_strnth_opt(s, idx, *adt, c, mdl, sigs);
+            }
+            panic!("codegen: StrNth Option result must be an ADT")
+        }
+        HExpr::Get { src, idx, res: Some(res_ty), .. } => {
+            if let Ty::Adt(adt) = res_ty {
+                return emit_get_opt(src, idx, *adt, c, mdl, sigs);
+            }
+            panic!("codegen: Get Option result must be an ADT")
+        }
+        HExpr::MapGet { src, key, res: Some(res_ty), .. } => {
+            if let Ty::Adt(adt) = res_ty {
+                return emit_map_get_opt(src, key, *adt, c, mdl, sigs);
+            }
+            panic!("codegen: MapGet Option result must be an ADT")
+        }
         HExpr::Ctor { adt, variant, args } => {
             let name = mdl.adt_name(*adt);
             let boxed = mdl.adt_boxed(*adt);
@@ -258,8 +281,26 @@ pub(crate) fn emit_field_store(
             c.line(&format!("  store i64 {}, ptr {}, align 8", x, t_f));
         }
         Ty::Vec(elem) => {
-            let (p, l, cap) = emit_vec_header(arg, c, mdl, sigs);
-            for (k, v) in [p, l, cap].into_iter().enumerate() {
+            // The ADT owns its own copy of the buffer (the str strdup rule,
+            // widened to vectors): the source may be static data or an
+            // alias, so the constructor always deep-copies.
+            let (p, l, _cap) = emit_vec_header(arg, c, mdl, sigs);
+            let esz: i64 = match elem {
+                Elem::F64 => 8,
+                _ => 8,
+            };
+            let nlen = c.temp();
+            c.line(&format!("  {} = mul i64 {}, {}", nlen, l, esz));
+            mdl.ensure_decl("declare ptr @malloc(i64)");
+            let np = c.temp();
+            c.line(&format!("  {} = call ptr @malloc(i64 {})", np, nlen));
+            mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+            c.line(&format!(
+                "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+                np, p, nlen
+            ));
+            let caps = vec![np, l.clone(), l];
+            for (k, v) in caps.into_iter().enumerate() {
                 let t_k = c.temp();
                 c.line(&format!(
                     "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
@@ -277,7 +318,6 @@ pub(crate) fn emit_field_store(
                 };
                 c.line(&format!("  store i64 {}, ptr {}, align 8", vv, t_k));
             }
-            let _ = elem;
         }
         Ty::Adt(j) => {
             let v = emit_adt(arg, c, mdl, sigs);
@@ -352,6 +392,8 @@ pub(crate) fn emit_field_load(
             c.scalar.insert(binder.to_string(), (t_p, Ty::Str));
         }
         Ty::Vec(elem) => {
+            // Only the alloca hoists to the entry block; the loads read the
+            // boxed struct, which is valid only inside this arm's block.
             let slot = c.temp();
             c.prelude
                 .push(format!("  {} = alloca %VecI64, align 8", slot));
@@ -372,11 +414,9 @@ pub(crate) fn emit_field_load(
                 if k == 0 {
                     let t_p = c.temp();
                     c.line(&format!("  {} = inttoptr i64 {} to ptr", t_p, t_l));
-                    c.prelude
-                        .push(format!("  store ptr {}, ptr {}, align 8", t_p, t_dst));
+                    c.line(&format!("  store ptr {}, ptr {}, align 8", t_p, t_dst));
                 } else {
-                    c.prelude
-                        .push(format!("  store i64 {}, ptr {}, align 8", t_l, t_dst));
+                    c.line(&format!("  store i64 {}, ptr {}, align 8", t_l, t_dst));
                 }
             }
             c.grow.insert(binder.to_string(), (slot, *elem));

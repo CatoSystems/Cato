@@ -89,7 +89,7 @@ fn does_not_fold_division_by_zero() {
     let p = compile_opt("(defn main [] (print-i64 (/ 1 0)))", true);
     let mut found_div = false;
     cato_core::opt::walk::visit_nodes(main_body(&p), &mut |n| {
-        if matches!(n, HExpr::Bin(BinOp::Div, _, _)) {
+        if matches!(n, HExpr::BinW(BinOp::Div, _, _, cato_core::hir::Ty::I64)) {
             found_div = true;
         }
     });
@@ -111,7 +111,7 @@ fn folds_string_concatenation() {
 #[test]
 fn folds_vector_element_access_and_count() {
     let p = compile_opt(
-        "(defn main [] (do (print (get [10 20 30] 1)) (print (count [4 5]))))",
+        "(defn main [] (do (print (get [10 20 30] 1 0)) (print (count [4 5]))))",
         true,
     );
     assert_eq!(consts_in(main_body(&p)), vec![20, 2]);
@@ -239,7 +239,7 @@ fn elides_clone_of_dead_binding() {
 (defn main []
   (let [v (conj (vec-i64 1) 2)
         w (clone v)]
-    (print (get w 0))))
+    (print (get w 0 0))))
 "#;
     let p = compile_opt(src, true);
     assert_eq!(clones_in(main_body(&p)), 0, "clone of a dead binding should be elided");
@@ -252,7 +252,7 @@ fn keeps_clone_of_live_binding() {
 (defn main []
   (let [v (conj (vec-i64 1) 2)
         w (clone v)]
-    (do (print (get w 0)) (print (get v 1)))))
+    (do (print (get w 0 0)) (print (get v 1 0)))))
 "#;
     let p = compile_opt(src, true);
     assert_eq!(clones_in(main_body(&p)), 1, "clone of a live binding must stay");

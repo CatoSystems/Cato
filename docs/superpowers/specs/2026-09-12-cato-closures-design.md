@@ -50,6 +50,13 @@ out-of-line machinery needed.
 - Closure params need type annotations; `fn` types cannot be returned from
   defns yet; captures are scalar/str only; `(Fn ...)` as a struct field is
   out of scope until ADT fields widen.
+- **Env lifetime — open leak contract:** a closure's boxed env is allocated
+  once and never freed (closure values stay Copy; freeing would need
+  last-use or not-recaptured proofs). Every non-fused higher-order call
+  therefore retains its env until process exit. This is an interim
+  contract, not the final memory model; closing it — the S2 capture-move
+  machinery makes a conservative "not returned, not captured again" rule
+  sound — is tracked in the memory-model work that follows S1c.
 
 ## Verification
 

@@ -244,7 +244,7 @@ fn compiles_generic_to_expected_output() {
 fn compiles_own_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/own.cato")).unwrap();
-    assert_eq!(compile_and_run("own", &src), "123\n3\n7\n");
+    assert_eq!(compile_and_run("own", &src), "123\n7\n");
 }
 
 #[test]
@@ -387,7 +387,7 @@ fn subs_split_join_edge_cases() {
         j (join "" one)]
     (do
       (print-i64 (count parts))      ; 3 (empty middle part kept)
-      (print-string (get parts 1))   ; (empty)
+      (print-string (get parts 1 ""))   ; (empty)
       (print-i64 (count one))        ; 1
       (print-string j)               ; abc
       (print-string (subs "hello" 1 4))  ; ell
@@ -433,6 +433,7 @@ fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
     for name in ["heap", "maps", "sets", "slice"] {
+        // (mem/ cases are covered by their own sanitizer tests below)
         let src = manifest.join("../../examples").join(format!("{}.cato", name));
         let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
         let exe = manifest.join("../../target").join(format!("frees_{}_bin", name));
@@ -453,6 +454,92 @@ fn scope_exit_frees_are_sanitizer_clean() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(!stderr.contains("AddressSanitizer"), "{}: sanitizer error:\n{}", name, stderr);
     }
+}
+
+// Ownership-driven destruction: a moved parameter's buffer must NOT be
+// freed by the callee when ownership transferred (here: into a `let` that
+// is returned). Under `--no-opt` the shape-based pre-S2 planner freed the
+// returned box and the caller's next callee freed it again — a double-free
+// caught by ASAN. The state-driven planner suppresses the moved param and
+// frees exactly once (in the final consumer).
+#[test]
+fn compiles_options2_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/options2.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("options2", &src),
+        "120\n-1\n-1\n201\n-1\n77\n6\n106\n"
+    );
+}
+
+#[test]
+fn vec_field_adt_is_sanitizer_clean() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rt = manifest.join("../../runtime/runtime.c");
+    let src = manifest.join("../../examples/mem/vec_field_adt.cato");
+    let out_ll = manifest.join("../../target/vec_field_adt.ll");
+    let exe = manifest.join("../../target/vec_field_adt_bin");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .args(["-fsanitize=address"])
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    assert!(out.status.success(), "binary failed");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+}
+
+#[test]
+fn moved_param_return_is_sanitizer_clean_without_opt() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rt = manifest.join("../../runtime/runtime.c");
+    let src = manifest.join("../../examples/mem/moved_param_return.cato");
+    let out_ll = manifest.join("../../target/moved_param_return.ll");
+    let exe = manifest.join("../../target/moved_param_return_bin");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed");
+
+    let cc = Command::new("clang")
+        .args(["-fsanitize=address"])
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang failed");
+
+    let out = Command::new(&exe).output().expect("run binary");
+    assert!(out.status.success(), "binary failed");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+}
+
+// A move transfers the drop duty: the source binding frees nothing, the
+// heir frees exactly once. Verifiable in the IR: exactly one drop call.
+#[test]
+fn move_transfers_the_drop_duty_exactly_once() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../examples/mem/moved_param_return.cato");
+    let out_ll = manifest.join("../../target/moved_param_transfer.ll");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed");
+
+    let ir = std::fs::read_to_string(&out_ll).unwrap();
+    let count = ir.matches("call void @drop__").count();
+    assert_eq!(count, 1, "the returned box must be dropped exactly once (in the final consumer), IR:\n{}", ir);
 }
 
 // Phase 13: frees are annotated in HIR for non-escaping bindings.

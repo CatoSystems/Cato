@@ -6,15 +6,15 @@
 
 (defn main []
   (let [m {1 10 2 20 3 30}]
-    (print (get m 2))            ; 20
+    (print (get m 2 0))            ; 20
     (print (count m))            ; 3
     (print (get m 9 99))         ; 99 (default)
     (let [m2 (assoc m 2 99)]
-      (print (get m2 2))         ; 99 (assoc replaces)
-      (print (get m 2))          ; 20 (original snapshot unchanged)
+      (print (get m2 2 0))         ; 99 (assoc replaces)
+      (print (get m 2 0))          ; 20 (original snapshot unchanged)
       (print (count m2)))        ; 3
     (let [m3 (assoc m 7 70)]
-      (print (get m3 7))         ; 70 (new key)
+      (print (get m3 7 0))         ; 70 (new key)
       (print (count m3)))        ; 4
     (let [empty {}]
       (print (count empty))      ; 0

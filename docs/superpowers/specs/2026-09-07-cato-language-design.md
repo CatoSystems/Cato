@@ -8,7 +8,7 @@ Status: Draft for review
 
 ## 1. Language Overview & Vision
 
-**Cato** is a statically-typed, compiled systems programming language with Clojure's surface syntax. It retains S-expressions, Lisp macros, and the immutable-first functional philosophy, but compiles to native machine code via LLVM with Rust-like ownership semantics.
+**Cato** is a statically-typed, compiled systems programming language with Clojure's surface syntax. It retains S-expressions, a Lisp-style macro layer (a fixed macro set today; user-defined macros are scheduled after the self-hosting fixpoint), and the immutable-first functional philosophy, but compiles to native machine code via LLVM with Rust-like ownership semantics.
 
 ### Core Philosophy
 
@@ -17,7 +17,7 @@ Status: Draft for review
 | **Clojure ergonomics** | S-expression syntax, `[]` vectors, `{}` maps, `#{}` sets, threading macros (`->`, `->>`), Lisp macros |
 | **Systems-level performance** | Direct LLVM IR emission, monomorphization, zero-cost abstractions, no GC |
 | **Memory safety without runtime cost** | Compile-time ownership/borrowing with linear types — enforced at compile time, zero runtime overhead |
-| **Zero-allocation functional code** | Stream fusion, defunctionalization, and inlining eliminate heap allocations from `map`/`filter`/`reduce` pipelines |
+| **Zero-allocation functional code** | Stream fusion, closure conversion, and inlining eliminate heap allocations from `map`/`filter`/`reduce` pipelines |
 
 ### What Cato Is NOT
 
@@ -30,7 +30,7 @@ Status: Draft for review
 | Trade-off | Decision | Rationale |
 |---|---|---|
 | Generality vs. Safety | Ownership enforced, not optional | Systems programming demands memory safety guarantees |
-| Syntax simplicity vs. Expressiveness | Retain full Lisp macro power | Macros are the killer feature for DSLs |
+| Syntax simplicity vs. Expressiveness | Retain Lisp macro power, in stages | A fixed macro set ships with the seed compiler; user-defined macros (`quote`/`syntax-quote`) are scheduled after the self-hosting fixpoint |
 | Compile time vs. Run time | Aggressive monomorphization | Accepts longer compile time for zero-allocation runtime and SIMD opportunity |
 | Interop vs. Purity | C FFI is first-class | Systems programming requires talking to C libraries |
 
@@ -40,7 +40,7 @@ Status: Draft for review
 
 ### Type System: Hindley-Milner with Bidirectional Inference + Ownership
 
-Cato uses a **bidirectional type checker** with Hindley-Milner-style let-polymorphism, extended with linear/affine types for ownership tracking.
+Cato uses a **bidirectional checker**: an expected type flows down through lowering, and a structural unifier relates annotations to argument types. Inference is **monomorphic** — generics are defn-level type parameters, monomorphized per call site (no let-polymorphism; every binding has one concrete type), extended with linear/affine types for ownership tracking.
 
 **Core Properties:**
 - **Inferred by default** — no type annotations required for local definitions.
@@ -106,6 +106,17 @@ Inspired by Rust's borrow checker, expressed in Clojure's threading/let-binding 
 | `&!x` | Mutable exclusive borrow | `&mut x` |
 | `(clone x)` | Explicit deep copy | `x.clone()` |
 | `(drop x)` | Explicit deallocation | `drop(x)` |
+
+> **Implementation status.** What the checker enforces today: moves and
+> use-after-move, and borrowed (`&`) parameters cannot be moved anywhere in
+> the callee (passing one to an owned parameter, capturing, `conj`-ing, or
+> dropping it is a compile error — the callee could free a buffer the caller
+> still reads). `&!` exclusive borrows were removed pre-1.0: with
+> uniqueness-driven in-place updates there is no user-facing exclusive lend.
+> Destruction is ownership-driven (`plan_drops`): a binding frees at scope
+> exit iff it still owns its heap buffer; moves transfer the duty. Borrow
+> *regions* (borrows beyond a call boundary, mutation through borrows) are
+> not part of the language; `&` is a checked parameter-passing mode.
 
 ### Unboxed Native Types
 
@@ -292,16 +303,16 @@ Fused IR:
   return acc
 ```
 
-#### [6] Defunctionalization
-Any higher-order function that wasn't fused (e.g., a callback passed to a C library) is **defunctionalized**: each closure becomes `{ fn* pointer, void* env }`. Since monomorphization made every closure type concrete, defunctionalization is simply closure conversion — no type erasure, no dynamic dispatch. After inlining, calls become direct calls.
+#### [6] Closure Conversion (not defunctionalization)
+Any higher-order function that wasn't fused (e.g., a callback passed to a C library) is **closure-converted**: each closure becomes `{ fn* pointer, void* env }` with an indirect call. Since monomorphization made every closure type concrete, there is no type erasure and no dynamic dispatch; after inlining, most calls become direct calls. (True defunctionalization — enumerating every call target into a static dispatch structure — is a possible later optimization, not what ships.)
 
 #### [7] SSA + Noalias Emission
-Convert to LLVM SSA. Cato emits **`noalias`** on all function arguments and load/store pointers. Because the language enforces immutability + ownership, the compiler proves:
+Convert to LLVM SSA. The target state is **`noalias`** on all function arguments and load/store pointers: because the language enforces immutability + ownership, the compiler can in principle prove:
 - No two mutable references alias.
 - Immutable references never alias mutable ones.
 - Fused loops write to disjoint memory regions.
 
-This single feature unlocks LLVM's aggressive SIMD vectorization, loop unrolling, and memory pipelining that C compilers often miss because they can't prove non-aliasing.
+**Shipped today:** `noalias nocapture readonly` on fused-loop data and closure-env *parameters only*; loads/stores carry no alias metadata yet. Emitting noalias per load/store requires the uniqueness proof at each access point rather than per binding — this is the planned work, and until it lands the auto-SIMD/auto-parallel claims below rest on LLVM's default alias analysis over the parameter annotations.
 
 #### [8] Automatic Parallelism
 After fusion + noalias analysis, the compiler identifies pure loops (no side effects, no cross-iteration data dependence). Candidates for:
@@ -310,11 +321,12 @@ After fusion + noalias analysis, the compiler identifies pure loops (no side eff
 
 Opt-in per-loop via `(parallel loop)`; globally via a `--fast` flag.
 
+**Shipped today:** `(parallel (reduce ...))` lowers pipeline reduces onto a thread pool, and `--fast` attaches `llvm.loop.vectorize.enable` metadata. The "fusion guarantees disjoint memory" argument is asserted, not yet backed by a proof pass; broader loop shapes are rejected rather than parallelized.
+
 #### [9] LLVM IR Emission
 Emit textual LLVM IR (`.ll`) with:
 - Unboxed native types.
-- `noalias` on all pointers.
-- `readnone` + `nounwind` on pure functions.
+- `noalias nocapture readonly` on fused-loop data and closure-env parameters (function-level attributes and load/store alias annotations pending, §[7]).
 - `inbounds` on all GEPs.
 - Alignment hints derived from the data layout.
 

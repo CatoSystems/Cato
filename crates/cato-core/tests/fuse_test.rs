@@ -23,7 +23,7 @@ fn fuses_pipeline_keeps_single_reduce() {
 fn fuses_closure_reduce() {
     let h = fused_map_filter(
         "ss",
-        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- x mu) (- x mu)))) 0.0 xs))",
+        "(defn ss [xs :- vec mu :- f64] (reduce (fn [acc x] (+ acc (* (- (f64 x) mu) (- (f64 x) mu)))) 0.0 xs))",
     );
     assert!(matches!(h, HExpr::Reduce(_)));
 }

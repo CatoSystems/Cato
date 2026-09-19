@@ -196,7 +196,7 @@ pub(crate) fn reduce_init(r: &HReduce) -> Option<&HExpr> {
 }
 
 /// An f64 accumulator: an f64 init literal or a promoted int init
-/// (`ConvF64` wrapper inserted by HIR when elements are f64).
+/// (an `ICast` to f64 inserted by HIR when elements are f64).
 pub(crate) fn acc_ret_is_f64(r: &HReduce) -> bool {
     match r {
         HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => init_is_f64(init),
@@ -206,7 +206,7 @@ pub(crate) fn acc_ret_is_f64(r: &HReduce) -> bool {
 pub(crate) fn init_is_f64(init: &HExpr) -> bool {
     match init {
         HExpr::ConstF64(_) => true,
-        HExpr::ConvF64(_) => true,
+        HExpr::ICast(_, _, Ty::F64) => true,
         _ => false,
     }
 }

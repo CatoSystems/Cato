@@ -20,8 +20,8 @@
 
 ; Multi-dispatch: ADT variant x vector slot in one specializer list.
 (defgeneric fits [s :- Shape box :- (Vector f64)] :- bool)
-(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0)))
-(defmethod fits [(Rect w h) box :- (Vector f64)] :- bool (< (+ w h) (get box 0)))
+(defmethod fits [(Circle r) box :- (Vector f64)] :- bool (< r (get box 0 0.0)))
+(defmethod fits [(Rect w h) box :- (Vector f64)] :- bool (< (+ w h) (get box 0 0.0)))
 
 ; Maps and sets also flow back from functions: the header returns by
 ; value, and the result composes with get/count and dispatch.
@@ -48,7 +48,7 @@
     (print (fits (Circle 2.0) [3.0]))     ; 1 (true)
     (print (fits (Circle 5.0) [3.0]))     ; 0 (false)
     (print (fits (Rect 1.0 2.0) [4.0 9.0])) ; 1 (true)
-    (print (get (counts 7) 1))            ; 14
+    (print (get (counts 7) 1 0))            ; 14
     (print (size (singleton 5)))          ; 1
     (print (len [1 2 3]))                 ; 103 — exact beats wildcard
     (print (len [1.5 2.5]))               ; 2   — wildcard (vec_f64)

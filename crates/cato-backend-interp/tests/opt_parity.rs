@@ -126,7 +126,7 @@ fn clone_elision_preserves_heap_behavior() {
 (defn main []
   (let [a (conj (vec-i64 1) 2)
         b (clone a)]
-    (do (print (get b 0))
+    (do (print (get b 0 0))
         (print (count a)))))
 "#,
     );
@@ -135,8 +135,8 @@ fn clone_elision_preserves_heap_behavior() {
 (defn main []
   (let [a (conj (vec-i64 1) 2)
         b (clone a)]
-    (do (print (get b 1))
-        (print (get a 0)))))
+    (do (print (get b 1 0))
+        (print (get a 0 0)))))
 "#,
     );
 }

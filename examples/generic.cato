@@ -26,5 +26,5 @@
   (print (mean (vec-f64 1.0 2.0 3.0 4.0))) ; 2.5
   (print (gmax (vec-f64 1.5 7.25 3.0)))   ; 7.25
   (print (gmax (vec-i64 5 9 2)))          ; 9
-  (print (get (vec-f64 1.5 2.5) 1))       ; 2.5
+  (print (get (vec-f64 1.5 2.5) 1 0.0))       ; 2.5
   (print (f64-window (vec-f64 1.0 2.0 3.0) (vec-f64 10.0 20.0 30.0)))) ; 1*10+2*20 = 50

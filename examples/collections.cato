@@ -17,7 +17,7 @@
   (reduce + 0 (map (fn [a b] (* a b)) (zip xs ys))))
 
 (defn nth-squared [xs :- vec i :- i64] :- i64
-  (* (get xs i) (get xs i -1)))
+  (* (get xs i 0) (get xs i -1)))
 
 (defn classify-all [xs :- vec] :- i64
   (doseq [x xs]

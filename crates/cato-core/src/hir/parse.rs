@@ -355,10 +355,10 @@ pub(crate) fn parse_params(
                     // (`&x :- (Vector f64)`) or the annotation symbol
                     // (`x :- &vec`). List annotations take the sigil from
                     // the name position.
-                    let (name_borrow, bare) = split_borrow(name);
+                    let (name_borrow, bare) = split_borrow(name)?;
                     let (ty_borrow, ty) = match &params[i + 2] {
                         Expr::LitSym(ty_sym) => {
-                            let (b, rest) = split_borrow(ty_sym);
+                            let (b, rest) = split_borrow(ty_sym)?;
                             (b, parse_ty_sym(rest, tcx.adt_by_name, ty_params)?)
                         }
                         other => (
@@ -444,7 +444,14 @@ pub(crate) fn parse_ty(
                 Expr::LitSym(s) if s == "i64" => Elem::I64,
                 Expr::LitSym(s) if s == "f64" => Elem::F64,
                 Expr::LitSym(s) if s == "str" => Elem::Str,
-                Expr::LitSym(p) => Elem::Param(register_ty_param(p, ty_params)),
+                Expr::LitSym(p) => {
+                    // A type parameter must be spelled like one (uppercase,
+                    // e.g. T); anything else is a typo'd type name.
+                    if !is_ty_param_name(p) {
+                        return Err(format!("unknown type name {}", p));
+                    }
+                    Elem::Param(register_ty_param(p, ty_params))
+                }
                 _ => return Err("Vector element type must be i64, f64 or a type parameter".into()),
             };
             Ok(Ty::Vec(el))
@@ -455,14 +462,15 @@ pub(crate) fn parse_ty(
 }
 
 /// Split a leading borrow sigil off an annotation symbol: `&Shape`,
-/// `&!vec`, `&(Vector f64)`.
-pub(crate) fn split_borrow(s: &str) -> (Borrow, &str) {
-    if let Some(rest) = s.strip_prefix("&!") {
-        (Borrow::Exclusive, rest)
+/// `&(Vector f64)`. (`&!` exclusive borrows were removed pre-1.0: the
+/// uniqueness-based in-place paths need no user-facing exclusive lend.)
+pub(crate) fn split_borrow(s: &str) -> Result<(Borrow, &str), String> {
+    if s.starts_with("&!") {
+        Err("unsupported borrow sigil `&!` — exclusive borrows were removed; use `&` or pass by value".to_string())
     } else if let Some(rest) = s.strip_prefix('&') {
-        (Borrow::Shared, rest)
+        Ok((Borrow::Shared, rest))
     } else {
-        (Borrow::Owned, s)
+        Ok((Borrow::Owned, s))
     }
 }
 
@@ -490,9 +498,21 @@ pub(crate) fn parse_ty_sym(
         "set" => Ok(Ty::Set),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
-            None => Ok(Ty::Param(register_ty_param(other, ty_params))),
+            None if is_ty_param_name(other) => {
+                Ok(Ty::Param(register_ty_param(other, ty_params)))
+            }
+            // Lowercase unknowns are typos, not type variables: reject them
+            // instead of silently genericizing the defn.
+            None => Err(format!("unknown type name {}", other)),
         },
     }
+}
+
+/// Type parameters are introduced implicitly by annotation spelling: they
+/// must start with an uppercase letter (`T`), mirroring the ADT-name
+/// convention. Lowercase unknown symbols are treated as the typos they are.
+fn is_ty_param_name(s: &str) -> bool {
+    s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
 }
 
 /// Parse a Fn-annotation element type (scalar, str, or vector forms only —

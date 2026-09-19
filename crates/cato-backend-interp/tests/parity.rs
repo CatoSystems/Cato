@@ -4,6 +4,7 @@
 use std::process::Command;
 
 const EXAMPLES: &[&str] = &[
+    "options2",
     "closures",
     "collection_generics",
     "collections",
@@ -105,27 +106,47 @@ fn string_ordering_rejects_mixed_operands() {
 }
 
 #[test]
+fn interp_cmpw_orders_u64_top_bit_like_llvm() {
+    // (u64 -1) is u64::MAX — its i64 bit pattern is -1. The backend emits
+    // `ult`, so unsigned order says MAX < 1 is false; a signed interp
+    // compare would say true. This corner is outside the examples suite.
+    let src = r#"
+(defn main [] :- i64
+  (do
+    (print (if (< (u64 -1) (u64 1)) 1 0))
+    (print (if (> (u64 -1) (u64 1)) 1 0))
+    (print (if (< (u64 1) (u64 -1)) 1 0))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "0\n1\n1\n");
+}
+
+#[test]
 fn interp_evaluates_nth_and_char_str() {
+    // Two-argument nth returns (Option i64); the explicit-default form
+    // returns i64 directly. Out-of-range reads yield None / the default.
     let src = r#"
 (defn main []
   (let [s "hello"
         c (char->str 65)
         t (char->str 9)]
     (do
-      (print (nth s 0))
-      (print (nth s 4))
-      (print (nth s 99))
-      (print (nth s (- 0 1)))
+      (print (match (nth s 0) (Some [b] b) (None [] 0)))
+      (print (match (nth s 4) (Some [b] b) (None [] 0)))
+      (print (match (nth s 99) (Some [b] b) (None [] 0)))
+      (print (nth s 0 0))
+      (print (nth s 99 7))
       (print-string c)
       (print (count c))
       (print (= t "\t"))
-      (print (nth (char->str 122) 0))
+      (print (match (nth (char->str 122) 0) (Some [b] b) (None [] 0)))
       (print (char->str 300)))))
 "#;
     let program = cato_core::compile_to_program(src).expect("compile");
     let out = cato_interp::Interpreter::new(&program).run().expect("run");
-    // Out-of-range nth yields 0; char->str 300 truncates to ',' (300 & 0xFF).
-    assert_eq!(out, "104\n111\n0\n0\nA\n1\n1\n122\n,\n");
+    // Out-of-range Option nth is None; char->str 300 truncates to ','.
+    assert_eq!(out, "104\n111\n0\n104\n7\nA\n1\n1\n122\n,\n");
 }
 
 #[test]

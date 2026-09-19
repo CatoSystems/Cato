@@ -123,8 +123,6 @@ pub fn build_program_located(
             _ => lower_expect(&raw.body, &env, &ctx, Some(ret)),
         }
         .map_err(|e| locate(*span, &e))?;
-        let mut body = body;
-        annotate_frees(&mut body, &facts);
         out.push(Defn {
             name: raw.name.clone(),
             params: raw.params.clone(),
@@ -151,20 +149,17 @@ pub fn build_program_located(
     // Monomorphized generic instantiations generated during lowering.
     out.extend(ctx.inst.borrow_mut().extra.drain(..));
 
-    // Multimethod hidden/dispatch defns generated during lowering; their
-    // bodies get the same scope-exit free annotation as plain defns.
+    // Multimethod hidden/dispatch defns generated during lowering.
     for mut d in ctx.gens.borrow_mut().extra.drain(..) {
-        annotate_frees(&mut d.body, &facts);
         out.push(d);
     }
 
     // Closure bodies: clone into the program's lambda table.
-    let lambdas: Vec<crate::Lambda> = ctx
+    let mut lambdas: Vec<crate::Lambda> = ctx
         .lambdas
         .borrow_mut()
         .drain(..)
-        .map(|(mangled, captures, params, ret, mut body)| {
-            annotate_frees(&mut body, &facts);
+        .map(|(mangled, captures, params, ret, body)| {
             crate::Lambda {
                 mangled,
                 captures,
@@ -185,7 +180,8 @@ pub fn build_program_located(
     let mut adts = adts;
     adts.extend(extra_adts);
 
-    // Ownership / borrow check: needs every callee's borrow kinds.
+    // Ownership / borrow check + scope-exit drop planning: needs every
+    // callee's borrow kinds, so it runs once all defns are collected.
     let sigs: HashMap<String, Vec<Borrow>> = out
         .iter()
         .map(|d| (d.name.clone(), d.borrows.clone()))
@@ -194,14 +190,29 @@ pub fn build_program_located(
         .iter()
         .map(|(r, s)| (r.name.as_str(), *s))
         .collect();
-    for d in &out {
-        check_ownership(d, &sigs).map_err(|e| {
+    for d in out.iter_mut() {
+        if d.is_extern {
+            continue;
+        }
+        plan_drops(&d.name, &d.params, &d.borrows, &mut d.body, &sigs, &facts, false).map_err(|e| {
             let span = span_by_name
                 .get(d.name.as_str())
                 .copied()
                 .unwrap_or_default();
             locate(span, &e)
         })?;
+    }
+    for lam in lambdas.iter_mut() {
+        let name = format!("<lambda {}>", lam.mangled);
+        plan_drops(
+            &name,
+            &lam.params,
+            &[],
+            &mut lam.body,
+            &sigs,
+            &facts,
+            false,
+        )?;
     }
     Ok((adts, out, lambdas, fn_sigs))
 }

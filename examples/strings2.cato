@@ -28,10 +28,10 @@
       (print (sign "same" "same"))   ; 0
       (print (>= "zz" "aa"))         ; 1
       ; Byte access: nth is bounds-checked; out of range yields 0.
-      (print (nth s 0))              ; 99  (c)
-      (print (nth s 3))              ; 111 (o)
-      (print (nth s 99))             ; 0
-      (print (nth s (- 0 1)))        ; 0
+      (print (nth s 0 0))              ; 99  (c)
+      (print (nth s 3 0))              ; 111 (o)
+      (print (nth s 99 0))             ; 0
+      (print (nth s (- 0 1) 0))        ; 0
       ; Byte construction: a fresh one-byte heap string.
       (print-string (char->str 67))  ; C
       (print (count comma))          ; 1

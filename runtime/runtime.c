@@ -82,12 +82,14 @@ char *cato_str_join(char **arr, int64_t n, const char *sep) {
    dropped whole only via the (flat) fast path. */
 
 typedef struct HamtLeaf {
+    size_t rc;         /* reference count: referencing edges (starts at 1) */
     int64_t key;
     int64_t val;
     struct HamtLeaf *next; /* collision chain */
 } HamtLeaf;
 
 typedef struct HamtNode {
+    size_t rc;
     uint32_t bitmap;   /* which of the 16 slots exist */
     /* HamtLeaf* (tagged 1) or HamtNode* (tagged 0) follow, popcount(bitmap) of them */
 } HamtNode;
@@ -113,14 +115,44 @@ static HamtNode *hamt_child(HamtNode *n, int i) {
 
 static HamtNode *hamt_new_node(uint32_t bitmap) {
     HamtNode *n = malloc(sizeof(HamtNode) + hamt_popcount(bitmap) * sizeof(void *));
+    n->rc = 1;
     n->bitmap = bitmap;
     return n;
 }
 
 static HamtLeaf *hamt_leaf(int64_t k, int64_t v, HamtLeaf *next) {
     HamtLeaf *l = malloc(sizeof(HamtLeaf));
+    l->rc = 1;
     l->key = k; l->val = v; l->next = next;
     return l;
+}
+
+/* retain/release: a shared node's count is the number of referencing
+   edges; at zero the node frees and the release recurses. */
+static void hamt_release_rec(void *t);
+
+static void hamt_retain(void *t) {
+    if (t == NULL) return;
+    if (HAMT_IS_LEAF(t)) HAMT_LEAF(t)->rc++;
+    else ((HamtNode *)t)->rc++;
+}
+
+static void hamt_release_rec(void *t) {
+    if (t == NULL) return;
+    if (HAMT_IS_LEAF(t)) {
+        HamtLeaf *l = HAMT_LEAF(t);
+        if (--l->rc == 0) {
+            hamt_release_rec(l->next ? HAMT_TAG_LEAF(l->next) : NULL);
+            free(l);
+        }
+        return;
+    }
+    HamtNode *n = (HamtNode *)t;
+    if (--n->rc != 0) return;
+    void **children = (void **)(n + 1);
+    int cnt = hamt_popcount(n->bitmap);
+    for (int i = 0; i < cnt; i++) hamt_release_rec(children[i]);
+    free(n);
 }
 
 static const int HAMT_BITS = 4, HAMT_DEPTH = 16;
@@ -129,9 +161,11 @@ static const int HAMT_BITS = 4, HAMT_DEPTH = 16;
 static HamtLeaf *hamt_leaf_assoc(HamtLeaf *l, int64_t k, int64_t v) {
     if (l == NULL) return hamt_leaf(k, v, NULL);
     if (l->key == k) {
-        HamtLeaf *nl = hamt_leaf(k, v, l->next);
-        return nl;
+        /* the replacement shares the old tail chain */
+        if (l->next) hamt_retain(HAMT_TAG_LEAF(l->next));
+        return hamt_leaf(k, v, l->next);
     }
+    /* fresh copies all the way down: nothing shared */
     return hamt_leaf(l->key, l->val, hamt_leaf_assoc(l->next, k, v));
 }
 
@@ -171,7 +205,11 @@ static void *hamt_assoc_rec(void *t, uint64_t h, int d, int64_t k, int64_t v) {
         int b = 1 << i;
         if (nn->bitmap & b) {
             if (i == idx) nc[w] = nchild;
-            else nc[w] = oc[hamt_popcount(n->bitmap & (b - 1))];
+            else {
+                void *shared = oc[hamt_popcount(n->bitmap & (b - 1))];
+                hamt_retain(shared); /* the new root references it too */
+                nc[w] = shared;
+            }
             w++;
         }
     }
@@ -200,6 +238,22 @@ int64_t cato_hamt_get(void *t, int64_t k, int64_t def) {
     int64_t out;
     if (hamt_get_rec(t, cato_mix64((uint64_t)k), 0, k, &out)) return out;
     return def;
+}
+
+/* Find with presence report: writes 1/0 to *found and returns the value
+   (0 on miss). Generated code uses this for Option-returning map gets. */
+int64_t cato_hamt_find(void *t, int64_t k, void *found_out) {
+    int64_t out;
+    int f = hamt_get_rec(t, cato_mix64((uint64_t)k), 0, k, &out);
+    *(int64_t *)found_out = f;
+    return out;
+}
+
+/* Release a map's heap: `cap` is the header's cap word (tag bit 1 = HAMT
+   root, 0 = flat sorted array). Called by generated drop glue. */
+void cato_map_release_pair(void *root, int64_t cap) {
+    if ((cap & 1) == 0) { free(root); return; }
+    hamt_release_rec(root);
 }
 
 /* build a HAMT root from a flat sorted array */

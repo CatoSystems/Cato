@@ -104,26 +104,15 @@ pub(crate) fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Resul
     }
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
-    // Closed widths compare in their own width (and signedness); f32
-    // compares with fcmp. i64 keeps the plain Cmp path.
-    if at == Ty::F32 && bt == Ty::F32 {
-        return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b), Ty::F32));
-    }
-    if at == bt && at.is_int() && at != Ty::I64 {
+    // Closed widths compare in their own width (and signedness); the width
+    // lives in the node — no untyped compare, no silent promotion.
+    if at == bt && at.is_numeric() {
         return Ok(HExpr::CmpW(op, Box::new(a), Box::new(b), at));
     }
-    if at.is_int() && bt.is_int() && at != bt {
-        return Err(format!(
-            "cannot compare mixed widths {:?} and {:?} — cast explicitly",
-            at, bt
-        ));
-    }
-    if at == Ty::F32 || bt == Ty::F32 {
-        return Err("cannot mix f32 with other widths — cast with (f32 e) or (f64 e)".into());
-    }
-    let (a, b) = promote_pair(a, b, env, ctx)?;
-    let is_f64 = ty_of(&a, env, ctx) == Ty::F64;
-    Ok(HExpr::Cmp(op, Box::new(a), Box::new(b), is_f64))
+    Err(format!(
+        "cannot compare {:?} and {:?} — operands must share a width (cast explicitly)",
+        at, bt
+    ))
 }
 
 pub(crate) fn lower_and_or(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
@@ -191,16 +180,23 @@ pub(crate) fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     let ty = match ty_of(&src, env, ctx) {
         Ty::Vec(e) => elem_ty(e),
         Ty::Map => {
-            // Map lookup: (get m k [default]) yields i64.
+            // Map lookup: (get m k) yields (Option i64); (get m k d)
+            // yields i64 directly.
             let key = lower(&items[2], env, ctx)?;
             let default = match items.get(3) {
                 Some(d) => Some(Box::new(lower(d, env, ctx)?)),
                 None => None,
             };
+            let res = if default.is_none() {
+                Some(Ty::Adt(option_instance(ctx, Ty::I64)?))
+            } else {
+                None
+            };
             return Ok(HExpr::MapGet {
                 src: Box::new(src),
                 key: Box::new(key),
                 default,
+                res,
             });
         }
         other => return Err(format!("get source must be a vector or map, got {:?}", other)),
@@ -210,12 +206,35 @@ pub(crate) fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
         Some(d) => Some(Box::new(lower(d, env, ctx)?)),
         None => None,
     };
+    // Two-argument vector get returns (Option elem) — scalar elements only
+    // (string elements would alias the vector's buffer in the Option).
+    let res = if default.is_none() {
+        if ty == Ty::Str {
+            return Err(
+                "Option get over (Vector str) is not supported — use (get v i default)".into(),
+            );
+        }
+        Some(Ty::Adt(option_instance(ctx, ty)?))
+    } else {
+        None
+    };
     Ok(HExpr::Get {
         src: Box::new(src),
         idx: Box::new(idx),
         default,
         ty,
+        res,
     })
+}
+
+/// The monomorphized `(Option T)` instance for T, through the prelude.
+pub(crate) fn option_instance(ctx: &Ctx, t: Ty) -> Result<u32, String> {
+    let tpl = ctx
+        .adts
+        .iter()
+        .position(|d| d.name == "Option" && d.ty_params.len() == 1)
+        .ok_or("the prelude's (Option a) type is required for Option-returning get/nth")?;
+    ctx.instantiate_adt(tpl as u32, &[t])
 }
 
 pub(crate) fn elem_ty(e: Elem) -> Ty {
@@ -277,6 +296,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                     idx: Box::new(HExpr::ConstI64(k as i64)),
                     default: Some(Box::new(zero)),
                     ty: elem_ty(elem),
+                    res: None,
                 };
                 child.insert(pn.clone(), elem_ty(elem));
                 resolved.push((pn.clone(), getv, elem_ty(elem)));

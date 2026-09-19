@@ -18,10 +18,6 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
     let e = match e {
         HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::Var(_)
         | HExpr::StrLit(_) | HExpr::VecLit(_) => return f(e),
-        HExpr::Bin(op, a, b) => {
-            HExpr::Bin(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
-        }
-        HExpr::ConvF64(a) => HExpr::ConvF64(Box::new(rewrite(*a, f))),
         HExpr::Count(a) => HExpr::Count(Box::new(rewrite(*a, f))),
         HExpr::Call(n, args) => {
             HExpr::Call(n, args.into_iter().map(|a| rewrite(a, f)).collect())
@@ -46,9 +42,6 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         }
         HExpr::Or(a, b) => HExpr::Or(Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f))),
         HExpr::Not(a) => HExpr::Not(Box::new(rewrite(*a, f))),
-        HExpr::Cmp(op, a, b, fl) => {
-            HExpr::Cmp(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)), fl)
-        }
         HExpr::BinW(op, a, b, t) => {
             HExpr::BinW(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)), t)
         }
@@ -58,7 +51,7 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         HExpr::BinF(op, a, b) => {
             HExpr::BinF(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
         }
-        HExpr::ICast(a, t) => HExpr::ICast(Box::new(rewrite(*a, f)), t),
+        HExpr::ICast(a, from, to) => HExpr::ICast(Box::new(rewrite(*a, f)), from, to),
         HExpr::Abs(a, t) => HExpr::Abs(Box::new(rewrite(*a, f)), t),
         HExpr::Min(a, b, t) => {
             HExpr::Min(Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)), t)
@@ -75,9 +68,10 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         HExpr::StrOrd(op, a, b) => {
             HExpr::StrOrd(op, Box::new(rewrite(*a, f)), Box::new(rewrite(*b, f)))
         }
-        HExpr::StrNth { s, idx } => HExpr::StrNth {
+        HExpr::StrNth { s, idx, res } => HExpr::StrNth {
             s: Box::new(rewrite(*s, f)),
             idx: Box::new(rewrite(*idx, f)),
+            res,
         },
         HExpr::CharStr(c) => HExpr::CharStr(Box::new(rewrite(*c, f))),
         HExpr::Loop { binds, body, ty } => HExpr::Loop {
@@ -113,10 +107,11 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             k: Box::new(rewrite(*k, f)),
             v: Box::new(rewrite(*v, f)),
         },
-        HExpr::MapGet { src, key, default } => HExpr::MapGet {
+        HExpr::MapGet { src, key, default, res } => HExpr::MapGet {
             src: Box::new(rewrite(*src, f)),
             key: Box::new(rewrite(*key, f)),
             default: default.map(|d| Box::new(rewrite(*d, f))),
+            res,
         },
         HExpr::SetLit(vs) => HExpr::SetLit(vs.into_iter().map(|v| rewrite(v, f)).collect()),
         HExpr::SetConj { s, x } => HExpr::SetConj {
@@ -144,10 +139,11 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             sep: Box::new(rewrite(*sep, f)),
             xs: Box::new(rewrite(*xs, f)),
         },
-        HExpr::Conj { v, x, elem } => HExpr::Conj {
+        HExpr::Conj { v, x, elem, in_place } => HExpr::Conj {
             v: Box::new(rewrite(*v, f)),
             x: Box::new(rewrite(*x, f)),
             elem,
+            in_place,
         },
         HExpr::Subvec {
             v,
@@ -178,11 +174,13 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             idx,
             default,
             ty,
+            res,
         } => HExpr::Get {
             src: Box::new(rewrite(*src, f)),
             idx: Box::new(rewrite(*idx, f)),
             default: default.map(|d| Box::new(rewrite(*d, f))),
             ty,
+            res,
         },
         HExpr::Clone(a) => HExpr::Clone(Box::new(rewrite(*a, f))),
         HExpr::DropStmt(a) => HExpr::DropStmt(Box::new(rewrite(*a, f))),
@@ -208,12 +206,14 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             mangled,
             params,
             captures,
+            capture_owns,
             body,
         } => HExpr::Closure {
             sig,
             mangled,
             params,
             captures,
+            capture_owns,
             body: Box::new(rewrite(*body, f)),
         },
         HExpr::ClosureCall { f: fv, args, sig } => HExpr::ClosureCall {
@@ -369,12 +369,11 @@ fn count_walk(
         }
         HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::StrLit(_)
         | HExpr::VecLit(_) => {}
-        HExpr::Bin(_, a, b) | HExpr::BinW(_, a, b, _) | HExpr::BinF(_, a, b) => {
+        HExpr::BinW(_, a, b, _) | HExpr::BinF(_, a, b) => {
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
-        HExpr::Cmp(_, a, b, _)
-        | HExpr::CmpW(_, a, b, _)
+        HExpr::CmpW(_, a, b, _)
         | HExpr::Min(a, b, _)
         | HExpr::Max(a, b, _)
         | HExpr::And(a, b)
@@ -382,10 +381,9 @@ fn count_walk(
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
-        HExpr::ConvF64(a)
-        | HExpr::Count(a)
+        HExpr::Count(a)
         | HExpr::Not(a)
-        | HExpr::ICast(a, _)
+        | HExpr::ICast(a, _, _)
         | HExpr::Abs(a, _)
         | HExpr::Clone(a)
         | HExpr::DropStmt(a) => count_walk(a, targets, shadowed, counts),
@@ -397,7 +395,7 @@ fn count_walk(
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
-        HExpr::StrNth { s, idx } => {
+        HExpr::StrNth { s, idx, res } => {
             count_walk(s, targets, shadowed, counts);
             count_walk(idx, targets, shadowed, counts);
         }
@@ -443,7 +441,7 @@ fn count_walk(
             count_walk(k, targets, shadowed, counts);
             count_walk(v, targets, shadowed, counts);
         }
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, res } => {
             count_walk(src, targets, shadowed, counts);
             count_walk(key, targets, shadowed, counts);
             if let Some(d) = default {
@@ -690,6 +688,7 @@ pub fn substitute(e: HExpr, name: &str, replacement: &HExpr) -> HExpr {
             mangled,
             params,
             captures,
+            capture_owns,
             body,
         } => {
             let shadows = params.iter().any(|(p, _)| p == name);
@@ -697,6 +696,7 @@ pub fn substitute(e: HExpr, name: &str, replacement: &HExpr) -> HExpr {
                 sig,
                 mangled,
                 captures,
+                capture_owns,
                 params,
                 body: if shadows {
                     body
@@ -753,12 +753,9 @@ pub fn is_drop_safe(e: &HExpr) -> bool {
         | HExpr::Var(_)
         | HExpr::StrLit(_)
         | HExpr::VecLit(_)
-        | HExpr::Bin(..)
         | HExpr::BinW(..)
         | HExpr::BinF(..)
-        | HExpr::Cmp(..)
         | HExpr::CmpW(..)
-        | HExpr::ConvF64(_)
         | HExpr::ICast(..)
         | HExpr::Not(_)
         | HExpr::Abs(..)
@@ -802,12 +799,9 @@ pub fn is_dup_safe(e: &HExpr) -> bool {
         | HExpr::ConstF64(_)
         | HExpr::Var(_)
         | HExpr::StrLit(_)
-        | HExpr::Bin(..)
         | HExpr::BinW(..)
         | HExpr::BinF(..)
-        | HExpr::Cmp(..)
         | HExpr::CmpW(..)
-        | HExpr::ConvF64(_)
         | HExpr::ICast(..)
         | HExpr::Not(_)
         | HExpr::Abs(..)
@@ -899,12 +893,11 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
         | HExpr::Var(_)
         | HExpr::StrLit(_)
         | HExpr::VecLit(_) => {}
-        HExpr::Bin(_, a, b) | HExpr::BinW(_, a, b, _) | HExpr::BinF(_, a, b) => {
+        HExpr::BinW(_, a, b, _) | HExpr::BinF(_, a, b) => {
             visit_nodes(a, f);
             visit_nodes(b, f);
         }
-        HExpr::Cmp(_, a, b, _)
-        | HExpr::CmpW(_, a, b, _)
+        HExpr::CmpW(_, a, b, _)
         | HExpr::Min(a, b, _)
         | HExpr::Max(a, b, _)
         | HExpr::And(a, b)
@@ -912,10 +905,9 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(a, f);
             visit_nodes(b, f);
         }
-        HExpr::ConvF64(a)
-        | HExpr::Count(a)
+        HExpr::Count(a)
         | HExpr::Not(a)
-        | HExpr::ICast(a, _)
+        | HExpr::ICast(a, _, _)
         | HExpr::Abs(a, _)
         | HExpr::Clone(a)
         | HExpr::DropStmt(a) => visit_nodes(a, f),
@@ -927,7 +919,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(a, f);
             visit_nodes(b, f);
         }
-        HExpr::StrNth { s, idx } => {
+        HExpr::StrNth { s, idx, .. } => {
             visit_nodes(s, f);
             visit_nodes(idx, f);
         }
@@ -973,7 +965,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(k, f);
             visit_nodes(v, f);
         }
-        HExpr::MapGet { src, key, default } => {
+        HExpr::MapGet { src, key, default, res } => {
             visit_nodes(src, f);
             visit_nodes(key, f);
             if let Some(d) = default {

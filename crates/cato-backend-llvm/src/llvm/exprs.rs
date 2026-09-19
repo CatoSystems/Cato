@@ -111,37 +111,6 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             z
         }
         HExpr::SetContains { .. } => emit_set_contains(e, c, mdl, sigs),
-        HExpr::Cmp(op, a, b, is_f64) => {
-            if *is_f64 {
-                let av = emit_float(a, c, mdl, sigs);
-                let bv = emit_float(b, c, mdl, sigs);
-                let op = match op {
-                    CmpOp::Eq => "oeq",
-                    CmpOp::Ne => "one",
-                    CmpOp::Lt => "olt",
-                    CmpOp::Gt => "ogt",
-                    CmpOp::Le => "ole",
-                    CmpOp::Ge => "oge",
-                };
-                let t = c.temp();
-                c.line(&format!("  {} = fcmp {} double {}, {}", t, op, av, bv));
-                t
-            } else {
-                let av = emit_int(a, c, mdl, sigs);
-                let bv = emit_int(b, c, mdl, sigs);
-                let op = match op {
-                    CmpOp::Eq => "eq",
-                    CmpOp::Ne => "ne",
-                    CmpOp::Lt => "slt",
-                    CmpOp::Gt => "sgt",
-                    CmpOp::Le => "sle",
-                    CmpOp::Ge => "sge",
-                };
-                let t = c.temp();
-                c.line(&format!("  {} = icmp {} i64 {}, {}", t, op, av, bv));
-                t
-            }
-        }
         HExpr::And(a, b) => {
             let la = emit_bool(a, c, mdl, sigs);
             let parent = c.cur.clone();
@@ -287,20 +256,6 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 l.clone()
             }
         }
-        HExpr::Bin(op, a, b) => {
-            let av = emit_int(a, c, mdl, sigs);
-            let bv = emit_int(b, c, mdl, sigs);
-            let op = match op {
-                BinOp::Add => "add",
-                BinOp::Sub => "sub",
-                BinOp::Mul => "mul",
-                BinOp::Div => "sdiv",
-            };
-            let t = c.temp();
-            c.line(&format!("  {} = {} i64 {}, {}", t, op, av, bv));
-            t
-        }
-        HExpr::ConvF64(_) => panic!("codegen: ConvF64 in i64 context"),
         HExpr::Call(name, args) if name == "print-f64" => {
             // print method body in i64 context (print returns 0).
             let v = emit_float(&args[0], c, mdl, sigs);
@@ -510,7 +465,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::ToStr(_, _) | HExpr::ParseNum { .. } | HExpr::Slurp(_) | HExpr::Args => panic!(
             "codegen: string/Option/vector result must be bound with let"
         ),
-        HExpr::StrNth { s, idx } => {
+        HExpr::StrNth { s, idx, .. } => {
             // Bounds-checked byte load, branchless: clamp the index with a
             // select before the GEP so out-of-range reads (and negatives)
             // yield 0, never a fault.
@@ -536,7 +491,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, z));
             r
         }
-        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..) | HExpr::Cmp(..)
+        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..)
         | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
         | HExpr::ConstB(..) => {
             // Bool value in i64 position: widen 0/1 (e.g. print-i64 of a test).
@@ -583,10 +538,9 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = {} {} {}, {}", t, op, ll, av, bv));
             t
         }
-        HExpr::ICast(inner, target) => {
-            let src = static_int_width(inner, c, sigs);
-            let iv = emit_typed(inner, src, c, mdl, sigs);
-            emit_cast(iv, src, *target, c)
+        HExpr::ICast(inner, from, target) => {
+            let iv = emit_typed(inner, *from, c, mdl, sigs);
+            emit_cast(iv, *from, *target, c)
         }
         HExpr::BinF(..) => panic!("codegen: f32 arithmetic in i64 context"),
         HExpr::SetLit(_)

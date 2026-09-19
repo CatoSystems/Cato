@@ -2,7 +2,7 @@ use super::*;
 
 pub(crate) fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
     if want && cur != Ty::F64 {
-        HExpr::ConvF64(Box::new(e))
+        HExpr::ICast(Box::new(e), cur, Ty::F64)
     } else {
         e
     }
@@ -15,46 +15,39 @@ pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(
         return Err("ADT and string values cannot be used in arithmetic".into());
     }
     // Every width is closed: both operands must share it (cast explicitly).
-    // i64 keeps the historical auto-promotion to f64 below; f32 never
-    // auto-promotes.
-    if at == bt && at.is_int() {
+    // No silent promotion — int↔float and int↔int width mixes are errors.
+    if at == bt && at.is_numeric() {
         return Ok((a, b));
     }
-    if at == Ty::F32 && bt == Ty::F32 {
-        return Ok((a, b));
-    }
-    if at.is_int() && bt.is_int() {
-        return Err(format!(
-            "cannot mix widths {:?} and {:?} — cast explicitly",
-            at, bt
-        ));
-    }
-    if at == Ty::F32 || bt == Ty::F32 {
-        return Err(format!(
-            "cannot mix f32 with {:?} — cast with (f32 e) or (f64 e)",
-            if at == Ty::F32 { bt } else { at }
-        ));
-    }
-    let f = at == Ty::F64 || bt == Ty::F64;
-    Ok((coerce_f64(a, at, f), coerce_f64(b, bt, f)))
+    Err(format!(
+        "cannot mix {:?} and {:?} in arithmetic — cast explicitly with ({}) e",
+        at,
+        bt,
+        if at.is_float() || bt.is_float() { "f64" } else { "i64" }
+    ))
 }
 
 pub(crate) fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     let (a, b) = promote_pair(a, b, env, ctx)?;
     let t = ty_of(&a, env, ctx);
-    if t != Ty::I64 && t.is_int() {
-        return Ok(HExpr::BinW(op, Box::new(a), Box::new(b), t));
-    }
     if t == Ty::F32 {
         return Ok(HExpr::BinF(op, Box::new(a), Box::new(b)));
     }
-    Ok(HExpr::Bin(op, Box::new(a), Box::new(b)))
+    // Int widths and f64: the width lives in the node.
+    Ok(HExpr::BinW(op, Box::new(a), Box::new(b), t))
 }
 
 pub(crate) fn promote_init(init: HExpr) -> HExpr {
     match init {
         HExpr::ConstI64(v) => HExpr::ConstF64(v as f64),
-        other => HExpr::ConvF64(Box::new(other)),
+        other => {
+            let from = match &other {
+                // Literal-typed inits are i64; anything else already carries
+                // its width in the node.
+                _ => Ty::I64,
+            };
+            HExpr::ICast(Box::new(other), from, Ty::F64)
+        }
     }
 }
 
@@ -258,7 +251,12 @@ pub(crate) fn pipeline_src(
 /// vector literal.
 pub(crate) fn expr_to_source(src: &Expr, env: &Env, ctx: &Ctx) -> Result<HSource, String> {
     match src {
-        Expr::LitSym(v) => Ok(HSource::Var(v.clone())),
+        Expr::LitSym(v) => {
+            if !env.contains_key(v.as_str()) {
+                return Err(format!("unbound variable {}", v));
+            }
+            Ok(HSource::Var(v.clone()))
+        }
         Expr::Vector(items) if items.iter().all(|e| matches!(e, Expr::LitI64(_))) => {
             Ok(HSource::Lit(VLit::I64(vec_lit_i64(items))))
         }
@@ -301,9 +299,14 @@ pub(crate) fn source_elem_tys(src: &HSource, env: &Env) -> Result<(Ty, Ty), Stri
     }
 }
 
-pub(crate) fn vec_source_arg(src: &Expr, _env: &Env, _ctx: &Ctx) -> Result<HSource, String> {
+pub(crate) fn vec_source_arg(src: &Expr, env: &Env, _ctx: &Ctx) -> Result<HSource, String> {
     match src {
-        Expr::LitSym(v) => Ok(HSource::Var(v.clone())),
+        Expr::LitSym(v) => {
+            if !env.contains_key(v.as_str()) {
+                return Err(format!("unbound variable {}", v));
+            }
+            Ok(HSource::Var(v.clone()))
+        }
         _ => Err("zip arguments must be vector variables".into()),
     }
 }

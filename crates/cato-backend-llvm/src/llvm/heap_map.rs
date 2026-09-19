@@ -6,7 +6,7 @@ pub(crate) fn emit_map_get(
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
-    let HExpr::MapGet { src, key, default } = e else {
+    let HExpr::MapGet { src, key, default, res } = e else {
         panic!("codegen: emit_map_get on non-mapget")
     };
     let (ptr, len, cap) = map_val(src, c, mdl, sigs);
@@ -505,4 +505,122 @@ pub(crate) fn header_load(slot: &str, c: &mut FnCtx) -> (String, String, String)
     let cap = c.temp();
     c.line(&format!("  {} = load i64, ptr {}, align 8", cap, cf));
     (p, l, cap)
+}
+
+/// Two-argument `(get m k)`: materialize `(Option i64)` — Some on a hit
+/// (HAMT or flat), None on a miss. Flat arrays accumulate a found flag
+/// alongside the value phi; HAMT roots ask the runtime, which reports
+/// presence through an out-slot.
+pub(crate) fn emit_map_get_opt(
+    src: &HExpr,
+    key: &HExpr,
+    adt: u32,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let (ptr, len, cap) = map_val(src, c, mdl, sigs);
+    let kv = emit_int(key, c, mdl, sigs);
+    let is_hamt = c.temp();
+    c.line(&format!("  {} = and i64 {}, 1", is_hamt, cap));
+    let bit = c.temp();
+    c.line(&format!("  {} = icmp ne i64 {}, 0", bit, is_hamt));
+    let pre = c.cur.clone();
+    let bflat = c.block_name();
+    let bhamt = c.block_name();
+    let bjoin = c.block_name();
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        bit, bhamt, bflat
+    ));
+
+    // HAMT: the runtime find writes found=0/1 through an out-slot.
+    let lbl = c.open(&bhamt);
+    c.line(&format!("{}:", lbl));
+    mdl.ensure_decl("declare i64 @cato_hamt_find(ptr, i64, ptr)");
+    let found_slot = c.temp();
+    c.prelude
+        .push(format!("  {} = alloca i64, align 8", found_slot));
+    let hv = c.temp();
+    c.line(&format!(
+        "  {} = call i64 @cato_hamt_find(ptr {}, i64 {}, ptr {})",
+        hv, ptr, kv, found_slot
+    ));
+    let hf = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", hf, found_slot));
+    c.line(&format!("  br label %{}", bjoin));
+
+    // Flat: running (value, found) phis — the last match wins.
+    let lbl = c.open(&bflat);
+    c.line(&format!("{}:", lbl));
+    let ivar = c.temp();
+    let inext = c.temp();
+    let kf = c.temp();
+    let kreg = c.temp();
+    let vf = c.temp();
+    let vreg = c.temp();
+    let m = c.temp();
+    let rphi = c.temp();
+    let res2 = c.temp();
+    let fphi = c.temp();
+    let fnext = c.temp();
+    c.line(&format!(
+        "  {} = phi i64 [ 0, %{} ], [ {}, %{} ]",
+        rphi, pre, res2, bflat
+    ));
+    c.line(&format!(
+        "  {} = phi i64 [ 0, %{} ], [ {}, %{} ]",
+        fphi, pre, fnext, bflat
+    ));
+    c.line(&format!(
+        "  {} = phi i64 [ 0, %{} ], [ {}, %{} ]",
+        ivar, pre, inext, bflat
+    ));
+    let twoi = c.temp();
+    c.line(&format!("  {} = mul i64 {}, 2", twoi, ivar));
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
+        kf, ptr, twoi
+    ));
+    c.line(&format!("  {} = load i64, ptr {}, align 8", kreg, kf));
+    let one = c.temp();
+    c.line(&format!("  {} = add i64 {}, 1", one, twoi));
+    c.line(&format!(
+        "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
+        vf, ptr, one
+    ));
+    c.line(&format!("  {} = load i64, ptr {}, align 8", vreg, vf));
+    c.line(&format!("  {} = icmp eq i64 {}, {}", m, kreg, kv));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 {}",
+        res2, m, vreg, rphi
+    ));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 1, i64 {}",
+        fnext, m, fphi
+    ));
+    c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
+    let cond = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", cond, inext, len));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        cond, bflat, bjoin
+    ));
+
+    // Join flat and HAMT (value, found), then materialize the instance.
+    let lbl = c.open(&bjoin);
+    c.line(&format!("{}:", lbl));
+    let out = c.temp();
+    c.line(&format!(
+        "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+        out, hv, bhamt, res2, bflat
+    ));
+    let found = c.temp();
+    c.line(&format!(
+        "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+        found, hf, bhamt, fnext, bflat
+    ));
+    let foundb = c.temp();
+    c.line(&format!("  {} = icmp ne i64 {}, 0", foundb, found));
+    materialize_option(c, mdl, adt, &foundb, &out)
 }

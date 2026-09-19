@@ -187,6 +187,7 @@ pub(crate) fn emit_str_val(
             idx,
             default,
             ty: Ty::Str,
+            ..
         } => {
             // Element load from a (Vector str): bounds-checked, null (or the
             // default string) out of range.
@@ -239,6 +240,7 @@ pub(crate) fn emit_get(
         idx,
         default,
         ty,
+        res,
     } = e
     else {
         panic!("codegen: emit_get on non-get")
@@ -279,6 +281,39 @@ pub(crate) fn emit_get(
         }
         None => v,
     }
+}
+
+/// The two-argument `get` returns `(Option T)` materialized from the
+/// in-bounds flag and the (masked) element load.
+pub(crate) fn emit_get_opt(
+    src: &HExpr,
+    idx: &HExpr,
+    adt: u32,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let (d, l, elem) = vec_arg(src, c, mdl);
+    let ll = mdl.elem_ll(elem);
+    let iv = emit_int(idx, c, mdl, sigs);
+    let inb = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
+    let safe = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        p, ll, d, safe
+    ));
+    let payload = match elem {
+        Elem::I64 | Elem::F64 => {
+            let v = c.temp();
+            c.line(&format!("  {} = load {}, ptr {}, align 8", v, ll, p));
+            v
+        }
+        o => panic!("Option get over {:?} elements is not supported", o),
+    };
+    materialize_option(c, mdl, adt, &inb, &payload)
 }
 
 pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) {
@@ -351,10 +386,43 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
             }
             _ => {}
         }
+        // Option-returning lookups bind as inline ADT slots.
+        if let HExpr::Get {
+            src,
+            idx,
+            res: Some(Ty::Adt(adt)),
+            ..
+        } = value
+        {
+            let slot = emit_get_opt(src, idx, *adt, c, mdl, sigs);
+            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
+            continue;
+        }
+        if let HExpr::MapGet {
+            src,
+            key,
+            res: Some(Ty::Adt(adt)),
+            ..
+        } = value
+        {
+            let slot = emit_map_get_opt(src, key, *adt, c, mdl, sigs);
+            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
+            continue;
+        }
+        if let HExpr::StrNth {
+            s,
+            idx,
+            res: Some(Ty::Adt(adt)),
+        } = value
+        {
+            let slot = emit_strnth_opt(s, idx, *adt, c, mdl, sigs);
+            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
+            continue;
+        }
         // Heap-constructing values bind as growable slots.
         match value {
-            HExpr::Conj { v, x, elem } => {
-                let slot = emit_conj(v, x, *elem, c, mdl, sigs);
+            HExpr::Conj { v, x, elem, in_place } => {
+                let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
                 c.grow.insert(name.clone(), (slot, *elem));
                 continue;
             }
@@ -530,8 +598,14 @@ pub(crate) fn emit_closure_val(
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     match e {
-        HExpr::Closure { sig, mangled, captures, .. } => {
-            emit_closure_creation(mangled, *sig, captures, c, mdl, sigs)
+        HExpr::Closure {
+            sig,
+            mangled,
+            captures,
+            capture_owns,
+            ..
+        } => {
+            emit_closure_creation(mangled, *sig, captures, capture_owns, c, mdl, sigs)
         }
         HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
@@ -547,4 +621,34 @@ pub(crate) fn emit_closure_val(
         }
         o => panic!("codegen: expected a closure value, got {:?}", o),
     }
+}
+
+/// Two-argument `(nth s i)`: `(Option i64)` from the in-bounds byte load.
+pub(crate) fn emit_strnth_opt(
+    s: &HExpr,
+    idx: &HExpr,
+    adt: u32,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
+    let sp = emit_str_val(s, c, mdl, sigs);
+    mdl.declare("declare i64 @strlen(ptr)".to_string());
+    let len = c.temp();
+    c.line(&format!("  {} = call i64 @strlen(ptr {})", len, sp));
+    let iv = emit_int(idx, c, mdl, sigs);
+    let inb = c.temp();
+    c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, len));
+    let safe = c.temp();
+    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+        p, sp, safe
+    ));
+    let b = c.temp();
+    c.line(&format!("  {} = load i8, ptr {}, align 1", b, p));
+    let z = c.temp();
+    c.line(&format!("  {} = zext i8 {} to i64", z, b));
+    materialize_option(c, mdl, adt, &inb, &z)
 }

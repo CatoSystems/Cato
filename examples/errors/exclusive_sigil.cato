@@ -1,0 +1,4 @@
+;; E202: the exclusive-borrow sigil `&!` was removed pre-1.0.
+(deftype Bx (Box [v :- i64]))
+(defn f [a :- &!Bx] :- i64 0)
+(defn main [] :- i64 0)

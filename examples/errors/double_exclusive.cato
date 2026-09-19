@@ -1,6 +1,0 @@
-;; E302: the same binding borrowed exclusively twice in one call.
-(deftype Bx (Box [v :- i64]))
-(defn f [a :- &!Box b :- &!Box] :- i64 0)
-(defn main [] :- i64
-  (let [x (Box 1)]
-    (f x x)))
