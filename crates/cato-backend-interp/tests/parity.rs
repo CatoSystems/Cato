@@ -60,6 +60,55 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
 }
 
 #[test]
+fn generic_instantiations_over_str_and_widths_emit_valid_ir() {
+    // ty_mangle must give every instantiable type an LLVM-safe suffix:
+    // `ident__??` was not even parseable IR.
+    let src = r#"
+(defn ident [x :- T] :- T x)
+(defn pick [a :- T b :- T] :- T
+  (if (< (count a) (count b)) a b))
+(defn narrow [x :- T] :- T x)
+(defn main []
+  (let [s (ident "hello")
+        w (narrow (i32 7))]
+    (do
+      (print (count s))
+      (print-string (pick "ab" "cde"))
+      (print (i64 w)))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "5\nab\n7\n");
+
+    // LLVM side: emit must succeed and clang must accept the symbols.
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent().unwrap().parent().unwrap();
+    let cato = root.join("target/debug/cato");
+    let scratch = root.join("target/parity_str_generic.cato");
+    std::fs::write(&scratch, src).expect("scratch src");
+    let ll = root.join("target/parity_str_generic.ll");
+    let exe = root.join("target/parity_str_generic_bin");
+    let status = Command::new(&cato)
+        .arg(&scratch)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&ll)
+        .status()
+        .expect("cato emit");
+    assert!(status.success(), "emit failed");
+    let cc = Command::new("clang")
+        .arg(&ll)
+        .arg(root.join("runtime/runtime.c"))
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang");
+    assert!(cc.success(), "clang rejected the emitted IR");
+    let out = Command::new(&exe).output().expect("llvm run");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "5\nab\n7\n");
+}
+
+#[test]
 fn interp_evaluates_bool_literals() {
     let src = r#"
 (defn main []

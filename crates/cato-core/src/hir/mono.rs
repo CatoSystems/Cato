@@ -51,12 +51,24 @@ pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Result<Ty, Str
     }
 }
 
-/// LLVM-safe suffix for an instantiation's type arguments.
+/// LLVM-safe suffix for an instantiation's type arguments. Must cover
+/// every type that can bind a defn's type parameter from a call argument —
+/// the `??` fallback is not valid IR.
 pub(crate) fn ty_suffix(ty: Ty) -> Option<&'static str> {
     match ty {
         Ty::I64 => Some("i64"),
+        Ty::I32 => Some("i32"),
+        Ty::I8 => Some("i8"),
+        Ty::I16 => Some("i16"),
+        Ty::U8 => Some("u8"),
+        Ty::U16 => Some("u16"),
+        Ty::U32 => Some("u32"),
+        Ty::U64 => Some("u64"),
+        Ty::Usize => Some("usize"),
         Ty::F64 => Some("f64"),
+        Ty::F32 => Some("f32"),
         Ty::Bool => Some("bool"),
+        Ty::Str => Some("str"),
         Ty::Vec(Elem::I64) => Some("vec_i64"),
         Ty::Vec(Elem::F64) => Some("vec_f64"),
         Ty::Vec(Elem::Str) => Some("vec_str"),
