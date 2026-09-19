@@ -17,11 +17,15 @@
 
 (deftype Asts (KNil) (KCons [kid :- Ast next :- Asts]))
 
+; ABool is the S5 amendment: the seed reader reads `true`/`false` to
+; LitBool (distinct from LitI64), so the kernel AST needs the variant. The
+; payload is 0/1 — Span fields are i64 and so is every other Ast payload.
 (deftype Ast
   (ANil [at :- Span])
   (ASym [sid :- i64 at :- Span])
   (AInt [v :- i64 at :- Span])
   (AF64 [v :- f64 at :- Span])
+  (ABool [v :- i64 at :- Span])
   (AStr [v :- str at :- Span])
   (AList [kids :- Asts at :- Span])
   (AVec [kids :- Asts at :- Span])
@@ -35,6 +39,7 @@
     (ASym [sid at] 1)
     (AInt [v at] 2)
     (AF64 [v at] 3)
+    (ABool [v at] 9)
     (AStr [v at] 4)
     (AList [kids at] 5)
     (AVec [kids at] 6)
@@ -46,6 +51,7 @@
 (defn ast-sym [sid :- i64 l :- i64 c :- i64] :- Ast (ASym sid (Span l c 1)))
 (defn ast-int [v :- i64 l :- i64 c :- i64] :- Ast (AInt v (Span l c 1)))
 (defn ast-f64 [v :- f64 l :- i64 c :- i64] :- Ast (AF64 v (Span l c 1)))
+(defn ast-bool [v :- i64 l :- i64 c :- i64] :- Ast (ABool v (Span l c 1)))
 (defn ast-str [v :- str l :- i64 c :- i64] :- Ast (AStr v (Span l c 1)))
 
 ; Collection constructors take the child chain; `ast-cons` builds chains.
@@ -68,6 +74,7 @@
     (ASym [sid at] 1)
     (AInt [v at] 1)
     (AF64 [v at] 1)
+    (ABool [v at] 1)
     (AStr [v at] 1)
     (AList [kids at] (+ 1 (asts-count (clone kids))))
     (AVec [kids at] (+ 1 (asts-count (clone kids))))
@@ -97,4 +104,5 @@
     (ASym [sid at] 0)
     (AInt [v at] 0)
     (AF64 [v at] 0)
+    (ABool [v at] 0)
     (AStr [v at] 0)))
