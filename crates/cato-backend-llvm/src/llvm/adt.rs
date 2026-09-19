@@ -8,6 +8,9 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         },
         HExpr::Ctor { adt, .. } => *adt,
         HExpr::Match { ty: Ty::Adt(i), .. } => *i,
+        // A clone of an ADT value has that ADT's representation; emit_adt
+        // handles the copy itself (boxed helper or inline struct load).
+        HExpr::Clone(inner) => adt_of(inner, c, sigs),
         HExpr::Call(name, _) => match sigs.get(name) {
             Some((Ty::Adt(i), _)) => *i,
             _ => panic!("codegen: call {} does not return an ADT", name),

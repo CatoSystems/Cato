@@ -1,0 +1,192 @@
+; types.cato — S6: kernel types.
+;
+; A type is one flat word `(Ty tag a)` — unboxed, so types thread by copy
+; and never clone. The tags mirror `hir::Ty`:
+;
+;   0 i64  1 i32  2 i8  3 i16  4 u8  5 u16  6 u32  7 u64  8 usize
+;   9 f64 10 f32 11 bool 12 str 13 map 14 set
+;   15 vec (a: element code — 0 i64, 1 f64, 2 str, 100+k param k)
+;   16 adt (a: combined-table index)   17 fn (a: signature index)
+;   18 param (a: index into a defn's ty_params)   19 none (absent sentinel)
+;
+; Type equality is tag+a equality. Element `a`-codes reuse the same
+; numbering (0/1/2) so a `(Vector T)` parameter binds T = (Ty el 0).
+
+(deftype Ty (Ty [tag :- i64 a :- i64]))
+(deftype TyList (TyNil) (TyCons [h :- Ty t :- TyList]))
+
+(defn t-none [] :- Ty (Ty 19 0))
+(defn t-i64 [] :- Ty (Ty 0 0))
+(defn t-i32 [] :- Ty (Ty 1 0))
+(defn t-i8 [] :- Ty (Ty 2 0))
+(defn t-i16 [] :- Ty (Ty 3 0))
+(defn t-u8 [] :- Ty (Ty 4 0))
+(defn t-u16 [] :- Ty (Ty 5 0))
+(defn t-u32 [] :- Ty (Ty 6 0))
+(defn t-u64 [] :- Ty (Ty 7 0))
+(defn t-usize [] :- Ty (Ty 8 0))
+(defn t-f64 [] :- Ty (Ty 9 0))
+(defn t-f32 [] :- Ty (Ty 10 0))
+(defn t-bool [] :- Ty (Ty 11 0))
+(defn t-str [] :- Ty (Ty 12 0))
+(defn t-map [] :- Ty (Ty 13 0))
+(defn t-set [] :- Ty (Ty 14 0))
+(defn t-vec [elc :- i64] :- Ty (Ty 15 elc))
+(defn t-adt [i :- i64] :- Ty (Ty 16 i))
+(defn t-fn [i :- i64] :- Ty (Ty 17 i))
+(defn t-param [i :- i64] :- Ty (Ty 18 i))
+
+(defn ty-eq [x :- Ty y :- Ty] :- bool
+  (match x
+    (Ty [xt xa]
+      (match y
+        (Ty [yt ya] (and (= xt yt) (= xa ya)))))))
+
+(defn ty-tag [x :- Ty] :- i64
+  (match x (Ty [tag a] tag)))
+
+(defn ty-arg [x :- Ty] :- i64
+  (match x (Ty [tag a] a)))
+
+(defn is-int-ty [x :- Ty] :- bool
+  (let [t (ty-tag x)]
+    (< t 9)))
+
+(defn is-uint-ty [x :- Ty] :- bool
+  (let [t (ty-tag x)]
+    (and (>= t 4) (< t 9))))
+
+(defn is-float-ty [x :- Ty] :- bool
+  (let [t (ty-tag x)]
+    (or (= t 9) (= t 10))))
+
+(defn is-numeric-ty [x :- Ty] :- bool
+  (or (is-int-ty (clone x)) (is-float-ty (clone x))))
+
+; Copy semantics: everything but adt/vec/map/set/fn/param assigns by copy.
+(defn is-copy-ty [x :- Ty] :- bool
+  (let [t (ty-tag x)]
+    (and (not (= t 15)) (not (= t 16)) (not (= t 13)) (not (= t 14))
+         (not (= t 17)) (not (= t 18)))))
+
+; Non-Copy in the move checker's sense (adt/vec/map/set/fn — param never
+; survives to checking).
+(defn is-non-copy-ty [x :- Ty] :- bool
+  (let [t (ty-tag x)]
+    (or (= t 15) (= t 16) (= t 13) (= t 14) (= t 17))))
+
+; The element type word of a vec type (0 i64 / 1 f64 / 2 str / 100+k param).
+(defn vec-elem [x :- Ty] :- i64
+  (ty-arg x))
+
+; Elem word -> Ty (the scalar a vector element reads as); params are
+; unresolved and stay words.
+(defn elem-ty [el :- i64] :- Ty
+  (if (= el 0) (t-i64)
+    (if (= el 1) (t-f64)
+      (if (= el 2) (t-str)
+        (t-param (- el 100))))))
+
+; --- suffixes (the seed's ty_suffix / ty_mangle) ----------------------------
+
+; LLVM-safe suffix for an instantiation's type arguments; missing means
+; "render as an ADT name" (the mangle fallback).
+(defn ty-suffix [x :- Ty] :- str
+  (let [t (ty-tag (clone x))
+        a (ty-arg (clone x))]
+    (cond
+      (= t 0) "i64"
+      (= t 1) "i32"
+      (= t 2) "i8"
+      (= t 3) "i16"
+      (= t 4) "u8"
+      (= t 5) "u16"
+      (= t 6) "u32"
+      (= t 7) "u64"
+      (= t 8) "usize"
+      (= t 9) "f64"
+      (= t 10) "f32"
+      (= t 11) "bool"
+      (= t 12) "str"
+      (and (= t 15) (= a 0)) "vec_i64"
+      (and (= t 15) (= a 1)) "vec_f64"
+      (and (= t 15) (= a 2)) "vec_str"
+      "?")))
+
+; --- type lists -------------------------------------------------------------
+
+(defn tys-null [ks :- TyList] :- bool
+  (match ks
+    (TyNil [] true)
+    (TyCons [h t] false)))
+
+(defn tys-depth [ks :- TyList] :- i64
+  (match ks
+    (TyCons [h t] (+ 1 (tys-depth (clone t))))
+    (TyNil [] 0)))
+
+(defn tys-rev [ks :- TyList acc :- TyList] :- TyList
+  (match ks
+    (TyCons [h t] (tys-rev (clone t) (TyCons h acc)))
+    (TyNil [] acc)))
+
+(defn tys-idx [ks :- TyList i :- i64] :- Ty
+  (match ks
+    (TyCons [h t] (if (= i 0) h (tys-idx (clone t) (- i 1))))
+    (TyNil [] (t-none))))
+
+(defn tys-append [ks :- TyList x :- Ty] :- TyList
+  (match ks
+    (TyNil [] (TyCons x (TyNil)))
+    (TyCons [h t] (TyCons h (tys-append (clone t) x)))))
+
+(defn tys-eq [xs :- TyList ys :- TyList] :- bool
+  (match xs
+    (TyNil [] (tys-null (clone ys)))
+    (TyCons [xh xt]
+      (match ys
+        (TyNil [] false)
+        (TyCons [yh yt] (and (ty-eq xh yh) (tys-eq (clone xt) (clone yt))))))))
+
+; --- sids chains ------------------------------------------------------------
+
+(deftype Sids (SNil) (SCons [h :- i64 t :- Sids]))
+
+(defn sids-null [ks :- Sids] :- bool
+  (match ks
+    (SNil [] true)
+    (SCons [h t] false)))
+
+(defn sids-depth [ks :- Sids] :- i64
+  (match ks
+    (SCons [h t] (+ 1 (sids-depth (clone t))))
+    (SNil [] 0)))
+
+(defn sids-rev [ks :- Sids acc :- Sids] :- Sids
+  (match ks
+    (SCons [h t] (sids-rev (clone t) (SCons h acc)))
+    (SNil [] acc)))
+
+(defn sids-idx [ks :- Sids i :- i64] :- i64
+  (match ks
+    (SCons [h t] (if (= i 0) h (sids-idx (clone t) (- i 1))))
+    (SNil [] -1)))
+
+(defn sids-append [ks :- Sids x :- i64] :- Sids
+  (match ks
+    (SNil [] (SCons x (SNil)))
+    (SCons [h t] (SCons h (sids-append (clone t) x)))))
+
+(defn sids-has [ks :- Sids x :- i64] :- bool
+  (match ks
+    (SCons [h t] (or (= h x) (sids-has (clone t) x)))
+    (SNil [] false)))
+
+(defn sids-drop [ks :- Sids n :- i64] :- Sids
+  (if (= n 0)
+    (clone ks)
+    (match ks
+      (SCons [h t] (sids-drop (clone t) (- n 1)))
+      (SNil [] (SNil)))))
+
+; The dump renders sid lists space-separated (used for binders/frees).

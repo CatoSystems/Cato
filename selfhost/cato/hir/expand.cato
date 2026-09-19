@@ -108,6 +108,10 @@
 (defn s-u32 [] :- i64 82)
 (defn s-u64 [] :- i64 83)
 (defn s-usize [] :- i64 84)
+(defn s-option [] :- i64 85)
+(defn s-some [] :- i64 86)
+(defn s-nonevar [] :- i64 87)
+(defn s-aparam [] :- i64 88)
 
 ; The driver seeds the reader's intern table with these names, in this
 ; order, before reading the source. `conj` typechecks only on a
@@ -125,15 +129,16 @@
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
-   (mt-add [] "->") "->>") "when") "when-not") "cond") "if-let") "when-let") "if-not")
-   "and") "or") "do") "let") "fn") "if") "not") "=") "/=") "<") ">") "<=") ">=") "+") "-")
-   "*") "/") "abs") "min") "max") "match") "loop") "recur") "get") "conj") "count") "str")
-   "subs") "split") "join") "nth") "char->str") "clone") "drop") "parse-i64") "parse-f64")
-   "vec-i64") "vec-f64") "slurp") "spit") "args") "exit") "print-str") "print-string")
-   "print-f64") "print-i64") "even?") "doseq") "reduce") "for") "parallel") "map")
-   "filter") "defn") "extern") "deftype") "defgeneric") "defmethod") "ns") "require") ":-")
-   "_") ":when") "$b") "nil") "Fn") "Vector") "f64") "f32") "i8") "i16") "i32") "u8")
-   "u16") "u32") "u64") "usize")
+   (mt-add (mt-add (mt-add (mt-add (mt-add [] "->") "->>") "when") "when-not") "cond")
+   "if-let") "when-let") "if-not") "and") "or") "do") "let") "fn") "if") "not") "=") "/=")
+   "<") ">") "<=") ">=") "+") "-") "*") "/") "abs") "min") "max") "match") "loop") "recur")
+   "get") "conj") "count") "str") "subs") "split") "join") "nth") "char->str") "clone")
+   "drop") "parse-i64") "parse-f64") "vec-i64") "vec-f64") "slurp") "spit") "args") "exit")
+   "print-str") "print-string") "print-f64") "print-i64") "even?") "doseq") "reduce")
+   "for") "parallel") "map") "filter") "defn") "extern") "deftype") "defgeneric")
+   "defmethod") "ns") "require") ":-") "_") ":when") "$b") "nil") "Fn") "Vector") "f64")
+   "f32") "i8") "i16") "i32") "u8") "u16") "u32") "u64") "usize") "Option") "Some") "None")
+   "a")
   )
 
 ; --- outcomes --------------------------------------------------------------
@@ -196,6 +201,20 @@
   (match ks
     (KCons [kid rest] (ast-sid-of (clone kid)))
     (KNil [] -1)))
+
+; The child chain of a node; atoms have none.
+(defn ast-kids-of [a :- Ast] :- Asts
+  (match a
+    (ANil [at] (KNil))
+    (ASym [sid at] (KNil))
+    (AInt [v at] (KNil))
+    (AF64 [v at] (KNil))
+    (ABool [v at] (KNil))
+    (AStr [v at] (KNil))
+    (AList [ks at] (clone ks))
+    (AVec [ks at] (clone ks))
+    (AMap [ks at] (clone ks))
+    (ASet [ks at] (clone ks))))
 
 (defn asts-init [ks :- Asts] :- Asts
   ; All but the last child (cond's odd trailing default peels off here).

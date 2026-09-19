@@ -1,0 +1,116 @@
+; hexpr.cato — S6: the kernel's typed IR.
+;
+; One recursive HExpr ADT mirroring the seed's `HExpr` arms for the subset.
+; Children ride chains (the deftype field grammar allows no vectors of
+; ADTs); optional children are `HENil`; optional types are `t-none`.
+;
+;   HExprs — ordered children (call args, str args, Seq, ctor args)
+;   Binds  — let/loop bindings: (name sid, value, ty)
+;   HArms  — match arms: (variant, binders, body); variant -1 is `_`
+;   Caps   — closure captures: (name, ty, own)
+;
+; The move checker rebuilds nodes (functional rewrite) to fill the
+; seed's post-`plan_drops` annotations: `HLet` frees, `HConj` in_place,
+; `HClosure` capture own-bits.
+
+(deftype HExprs (HENil) (HECons [kid :- HExpr next :- HExprs]))
+
+(deftype Binds (BNil) (BCons [name :- i64 v :- HExpr ty :- Ty next :- Binds]))
+
+(deftype HArms (HANil) (HACons [variant :- i64 binders :- Sids body :- HExpr]))
+
+(deftype Caps (CNil) (CCons [name :- i64 ty :- Ty own :- i64 next :- Caps]))
+
+(deftype VVals (VVNil)
+  (VVI64 [v :- i64 next :- VVals])
+  (VVF64 [v :- f64 next :- VVals]))
+
+(deftype HExpr
+  (HConstI64 [v :- i64])
+  (HConstF64 [v :- f64])
+  (HConstB [v :- i64])
+  (HVar [name :- i64])
+  (HStrLit [v :- str])
+  (HVecLit [el :- i64 vals :- VVals])
+  (HBinW [op :- i64 a :- HExpr b :- HExpr ty :- Ty])
+  (HBinF [op :- i64 a :- HExpr b :- HExpr])
+  (HCmpW [op :- i64 a :- HExpr b :- HExpr ty :- Ty])
+  (HStrCmp [pol :- i64 a :- HExpr b :- HExpr])
+  (HStrOrd [op :- i64 a :- HExpr b :- HExpr])
+  (HICast [e :- HExpr from :- Ty to :- Ty])
+  (HCount [e :- HExpr])
+  (HToStr [e :- HExpr ty :- Ty])
+  (HStrCat [args :- HExprs])
+  (HSubs [s :- HExpr a :- HExpr b :- HExpr])
+  (HSplit [s :- HExpr sep :- HExpr])
+  (HJoin [sep :- HExpr xs :- HExpr])
+  (HStrNth [s :- HExpr idx :- HExpr res :- Ty])
+  (HCharStr [e :- HExpr])
+  (HGet [src :- HExpr idx :- HExpr dflt :- HExpr ty :- Ty res :- Ty])
+  (HConj [v :- HExpr x :- HExpr el :- i64 inplace :- i64])
+  (HIf [c :- HExpr t :- HExpr e :- HExpr ty :- Ty])
+  (HAnd [a :- HExpr b :- HExpr])
+  (HOr [a :- HExpr b :- HExpr])
+  (HNot [e :- HExpr])
+  (HAbs [e :- HExpr ty :- Ty])
+  (HMin [a :- HExpr b :- HExpr ty :- Ty])
+  (HMax [a :- HExpr b :- HExpr ty :- Ty])
+  (HSeq [es :- HExprs])
+  (HLet [binds :- Binds body :- HExpr frees :- Sids])
+  (HLoop [binds :- Binds ty :- Ty body :- HExpr])
+  (HRecur [args :- HExprs])
+  (HCtor [adt :- i64 variant :- i64 args :- HExprs])
+  (HMatch [scrut :- HExpr arms :- HArms ty :- Ty])
+  (HClone [e :- HExpr])
+  (HDrop [e :- HExpr])
+  (HClosure [sig :- i64 mangled :- i64 params :- PList caps :- Caps body :- HExpr])
+  (HClosureCall [f :- HExpr args :- HExprs sig :- i64])
+  (HCall [name :- i64 args :- HExprs])
+  (HSlurp [p :- HExpr])
+  (HSpit [path :- HExpr data :- HExpr])
+  (HArgs)
+  (HExit [e :- HExpr])
+  (HParseNum [s :- HExpr int :- i64 res :- Ty]))
+
+; --- chains -----------------------------------------------------------------
+
+(defn hes-null [ks :- HExprs] :- bool
+  (match ks
+    (HENil [] true)
+    (HECons [kid next] false)))
+
+(defn hes-depth [ks :- HExprs] :- i64
+  (match ks
+    (HECons [kid next] (+ 1 (hes-depth (clone next))))
+    (HENil [] 0)))
+
+(defn hes-rev [ks :- HExprs acc :- HExprs] :- HExprs
+  (match ks
+    (HECons [kid next] (hes-rev (clone next) (HECons kid acc)))
+    (HENil [] acc)))
+
+(defn binds-depth [ks :- Binds] :- i64
+  (match ks
+    (BCons [name v ty next] (+ 1 (binds-depth (clone next))))
+    (BNil [] 0)))
+
+(defn binds-rev [ks :- Binds acc :- Binds] :- Binds
+  (match ks
+    (BCons [name v ty next] (binds-rev (clone next) (BCons name (clone v) ty acc)))
+    (BNil [] acc)))
+
+(defn arms-depth [ks :- HArms] :- i64
+  (match ks
+    (HACons [variant binders body] (+ 1 (arms-depth (clone body))))
+    (HANil [] 0)))
+
+(defn caps-depth [ks :- Caps] :- i64
+  (match ks
+    (CCons [name ty own next] (+ 1 (caps-depth (clone next))))
+    (CNil [] 0)))
+
+(defn vvals-depth [ks :- VVals] :- i64
+  (match ks
+    (VVI64 [v next] (+ 1 (vvals-depth (clone next))))
+    (VVF64 [v next] (+ 1 (vvals-depth (clone next))))
+    (VVNil [] 0)))
