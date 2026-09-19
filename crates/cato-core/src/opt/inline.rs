@@ -34,6 +34,7 @@ pub fn run(program: &mut Program) -> bool {
         if d.is_extern
             || d.name == "main"
             || !substitution_safe_params(&d.params)
+            || !substitution_safe_ret(d.ret)
             || node_count(&d.body) > INLINE_BUDGET
             || super::walk::contains_reduce(&d.body)
             || calls_directly(&d.body, &d.name)
@@ -96,6 +97,14 @@ fn substitution_safe_params(params: &[(String, Ty)]) -> bool {
     params.iter().all(|(_, t)| {
         t.is_numeric() || matches!(t, Ty::Bool | Ty::Str)
     })
+}
+
+/// The substituted body value takes the call site's uses across destruction
+/// points computed for the call result, so a heap-owning return must not be
+/// inlined either (its buffer could be freed while a re-emitted use of the
+/// original binding still reads it).
+fn substitution_safe_ret(ret: Ty) -> bool {
+    ret.is_copy_ty()
 }
 
 fn calls_directly(e: &HExpr, name: &str) -> bool {

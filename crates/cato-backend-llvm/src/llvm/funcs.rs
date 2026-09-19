@@ -411,11 +411,144 @@ pub(crate) fn emit_vec_pair(
             if c.grow.contains_key(v) {
                 grow_val(c, v)
             } else {
-                vec_arg(e, c, mdl)
+                vec_arg(e, c, mdl, sigs)
             }
         }
-        HExpr::VecLit(_) => vec_arg(e, c, mdl),
+        HExpr::VecLit(_) => vec_arg(e, c, mdl, sigs),
         HExpr::Call(..) => emit_vec_call(e, c, mdl, sigs),
+        HExpr::Split { s, sep } => {
+            let (arr, l) = emit_split(s, sep, c, mdl, sigs);
+            (arr, l, Elem::Str)
+        }
+        HExpr::Conj { v, x, elem, in_place } => {
+            // A conj in value position: build through the same slot
+            // machinery as a let-bound conj, then read the live header.
+            let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
+            read_grow_slot(&slot, *elem, c)
+        }
+        HExpr::Clone(inner) => {
+            // Deep copy of a vector value: str elements strdup through
+            // cato_str_vec_copy (each vector owns its element strings),
+            // numerics memcpy into a fresh exact-size buffer.
+            let (p, l, elem) = emit_vec_pair(inner, c, mdl, sigs);
+            let np = if elem == Elem::Str {
+                mdl.ensure_decl("declare ptr @cato_str_vec_copy(ptr, i64, i64)");
+                let d = c.temp();
+                c.line(&format!(
+                    "  {} = call ptr @cato_str_vec_copy(ptr {}, i64 {}, i64 {})",
+                    d, p, l, l
+                ));
+                d
+            } else {
+                let nbytes = c.temp();
+                c.line(&format!("  {} = mul i64 {}, 8", nbytes, l));
+                let d = emit_malloc(c, mdl, &nbytes);
+                mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+                c.line(&format!(
+                    "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+                    d, p, nbytes
+                ));
+                d
+            };
+            let slot = c.temp();
+            c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+            for (k, v) in [(0, np.clone()), (1, l.clone()), (2, l)] {
+                let f = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 {}",
+                    f, slot, k
+                ));
+                if k == 0 {
+                    c.line(&format!("  store ptr {}, ptr {}, align 8", v, f));
+                } else {
+                    c.line(&format!("  store i64 {}, ptr {}, align 8", v, f));
+                }
+            }
+            read_grow_slot(&slot, elem, c)
+        }
+        HExpr::If(cond, then, els, ty) => {
+            let elem = vec_elem_of(*ty);
+            let lc = emit_bool(cond, c, mdl, sigs);
+            let bt = c.block_name();
+            let be = c.block_name();
+            let bm = c.block_name();
+            c.line(&format!("  br i1 {}, label %{}, label %{}", lc, bt, be));
+            let lbl = c.open(&bt);
+            c.line(&format!("{}:", lbl));
+            let (tp, tl, _) = emit_vec_pair(then, c, mdl, sigs);
+            let tbr = c.cur.clone();
+            c.line(&format!("  br label %{}", bm));
+            let lbl = c.open(&be);
+            c.line(&format!("{}:", lbl));
+            let (ep, el, _) = emit_vec_pair(els, c, mdl, sigs);
+            let ebr = c.cur.clone();
+            c.line(&format!("  br label %{}", bm));
+            let lbl = c.open(&bm);
+            c.line(&format!("{}:", lbl));
+            phi_vec_pair(&tp, &tl, &tbr, &ep, &el, &ebr, elem, c)
+        }
+        HExpr::Match { scrut, arms, ty } => {
+            let elem = vec_elem_of(*ty);
+            let scrut_ptr = emit_adt(scrut, c, mdl, sigs);
+            let ai = adt_of(scrut, c, sigs);
+            let name = mdl.adt_name(ai);
+            let t_tg = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 0",
+                t_tg, name, scrut_ptr
+            ));
+            let t_tag = c.temp();
+            c.line(&format!("  {} = load i64, ptr {}, align 8", t_tag, t_tg));
+            let merged = c.block_name();
+            let fail = c.block_name();
+            let mut arm_labels: Vec<(Option<u32>, String)> = Vec::new();
+            let mut default_lbl = fail.clone();
+            for arm in arms {
+                let lbl = c.block_name();
+                if arm.variant.is_none() {
+                    default_lbl = lbl.clone();
+                }
+                arm_labels.push((arm.variant, lbl));
+            }
+            c.line(&format!("  switch i64 {}, label %{} [", t_tag, default_lbl));
+            for (variant, lbl) in &arm_labels {
+                if let Some(vi) = variant {
+                    c.line(&format!("    i64 {}, label %{}", vi, lbl));
+                }
+            }
+            c.line("]");
+            // Default: HIR guarantees exhaustiveness.
+            let lbl = c.open(&fail);
+            c.line(&format!("{}:", lbl));
+            c.line("  unreachable");
+            let mut ps: Vec<String> = Vec::new();
+            let mut ls: Vec<String> = Vec::new();
+            let mut preds: Vec<String> = Vec::new();
+            for (arm, (_, lbl)) in arms.iter().zip(arm_labels.iter()) {
+                let l = c.open(lbl);
+                c.line(&format!("{}:", l));
+                if let Some(vi) = arm.variant {
+                    let def = mdl.adts[ai as usize].clone();
+                    let fields = def.variants[vi as usize].1.clone();
+                    let offsets = &mdl.adt_field_offsets(ai)[vi as usize];
+                    for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
+                        emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
+                    }
+                }
+                let (p, l2, _) = emit_vec_pair(&arm.body, c, mdl, sigs);
+                ps.push(p);
+                ls.push(l2);
+                preds.push(c.cur.clone());
+                c.line(&format!("  br label %{}", merged));
+            }
+            let lbl = c.open(&merged);
+            c.line(&format!("{}:", lbl));
+            let p0 = ps.first().cloned().unwrap_or_else(|| "null".into());
+            let l0 = ls.first().cloned().unwrap_or_else(|| "0".into());
+            let m0 = phi_pairs("ptr", &ps, &preds, &p0, c);
+            let m1 = phi_pairs("i64", &ls, &preds, &l0, c);
+            (m0, m1, elem)
+        }
         HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
             let v = emit_vec_pair(body, c, mdl, sigs);
@@ -430,6 +563,74 @@ pub(crate) fn emit_vec_pair(
         }
         other => panic!("codegen: unsupported vector value {:?}", other),
     }
+}
+
+/// The element type of a vector-typed expression annotation.
+fn vec_elem_of(ty: Ty) -> Elem {
+    match ty {
+        Ty::Vec(e) => e,
+        other => panic!("codegen: vector value annotated {:?}", other),
+    }
+}
+
+/// Read a growable slot's live (ptr, len).
+fn read_grow_slot(slot: &str, elem: Elem, c: &mut FnCtx) -> (String, String, Elem) {
+    let pf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
+        pf, slot
+    ));
+    let p = c.temp();
+    c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
+    let lf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+        lf, slot
+    ));
+    let l = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+    (p, l, elem)
+}
+
+/// Join one (ptr, len) pair arriving from two predecessor blocks.
+fn phi_vec_pair(
+    tp: &str,
+    tl: &str,
+    tbr: &str,
+    ep: &str,
+    el: &str,
+    ebr: &str,
+    elem: Elem,
+    c: &mut FnCtx,
+) -> (String, String, Elem) {
+    let mp = c.temp();
+    c.line(&format!(
+        "  {} = phi ptr [ {}, %{} ], [ {}, %{} ]",
+        mp, tp, tbr, ep, ebr
+    ));
+    let ml = c.temp();
+    c.line(&format!(
+        "  {} = phi i64 [ {}, %{} ], [ {}, %{} ]",
+        ml, tl, tbr, el, ebr
+    ));
+    (mp, ml, elem)
+}
+
+/// Phi over N values of `llty` from `preds`; `dflt`/fallback when empty.
+fn phi_pairs(llty: &str, vals: &[String], preds: &[String], dflt: &str, c: &mut FnCtx) -> String {
+    let res = c.temp();
+    if vals.is_empty() {
+        c.line(&format!("  {} = add {} 0, 0", res, llty));
+        return res;
+    }
+    let pairs: Vec<String> = vals
+        .iter()
+        .zip(preds.iter())
+        .map(|(v, p)| format!("[ {}, %{} ]", v, p))
+        .collect();
+    c.line(&format!("  {} = phi {} {}", res, llty, pairs.join(", ")));
+    let _ = dflt;
+    res
 }
 
 /// Static width of an i64/i32 expression (for cast selection).

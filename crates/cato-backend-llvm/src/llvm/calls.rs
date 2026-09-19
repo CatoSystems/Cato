@@ -45,7 +45,7 @@ pub(crate) fn call_user(
     for (expr, ty) in args.iter().zip(arg_tys.iter()) {
         match ty {
             Ty::Vec(_) => {
-                let (d, l, _) = vec_arg(expr, c, mdl);
+                let (d, l, _) = emit_vec_pair(expr, c, mdl, sigs);
                 ll_args.push(format!("ptr {}", d));
                 ll_args.push(format!("i64 {}", l));
             }

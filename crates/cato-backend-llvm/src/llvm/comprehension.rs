@@ -10,7 +10,7 @@ pub(crate) fn emit_for(
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
-    let (ptr, len, _) = vec_arg(src, c, mdl);
+    let (ptr, len, _) = vec_arg(src, c, mdl, sigs);
     let rll = mdl.elem_ll(res_elem);
     let ll = mdl.elem_ll(elem);
     let nbytes = c.temp();

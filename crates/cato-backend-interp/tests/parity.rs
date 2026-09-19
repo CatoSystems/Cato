@@ -109,6 +109,67 @@ fn generic_instantiations_over_str_and_widths_emit_valid_ir() {
 }
 
 #[test]
+fn string_builder_patterns_agree_between_backends() {
+    // The S4 selfhost stdlib leans on vector-typed control flow: if/match
+    // bodies producing (Vector str), conj in value position, and vector
+    // clone — all through recursion (loop variables are Copy-only).
+    let src = r#"
+(defn sb-new [] :- (Vector str) [])
+(defn sb-add [b :- (Vector str) s :- str] :- (Vector str)
+  (conj b s))
+(defn sb-build [b :- (Vector str) n :- i64] :- (Vector str)
+  (if (< n 1)
+    b
+    (let [t (sb-add b "w")]
+      (sb-build t (- n 1)))))
+(defn pick-vec [n :- i64] :- (Vector str)
+  (match (get (vec-i64 1) 0)
+    (Some [_] (let [t (conj (sb-new) "one")] t))
+    (None [] (sb-new))))
+(defn main []
+  (let [b1 (sb-new)
+        b2 (sb-add b1 "a")
+        b3 (sb-build (clone b2) 3)
+        bv (pick-vec 5)]
+    (do
+      (print (count b2))
+      (print (count b3))
+      (print (join "" b3))
+      (print (count bv))
+      (print (get (clone b2) 0 "?")))))
+"#;
+    let program = cato_core::compile_to_program(src).expect("compile");
+    let out = cato_interp::Interpreter::new(&program).run().expect("run");
+    assert_eq!(out, "1\n4\nawww\n1\na\n");
+
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent().unwrap().parent().unwrap();
+    let cato = root.join("target/debug/cato");
+    let scratch = root.join("target/parity_strbuilder.cato");
+    std::fs::write(&scratch, src).expect("scratch src");
+    let ll = root.join("target/parity_strbuilder.ll");
+    let exe = root.join("target/parity_strbuilder_bin");
+    let status = Command::new(&cato)
+        .arg(&scratch)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&ll)
+        .status()
+        .expect("cato emit");
+    assert!(status.success(), "emit failed");
+    let cc = Command::new("clang")
+        .arg(&ll)
+        .arg(root.join("runtime/runtime.c"))
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang");
+    assert!(cc.success(), "clang rejected the emitted IR");
+    let out = Command::new(&exe).output().expect("llvm run");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n4\nawww\n1\na\n");
+}
+
+#[test]
 fn interp_evaluates_bool_literals() {
     let src = r#"
 (defn main []

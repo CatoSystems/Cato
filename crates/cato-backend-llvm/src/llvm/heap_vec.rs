@@ -57,12 +57,12 @@ pub(crate) fn emit_conj(
                 c.line(&format!("  {} = load i64, ptr {}, align 8", cp, cf));
                 (p, l, cp)
             } else {
-                let (p, l, _) = vec_arg(v, c, mdl);
+                let (p, l, _) = vec_arg(v, c, mdl, sigs);
                 (p, l.clone(), l)
             }
         }
         _ => {
-            let (p, l, _) = vec_arg(v, c, mdl);
+            let (p, l, _) = vec_arg(v, c, mdl, sigs);
             (p, l.clone(), l)
         }
     };
@@ -232,7 +232,7 @@ pub(crate) fn emit_subvec(
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     let ll = mdl.elem_ll(elem);
-    let (ptr, len, _) = vec_arg(v, c, mdl);
+    let (ptr, len, _) = vec_arg(v, c, mdl, sigs);
     let sv = emit_int(start, c, mdl, sigs);
     let ev = emit_int(end, c, mdl, sigs);
     // s' = max(0, start); e' = min(max(0, end), len); n = max(0, e'-s')
@@ -469,7 +469,7 @@ pub(crate) fn emit_join(
 ) -> String {
     mdl.ensure_decl("declare ptr @cato_str_join(ptr, i64, ptr)");
     let sepp = emit_str_val(sep, c, mdl, sigs);
-    let (d, l, _) = vec_arg(xs, c, mdl);
+    let (d, l, _) = vec_arg(xs, c, mdl, sigs);
     let p = c.temp();
     c.line(&format!(
         "  {} = call ptr @cato_str_join(ptr {}, i64 {}, ptr {})",

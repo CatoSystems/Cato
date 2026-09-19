@@ -197,6 +197,17 @@ fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
                 tail_escape(last, escaped);
             }
         }
+        // Branch results are tail positions too: a binding returned from
+        // an `if`/`match` arm transfers its drop duty to the result.
+        HExpr::If(_, then, els, _) => {
+            tail_escape(then, escaped);
+            tail_escape(els, escaped);
+        }
+        HExpr::Match { arms, .. } => {
+            for arm in arms {
+                tail_escape(&arm.body, escaped);
+            }
+        }
         HExpr::Var(v) => {
             escaped.insert(v.clone());
         }

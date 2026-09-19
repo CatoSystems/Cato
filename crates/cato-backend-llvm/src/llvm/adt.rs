@@ -483,7 +483,7 @@ pub(crate) fn emit_vec_header(
             }
         }
         HExpr::VecLit(_) => {
-            let (p, l, _) = vec_arg(arg, c, mdl);
+            let (p, l, _) = vec_arg(arg, c, mdl, sigs);
             (p, l.clone(), l)
         }
         HExpr::Call(..) => {
@@ -500,7 +500,13 @@ pub(crate) fn emit_vec_header(
             c.line(&format!("  {} = extractvalue %VecI64 {}, 2", cap, st));
             (pp, l, cap)
         }
-        other => panic!("codegen: unsupported vector field argument {:?}", other),
+        other => {
+            // Control-flow / clone / conj values in field position flow
+            // through the general vector-value path; their header has no
+            // spare capacity word, so cap = len.
+            let (p, l, _) = emit_vec_pair(other, c, mdl, sigs);
+            (p, l.clone(), l)
+        }
     }
 }
 

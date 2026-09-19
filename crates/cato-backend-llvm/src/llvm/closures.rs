@@ -166,7 +166,7 @@ fn emit_collection_header(
     } else if let Some((slot, _)) = c.growm.get(name).cloned() {
         load_header(c, &slot)
     } else {
-        let (p, l, _) = vec_arg(&HExpr::Var(name.to_string()), c, mdl);
+        let (p, l, _) = vec_arg(&HExpr::Var(name.to_string()), c, mdl, sigs);
         (p, l.clone(), l)
     }
 }

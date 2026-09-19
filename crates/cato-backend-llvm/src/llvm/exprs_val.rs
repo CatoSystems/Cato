@@ -48,9 +48,15 @@ pub(crate) fn grow_val(c: &mut FnCtx, name: &str) -> (String, String, Elem) {
 
 /// Emit a body expression in (ptr, len) vector-value position: growable
 /// bindings load their live header; lets free-stand by emitting their
-/// bindings first.
+/// bindings first. Anything beyond the Var/VecLit fast paths flows through
+/// the general `emit_vec_pair` (if/match/conj/clone/call/...).
 
-pub(crate) fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, String, Elem) {
+pub(crate) fn vec_arg(
+    expr: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> (String, String, Elem) {
     match expr {
         HExpr::Var(v) => {
             if c.grow.contains_key(v) {
@@ -77,7 +83,7 @@ pub(crate) fn vec_arg(expr: &HExpr, c: &mut FnCtx, mdl: &mut Mdl) -> (String, St
             c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
             (t_d, t_l, elem)
         }
-        _ => panic!("codegen: unsupported vector argument"),
+        other => emit_vec_pair(other, c, mdl, sigs),
     }
 }
 
@@ -191,7 +197,7 @@ pub(crate) fn emit_str_val(
         } => {
             // Element load from a (Vector str): bounds-checked, null (or the
             // default string) out of range.
-            let (d, l, _) = vec_arg(src, c, mdl);
+            let (d, l, _) = vec_arg(src, c, mdl, sigs);
             let iv = emit_int(idx, c, mdl, sigs);
             let inb = c.temp();
             c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
@@ -245,7 +251,7 @@ pub(crate) fn emit_get(
     else {
         panic!("codegen: emit_get on non-get")
     };
-    let (d, l, elem) = vec_arg(src, c, mdl);
+    let (d, l, elem) = vec_arg(src, c, mdl, sigs);
     let ll = mdl.elem_ll(elem);
     let iv = emit_int(idx, c, mdl, sigs);
     let inb = c.temp();
@@ -293,7 +299,7 @@ pub(crate) fn emit_get_opt(
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
-    let (d, l, elem) = vec_arg(src, c, mdl);
+    let (d, l, elem) = vec_arg(src, c, mdl, sigs);
     let ll = mdl.elem_ll(elem);
     let iv = emit_int(idx, c, mdl, sigs);
     let inb = c.temp();
@@ -532,7 +538,10 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                         continue;
                     }
                 }
-                materialize_vec_lit(value, name, c, mdl)
+                // Any other vector-valued form (literal, if, match, clone,
+                // conj): evaluate it and bind the (ptr, len) read-only.
+                let (p, l, elem) = emit_vec_pair(value, c, mdl, sigs);
+                c.vecs.insert(name.clone(), (p, l, elem));
             }
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);

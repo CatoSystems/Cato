@@ -350,7 +350,16 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 t
             }
             HExpr::VecLit(_) => {
-                let (_, l, _) = vec_arg(v, c, mdl);
+                let (_, l, _) = vec_arg(v, c, mdl, sigs);
+                l
+            }
+            HExpr::Clone(inner) => {
+                // Count of a cloned vector: the copy's length.
+                let (_, l, _) = vec_arg(inner, c, mdl, sigs);
+                l
+            }
+            other if count_expr_is_vec(other, c, sigs) => {
+                let (_, l, _) = vec_arg(other, c, mdl, sigs);
                 l
             }
             // Str-typed value expressions (loop results, bound heap
@@ -560,3 +569,32 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
     .to_string()
 }
 
+
+/// Can this expression only denote a vector (never a string)? Used to
+/// route `count` results: vector values contribute their length, string
+/// values their byte length. Calls resolve through the signature table,
+/// control flow through its annotation, and lets through the body.
+fn count_expr_is_vec(
+    e: &HExpr,
+    c: &FnCtx,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> bool {
+    match e {
+        HExpr::Call(name, _) => {
+            matches!(sigs.get(name), Some((Ty::Vec(_), _)))
+        }
+        HExpr::If(_, _, _, t) | HExpr::Match { ty: t, .. } => matches!(t, Ty::Vec(_)),
+        HExpr::Split { .. } => true,
+        HExpr::Let(binds, body, _) => match body.as_ref() {
+            // An inlined body aliases its bind: the bind's recorded type
+            // decides (the binding itself is not emitted yet).
+            HExpr::Var(v) => binds
+                .iter()
+                .any(|(n, _, t)| n == v && matches!(t, Ty::Vec(_))),
+            b => count_expr_is_vec(b, c, sigs),
+        },
+        HExpr::Seq(vs) => vs.last().map(|x| count_expr_is_vec(x, c, sigs)).unwrap_or(false),
+        HExpr::Var(v) => c.vecs.contains_key(v) || c.grow.contains_key(v),
+        _ => false,
+    }
+}
