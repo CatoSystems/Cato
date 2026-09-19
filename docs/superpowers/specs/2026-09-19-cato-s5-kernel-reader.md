@@ -72,26 +72,38 @@ One namespace concatenated after `selfhost/cato/lib/` (canonical order below;
   ocol :- i64 kids :- Asts next :- RStack]))` — the explicit parse stack.
   `kind`: 0 list, 1 vector, 2 map, 3 set. `kids` accumulates by persistent
   prepend (reversed; close reverses once).
-- `(deftype RRes (ROk [forms :- Asts n :- i64 tab :- (Vector str)]) (RErr
-  [msg :- str at :- Span]))` — top-level forms in source order with the
-  symbol table (sids are table indices; the serializer renders names), or a
+- `(deftype RRes (ROk [forms :- Asts tab :- (Vector str)]) (RErr [msg :-
+  str at :- Span]))` — top-level forms in source order with the symbol
+  table (sids are table indices; the serializer renders names), or a
   reader error with its span.
 - `(read-all src)` → `RRes`: entry point, seeds the scan at byte 0, line 1,
   col 0.
-- `scan` carries the heap state as *parameters* — `src i line col stack top
-  tab` — and threads it by move: plain steps (whitespace, comments, atoms,
-  delimiter open) rebuild nothing and clone nothing. The S4 extraction law
-  (match-bound fields alias the box; extraction clones) is paid only where
-  the state actually changes:
+- `scan` carries its state as *parameters* — `src i line col depth bline
+  bcol stack kids tab` (the bottom-position pair feeds the "unclosed
+  delimiter" span; there is no `top` chain: the current children *are* a
+  parameter, and an open boxes them into the new frame). Plain steps
+  (whitespace, comments, delimiter opens, atom pushes) rebuild nothing and
+  clone nothing. The ownership law, applied strictly:
   - delimiter open: `(RSFrame ... stack)` boxes the parameter — free;
-  - top-level push: `(KCons node top)` on a parameter — free;
+  - atom/string push: `(KCons node kids)` on the parameter — free;
   - delimiter close: the frame is matched, so `kids` and the remaining
-    stack are cloned out (deep copies, freed with the originals when the
-    consumed box drops) — O(closing collection + enclosing) per close;
-  - interning: the table is a `(Vector str)` parameter; `intern-find` reads
-    it through `get` (shared borrow, no clone), a miss does `(conj tab tok)`
-    — a provable last use grows in place, no copy. Net: zero clone traffic
-    for symbol lookup, one in-place append per distinct symbol.
+    stack are cloned out (deep copies; the originals die with the consumed
+    box when `close-form` exits) — O(closing collection + enclosing) per
+    close;
+  - interning: the lookup runs on `(clone tab)` — an owned parameter is
+    freed at callee exit, and `intern-sid` consumes its argument — and a
+    miss appends with `(conj (clone tab) tok)` because **vector parameters
+    are passed read-only by the LLVM backend**: in-place growth through one
+    is a seed-level invariant violation. Net: one table copy per atom,
+    one more per distinct symbol.
+  - results of owned lets must never be seed-static data: a helper whose
+    zero-iteration result is its initial literal would free static memory
+    when the let's scope ends (the empty-string literal that taught this
+    now seeds its accumulator with `(subs raw 0 0)`).
+  - extraction without clone from a matched box compiles today but
+    miscompiles (the parent's drop glue frees the field) — the S4 clone
+    law is a contract, not yet an enforced check. The checker gap is
+    recorded for a future slice.
 - Helpers are the seed's helpers, ported: `skip-line`, `str-end` (backslash
   skip), `tok-end` (delimiter/whitespace stop set), `unescape` (run-copying:
   copy the bytes up to the next `\` with `subs`, translate the escape,
@@ -112,12 +124,14 @@ One line per top-level form (byte-compare target; also the reference
 driver's output):
 
 ```
-line  := node "\n"
-node  := "@" i64 ":" i64 "+" i64 tag          ; line:col+len of the form
-tag   := "(sym " name ")" | "(int " i64 ")" | "(f64 " %g ")" | "(bool " 0|1 ")"
+line  := "@" i64 ":" i64 "+" i64 node "\n"    ; line:col+len of the form
+node  := "(sym " name ")" | "(int " i64 ")" | "(f64 " %g ")" | "(bool " 0|1 ")"
        | "(str " esc ")" | "(nil)" | "(list" node* ")" | "(vec" node* ")"
        | "(map" node* ")" | "(set" node* ")"
 ```
+Spans pin the top level only — the seed AST carries byte spans there and
+nowhere else, so inner-node spans (which the kernel AST does carry, for
+S6) stay off the wire.
 
 - `esc` escapes `\` `"` newline `\t` so a form stays on one line; spaces
   inside string values are printed raw (byte comparison only, no parser).
@@ -164,6 +178,28 @@ error messages and spans on both sides.
 - **Backend parity** (the S4 pattern): the same concat is emitted to LLVM,
   clang-compiled, and run over the fixtures — interp and native stdout agree
   byte for byte, so the reader is exercised on both backends from day one.
+
+## Seed defects found and fixed along the way
+
+The reader is the first program to exercise these shapes; all three fixes
+predate the kernel in spirit and are guarded by the existing suites:
+
+1. `field_slot_count` (cato-core) counted an inline ADT child as its
+   payload alone while child values materialize as tag + payload — every
+   box holding an inline ADT field overflowed one word on store. S4's `Ast`
+   carried `at :- Span` from day one; nothing read it back, so the spill
+   hid in malloc slack. The reader reads spans back.
+2. `emit_vec_header`'s call arm (cato-backend-llvm) returned the
+   `ptrtoint`'d data word as the vector header pointer, producing IR clang
+   rejects whenever a call-returned vector reaches a constructor field.
+3. The tree-walking interpreter ran on the 8MB main thread; debug eval
+   frames are large enough that ~100 nested Cato calls died. It now runs
+   on a 512MB-stack thread (rustc's own fix), so interp parity runs can
+   exercise compiler-scale recursion. Also: `match` over a raw
+   `parse-i64`/`parse-f64` call fails LLVM codegen (match-over-ADT reads a
+   Var) — kernel source let-binds parse results first; and `fmt_f64` is
+   now `pub` so the differential oracle shares the interp's one `%g`
+   float contract.
 
 ## Non-goals
 
