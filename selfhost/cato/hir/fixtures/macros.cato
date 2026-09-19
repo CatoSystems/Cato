@@ -1,0 +1,45 @@
+; macros.cato — the branching macro set: when / when-not / cond / if-let /
+; when-let / if-not / and / or, in statement and value position.
+
+(defn bump [x :- i64] :- i64 (+ x 1))
+
+(defn tag [b :- bool] :- i64
+  (if b 1 0))
+
+(defn pick [b :- bool x :- i64] :- i64
+  (when b x))
+
+(defn pick-not [b :- bool x :- i64] :- i64
+  (when-not b x))
+
+(defn grade [n :- i64] :- str
+  (cond (< n 10) "low"
+        (< n 100) "mid"
+        "high"))
+
+(defn may [b :- bool] :- i64
+  (if-let [v (tag b)] v 0))
+
+(defn may-else [b :- bool] :- i64
+  (if-let [v (tag b)] v 2))
+
+(defn got [b :- bool] :- i64
+  (when-let [v (tag b)]
+    (let [w (+ v 1)]
+      w)))
+
+(defn flip [b :- bool x :- i64 y :- i64] :- i64
+  (if-not b x y))
+
+(defn booleans [a :- bool b :- bool c :- bool] :- bool
+  (and a (or b c)))
+
+(defn booleans2 [a :- bool b :- bool] :- bool
+  (and a b))
+
+(defn single [a :- bool] :- bool
+  (or a))
+
+(defn nested-macros [n :- i64] :- i64
+  (when (and (> n 0) (not (= n 3)))
+    (cond (> n 10) (bump n) 0)))

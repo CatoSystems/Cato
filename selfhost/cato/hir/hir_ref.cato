@@ -1,0 +1,44 @@
+; hir_ref.cato — S6 reference driver.
+;
+; Concatenated after the lib, reader and hir files by the test harness
+; (one namespace); this file defines the only `main`. The path to read
+; comes from `(args)` index 0 (S3); the second positional selects the
+; wire format:
+;
+;   <file> ast   — the expanded forms, serialized with the S5 node
+;                  grammar (the expander's differential mode)
+;   <file>       — the typed-IR dump (the build's differential mode)
+;
+; The driver seeds the reader's intern table with the kernel's magic
+; names before reading (see expand.cato), so special-form dispatch is a
+; sid compare. Errors print `err @line:col+len msg` — reader errors with
+; the reader's span, expansion errors with the enclosing top-level
+; form's span, build errors bare.
+
+(defn read-all-with [src :- str tab :- (Vector str)] :- RRes
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+
+(defn print-lines [s :- str]
+  (if (> (count s) 0)
+    ; dump-forms ends every line with \n; print-string appends the final
+    ; one, so the body sheds its trailing newline.
+    (print-string (subs s 0 (- (count s) 1)))
+    0))
+
+(defn main []
+  (let [a (args)
+        path (get a 0 "")
+        mode (get a 1 "")
+        src (slurp path)
+        r (read-all-with src (magic-table))]
+    (match r
+      (ROk [forms tab]
+        (match (expand-all (clone forms) (KNil))
+          (EOk [xforms]
+            (if (= mode "ast")
+              (print-lines (sb-str (dump-forms (clone tab) (clone xforms) (sb-new))))
+              0))
+          (EErr [msg at]
+            (print-string (str "err " (spat (clone at)) " " (clone msg))))))
+      (RErr [msg at]
+        (print-string (str "err " (spat (clone at)) " " (clone msg)))))))

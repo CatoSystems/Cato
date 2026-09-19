@@ -1,0 +1,14 @@
+; threads.cato — `->` / `->>` desugaring: list steps, bare-symbol steps,
+; nesting, single-step passthrough.
+
+(defn f [a :- i64 b :- i64] :- i64 (+ a b))
+(defn g [x :- i64] :- i64 (+ x 1))
+
+(defn one [x :- i64] :- i64 (-> x g))
+(defn two [x :- i64] :- i64 (-> x (f 1) g))
+(defn three [x :- i64] :- i64 (->> x (f 2) (f 3)))
+(defn sym-step [x :- i64] :- i64 (->> x g g))
+(defn nested [x :- i64] :- i64 (-> (-> x g) (f 2)))
+(defn in-value [x :- i64] :- i64
+  (let [y (-> x (f 1))]
+    (f y 1)))

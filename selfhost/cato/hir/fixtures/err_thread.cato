@@ -1,0 +1,6 @@
+; err_thread.cato — a threading macro with no steps fails expansion; the
+; error is attributed to the enclosing top-level form's span.
+
+(defn ok [x :- i64] :- i64 x)
+
+(defn bad [x :- i64] :- i64 (->))
