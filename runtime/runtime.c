@@ -254,6 +254,7 @@ int64_t cato_hamt_find(void *t, int64_t k, void *found_out) {
    strdups all live elements (each vector owns its own); release frees
    each element, then the array. */
 char **cato_str_vec_copy(char **src, int64_t len, int64_t cap) {
+    if (cap < 1) cap = 1;  /* empty copies still get a real address */
     char **out = malloc(cap * sizeof(char *));
     for (int64_t i = 0; i < len; i++) out[i] = strdup(src[i]);
     return out;

@@ -175,6 +175,7 @@ pub(crate) fn emit_str_val(
             p
         }
         HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
+        HExpr::Match { ty: Ty::Str, .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Let(binds, body, frees) => {
             emit_let(binds, c, mdl, sigs);
             let v = emit_str_val(body, c, mdl, sigs);
@@ -226,6 +227,16 @@ pub(crate) fn emit_str_val(
                     r
                 }
             }
+        }
+        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
+        // Clone of a string yields an OWNED copy (strdup): str results
+        // are caller-freed per the owning-temp convention.
+        HExpr::Clone(inner) => {
+            let p = emit_str_val(inner, c, mdl, sigs);
+            mdl.ensure_decl("declare ptr @strdup(ptr)");
+            let d = c.temp();
+            c.line(&format!("  {} = call ptr @strdup(ptr {})", d, p));
+            d
         }
         other => panic!("codegen: expected a string expression, got {:?}", other),
     }

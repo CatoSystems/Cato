@@ -439,6 +439,37 @@ pub(crate) fn emit_field_load(
     }
 }
 
+
+/// A heap copy of a possibly-static vector: str elements strdup via
+/// cato_str_vec_copy, numerics memcpy into a fresh same-length buffer.
+fn heap_copy_vec(
+    p: &str,
+    l: &str,
+    elem: Elem,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+) -> String {
+    if elem == Elem::Str {
+        mdl.ensure_decl("declare ptr @cato_str_vec_copy(ptr, i64, i64)");
+        let d = c.temp();
+        c.line(&format!(
+            "  {} = call ptr @cato_str_vec_copy(ptr {}, i64 {}, i64 {})",
+            d, p, l, l
+        ));
+        d
+    } else {
+        let nbytes = c.temp();
+        c.line(&format!("  {} = mul i64 {}, 8", nbytes, l));
+        let d = emit_malloc(c, mdl, &nbytes);
+        mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+        c.line(&format!(
+            "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+            d, p, nbytes
+        ));
+        d
+    }
+}
+
 /// Materialize a vector argument as (ptr, len, cap) for field storage.
 /// Field storage snapshots the header, so uniquely-owned growth slots load
 /// their live header; static literals report cap = len (they never grow).
@@ -474,17 +505,29 @@ pub(crate) fn emit_vec_header(
                 let p = out.pop().unwrap();
                 (p, l, cap)
             } else {
-                let (p, l, _) = c
+                let (p, l, elem) = c
                     .vecs
                     .get(v)
                     .cloned()
                     .unwrap_or_else(|| panic!("codegen: {} is not a vector binding", v));
-                (p, l.clone(), l)
+                // A binding whose data pointer is a static global (an
+                // empty/vector literal) must not reach owning fields: the
+                // drop glue would free the global.
+                if p.starts_with('@') {
+                    let dp = heap_copy_vec(&p, &l, elem, c, mdl);
+                    (dp, l.clone(), l)
+                } else {
+                    (p, l.clone(), l)
+                }
             }
         }
         HExpr::VecLit(_) => {
-            let (p, l, _) = vec_arg(arg, c, mdl, sigs);
-            (p, l.clone(), l)
+            // Field storage must own its buffer: literals mint static
+            // globals, which the owning ADT's drop glue would free. Give
+            // the field a heap copy (str vectors copy their elements).
+            let (p, l, elem) = vec_arg(arg, c, mdl, sigs);
+            let dp = heap_copy_vec(&p, &l, elem, c, mdl);
+            (dp, l.clone(), l)
         }
         HExpr::Call(..) => {
             // A call returning a vector: the %VecI64 struct comes back by
@@ -545,12 +588,14 @@ pub(crate) fn emit_adt_clone_fn(adts: &[AdtDef], boxed: &[bool], i: u32) -> Stri
     if !def.variants.is_empty() {
         out.push_str("bad:\n  unreachable\n\n");
     }
+    let mut serial = 0usize;
     for (vn, fields) in def.variants.iter() {
         out.push_str(&format!("v{}:\n", vn));
         let mut at = 0usize;
         for f in fields {
             let count = cato_core::field_slot_count(f, boxed, adts);
-            copy_field(&mut out, f, at, &name, adts, boxed);
+            copy_field(&mut out, f, at, &name, adts, boxed, serial);
+            serial += 1;
             at += count;
         }
         out.push_str("  br label %merge\n\n");
@@ -561,26 +606,87 @@ pub(crate) fn emit_adt_clone_fn(adts: &[AdtDef], boxed: &[bool], i: u32) -> Stri
 }
 
 /// Field copy inside `@clone__`: loads from %src at `off`, stores to %box.
-fn copy_field(out: &mut String, f: &Ty, off: usize, name: &str, adts: &[AdtDef], boxed: &[bool]) {
+fn copy_field(
+    out: &mut String,
+    f: &Ty,
+    off: usize,
+    name: &str,
+    adts: &[AdtDef],
+    boxed: &[bool],
+    serial: usize,
+) {
+    // Locals are function-scoped in LLVM and variants repeat offsets, so
+    // every field's temps carry a unique serial suffix.
+    let u = format!("{off}x{serial}");
+    let u = u.as_str();
     match f {
         Ty::Str => {
             // Owning copy of the bytes.
             out.push_str(&format!(
-                "  %sp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                off, off, name
+                "  %sp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!("  %sl{0} = load i64, ptr %sp{0}\n", off));
-            out.push_str(&format!("  %sptr{0} = inttoptr i64 %sl{0} to ptr\n", off));
-            out.push_str(&format!("  %sdup{0} = call ptr @strdup(ptr %sptr{0})\n", off));
+            out.push_str(&format!("  %sl{u} = load i64, ptr %sp{u}\n"));
+            out.push_str(&format!("  %sptr{u} = inttoptr i64 %sl{u} to ptr\n"));
+            out.push_str(&format!("  %sdup{u} = call ptr @strdup(ptr %sptr{u})\n"));
             out.push_str(&format!(
-                "  %dp{0} = getelementptr inbounds {2}, ptr %box, i32 0, i32 1, i32 {1}\n",
-                off, off, name
+                "  %dp{u} = getelementptr inbounds {name}, ptr %box, i32 0, i32 1, i32 {off}\n"
             ));
+            out.push_str(&format!("  %ni{u} = ptrtoint ptr %sdup{u} to i64\n"));
+            out.push_str(&format!("  store i64 %ni{u}, ptr %dp{u}\n"));
+        }
+        Ty::Vec(elem) => {
+            // A vector field owns its element buffer, so the copy needs
+            // its own: str elements strdup via cato_str_vec_copy, numerics
+            // memcpy into a fresh buffer of the same capacity.
             out.push_str(&format!(
-                "  %ni{0} = ptrtoint ptr %sdup{0} to i64\n",
-                off
+                "  %vp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!("  store i64 %ni{}, ptr %dp{}\n", off, off));
+            for k in 0..3usize {
+                out.push_str(&format!(
+                    "  %vf{u}k{k} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {}\n",
+                    off + k
+                ));
+                out.push_str(&format!("  %vl{u}k{k} = load i64, ptr %vf{u}k{k}\n"));
+            }
+            out.push_str(&format!(
+                "  %vptr{u} = inttoptr i64 %vl{u}k0 to ptr\n"
+            ));
+            if *elem == Elem::Str {
+                out.push_str(&format!(
+                    "  %vcp{u} = call ptr @cato_str_vec_copy(ptr %vptr{u}, i64 %vl{u}k1, i64 %vl{u}k2)\n"
+                ));
+            } else {
+                out.push_str(&format!(
+                    "  %vnb{u} = mul i64 %vl{u}k2, 8\n"
+                ));
+                out.push_str(&format!(
+                    "  %vcp{u} = call ptr @malloc(i64 %vnb{u})\n"
+                ));
+                out.push_str(&format!(
+                    "  %vcb{u} = mul i64 %vl{u}k1, 8\n"
+                ));
+                out.push_str(&format!(
+                    "  call void @llvm.memcpy.p0.p0.i64(ptr %vcp{u}, ptr %vptr{u}, i64 %vcb{u}, i1 false, i1 false)\n"
+                ));
+            }
+            for k in 0..3usize {
+                out.push_str(&format!(
+                    "  %vd{u}k{k} = getelementptr inbounds {name}, ptr %box, i32 0, i32 1, i32 {}\n",
+                    off + k
+                ));
+                if k == 0 {
+                    out.push_str(&format!(
+                        "  %vni{u}k{k} = ptrtoint ptr %vcp{u} to i64\n"
+                    ));
+                    out.push_str(&format!(
+                        "  store i64 %vni{u}k{k}, ptr %vd{u}k{k}\n"
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  store i64 %vl{u}k{k}, ptr %vd{u}k{k}\n"
+                    ));
+                }
+            }
         }
         Ty::Adt(j)
             if boxed.get(*j as usize).copied().unwrap_or(false) =>
@@ -588,27 +694,18 @@ fn copy_field(out: &mut String, f: &Ty, off: usize, name: &str, adts: &[AdtDef],
             // Owning boxed child: clone recursively.
             let child = &adts[*j as usize].name;
             out.push_str(&format!(
-                "  %sp{} = getelementptr inbounds {}, ptr %src, i32 0, i32 1, i32 {}\n",
-                off, name, off
+                "  %sp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!("  %sl{} = load i64, ptr %sp{}\n", off, off));
+            out.push_str(&format!("  %sl{u} = load i64, ptr %sp{u}\n"));
+            out.push_str(&format!("  %sc{u} = inttoptr i64 %sl{u} to ptr\n"));
             out.push_str(&format!(
-                "  %sc{} = inttoptr i64 %sl{} to ptr\n",
-                off, off
-            ));
-            out.push_str(&format!(
-                "  %nc{} = call ptr @clone__{}(ptr %sc{})\n",
-                off, child, off
+                "  %nc{u} = call ptr @clone__{child}(ptr %sc{u})\n"
             ));
             out.push_str(&format!(
-                "  %dp{0} = getelementptr inbounds {1}, ptr %box, i32 0, i32 1, i32 {0}\n",
-                off, name
+                "  %dp{u} = getelementptr inbounds {name}, ptr %box, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!(
-                "  %ni{0} = ptrtoint ptr %nc{0} to i64\n",
-                off
-            ));
-            out.push_str(&format!("  store i64 %ni{}, ptr %dp{}\n", off, off));
+            out.push_str(&format!("  %ni{u} = ptrtoint ptr %nc{u} to i64\n"));
+            out.push_str(&format!("  store i64 %ni{u}, ptr %dp{u}\n"));
         }
         _ => {
             // Plain i64-slot copy (scalars, bools, strs, vec headers, and
@@ -616,20 +713,18 @@ fn copy_field(out: &mut String, f: &Ty, off: usize, name: &str, adts: &[AdtDef],
             // for inline children that is exactly their struct layout).
             let count = cato_core::field_slot_count(f, boxed, adts);
             for k in 0..count {
+                let uk = format!("{u}k{k}");
+                let uk = uk.as_str();
                 out.push_str(&format!(
-                    "  %sp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                    off + k,
-                    off + k,
-                    name
+                    "  %sp{uk} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {}\n",
+                    off + k
                 ));
-                out.push_str(&format!("  %sl{0} = load i64, ptr %sp{0}\n", off + k));
+                out.push_str(&format!("  %sl{uk} = load i64, ptr %sp{uk}\n"));
                 out.push_str(&format!(
-                    "  %dp{0} = getelementptr inbounds {2}, ptr %box, i32 0, i32 1, i32 {1}\n",
-                    off + k,
-                    off + k,
-                    name
+                    "  %dp{uk} = getelementptr inbounds {name}, ptr %box, i32 0, i32 1, i32 {}\n",
+                    off + k
                 ));
-                out.push_str(&format!("  store i64 %sl{0}, ptr %dp{0}\n", off + k));
+                out.push_str(&format!("  store i64 %sl{uk}, ptr %dp{uk}\n"));
             }
         }
     }
@@ -666,11 +761,13 @@ pub(crate) fn emit_adt_drop_fn(adts: &[AdtDef], owns: &[bool], boxed: &[bool], i
         if !def.variants.is_empty() {
             out.push_str("bad:\n  unreachable\n\n");
         }
+        let mut serial = 0usize;
         for (vn, fields) in def.variants.iter() {
             out.push_str(&format!("v{}:\n", vn));
             let mut at = 0usize;
             for f in fields {
-                free_field(&mut out, f, at, &name, adts, owns, boxed);
+                free_field(&mut out, f, at, &name, adts, owns, boxed, serial);
+                serial += 1;
                 at += cato_core::field_slot_count(f, boxed, adts);
             }
             out.push_str("  br label %freebox\n\n");
@@ -700,11 +797,13 @@ pub(crate) fn emit_adt_drop_fn(adts: &[AdtDef], owns: &[bool], boxed: &[bool], i
         if !def.variants.is_empty() {
             out.push_str("bad:\n  unreachable\n\n");
         }
+        let mut serial = 1000000usize;
         for (vn, fields) in def.variants.iter() {
             out.push_str(&format!("v{}:\n", vn));
             let mut at = 0usize;
             for f in fields {
-                free_field(&mut out, f, at, &name, adts, owns, boxed);
+                free_field(&mut out, f, at, &name, adts, owns, boxed, serial);
+                serial += 1;
                 at += cato_core::field_slot_count(f, boxed, adts);
             }
             out.push_str("  br label %done\n\n");
@@ -724,48 +823,61 @@ fn free_field(
     adts: &[AdtDef],
     owns: &[bool],
     boxed: &[bool],
+    serial: usize,
 ) {
+    // Locals are function-scoped and variants repeat offsets: unique
+    // serial suffix, same discipline as `copy_field`.
+    let u = format!("{off}x{serial}");
+    let u = u.as_str();
     match f {
         Ty::Str => {
             out.push_str(&format!(
-                "  %fp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                off, off, name
+                "  %fp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!("  %fl{0} = load i64, ptr %fp{0}\n", off));
-            out.push_str(&format!("  %fv{0} = inttoptr i64 %fl{0} to ptr\n", off));
-            out.push_str(&format!("  call void @free(ptr %fv{})\n", off));
+            out.push_str(&format!("  %fl{u} = load i64, ptr %fp{u}\n"));
+            out.push_str(&format!("  %fv{u} = inttoptr i64 %fl{u} to ptr\n"));
+            out.push_str(&format!("  call void @free(ptr %fv{u})\n"));
         }
-        Ty::Vec(_) => {
+        Ty::Vec(elem) => {
             out.push_str(&format!(
-                "  %vp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                off, off, name
+                "  %vp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
             ));
-            out.push_str(&format!("  %vl{0} = load i64, ptr %vp{0}\n", off));
-            out.push_str(&format!("  %vv{0} = inttoptr i64 %vl{0} to ptr\n", off));
-            out.push_str(&format!("  call void @free(ptr %vv{})\n", off));
+            out.push_str(&format!("  %vl{u} = load i64, ptr %vp{u}\n"));
+            out.push_str(&format!("  %vv{u} = inttoptr i64 %vl{u} to ptr\n"));
+            if *elem == Elem::Str {
+                // The array owns a heap copy of every element string.
+                out.push_str(&format!(
+                    "  %vn{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {}\n",
+                    off + 1
+                ));
+                out.push_str(&format!("  %vc{u} = load i64, ptr %vn{u}\n"));
+                out.push_str(&format!(
+                    "  call void @cato_str_vec_free(ptr %vv{u}, i64 %vc{u})\n"
+                ));
+            } else {
+                out.push_str(&format!("  call void @free(ptr %vv{u})\n"));
+            }
         }
         Ty::Adt(j) if owns.get(*j as usize).copied().unwrap_or(false) => {
             if boxed.get(*j as usize).copied().unwrap_or(false) {
                 // Owning boxed child: load the pointer, drop it.
                 out.push_str(&format!(
-                    "  %cp{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                    off, off, name
+                    "  %cp{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
                 ));
-                out.push_str(&format!("  %cl{0} = load i64, ptr %cp{0}\n", off));
-                out.push_str(&format!("  %cv{0} = inttoptr i64 %cl{0} to ptr\n", off));
+                out.push_str(&format!("  %cl{u} = load i64, ptr %cp{u}\n"));
+                out.push_str(&format!("  %cv{u} = inttoptr i64 %cl{u} to ptr\n"));
                 out.push_str(&format!(
-                    "  call void @drop__{}(ptr %cv{})\n",
-                    adts[*j as usize].name, off
+                    "  call void @drop__{}(ptr %cv{u})\n",
+                    adts[*j as usize].name
                 ));
             } else {
                 // Owning inline child: free in place at the embedded offset.
                 out.push_str(&format!(
-                    "  %ep{0} = getelementptr inbounds {2}, ptr %src, i32 0, i32 1, i32 {1}\n",
-                    off, off, name
+                    "  %ep{u} = getelementptr inbounds {name}, ptr %src, i32 0, i32 1, i32 {off}\n"
                 ));
                 out.push_str(&format!(
-                    "  call void @drop__{}(ptr %ep{})\n",
-                    adts[*j as usize].name, off
+                    "  call void @drop__{}(ptr %ep{u})\n",
+                    adts[*j as usize].name
                 ));
             }
         }

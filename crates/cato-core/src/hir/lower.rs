@@ -798,11 +798,21 @@ pub(crate) fn lower_expect(
                             // `(Node ...)`) infer from the field.
                             let a = lower_expect(it, env, ctx, Some(*fty))?;
                             let at = ty_of(&a, env, ctx);
+                            // Literal-friendly coercions: an i64 argument
+                            // widens where the field is f64 (as before), and
+                            // an empty vector literal satisfies any vector
+                            // field (VLit has no str arm; `[]` is the only
+                            // way to write the empty vector).
+                            let empty_vec = matches!(
+                                (fty, &a),
+                                (Ty::Vec(_), HExpr::VecLit(VLit::I64(vs))) if vs.is_empty()
+                            );
                             let at = if *fty == Ty::F64 && at == Ty::I64 {
-                                // Literal-friendly: an i64 argument widens
-                                // where the field is f64 (as before).
                                 args.push(HExpr::ICast(Box::new(a), Ty::I64, Ty::F64));
                                 Ty::F64
+                            } else if empty_vec {
+                                args.push(a);
+                                *fty
                             } else {
                                 args.push(a);
                                 at

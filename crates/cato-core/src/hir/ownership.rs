@@ -485,9 +485,18 @@ impl<'a> BCheck<'a> {
                     }
                 }
             }
-            HExpr::Ctor { args, .. } => {
+            HExpr::Ctor { adt, args, .. } => {
+                // Boxed or inline, an owning ADT's field slot is freed by
+                // the box's drop glue: a Var argument transfers its drop
+                // duty to the constructor (use-after-ctor is a move error).
+                let owns_box = self.facts.owns.get(*adt as usize).copied().unwrap_or(false);
                 for a in args {
                     self.check(a, tys, st, owns);
+                    if owns_box {
+                        if let HExpr::Var(v) = a {
+                            self.move_if_non_copy(v, tys, st, owns);
+                        }
+                    }
                 }
             }
             HExpr::Match { scrut, arms, .. } => {

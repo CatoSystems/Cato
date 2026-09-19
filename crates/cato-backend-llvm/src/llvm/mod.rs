@@ -111,6 +111,9 @@ pub fn emit_module_fast(
     mdl.ensure_decl("declare ptr @malloc(i64)");
     mdl.ensure_decl("declare void @free(ptr)");
     mdl.ensure_decl("declare ptr @strdup(ptr)");
+    mdl.ensure_decl("declare ptr @cato_str_vec_copy(ptr, i64, i64)");
+    mdl.ensure_decl("declare void @cato_str_vec_free(ptr, i64)");
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
     // Deep-clone helpers for boxed (recursive) ADTs: clone must produce an
     // owning copy, so a boxed value's children are cloned recursively.
     for (i, adt) in adts.iter().enumerate() {
