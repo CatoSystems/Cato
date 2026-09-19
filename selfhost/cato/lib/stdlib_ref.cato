@@ -1,0 +1,74 @@
+; stdlib_ref.cato — S4 reference driver.
+;
+; Concatenated after the lib files by the test harness (one namespace);
+; this file defines the only `main`. Output is the S4 acceptance artifact:
+; interpreter and clang-compiled LLVM must print it byte-identically.
+;
+; Sections exercise every module: interning (with a duplicate hit), span
+; rendering, the string builder, sid-keyed assoc-lists over two value
+; types, a hand-built Ast walk, and the Result contract.
+
+; The empty env for the vector-valued section: `(Vector str)` cannot be
+; written inside a let ascription (resolve_ann_ty gap), so the nullary
+; ctor gets its type from this defn's return annotation.
+(defn words-env [] :- (AList (Vector str)) (ALNil))
+
+(defn main []
+  (let [st0 (intern-new)
+        r1 (intern2 st0 "defn")
+        st1 (ires-st (clone r1))
+        sid-defn (ires-sid r1)
+        r2 (intern2 st1 "let")
+        st2 (ires-st (clone r2))
+        sid-let (ires-sid r2)
+        r3 (intern2 st2 "defn")
+        st3 (ires-st (clone r3))
+        sid-defn-again (ires-sid r3)
+        cnt3 (intern-count (clone st3))
+        tab3 (intern-tab (clone st3))
+        sp (Span 3 7 4)
+        buf0 (sb-new)
+        buf1 (sb-add-line buf0 "cato")
+        buf2 (sb-add-line buf1 "s4")
+        buf3 (sb-add buf2 "end")
+        env0 :- (AList str) (ALNil)
+        env1 (al-put env0 sid-defn "defn-key")
+        env2 (al-put env1 sid-let "let-key")
+        kids (ast-cons (ast-int 42 2 8)
+               (ast-cons (ast-str "hi" 2 12)
+               (ast-cons (ast-sym sid-defn-again 2 16) (KNil))))
+        tree (ast-list (clone kids) 2 2)
+        okr :- (Result i64) (Ok 41)
+        errr :- (Result i64) (Err "boom")]
+    (do
+      (print sid-defn)                              ; 0
+      (print sid-let)                               ; 1
+      (print sid-defn-again)                        ; 0 (dup hit)
+      (print cnt3)                                  ; 2
+      (print (intern-find tab3 "let" 1))            ; 1
+      (print-string (sym-name (clone st3) sid-let)) ; let
+      (print-string (sp-str (clone sp)))           ; 3:7+4
+      (print (sp-len (clone sp)))                   ; 4
+      (print (sb-count (clone buf3)))               ; 5
+      (print (sb-len (clone buf3)))                 ; 11
+      (print (count (sb-str (clone buf3))))         ; 11
+      (print-string (sb-str (clone buf3)))          ; cato \n s4 \n end
+      (print (al-depth (clone env2)))               ; 2
+      (print-string (al-get (clone env2) sid-let "?"))  ; let-key
+      (print-string (al-get (clone env2) 99 "?"))       ; ?
+      (print (al-has (clone env2) sid-defn))        ; 1
+      (let [envW (words-env)
+            words (al-put envW 7 (split "kernel,words" ","))
+            ws (al-get (clone words) 7 (split "," ","))]
+        (do
+          (print (al-depth (clone words)))          ; 1
+          (print (count (clone ws)))                ; 2
+          (print-string (join "-" ws))))           ; kernel-words
+      (print (ast-count (clone tree)))              ; 4 (list + 3 kids)
+      (print (ast-tag (clone tree)))                ; 5
+      (print (ast-child-count (clone tree)))        ; 3
+      (print (ast-tag (asts-first kids)))   ; 2 (int)
+      (print (unwrap-or (clone okr) -1))                    ; 41
+      (print (unwrap-or (clone errr) -1))                   ; -1
+      (print (if (is-ok okr) 1 0))                  ; 1
+      (print-string (err-msg errr)))))

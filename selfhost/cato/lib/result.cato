@@ -1,0 +1,24 @@
+; result.cato — S4: error plumbing.
+;
+; The kernel's compile phases report failure as a value you match on, the
+; same contract `Option` gives lookups — with a message attached. `Result`
+; wraps the value-or-diagnostic; helpers cover the common reads.
+
+(deftype (Result V) (Ok [v :- V]) (Err [msg :- str]))
+
+; A match-bound field aliases the box, and the box's drop frees the
+; field on function exit — results come back as clones.
+(defn unwrap-or [r :- (Result T) d :- T] :- T
+  (match r
+    (Ok [v] (clone v))
+    (Err [msg] d)))
+
+(defn is-ok [r :- (Result T)] :- bool
+  (match r
+    (Ok [v] true)
+    (Err [msg] false)))
+
+(defn err-msg [r :- (Result T)] :- str
+  (match r
+    (Ok [v] "")
+    (Err [msg] (clone msg))))

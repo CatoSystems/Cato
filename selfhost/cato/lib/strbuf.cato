@@ -1,0 +1,31 @@
+; strbuf.cato — S4: string builder.
+;
+; Emitter output and diagnostics accumulate pieces and join exactly once;
+; string concatenation in a loop is quadratic and never appears in kernel
+; code. conj on a provable last use grows in place, so the tail-recursive
+; append chain is amortized O(1) per piece despite the persistent API.
+
+(deftype StrBuf (SB [parts :- (Vector str)]))
+
+(defn sb-new [] :- StrBuf (SB []))
+
+(defn sb-add [b :- StrBuf s :- str] :- StrBuf
+  (match b
+    (SB [parts]
+      (let [ps (clone parts)]
+        (SB (conj ps s))))))
+
+(defn sb-add-line [b :- StrBuf s :- str] :- StrBuf
+  (sb-add (sb-add b s) "\n"))
+
+(defn sb-str [b :- StrBuf] :- str
+  (match b
+    (SB [parts] (join "" parts))))
+
+(defn sb-count [b :- StrBuf] :- i64
+  (match b
+    (SB [parts] (count parts))))
+
+(defn sb-len [b :- StrBuf] :- i64
+  (match b
+    (SB [parts] (count (join "" parts)))))

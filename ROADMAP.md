@@ -76,8 +76,12 @@ and signedness live in the IR, destruction derives from ownership states,
 collections are persistent with last-use in-place update, closure environments
 are owned and freed, HAMT nodes are refcounted, `&!` is removed, and
 two-argument `get`/`nth` return `Option`.
-`selfhost/` does not exist in the tree yet — S4–S9 are designed but
-un-attempted. The phases below are the plan, not a record.
+**S4 is shipped** (`selfhost/cato/lib/`, spec
+`docs/superpowers/specs/2026-09-19-cato-s4-compiler-stdlib.md`): symbol
+interning, string builder, span/AST ADTs, sid-keyed assoc-lists, and Result
+plumbing — ordinary Cato built by the seed, ASAN-clean, guarded in the test
+suite from this phase onward. S5–S9 are designed but un-attempted. The
+phases below are the plan, not a record.
 
 ## Phase S0 — Scalar floor *(shipped)*
 
@@ -144,7 +148,7 @@ programs — none of which the language can do today.
 - Reference: `examples/host.cato` — reads a file, writes a file, prints its
   args, exits nonzero.
 
-## Phase S4 — Compiler stdlib in Cato (`selfhost/cato/lib/`)
+## Phase S4 — Compiler stdlib in Cato (`selfhost/cato/lib/`) *(shipped — `docs/superpowers/specs/2026-09-19-cato-s4-compiler-stdlib.md`)*
 
 Ordinary Cato, built by the seed, guarded by the parity suite.
 

@@ -1,0 +1,25 @@
+; span.cato — S4: source positions.
+;
+; A Span is a value type (unboxed: i64 fields only, no heap). File
+; identity is a future sid, not a field, until the interner and the
+; reader meet in S5.
+
+(deftype Span (Span [line :- i64 col :- i64 len :- i64]))
+
+(defn sp-new [l :- i64 c :- i64 n :- i64] :- Span (Span l c n))
+
+(defn sp-line [s :- Span] :- i64
+  (match s
+    (Span [l c n] l)))
+
+(defn sp-col [s :- Span] :- i64
+  (match s
+    (Span [l c n] c)))
+
+(defn sp-len [s :- Span] :- i64
+  (match s
+    (Span [l c n] n)))
+
+(defn sp-str [s :- Span] :- str
+  (match s
+    (Span [l c n] (str l ":" c "+" n))))

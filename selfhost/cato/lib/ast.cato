@@ -1,0 +1,100 @@
+; ast.cato — S4: the reader's target AST (recursive ADTs).
+;
+; Ast -> Asts mutual recursion makes every node heap-boxed with
+; ownership-driven drop glue — the first real workout for the S1
+; representation rules. Spans ride on every node as unboxed inline
+; children.
+;
+; Child collections are a chain, not a (Vector Ast): the seed's field
+; grammar allows vector elements over scalars and type parameters only,
+; and the kernel subset must build with what it can express — the same
+; reason environments are assoc-lists. The reader (S5) constructs children
+; by persistent prepend, which is O(1) per node.
+;
+; A consequence worth keeping: `get items i default` cannot index children;
+; passes walk them with match recursion, exactly the shape the kernel's own
+; passes will use.
+
+(deftype Asts (KNil) (KCons [kid :- Ast next :- Asts]))
+
+(deftype Ast
+  (ANil [at :- Span])
+  (ASym [sid :- i64 at :- Span])
+  (AInt [v :- i64 at :- Span])
+  (AF64 [v :- f64 at :- Span])
+  (AStr [v :- str at :- Span])
+  (AList [kids :- Asts at :- Span])
+  (AVec [kids :- Asts at :- Span])
+  (AMap [kids :- Asts at :- Span])
+  (ASet [kids :- Asts at :- Span]))
+
+; A small discriminant for tests and generic pass logic.
+(defn ast-tag [a :- Ast] :- i64
+  (match a
+    (ANil [at] 0)
+    (ASym [sid at] 1)
+    (AInt [v at] 2)
+    (AF64 [v at] 3)
+    (AStr [v at] 4)
+    (AList [kids at] 5)
+    (AVec [kids at] 6)
+    (AMap [kids at] 7)
+    (ASet [kids at] 8)))
+
+; Constructors: spans fixed from line/col, width one.
+(defn ast-nil [l :- i64 c :- i64] :- Ast (ANil (Span l c 1)))
+(defn ast-sym [sid :- i64 l :- i64 c :- i64] :- Ast (ASym sid (Span l c 1)))
+(defn ast-int [v :- i64 l :- i64 c :- i64] :- Ast (AInt v (Span l c 1)))
+(defn ast-f64 [v :- f64 l :- i64 c :- i64] :- Ast (AF64 v (Span l c 1)))
+(defn ast-str [v :- str l :- i64 c :- i64] :- Ast (AStr v (Span l c 1)))
+
+; Collection constructors take the child chain; `ast-cons` builds chains.
+(defn ast-list [kids :- Asts l :- i64 c :- i64] :- Ast (AList kids (Span l c 1)))
+(defn ast-vec [kids :- Asts l :- i64 c :- i64] :- Ast (AVec kids (Span l c 1)))
+(defn ast-map [kids :- Asts l :- i64 c :- i64] :- Ast (AMap kids (Span l c 1)))
+(defn ast-set [kids :- Asts l :- i64 c :- i64] :- Ast (ASet kids (Span l c 1)))
+
+(defn ast-cons [kid :- Ast next :- Asts] :- Asts (KCons kid next))
+
+; Node count over the tree: atoms count one, collections recurse.
+(defn asts-count [ks :- Asts] :- i64
+  (match ks
+    (KCons [kid next] (+ (ast-count (clone kid)) (asts-count (clone next))))
+    (KNil [] 0)))
+
+(defn ast-count [a :- Ast] :- i64
+  (match a
+    (ANil [at] 1)
+    (ASym [sid at] 1)
+    (AInt [v at] 1)
+    (AF64 [v at] 1)
+    (AStr [v at] 1)
+    (AList [kids at] (+ 1 (asts-count (clone kids))))
+    (AVec [kids at] (+ 1 (asts-count (clone kids))))
+    (AMap [kids at] (+ 1 (asts-count (clone kids))))
+    (ASet [kids at] (+ 1 (asts-count (clone kids))))))
+
+; Depth of the child chain (0 for atoms).
+(defn asts-depth [ks :- Asts] :- i64
+  (match ks
+    (KCons [kid next] (+ 1 (asts-depth (clone next))))
+    (KNil [] 0)))
+
+; The first child of a chain, or the empty node. Chains have no O(1)
+; index; passes walk them by match recursion.
+(defn asts-first [ks :- Asts] :- Ast
+  (match ks
+    (KCons [kid next] (clone kid))
+    (KNil [] (ast-nil 0 0))))
+
+(defn ast-child-count [a :- Ast] :- i64
+  (match a
+    (AList [kids at] (asts-depth (clone kids)))
+    (AVec [kids at] (asts-depth (clone kids)))
+    (AMap [kids at] (asts-depth (clone kids)))
+    (ASet [kids at] (asts-depth (clone kids)))
+    (ANil [at] 0)
+    (ASym [sid at] 0)
+    (AInt [v at] 0)
+    (AF64 [v at] 0)
+    (AStr [v at] 0)))
