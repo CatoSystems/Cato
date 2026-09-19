@@ -1,9 +1,10 @@
 # Cato Roadmap — Self-Hosting
 
 **Cato** is a statically-typed, compiled systems language with Clojure's surface
-syntax: S-expressions, threading macros, immutable-first functional style —
-compiling to native machine code with unboxed types, stream fusion, and
-Rust-like ownership semantics. No GC, no boxing.
+syntax: S-expressions, threading macros, immutable-first functional style with
+persistent collections — compiling to native machine code with unboxed types,
+stream fusion, and compiler-derived ownership with deterministic destruction.
+No GC, no boxing.
 
 This roadmap has one goal: **Cato compiles Cato.** The Rust workspace becomes
 the *seed* — a trusted stage-0 compiler — and a kernel written in Cato takes
@@ -36,8 +37,9 @@ land in `selfhost/` and ship by re-bootstrapping.
 The kernel implements exactly the language its own source is written in — not
 the seed's full surface. `selfhost/` source therefore avoids, by convention:
 
-- `&`/`&!` borrows (explicit `clone` instead) — the kernel does move checking
-  only;
+- `&` borrows on parameters (the only borrow form; closures and collections
+  are move-only — lend or clone) — the kernel may also do plain move checking
+  only, per slice;
 - `defgeneric`/`defmethod`, `reduce`/`for`/`doseq` and all fusion machinery,
   `parallel`, `--fast` vectorization — iteration is `loop`/`recur`;
 - multi-file `require` until after the fixpoint (one namespace, then split);
@@ -52,21 +54,28 @@ its own suites (differential against the seed where representations overlap).
 
 ## Baseline — what the seed ships today
 
-- Frontend: reader (byte spans on top-level forms), fixed macro set, typed HIR,
-  CLOS-style multimethods, monomorphization, ownership check, fusion check;
-  middle end (fold, DCE/copy-prop, devirt, inline, clone elision).
+- Frontend: reader (byte spans on top-level forms), fixed macro set, typed HIR
+  (widths and signedness in the IR), CLOS-style multimethods, monomorphization,
+  ownership check with ownership-driven destruction (moves transfer the drop
+  duty), fusion check; middle end (fold, DCE/copy-prop, devirt, inline).
+- Semantics: persistent collections (conj/assoc/disj never consume; in-place
+  update only on provable last use), move-only closures with owned, freed
+  environments, refcounted HAMT map nodes, two-argument `get`/`nth` returning
+  `(Option V)`.
 - Backends: LLVM IR text emission (tagged unions, fused loops, closures,
   collections) and the tree-walking interpreter, byte-identical on all of
-  `examples/`; ~220 tests.
+  `examples/`; ~222 tests.
 - Tooling: `cato build/run/repl/lsp`, wasm32 emission, coded diagnostics,
   `runtime/runtime.c` helpers linked by every native build.
 - Zero external crates; everything above is the space the kernel must
   eventually cover or explicitly retire.
 
-**Status (September 2026):** S0–S3 are shipped, plus the typed-HIR /
-ownership-driven-destruction revision (`docs/superpowers/specs/
-2026-09-18-cato-ownership-model-revised.md`: widths live in the IR,
-destruction derives from ownership states, `&!` removed).
+**Status (September 2026):** S0–S3 are shipped, plus the memory-model revision
+(`docs/superpowers/specs/2026-09-18-cato-ownership-model-revised.md`): widths
+and signedness live in the IR, destruction derives from ownership states,
+collections are persistent with last-use in-place update, closure environments
+are owned and freed, HAMT nodes are refcounted, `&!` is removed, and
+two-argument `get`/`nth` return `Option`.
 `selfhost/` does not exist in the tree yet — S4–S9 are designed but
 un-attempted. The phases below are the plan, not a record.
 
