@@ -1,0 +1,949 @@
+; moveck.cato — S6: the move checker + drop planner.
+;
+; A port of the seed's `BCheck`/`plan_drops` over the kernel subset: per-
+; name ownership states (0 Owned / 1 Moved), `rem` occurrence counts (a
+; conj source at count 0 is a last use, so in-place update is
+; unobservable), the tail-escape set, the shadowed-bindings pre-pass, the
+; consumed set; the same merge rules for `if` branches and `match` arms
+; (union of moved, union of not-owning); conj's in_place bit; closure
+; captures consuming non-Copy vars with per-capture own bits; `let`'s
+; transfer-on-Var-init ownership rule; scope-exit `frees` = heap-owning ∧
+; still-owned ∧ not escaped ∧ not consumed ∧ not shadowed.
+;
+; The kernel has no borrows: every plain defn's parameters are Owned,
+; externs are Shared (the seed's own convention). The checker REBUILDS
+; nodes to fill the post-`plan_drops` annotations: HLet frees, HConj
+; in_place, HClosure capture own-bits. `rem` and `cons` thread
+; sequentially through branch walks (field mutations in the seed);
+; `st`/`owns` restart from the pre-branch state per branch and merge.
+
+; --- read-only context ---------------------------------------------------------
+
+(deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
+                    tab :- (Vector str) shared :- Sids]))
+
+(deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
+             (BErr [msg :- str]))
+
+(deftype BKRes (BKOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap es :- HExprs])
+              (BKErr [msg :- str]))
+
+(deftype B4 (B4 [st :- IMap owns :- IMap rem :- IMap cons :- IMap])
+           (B4Err [msg :- str]))
+
+(deftype UseRes (UseRes [rem :- IMap msg :- str]))
+
+; use_var: one occurrence consumed; a non-Copy read of a Moved value errors
+(defn use-var [v :- i64 rem :- IMap tys :- TyEnv st :- IMap bcx :- BCtx] :- UseRes
+  (let [rem2 (im-put rem v (- (im-get (clone rem) v 0) 1))
+        t (te-get tys v)]
+    (if (and (not (ty-noneq (clone t)))
+             (is-non-copy-ty (clone t))
+             (= (im-get st v 0) 1))
+      (match bcx
+        (BCtx [escaped shadowed facts tab shared]
+          (UseRes rem2 (str "use of moved value " (sym-str tab v)))))
+      (UseRes rem2 ""))))
+
+(deftype MoveRes (MoveRes [st :- IMap owns :- IMap cons :- IMap]))
+
+; move_var: state goes Moved; the drop duty leaves the binding
+(defn move-var [v :- i64 st :- IMap owns :- IMap cons :- IMap] :- MoveRes
+  (MoveRes (im-put st v 1) (im-put owns v 0) (im-put cons v 1)))
+
+; move_if_non_copy: the move sites (call args, conj sources, closure
+; captures, drop, let-of-var)
+(deftype MncRes (MncRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap])
+               (MncErr [msg :- str]))
+
+(defn move-if-nc [v :- i64 st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                 tys :- TyEnv bcx :- BCtx] :- MncRes
+  (let [t (te-get (clone tys) v)]
+    (if (and (not (ty-noneq (clone t))) (is-non-copy-ty (clone t)))
+      (match (use-var v (clone rem) (clone tys) (clone st) (clone (clone bcx)))
+        (UseRes [rem2 msg]
+          (if (> (count msg) 0)
+            (MncErr msg)
+            (match (move-var v (clone st) (clone owns) cons)
+              (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2))))))
+      (MncRes st owns rem cons))))
+
+(defn im-remove [m :- IMap k :- i64] :- IMap
+  (match m
+    (MNil [] (MNil))
+    (MCons [ek ev next]
+      (if (= ek k) (im-remove next k) (MCons ek ev (im-remove next k))))))
+
+; --- merge rules (the if/match branch merges) --------------------------------------
+
+; a value moved in any branch counts as moved afterwards
+(defn b-merge-st [m1 :- IMap m2 :- IMap st :- IMap] :- IMap
+  (match m1
+    (MCons [k v next]
+      (b-merge-st (clone next) m2 (if (= v 1) (im-put st k 1) st)))
+    (MNil [] (b-merge-st-2 m2 st))))
+
+(defn b-merge-st-2 [m2 :- IMap st :- IMap] :- IMap
+  (match m2
+    (MCons [k v next]
+      (b-merge-st-2 (clone next) (if (= v 1) (im-put st k 1) st)))
+    (MNil [] st)))
+
+; a name that failed to own in any branch never owns afterwards
+(defn b-merge-owns [m1 :- IMap m2 :- IMap owns :- IMap] :- IMap
+  (match m1
+    (MCons [k v next]
+      (b-merge-owns (clone next) m2 (if (= v 0) (im-put owns k 0) owns)))
+    (MNil [] (b-merge-owns-2 m2 owns))))
+
+(defn b-merge-owns-2 [m2 :- IMap owns :- IMap] :- IMap
+  (match m2
+    (MCons [k v next]
+      (b-merge-owns-2 (clone next) (if (= v 0) (im-put owns k 0) owns)))
+    (MNil [] owns)))
+
+; --- the seed's predicate helpers ---------------------------------------------------
+
+(defn b-heap-owning [ty :- Ty facts :- Facts] :- bool
+  (let [t (ty-tag (clone ty))]
+    (cond
+      (= t 15) true
+      (= t 12) true
+      (= t 17) true
+      (= t 13) true
+      (= t 14) true
+      (= t 16) (= (facts-owns-at (clone facts) (ty-arg (clone ty))) 1)
+      false)))
+
+(defn b-param-moves [ty :- Ty facts :- Facts] :- bool
+  ; boxed ADTs move by pointer; closures move their env
+  (let [t (ty-tag (clone ty))]
+    (cond
+      (= t 17) true
+      (= t 16) (= (facts-boxed-at (clone facts) (ty-arg (clone ty))) 1)
+      false)))
+
+; allocates: a fresh heap buffer the binding uniquely owns; aliases (Var),
+; element loads and control-flow results are excluded (the seed's rule —
+; control-flow merges leak as today until per-arm scratch drops exist)
+(defn b-allocates [v :- HExpr facts :- Facts] :- bool
+  (let [v (clone v)
+        facts (clone facts)
+        tag (h-tag (clone v))]
+    (cond
+      ; subs/split/join/strcat/charstr/tostr: fresh strings
+      (or (= tag 15) (= tag 16) (= tag 17) (= tag 14) (= tag 19) (= tag 13)) true
+      ; conj/args: fresh collections
+      (or (= tag 21) (= tag 42)) true
+      ; a closure mints its owning env allocation
+      (= tag 37) true
+      ; a fresh collection from a call; an explicit deep copy
+      (= tag 39) true
+      (= tag 35) true
+      (= tag 40) true
+      ; a fresh box for an owning ADT; a fresh Option from parse-*
+      (= tag 33) (= (facts-owns-at (clone facts) (hctor-adt (clone v))) 1)
+      (= tag 44) (let [res (hparse-res (clone v))]
+                   (and (= (ty-tag (clone res)) 16) (= (facts-owns-at (clone facts) (ty-arg (clone res))) 1)))
+      false)))
+
+; --- pre-passes: occurrence counts, shadowing, tail escapes -------------------------
+
+(defn cv-bump [name :- i64 counts :- IMap] :- IMap
+  (im-put counts name (+ 1 (im-get (clone counts) name 0))))
+
+; count_vars: every name occurrence, all positions (closure capture names
+; too — a missed occurrence would make in-place update unsound)
+(defn b-count-vars [e :- HExpr counts :- IMap] :- IMap
+  (let [tag (h-tag (clone e))]
+    (cond
+      (= tag 3) (cv-bump (name-of (clone e)) counts)
+
+      ; two-child forms
+      (or (= tag 7) (= tag 8) (= tag 6) (= tag 23) (= tag 24) (= tag 27) (= tag 28)
+          (= tag 9) (= tag 10) (= tag 21) (= tag 15) (= tag 16) (= tag 17) (= tag 18)
+          (= tag 41))
+      (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts))
+
+      ; if: three positions
+      (= tag 22)
+      (b-count-vars (hv-c (clone e)) (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts)))
+
+      ; one-child forms
+      (or (= tag 12) (= tag 26) (= tag 25) (= tag 35) (= tag 36) (= tag 11)
+          (= tag 19) (= tag 13) (= tag 44) (= tag 40) (= tag 43))
+      (b-count-vars (hv-a (clone e)) counts)
+
+      ; child lists
+      (or (= tag 39) (= tag 14) (= tag 33) (= tag 29) (= tag 32))
+      (b-count-vars-kids (hargs-of (clone e)) counts)
+
+      ; get: src, idx, default
+      (= tag 20)
+      (b-count-vars-default (hget-dflt (clone e)) (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts)))
+
+      ; closure: capture names count, then the body
+      (= tag 37)
+      (b-count-vars (hclo-body (clone e)) (b-count-caps (hclo-caps (clone e)) counts))
+
+      ; closure call: f, then args
+      (= tag 38)
+      (b-count-vars-kids (hargs-of (clone e)) (b-count-vars (hv-a (clone e)) counts))
+
+      ; match: scrutinee, then arm bodies
+      (= tag 34)
+      (b-count-vars-arms (arms-of (clone e)) (b-count-vars (hv-a (clone e)) counts))
+
+      ; loop: init values, then the body
+      (= tag 31)
+      (b-count-vars (hv-c (clone e)) (b-count-vars-binds (hloop-binds (clone e)) counts))
+
+      ; let: bind values, then the body
+      (= tag 30)
+      (b-count-vars (hv-b (clone e)) (b-count-vars-binds (binds-of (clone e)) counts))
+
+      ; consts, str lits, vec lits, args: no names
+      counts)))
+
+(defn b-count-vars-3 [c :- HExpr b :- HExpr a :- HExpr counts :- IMap] :- IMap
+  (b-count-vars c (b-count-vars b (b-count-vars a counts))))
+
+(defn b-count-vars-kids [es :- HExprs counts :- IMap] :- IMap
+  (match es
+    (HENil [] counts)
+    (HECons [kid next] (b-count-vars-kids (clone next) (b-count-vars kid counts)))))
+
+(defn b-count-vars-binds [binds :- Binds counts :- IMap] :- IMap
+  (match binds
+    (BNil [] counts)
+    (BCons [name v ty next] (b-count-vars-binds (clone next) (b-count-vars v counts)))))
+
+(defn b-count-vars-arms [arms :- HArms counts :- IMap] :- IMap
+  (match arms
+    (HANil [] counts)
+    (HACons [variant binders body next] (b-count-vars-arms (clone next) (b-count-vars body counts)))))
+
+(defn b-count-caps [caps :- Caps counts :- IMap] :- IMap
+  (match caps
+    (CNil [] counts)
+    (CCons [name ty own next] (b-count-caps (clone next) (cv-bump name counts)))))
+
+(defn b-count-vars-default [dflt :- HExprs counts :- IMap] :- IMap
+  (match dflt
+    (HENil [] counts)
+    (HECons [kid next] (b-count-vars-kids dflt counts))))
+
+; count_binds: names bound by more than one `let` share a codegen slot, so
+; their frees stay suppressed (the seed's known limitation). The walk
+; visits the same node kinds as the seed's count_binds.
+(defn b-count-binds [e :- HExpr counts :- IMap] :- IMap
+  (let [tag (h-tag (clone e))]
+    (cond
+      (= tag 30)
+      (b-count-binds (hv-b (clone e)) (b-count-binds-binds (binds-of (clone e)) counts))
+
+      (or (= tag 29) (= tag 14))
+      (b-count-binds-kids (hargs-of (clone e)) counts)
+
+      (= tag 22)
+      (b-count-binds-3 (hv-c (clone e)) (hv-b (clone e)) (hv-a (clone e)) counts)
+
+      (= tag 31)
+      (b-count-binds (hv-c (clone e)) (b-count-binds-binds (hloop-binds (clone e)) counts))
+
+      (= tag 32)
+      (b-count-binds-kids (hargs-of (clone e)) counts)
+
+      (or (= tag 13) (= tag 44) (= tag 40) (= tag 43))
+      (b-count-binds (hv-a (clone e)) counts)
+
+      (= tag 41)
+      (b-count-binds-2 (hv-b (clone e)) (hv-a (clone e)) counts)
+
+      (or (= tag 23) (= tag 24))
+      (b-count-binds-2 (hv-b (clone e)) (hv-a (clone e)) counts)
+
+      counts)))
+
+(defn b-count-binds-binds [binds :- Binds counts :- IMap] :- IMap
+  (match binds
+    (BNil [] counts)
+    (BCons [name v ty next]
+      (b-count-binds-binds (clone next) (b-count-binds v (cv-bump name counts))))))
+
+(defn b-count-binds-kids [es :- HExprs counts :- IMap] :- IMap
+  (match es
+    (HENil [] counts)
+    (HECons [kid next] (b-count-binds-kids (clone next) (b-count-binds kid counts)))))
+
+(defn b-count-binds-2 [a :- HExpr b :- HExpr counts :- IMap] :- IMap
+  (b-count-binds b (b-count-binds a counts)))
+
+(defn b-count-binds-3 [a :- HExpr b :- HExpr c :- HExpr counts :- IMap] :- IMap
+  (b-count-binds c (b-count-binds b (b-count-binds a counts))))
+
+(defn b-shadowed-of [counts :- IMap acc :- Sids] :- Sids
+  (match counts
+    (MNil [] acc)
+    (MCons [k v next]
+      (b-shadowed-of (clone next) (if (> v 1) (SCons k acc) acc)))))
+
+; tail_escape: vars referenced in tail (returned) position; branch results
+; are tail positions too — a binding returned from an if/match arm
+; transfers its drop duty to the result
+(defn b-tail-escape [e :- HExpr acc :- Sids] :- Sids
+  (let [tag (h-tag (clone e))]
+    (cond
+      (= tag 30) (b-tail-escape (hv-b (clone e)) acc)
+      (= tag 29) (b-tail-escape-last (hargs-of (clone e)) acc)
+      (= tag 22) (b-tail-escape (hv-b (clone e)) (b-tail-escape (hv-c (clone e)) acc))
+      (= tag 34) (b-tail-escape-arms (arms-of (clone e)) acc)
+      (= tag 3) (SCons (name-of (clone e)) acc)
+      acc)))
+
+(defn b-tail-escape-last [es :- HExprs acc :- Sids] :- Sids
+  (match es
+    (HENil [] acc)
+    (HECons [kid next]
+      (if (hes-null (clone next))
+        (b-tail-escape kid acc)
+        (b-tail-escape-last (clone next) acc)))))
+
+(defn b-tail-escape-arms [arms :- HArms acc :- Sids] :- Sids
+  (match arms
+    (HANil [] acc)
+    (HACons [variant binders body next] (b-tail-escape-arms (clone next) (b-tail-escape body acc)))))
+
+; --- the checker -------------------------------------------------------------------
+
+; sequential children
+(defn b-kids [es :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
+             tys :- TyEnv bcx :- BCtx acc :- HExprs] :- BKRes
+  (match es
+    (HENil [] (BKOk st owns rem cons (hes-rev acc (HENil))))
+    (HECons [kid next]
+      (match (bcheck kid st owns rem cons (clone tys) (clone (clone bcx)))
+        (BErr [msg] (BKErr msg))
+        (BOk [st2 owns2 rem2 cons2 c2]
+          (b-kids (clone next) st2 owns2 rem2 cons2 (clone tys) (clone (clone bcx)) (HECons c2 acc)))))))
+
+; a Get's optional default (absent = the empty chain)
+(defn b-default [dflt :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                tys :- TyEnv bcx :- BCtx] :- BKRes
+  (match dflt
+    (HENil [] (BKOk st owns rem cons (HENil)))
+    (HECons [kid next]
+      (match (b-kids dflt st owns rem cons (clone tys) (clone (clone bcx)) (HENil))
+        (BKErr [msg] (BKErr msg))
+        (BKOk [st2 owns2 rem2 cons2 c2]
+          (BKOk st2 owns2 rem2 cons2 c2))))))
+
+; HCall's Owned-kind Var arguments: use + move after the plain child walk
+; (builtins and externs never consume)
+(defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
+                  cons :- IMap tys :- TyEnv bcx :- BCtx] :- B4
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared]
+      (if (sids-has shared name)
+        (B4 st owns rem cons)
+        (b-call-move-walk args st owns rem cons (clone tys) (clone (clone bcx)))))))
+
+(defn b-call-move-walk [args :- HExprs st :- IMap owns :- IMap rem :- IMap
+                       cons :- IMap tys :- TyEnv bcx :- BCtx] :- B4
+  (match args
+    (HENil [] (B4 st owns rem cons))
+    (HECons [kid next]
+      (if (= (h-tag (clone kid)) 3)
+        (match (use-var (name-of (clone kid)) (clone rem) (clone tys) (clone st) (clone bcx))
+          (UseRes [rem2 msg]
+            (if (> (count msg) 0)
+              (B4Err msg)
+              (match (move-var (name-of (clone kid)) st owns cons)
+                (MoveRes [st2 owns2 cons2]
+                  (b-call-move-walk (clone next) st2 owns2 rem2 cons2 (clone tys) (clone bcx)))))))
+        (b-call-move-walk (clone next) st owns rem cons (clone tys) (clone bcx))))))
+
+; let bindings: sequential; the transfer-on-Var-init ownership rule
+(deftype BLRes (BLRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                      tys :- TyEnv binds :- Binds])
+              (BLErr [msg :- str]))
+
+(defn b-let-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                  tys :- TyEnv bcx :- BCtx acc :- Binds] :- BLRes
+  (match binds
+    (BNil [] (BLRes st owns rem cons tys acc))
+    (BCons [name value ty next]
+      (match (bcheck value st owns rem cons (clone tys) (clone (clone bcx)))
+        (BErr [msg] (BLErr msg))
+        (BOk [st1 owns1 rem1 cons1 v2]
+          (let [isv (= (h-tag (clone v2)) 3)
+                vn (name-of (clone v2))
+                ncopy (is-non-copy-ty ty)]
+            (if (and isv ncopy)
+              ; a non-Copy Var init moves the buffer: the drop duty
+              ; transfers to the new binding (read the source's ownership
+              ; before the move clears it)
+              (let [src-owns (im-get owns1 vn 0)]
+                (match (move-var vn st1 owns1 cons1)
+                  (MoveRes [st2 owns2 cons2]
+                    (b-let-binds (clone next) (im-put st2 name 0)
+                                 (im-put owns2 name src-owns) rem1
+                                 (im-remove cons2 name) (te-put tys name ty)
+                                 (clone bcx) (BCons name v2 ty acc)))))
+              ; a fresh binding starts unconsumed; a Copy Var alias never
+              ; owns; anything else owns iff it allocates
+              (let [owns2 (if isv
+                            (im-put owns1 name 0)
+                            (im-put owns1 name (if (b-allocates v2 (b-facts-of (clone bcx))) 1 0)))]
+                (b-let-binds (clone next) (im-put st1 name 0) owns2 rem1
+                             (im-remove cons1 name) (te-put tys name ty)
+                             (clone bcx) (BCons name v2 ty acc))))))))))
+
+(defn b-facts-of [bcx :- BCtx] :- Facts
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared] facts)))
+
+; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
+; consumed ∧ not shadowed, in binding order — the whole destruction rule
+(defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- BCtx] :- Sids
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared]
+      (b-frees-walk binds st owns cons escaped shadowed facts))))
+
+(defn b-frees-walk [binds :- Binds st :- IMap owns :- IMap cons :- IMap
+                   escaped :- Sids shadowed :- Sids facts :- Facts] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (BCons [name v ty next]
+      (let [rest (b-frees-walk (clone next) (clone st) (clone owns) (clone cons) (clone escaped) (clone shadowed) (clone facts))]
+        (if (and (b-heap-owning (clone ty) (clone facts))
+                 (= (im-get (clone owns) name 0) 1)
+                 (= (im-get (clone st) name 0) 0)
+                 (not (sids-has (clone escaped) name))
+                 (sids-has (clone cons) name)
+                 (not (sids-has (clone shadowed) name)))
+          (SCons name rest)
+          rest)))))
+
+; loop bindings: Copy-typed; the init checks against the outer state, the
+; binding shadows for the body, and the previous state restores after
+(deftype BLoopRes (BLoopRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                            tys :- TyEnv binds :- Binds saved :- IMap])
+                (BLoopErr [msg :- str]))
+
+(defn b-loop-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                   tys :- TyEnv bcx :- BCtx acc :- Binds saved :- IMap] :- BLoopRes
+  (match binds
+    (BNil [] (BLoopRes st owns rem cons tys acc saved))
+    (BCons [name init ty next]
+      (match (bcheck init st owns rem cons (clone tys) (clone (clone bcx)))
+        (BErr [msg] (BLoopErr msg))
+        (BOk [st1 owns1 rem1 cons1 init2]
+          (b-loop-binds (clone next) (im-put st1 name 0) owns1 rem1 cons1
+                        (te-put tys name ty)
+                        (clone bcx) (BCons name init2 ty acc)
+                        (im-put saved name (im-get st1 name 0))))))))
+
+(defn b-restore-st [saved :- IMap st :- IMap] :- IMap
+  (match saved
+    (MNil [] st)
+    (MCons [k prev next] (b-restore-st (clone next) (im-put st k prev)))))
+
+; match arms: every arm starts from the same post-scrutinee state; a move
+; in one arm must not poison the others — only one arm runs. Binders alias
+; the scrutinee's fields, so they never own (I64 is the historical
+; state-tracking stand-in).
+(deftype BArmsRes (BArmsRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap arms :- HArms])
+                (BArmsErr [msg :- str]))
+
+(defn b-arm-state [binders :- Sids pst :- IMap powns :- IMap tys :- TyEnv] :- BLRes
+  (match binders
+    (SNil [] (BLRes pst powns (MNil) (MNil) tys (BNil)))
+    (SCons [b rest]
+      (match (b-arm-state (clone rest) pst powns tys)
+        (BLErr [msg] (BLErr msg))
+        (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
+          (BLRes (im-put st1 b 0) (im-put owns1 b 0) rem1 cons1
+                 (te-put tys1 b (t-i64)) (BNil)))))))
+
+(defn b-arms [arms :- HArms pst :- IMap powns :- IMap st :- IMap owns :- IMap
+             rem :- IMap cons :- IMap tys :- TyEnv bcx :- BCtx acc :- HArms] :- BArmsRes
+  (match arms
+    (HANil [] (BArmsRes st owns rem cons (hes-rev-arms (clone acc) (HANil))))
+    (HACons [variant binders body next]
+      (match (b-arm-state (clone binders) (clone pst) (clone powns) (clone tys))
+        (BLErr [msg] (BArmsErr msg))
+        (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
+          (match (bcheck body st1 owns1 rem1 cons1 tys1 (clone bcx))
+            (BErr [msg] (BArmsErr msg))
+            (BOk [st2 owns2 rem2 cons2 body2]
+              ; a value moved in any arm counts as moved and
+              ; unconsumed-eligible afterwards
+              (let [st3 (b-merge-st (clone st1) (clone st2) (clone st))
+                    owns3 (b-merge-owns (clone owns1) (clone owns2) (clone owns))]
+                (b-arms (clone next) (clone pst) (clone powns) st3 owns3 rem2 cons2
+                        (clone tys) (clone bcx)
+                        (HACons variant (clone binders) body2 acc))))))))))
+
+(defn hes-rev-arms [arms :- HArms acc :- HArms] :- HArms
+  (match arms
+    (HANil [] acc)
+    (HACons [variant binders body next]
+      (hes-rev-arms (clone next) (HACons variant binders body acc)))))
+
+; closure captures: use, record the heap-ownership bit, then move the
+; non-Copy ones (the env's drop glue frees only what it really owns)
+(deftype BCapRes (BCapRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap caps :- Caps])
+                (BCapErr [msg :- str]))
+
+(defn b-caps [caps :- Caps st :- IMap owns :- IMap rem :- IMap cons :- IMap
+             tys :- TyEnv bcx :- BCtx] :- BCapRes
+  (match caps
+    (CNil [] (BCapRes st owns rem cons (CNil)))
+    (CCons [name ty own next]
+      (match (use-var name (clone rem) (clone tys) (clone st) (clone bcx))
+        (UseRes [rem2 msg]
+          (if (> (count msg) 0)
+            (BCapErr msg)
+            (let [own2 (im-get (clone owns) name 0)]
+              (if (is-non-copy-ty (clone ty))
+                (match (move-var name (clone st) (clone owns) (clone cons))
+                  (MoveRes [st2 owns2 cons2]
+                    (match (b-caps (clone next) st2 owns2 rem2 cons2 (clone tys) (clone bcx))
+                      (BCapErr [msg] (BCapErr msg))
+                      (BCapRes [st3 owns3 rem3 cons3 caps2]
+                        (BCapRes st3 owns3 rem3 cons3 (CCons name (clone ty) own2 caps2))))))
+                (match (b-caps (clone next) st owns rem2 cons (clone tys) (clone bcx))
+                  (BCapErr [msg] (BCapErr msg))
+                  (BCapRes [st3 owns3 rem3 cons3 caps2]
+                    (BCapRes st3 owns3 rem3 cons3 (CCons name (clone ty) own2 caps2))))))))))))
+
+; --- the checker body ----------------------------------------------------------------
+
+(defn bcheck [e :- HExpr st :- IMap owns :- IMap rem :- IMap cons :- IMap
+             tys :- TyEnv bcx :- BCtx] :- BRes
+  (match e
+    (HConstI64 [v]
+    
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HConstF64 [v]
+    
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HConstB [v]
+    
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HStrLit [v]
+    
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HVecLit [el vals]
+    
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HArgs []
+      (BOk (clone st) (clone owns) (clone rem) (clone cons) (clone e)))
+
+    (HVar [name]
+    (match (use-var name (clone rem) (clone tys) (clone st) (clone bcx))
+      (UseRes [rem2 msg]
+        (if (> (count msg) 0) (BErr msg) (BOk st owns rem2 cons (clone e))))))
+
+    (HBinW [op a b ty]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HBinW op c1 c2 ty)))))))
+
+    (HBinF [op a b]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HBinF op c1 c2)))))))
+
+    (HCmpW [op a b ty]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HCmpW op c1 c2 ty)))))))
+
+    (HStrCmp [p a b]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HStrCmp p c1 c2)))))))
+
+    (HStrOrd [op a b]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HStrOrd op c1 c2)))))))
+
+    (HAnd [a b]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HAnd c1 c2)))))))
+
+    (HOr [a b]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HOr c1 c2)))))))
+
+    (HMin [a b ty]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HMin c1 c2 ty)))))))
+
+    (HMax [a b ty]
+    (match (bcheck a (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck b st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HMax c1 c2 ty)))))))
+
+    (HSplit [s sep]
+    (match (bcheck s (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck sep st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HSplit c1 c2)))))))
+
+    (HJoin [sep xs]
+    (match (bcheck sep (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck xs st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HJoin c1 c2)))))))
+
+    (HStrNth [s idx res]
+    (match (bcheck s (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck idx st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HStrNth c1 c2 res)))))))
+
+    (HSubs [s a b]
+    (match (bcheck s (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck a st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (match (bcheck b st2 owns2 rem2 cons2 (clone tys) (clone (clone bcx)))
+              (BErr [msg] (BErr msg))
+              (BOk [st3 owns3 rem3 cons3 c3]
+                (BOk st3 owns3 rem3 cons3 (HSubs c1 c2 c3)))))))))
+
+    (HICast [x from to]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HICast c1 from to)))))
+
+    (HCount [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HCount c1)))))
+
+    (HToStr [x ty]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HToStr c1 ty)))))
+
+    (HCharStr [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HCharStr c1)))))
+
+    (HNot [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HNot c1)))))
+
+    (HAbs [x ty]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HAbs c1 ty)))))
+
+    (HClone [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HClone c1)))))
+
+    (HSlurp [p]
+    (match (bcheck p (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HSlurp c1)))))
+
+    (HExit [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HExit c1)))))
+
+    (HParseNum [s intf res]
+    (match (bcheck s (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HParseNum c1 intf res)))))
+
+    (HStrCat [args]
+    (match (b-kids args (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
+      (BKErr [msg] (BErr msg))
+      (BKOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HStrCat c1)))))
+
+    (HSeq [es]
+    (match (b-kids es (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
+      (BKErr [msg] (BErr msg))
+      (BKOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HSeq c1)))))
+
+    (HRecur [args]
+    (match (b-kids args (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
+      (BKErr [msg] (BErr msg))
+      (BKOk [st1 owns1 rem1 cons1 c1]
+        (BOk st1 owns1 rem1 cons1 (HRecur c1)))))
+
+    (HGet [src idx dflt ty res]
+    (match (bcheck src (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck idx st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (match (b-default dflt st2 owns2 rem2 cons2 (clone tys) (clone (clone bcx)))
+              (BKErr [msg] (BErr msg))
+              (BKOk [st3 owns3 rem3 cons3 c3]
+                (BOk st3 owns3 rem3 cons3 (HGet c1 c2 c3 ty res)))))))))
+
+    (HConj [v x el inplace]
+    (match (bcheck v (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (let [vn (name-of (clone c1))
+              isv (= (h-tag (clone c1)) 3)
+              t (te-get (clone tys) vn)
+              lastq (and isv
+                         (not (ty-noneq (clone t)))
+                         (is-non-copy-ty (clone t))
+                         (= (im-get st1 vn 0) 0)
+                         (= (im-get owns1 vn 0) 1)
+                         (= (im-get rem1 vn 0) 0))]
+          (if (not lastq)
+            (match (bcheck x st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+              (BErr [msg] (BErr msg))
+              (BOk [st2 owns2 rem2 cons2 c2]
+                (BOk st2 owns2 rem2 cons2 (HConj c1 c2 el 0))))
+            (match (move-var vn st1 owns1 cons1)
+              (MoveRes [st2 owns2 cons2]
+                (match (bcheck x st2 owns2 rem1 cons2 (clone tys) (clone (clone bcx)))
+                  (BErr [msg] (BErr msg))
+                  (BOk [st3 owns3 rem2 cons3 c2]
+                    (BOk st3 owns3 rem2 cons3 (HConj c1 c2 el 1)))))))))))
+
+    (HIf [c t2 e2 ty]
+    (match (bcheck c (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck t2 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [stT ownsT remT consT c2]
+            (match (bcheck e2 st1 owns1 remT consT (clone tys) (clone (clone bcx)))
+              (BErr [msg] (BErr msg))
+              (BOk [stE ownsE remE consE c3]
+                (let [st4 (b-merge-st stT stE st1)
+                      owns4 (b-merge-owns ownsT ownsE owns1)]
+                  (BOk st4 owns4 remE consE (HIf c1 c2 c3 ty))))))))))
+
+    (HLet [binds body frees]
+    (match (b-let-binds binds (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil))
+      (BLErr [msg] (BErr msg))
+      (BLRes [st1 owns1 rem1 cons1 tys1 binds2]
+        (match (bcheck body st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 body2]
+            (let [frees2 (b-frees binds2 st2 owns2 cons2 (clone bcx))]
+              (BOk st2 owns2 rem2 cons2 (HLet binds2 body2 frees2))))))))
+
+    (HLoop [binds ty body]
+    (match (b-loop-binds binds (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil) (MNil))
+      (BLoopErr [msg] (BErr msg))
+      (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved]
+        (match (bcheck body st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 body2]
+            (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop binds2 ty body2)))))))
+
+    (HCtor [adt variant args]
+    (match (b-kids args (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
+      (BKErr [msg] (BErr msg))
+      (BKOk [st1 owns1 rem1 cons1 c1]
+        (if (= (facts-owns-at (b-facts-of (clone bcx)) adt) 1)
+          (match (b-ctor-move c1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+            (B4Err [msg] (BErr msg))
+            (B4 [st2 owns2 rem2 cons2]
+              (BOk st2 owns2 rem2 cons2 (HCtor adt variant c1))))
+          (BOk st1 owns1 rem1 cons1 (HCtor adt variant c1))))))
+
+    (HMatch [scrut arms ty]
+    (match (bcheck scrut (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (b-arms arms st1 owns1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)) (HANil))
+          (BArmsErr [msg] (BErr msg))
+          (BArmsRes [st2 owns2 rem2 cons2 arms2]
+            (BOk st2 owns2 rem2 cons2 (HMatch c1 arms2 ty)))))))
+
+    (HDrop [x]
+    (match (bcheck x (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (if (= (h-tag (clone c1)) 3)
+          (match (move-if-nc (name-of (clone c1)) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+            (MncErr [msg] (BErr msg))
+            (MncRes [st2 owns2 rem2 cons2]
+              (BOk st2 owns2 rem2 cons2 (HDrop c1))))
+          (BOk st1 owns1 rem1 cons1 (HDrop c1))))))
+
+    (HClosure [sig mangled params caps body]
+    (match (b-caps caps (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BCapErr [msg] (BErr msg))
+      (BCapRes [st1 owns1 rem1 cons1 caps2]
+        (match (bcheck body st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 body2]
+            (BOk st2 owns2 rem2 cons2 (HClosure sig mangled params caps2 body2)))))))
+
+    (HClosureCall [f args sig]
+    (match (bcheck f (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (b-kids args st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)) (HENil))
+          (BKErr [msg] (BErr msg))
+          (BKOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HClosureCall c1 c2 sig)))))))
+
+    (HSpit [path data]
+    (match (bcheck path (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
+      (BErr [msg] (BErr msg))
+      (BOk [st1 owns1 rem1 cons1 c1]
+        (match (bcheck data st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (BErr [msg] (BErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (BOk st2 owns2 rem2 cons2 (HSpit c1 c2)))))))
+
+    (HCall [name args]
+    (match (b-kids args (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
+      (BKErr [msg] (BErr msg))
+      (BKOk [st1 owns1 rem1 cons1 c1]
+        (match (b-call-move name c1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (B4Err [msg] (BErr msg))
+          (B4 [st2 owns2 rem2 cons2]
+            (BOk st2 owns2 rem2 cons2 (HCall name c1)))))))
+))(defn b-ctor-move [args :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                  tys :- TyEnv bcx :- BCtx] :- B4
+  (match args
+    (HENil [] (B4 st owns rem cons))
+    (HECons [kid next]
+      (if (= (h-tag kid) 3)
+        (match (move-if-nc (name-of kid) st owns rem cons (clone tys) (clone (clone bcx)))
+          (MncErr [msg] (B4Err msg))
+          (MncRes [st2 owns2 rem2 cons2]
+            (b-ctor-move (clone next) st2 owns2 rem2 cons2 (clone tys) (clone (clone bcx)))))
+        (b-ctor-move (clone next) st owns rem cons (clone tys) (clone (clone bcx)))))))
+
+; --- plan_drops: the per-defn wrapper ------------------------------------------------
+
+; precompute the Shared-kind callees: builtins and externs never consume
+(defn b-shared-callees [defs :- Defns acc :- Sids] :- Sids
+  (match defs
+    (DNil [] acc)
+    (DCons [h t]
+      (match h
+        (Defn [name params ret isextern body]
+          (b-shared-callees (clone t) (if (= isextern 1) (SCons name acc) acc)))))))
+
+(defn b-add-builtins [acc :- Sids] :- Sids
+  (sids-append (sids-append (sids-append (sids-append (sids-append (sids-append
+    (sids-append acc (s-count)) (s-evenq)) (s-printi64)) (s-printf64))
+    (s-getform)) (s-clone)) (s-dropform)))
+
+(deftype BPlan (BPlan [st :- IMap owns :- IMap e :- HExpr])
+              (BPlanErr [msg :- str]))
+
+; plan_drops over one body: the pre-passes, the param states, the walk
+(defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
+             tab :- (Vector str) defs :- Defns] :- BPlan
+  (let [escaped (b-tail-escape (clone body) (SNil))
+        shadowed (b-shadowed-of (b-count-binds (clone body) (MNil)) (SNil))
+        rem0 (b-count-vars (clone body) (MNil))
+        shared (b-add-builtins (b-shared-callees (clone defs) (SNil)))
+        r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
+    (match r
+      (BLErr [msg] (BPlanErr msg))
+      (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
+        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared)]
+          (match (bcheck (clone body) st0 owns0 rem0 cons0 tys0 bcx)
+            (BErr [msg]
+              (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
+            (BOk [st1 owns1 rem1 cons1 body2]
+              (BPlan st1 owns1 body2))))))))
+
+(defn b-init-params [params :- PList facts :- Facts st :- IMap owns :- IMap
+                    rem :- IMap cons :- IMap tys :- TyEnv] :- BLRes
+  (match params
+    (PNil [] (BLRes st owns rem cons tys (BNil)))
+    (PCons [p rest]
+      (match p
+        (Param [pname pty]
+          (b-init-params (clone rest) facts
+                         (im-put st pname 0)
+                         (im-put owns pname (if (b-param-moves (clone pty) (clone facts)) 1 0))
+                         rem
+                         cons
+                         (te-put tys pname pty)))))))
