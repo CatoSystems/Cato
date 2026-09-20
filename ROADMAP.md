@@ -84,8 +84,15 @@ suite from this phase onward. **S5 is shipped** (`selfhost/cato/reader/`,
 spec `docs/superpowers/specs/2026-09-19-cato-s5-kernel-reader.md`): the
 kernel reader — tokenizer + iterative scan producing the span-carrying AST,
 byte-matching the seed reader over every `examples/` file and an edge-case
-fixture corpus, with interp↔LLVM parity of the driver itself. S6–S9 are
-designed but un-attempted. The phases below are the plan, not a record.
+fixture corpus, with interp↔LLVM parity of the driver itself. **S6 is
+shipped** (`selfhost/cato/hir/`, spec
+`docs/superpowers/specs/2026-09-19-cato-s6-kernel-expander-lowering-typing.md`):
+the kernel expander (the fixed macro set), forms parsing, lowering +
+monomorphization, move checking + drop planning, and the wire dump — the
+full pipeline's typed-IR output is byte-identical to a Rust oracle over the
+seed's `build_program_located` on the fixtures corpus, and the expander
+differential covers every `examples/` file. S7–S9 are designed but
+un-attempted. The phases below are the plan, not a record.
 
 ## Phase S0 — Scalar floor *(shipped)*
 
@@ -173,7 +180,7 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
 - Acceptance: differential test — kernel reader vs seed reader over every file
   in `examples/` (including `errors/`, `modules/`), same AST serialization.
 
-## Phase S6 — Kernel expander, lowering, typing
+## Phase S6 — Kernel expander, lowering, typing *(shipped — `docs/superpowers/specs/2026-09-19-cato-s6-kernel-expander-lowering-typing.md`)*
 
 - The fixed macro set (`->` `->>` `when` `when-not` `cond` `if-let`
   `when-let` `if-not` `and` `or`) mirroring `cato-core/src/expand.rs`.
@@ -185,7 +192,14 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
 - Monomorphization for generic `defn`s and ADTs using the seed's mangled-name
   scheme so emitted symbols match.
 - Acceptance: kernel type/IR dumps agree with the seed's `--dump-hir` on
-  subset programs.
+  subset programs. *(Met: the `hir` differential in
+  `crates/cato-backend-interp/tests/kernel_hir.rs` byte-matches a Rust
+  oracle over the seed's `build_program_located` — the pre-optimization
+  stage — against the kernel's wire dump on
+  `selfhost/cato/hir/fixtures/`; the expander differential additionally
+  covers every `examples/` file in `ast` mode. Native codegen of the full
+  kernel driver hits a seed emitter bug and is deferred to S7, so the
+  driver itself runs through the seed interpreter.)*
 
 ## Phase S7 — Kernel LLVM emitter
 
