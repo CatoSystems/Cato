@@ -1,0 +1,44 @@
+; S6 fixture: kitchen — a combination exercising most of the subset in
+; one program: macros, widths, strings, vectors, ADTs with guards,
+; closures, generics, host builtins.
+
+(deftype Res
+  (Ok [v :- i64])
+  (Fail [msg :- str]))
+
+(defn safe-div [a :- i64 b :- i64] :- Res
+  (if (= b 0)
+    (Fail "div0")
+    (Ok (/ a b))))
+
+(defn unwrap-or [r :- Res d :- i64] :- i64
+  (match r
+    (Ok [v] v)
+    (Fail [m] d)))
+
+(defn gtail [xs :- (Vector T)] :- T
+  (match (get xs (- (count xs) 1))
+    (Some [v] v)
+    (None [] 0)))
+
+(defn apply1 [f :- (Fn [i64] i64) x :- i64] :- i64
+  (f x))
+
+(defn main [] :- i64
+  (let [r1 (safe-div 10 2)
+        r2 (safe-div 1 0)
+        a (unwrap-or r1 -1)
+        b (unwrap-or r2 -1)
+        xs (conj (conj [1] 2) 3)
+        c (gtail xs)
+        inc2 (fn [x :- i64] (+ x 2))
+        d (apply1 inc2 a)
+        name (str "k" a)
+        parts (split "x,y" ",")
+        j (join "," parts)
+        acc (loop [i :- i64 0
+                   acc :- i64 0]
+              (if (< i 3)
+                (recur (+ i 1) (+ acc i))
+                acc))]
+    (+ a (+ b (+ c (+ d (+ (count name) (+ (count j) acc))))))))

@@ -433,7 +433,8 @@
     (AMap [ks at] (PTyRes (ps-err (clone ps) "type annotation must be a symbol or (Vector ty)") (t-none)))
     (ASet [ks at] (PTyRes (ps-err (clone ps) "type annotation must be a symbol or (Vector ty)") (t-none)))))
 
-; (Fn [t1 ...] ret)
+; (Fn [t1 ...] ret) — rest is the chain AFTER the `Fn` head: the params
+; vector then the ret form chain
 (defn parse-ty-fn [rest :- Asts ps :- PS] :- PTyRes
   (match rest
     (KNil [] (PTyRes (ps-err (clone ps) "Fn params must be a vector") (t-none)))
@@ -441,8 +442,10 @@
       (let [t1 (ast-tag (clone pvec))]
         (if (not (= t1 6))
           (PTyRes (ps-err (clone ps) "Fn params must be a vector") (t-none))
-          (let [ret (asts-idx (ast-kids-of (clone pret)) 0)]
-            (parse-fn-elems (ast-kids-of (clone pvec)) (TyNil) (clone ret) (clone ps))))))))
+          (if (asts-null (clone pret))
+            (PTyRes (ps-err (clone ps) "Fn annotation expects a return type") (t-none))
+            (let [ret (asts-idx (clone pret) 0)]
+              (parse-fn-elems (ast-kids-of (clone pvec)) (TyNil) (clone ret) (clone ps)))))))))
 
 (defn parse-fn-elems [els :- Asts acc :- TyList ret :- Ast ps :- PS] :- PTyRes
   (match els
@@ -556,7 +559,7 @@
     (TyNil [] (intern1 tab acc))
     (TyCons [h t]
       (let [suf (ty-mangle-str (clone adts) (clone tab) (clone h))
-            acc2 (if (= first 1) (str acc suf) (str acc "_" suf))]
+            acc2 (if (= first 1) (str acc "__" suf) (str acc "_" suf))]
         (inst-name-loop (clone adts) (clone tab) acc2 (clone t) 0)))))
 
 (defn ty-mangle-str [adts :- AdtTab tab :- (Vector str) x :- Ty] :- str
@@ -644,10 +647,10 @@
               (HDRRes (clone ps) (ast-sid-of (clone h)) (SNil))
 
               (= ht 5)
-              (match (asts-idx (clone h) 0)
+              (match (asts-idx (ast-kids-of (clone h)) 0)
                 (AList [hks hat] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
                 (ASym [nsid nat]
-                  (parse-typarams (asts-drop (ast-kids-of (clone h)) 1) (SNil) (ast-sid-of (clone h)) (clone ps)))
+                  (parse-typarams (asts-drop (ast-kids-of (clone h)) 1) (SNil) nsid (clone ps)))
                 (AInt [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
                 (AF64 [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
                 (ABool [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))

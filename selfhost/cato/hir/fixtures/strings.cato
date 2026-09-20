@@ -1,0 +1,19 @@
+; S6 fixture: strings — str/subs/split/join/nth/parse/char->str/count,
+; string comparisons through the runtime, Option unwrapping via match.
+
+(defn main [] :- i64
+  (let [s (str "n=" 42 " f=" 2.5)
+        t (subs s 2 4)
+        parts (split "a,b,c" ",")
+        j (join "-" parts)
+        c (count s)
+        ch (char->str 65)
+        k (count ch)
+        eq (if (= s t) 1 0)
+        lt (if (< "a" "b") 1 0)
+        byt (nth s 0 0)
+        o (parse-i64 "123")
+        v (match o (Some [n] n) (None [] 0))
+        o2 (parse-f64 "2.25")
+        w (match o2 (Some [n] n) (None [] 0.0))]
+    (+ c (+ v (+ k (+ eq (+ lt (+ byt (i64 w)))))))))

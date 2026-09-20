@@ -1,0 +1,21 @@
+; S6 fixture: host — extern declarations, slurp/spit/args/exit and the
+; print builtins (the print multimethod itself is seed-only; the kernel's
+; Call-ret fallback covers these).
+
+(extern strlen [s :- str] :- i64)
+
+(defn main [] :- i64
+  (let [text (str 42 " " true)
+        argv (args)
+        a (get argv 0 "none")]
+    (do
+      (print-str text)
+      (print-i64 (count text))
+      (spit "/tmp/cato_s6_host.txt" "host round trip")
+      (print-i64 (count (slurp "/tmp/cato_s6_host.txt")))
+      (print-i64 (strlen "cato"))
+      (print-f64 2.5)
+      (print-string a)
+      (if (> (count argv) 0)
+        (exit 1)
+        (print-i64 0)))))

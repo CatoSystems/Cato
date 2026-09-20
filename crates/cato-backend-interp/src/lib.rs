@@ -208,7 +208,13 @@ impl<'p> Interpreter<'p> {
             HExpr::Var(v) => env
                 .get(v)
                 .cloned()
-                .unwrap_or_else(|| panic!("interp: unbound var {}", v)),
+                .unwrap_or_else(|| {
+                    panic!(
+                        "interp: unbound var {} (fn {})",
+                        v,
+                        INTERP_FN.with(|f| f.borrow().clone())
+                    )
+                }),
             HExpr::BinF(op, a, b) => {
                 let x = f32_of(&self.eval(a, env)?);
                 let y = f32_of(&self.eval(b, env)?);
@@ -795,7 +801,7 @@ impl<'p> Interpreter<'p> {
                 let sv = self.eval(scrut, env)?;
                 let (variant, fields) = match &sv {
                     Value::Adt { variant, fields } => (*variant, fields.clone()),
-                    o => panic!("interp: match on {:?}", o),
+                    o => panic!("interp: match on {:?} (fn {})", o, INTERP_FN.with(|f| f.borrow().clone())),
                 };
                 for arm in arms {
                     if arm.variant == Some(variant) || arm.variant.is_none() {
@@ -806,7 +812,7 @@ impl<'p> Interpreter<'p> {
                         return self.eval(&arm.body, &mut child);
                     }
                 }
-                return Err("interp: match fell through".to_string());
+                return Err(format!("interp: match fell through (fn {})", INTERP_FN.with(|f| f.borrow().clone())));
             }
             HExpr::If(c, t, f, _) => {
                 if bool_of(&self.eval(c, env)?) {

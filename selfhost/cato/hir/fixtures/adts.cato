@@ -1,0 +1,35 @@
+; S6 fixture: adts — deftype, constructors, match with and without
+; :when guards, the prelude's (Option a) from two-argument get, clone
+; of a heap value.
+
+(deftype Shape
+  (Circle [r :- i64])
+  (Rect [w :- i64 h :- i64]))
+
+(defn area [s :- Shape] :- i64
+  (match s
+    (Circle [r] (* r 3))
+    (Rect [w h] (* w h))))
+
+(defn wide [s :- Shape] :- i64
+  (match s
+    (Rect [w h :when (> w 10)] 1)
+    (Rect [w h] 0)
+    (Circle [r] 0)))
+
+(defn maybe [v :- (Vector i64)] :- i64
+  (match (get v 5)
+    (Some [x] x)
+    (None [] 0)))
+
+(defn main [] :- i64
+  (let [c (Circle 7)
+        a (area (clone c))
+        b (area (clone c))
+        r (Rect 3 4)
+        w (wide (clone r))
+        big (Rect 20 1)
+        wb (wide big)
+        m (maybe (vec-i64 1 2))
+        s2 (clone c)]
+    (+ a (+ b (+ w (+ wb (+ m (area s2))))))))

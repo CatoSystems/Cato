@@ -420,7 +420,7 @@
                  (= (im-get (clone owns) name 0) 1)
                  (= (im-get (clone st) name 0) 0)
                  (not (sids-has (clone escaped) name))
-                 (sids-has (clone cons) name)
+                 (im-has (clone cons) name)
                  (not (sids-has (clone shadowed) name)))
           (SCons name rest)
           rest)))))
@@ -854,13 +854,12 @@
           (BOk st1 owns1 rem1 cons1 (HDrop c1))))))
 
     (HClosure [sig mangled params caps body]
+    ; captures use+move here (non-Copy); the BODY is checked separately
+    ; over the lambda table (check-lams) — the seed's split
     (match (b-caps caps (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
       (BCapErr [msg] (BErr msg))
       (BCapRes [st1 owns1 rem1 cons1 caps2]
-        (match (bcheck body st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
-          (BErr [msg] (BErr msg))
-          (BOk [st2 owns2 rem2 cons2 body2]
-            (BOk st2 owns2 rem2 cons2 (HClosure sig mangled params caps2 body2)))))))
+        (BOk st1 owns1 rem1 cons1 (HClosure sig mangled params caps2 body)))))
 
     (HClosureCall [f args sig]
     (match (bcheck f (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))

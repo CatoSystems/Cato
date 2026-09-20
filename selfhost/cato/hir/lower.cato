@@ -738,8 +738,9 @@
 (deftype OIRes (OIRes [tab :- (Vector str) adts :- AdtTab idx :- i64]))
 
 (defn option-instance [ty :- Ty tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- OIRes
+  ; the prelude's (Option a) is pinned at combined-table index 0
   (let [ps (PS tab (DLNil) (clone adts) (clone sigs) (SNil) "")
-        r (instantiate-adt (s-option) (TyCons (clone ty) (TyNil)) (clone ps))]
+        r (instantiate-adt 0 (TyCons (clone ty) (TyNil)) (clone ps))]
     (match r
       (PIARes [ps2 idx]
         (match ps2
@@ -1619,7 +1620,10 @@
                 (match ps2
                   (PS [t2 d2 a2 s2 y2 e2]
                     (let [body (asts-idx (clone items) 2)
-                          env2 (binds-of-params params)
+                          ; the body lowers in the OUTER env extended with
+                          ; the params (the seed's child = env + params);
+                          ; captures are collected against the outer env
+                          env2 (params-extend (clone env) params)
                           rb (lower-1 (clone body) (clone env2) t2 a2 (clone insts) s2 (clone lams) (clone rets) ncached (clone defs) (clone raws))]
                       (match rb
                         (LErr [msg] (LErr msg))
@@ -1634,11 +1638,11 @@
                                       rs (register-sig2 s3 (clone ptys) (clone ret))]
                                   (match rs
                                     (SigRes [s4 sig]
-                                      (let [midx (lams-depth s4)
+                                      (let [midx (lams-depth (clone lams))
                                             rm (intern1 t3 (str "lambda_" midx))]
                                         (match rm
                                           (I1Res [t5 mangled]
-                                            (lok t5 a3 (clone insts) s4 (lams-append s4 (Lam mangled caps params (clone ret) body2))
+                                            (lok t5 a3 (clone insts) s4 (lams-append (clone lams) (Lam mangled caps params (clone ret) body2))
                                                  r3 n3 (DNil)
                                                  (HClosure sig mangled params caps body2))))))))))))))))))))))))
 
@@ -1648,6 +1652,14 @@
       (match h
         (Param [name ty] (SCons name (plist-names (clone t))))))
     (PNil [] (SNil))))
+
+; the outer env extended with the fn params, in order
+(defn params-extend [env :- TyEnv ps :- PList] :- TyEnv
+  (match ps
+    (PCons [p rest]
+      (match p
+        (Param [name ty] (params-extend (te-put (clone env) name (clone ty)) rest))))
+    (PNil [] (clone env))))
 
 (defn plist-tys [ps :- PList] :- TyList
   (match ps
@@ -1816,9 +1828,9 @@
     (VErr "recur cannot cross a closure boundary")
     (if (not inloop)
       (VErr "recur in this position is not in tail position (recur may end the loop body, an if branch, a match arm, or a let/do tail)")
-      (if (= (hes-depth (hv-a (clone e))) arity)
+      (if (= (hes-depth (recur-args (clone e))) arity)
         (LOk2)
-        (VErr (str "recur expects " arity " argument(s) to match the loop bindings, got " (hes-depth (hv-a (clone e)))))))))
+        (VErr (str "recur expects " arity " argument(s) to match the loop bindings, got " (hes-depth (recur-args (clone e)))))))))
 
 (defn v-if-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
   (let [r1 (validate-recurs-2 (hv-a (clone e)) arity false crossed)]
@@ -2534,7 +2546,7 @@
       (or (= h (s-add)) (= h (s-sub)) (= h (s-mul)) (= h (s-div)))
       (lower-arith (arith-op h) (clone kids) (clone env) tab (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) (clone raws))
 
-      (or (= h (s-f64)) (= h (s-f32)) (= h (s-i8)) (= h (s-i16)) (= h (s-i32))
+      (or (= h (s-f64)) (= h (s-f32)) (= h (s-i8)) (= h (s-i16)) (= h (s-i32)) (= h (s-i64))
           (= h (s-u8)) (= h (s-u16)) (= h (s-u32)) (= h (s-u64)) (= h (s-usize)))
       (lower-cast h (clone kids) (clone env) tab (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) (clone raws))
 
@@ -2628,6 +2640,7 @@
     (= h (s-i8)) (t-i8)
     (= h (s-i16)) (t-i16)
     (= h (s-i32)) (t-i32)
+    (= h (s-i64)) (t-i64)
     (= h (s-u8)) (t-u8)
     (= h (s-u16)) (t-u16)
     (= h (s-u32)) (t-u32)
@@ -3174,29 +3187,39 @@
              (LLoopErr [msg :- str]))
 
 (defn build-lower [rs :- Raws i :- i64 n :- i64 ps :- PS env-of :- i64] :- LLoopRes
-  (build-lower-2 rs i n ps (DNil) (DNil)))
+  (build-lower-2 rs i n ps (DNil) (DNil)
+                 (ps-tab (clone ps)) (ps-adts (clone ps)) (MNil)
+                 (ps-sigs (clone ps)) (LMNil) (TENil) 0))
 
-(defn build-lower-2 [rs :- Raws i :- i64 n :- i64 ps :- PS defs :- Defns instdefs :- Defns] :- LLoopRes
+; the accumulated tab/adts/insts/sigs/lams/rets/ncached persist across
+; defns: interning during lowering (mangled names, $d/lambda gensyms),
+; ADT instances, closure signatures and mono cache state must reach the
+; next defn and the final dump — the seed's Ctx cells are program-global
+(defn build-lower-2 [rs :- Raws i :- i64 n :- i64 ps :- PS defs :- Defns instdefs :- Defns
+                    tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                    lams :- Lams rets :- TyEnv ncached :- i64] :- LLoopRes
   (if (>= i n)
     (match ps
-      (PS [tab decls adts sigs typarams err]
+      (PS [tab0 decls adts0 sigs0 typarams err]
         (if (> (count err) 0)
           (LLoopErr err)
-          (LLoopRes ps defs instdefs tab adts (MNil) sigs (LMNil) (TENil) 0))))
+          (LLoopRes ps defs instdefs tab adts insts sigs lams rets ncached))))
     (let [r (raws-at (clone rs) i)]
       (match r
         (RawDefn [name params ret typarams isextern body]
           (if (or (= isextern 1) (> (sids-depth (clone typarams)) 0))
-            (build-lower-2 (clone rs) (+ i 1) n (clone ps) (clone defs) (clone instdefs))
+            (build-lower-2 (clone rs) (+ i 1) n (clone ps) (clone defs) (clone instdefs)
+                           (clone tab) (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached)
             (let [env (binds-of-params (clone params))
-                  lr (lower-body-raw (clone body) (clone env) (clone ret) (ps-tab (clone ps)) (ps-adts (clone ps))
-                                     (MNil) (ps-sigs (clone ps)) (LMNil) (TENil) 0 (DNil) (clone rs))]
+                  lr (lower-body-raw (clone body) (clone env) (clone ret) (clone tab) (clone adts)
+                                     (clone insts) (clone sigs) (clone lams) (clone rets) ncached (DNil) (clone rs))]
               (match lr
                 (LErr [msg] (LLoopErr msg))
                 (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
                   (build-lower-2 (clone rs) (+ i 1) n (clone ps)
                                  (defns-append (clone defs) (Defn name (clone params) (clone ret) 0 body2))
-                                 (clone instdefs)))))))))))
+                                 (clone instdefs)
+                                 t2 a2 i2 s2 l2 r2 n2))))))))))
 
 (defn build-program [forms :- Asts tab :- (Vector str)] :- POut
   (let [n (asts-depth (clone forms))
@@ -3226,7 +3249,7 @@
                             (PErr err1)
                             (let [rn (raws-depth (clone raws))
                                   rets (seed-rets (clone raws) (TENil))]
-                              (match (build-lower-2 (clone raws) 0 rn ps1 (DNil) (DNil))
+                              (match (build-lower (clone raws) 0 rn ps1 0)
                                 (LLoopErr [msg2] (PErr msg2))
                                 (LLoopRes [ps2 defs instdefs t2 a2 i2 s2 l2 r2 n2]
                                   ; the seed's out order: plain defns in

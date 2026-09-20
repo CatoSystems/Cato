@@ -1,0 +1,34 @@
+; S6 fixture: control — if/when/when-not/cond/if-let/when-let/if-not/
+; and/or expansions, loop/recur, even?.
+
+(defn classify [n :- i64] :- i64
+  (cond
+    (< n 0) -1
+    (= n 0) 0
+    1))
+
+(defn bump [n :- i64] :- i64
+  (if-not (even? n) (+ n 1) n))
+
+(defn sum-to [n :- i64] :- i64
+  (loop [i :- i64 0
+         acc :- i64 0]
+    (if (> i n)
+      acc
+      (recur (+ i 1) (+ acc i)))))
+
+(defn count-down [n :- i64] :- i64
+  (loop [k :- i64 n]
+    (if (<= k 0)
+      0
+      (recur (- k 1)))))
+
+(defn main [] :- i64
+  (let [a (classify 5)
+        b (when (> a 0) 10)
+        c (when-not (= a 0) 20)
+        d (if-let [flag true] 30 40)
+        e (when-let [flag (< a 10)] 50)
+        f (sum-to 10)
+        g (count-down 3)]
+    (+ a (+ b (+ c (+ d (+ e (+ f g))))))))

@@ -112,6 +112,7 @@
 (defn s-some [] :- i64 86)
 (defn s-nonevar [] :- i64 87)
 (defn s-aparam [] :- i64 88)
+(defn s-i64 [] :- i64 89)
 
 ; The driver seeds the reader's intern table with these names, in this
 ; order, before reading the source. `conj` typechecks only on a
@@ -129,6 +130,7 @@
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
+   (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add [] "->") "->>") "when") "when-not") "cond")
    "if-let") "when-let") "if-not") "and") "or") "do") "let") "fn") "if") "not") "=") "/=")
    "<") ">") "<=") ">=") "+") "-") "*") "/") "abs") "min") "max") "match") "loop") "recur")
@@ -138,7 +140,7 @@
    "for") "parallel") "map") "filter") "defn") "extern") "deftype") "defgeneric")
    "defmethod") "ns") "require") ":-") "_") ":when") "$b") "nil") "Fn") "Vector") "f64")
    "f32") "i8") "i16") "i32") "u8") "u16") "u32") "u64") "usize") "Option") "Some") "None")
-   "a")
+   "a") "i64")
   )
 
 ; --- outcomes --------------------------------------------------------------
