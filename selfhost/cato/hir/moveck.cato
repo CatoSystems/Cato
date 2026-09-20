@@ -803,12 +803,15 @@
     (HLet [binds body frees]
     (match (b-let-binds binds (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil))
       (BLErr [msg] (BErr msg))
+      ; b-let-binds prepends while walking, so restore source order —
+      ; frees are collected in binding order over the restored chain
       (BLRes [st1 owns1 rem1 cons1 tys1 binds2]
         (match (bcheck body st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
-            (let [frees2 (b-frees binds2 st2 owns2 cons2 (clone bcx))]
-              (BOk st2 owns2 rem2 cons2 (HLet binds2 body2 frees2))))))))
+            (let [binds3 (binds-rev binds2 (BNil))
+                  frees2 (b-frees (clone binds3) st2 owns2 cons2 (clone bcx))]
+              (BOk st2 owns2 rem2 cons2 (HLet binds3 body2 frees2))))))))
 
     (HLoop [binds ty body]
     (match (b-loop-binds binds (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil) (MNil))
@@ -817,7 +820,7 @@
         (match (bcheck body st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
-            (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop binds2 ty body2)))))))
+            (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop (binds-rev binds2 (BNil)) ty body2)))))))
 
     (HCtor [adt variant args]
     (match (b-kids args (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
@@ -947,3 +950,49 @@
                          rem
                          cons
                          (te-put tys pname pty)))))))
+
+; --- whole-program check: rewrite every plain defn and lambda ---------------
+
+(deftype CkRes (CKOk [defs :- Defns lams :- Lams])
+              (CKErr [msg :- str]))
+
+(defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- (Vector str)
+                  alldefs :- Defns] :- CkRes
+  (match ds
+    (DNil [] (CKOk acc (LMNil)))
+    (DCons [h t]
+      (match h
+        (Defn [name params ret ie body]
+          (if (= ie 1)
+            (check-defns (clone t) (defns-append acc h) (clone facts) (clone tab) (clone alldefs))
+            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+              (BPlanErr [msg] (CKErr msg))
+              (BPlan [st owns body2]
+                (check-defns (clone t)
+                             (defns-append acc (Defn name (clone params) (clone ret) ie body2))
+                             (clone facts) (clone tab) (clone alldefs))))))))))
+
+(deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
+
+(defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- (Vector str)
+                 alldefs :- Defns] :- LkRes
+  (match ls
+    (LMNil [] (LOkL acc))
+    (LMCons [h t]
+      (match h
+        (Lam [mangled caps params ret body]
+          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+            (BPlanErr [msg] (LErrL msg))
+            (BPlan [st owns body2]
+              (check-lams (clone t) (lams-append acc (Lam mangled (clone caps) (clone params) (clone ret) body2))
+                          (clone facts) (clone tab) (clone alldefs)))))))))
+
+(defn check-program [defs :- Defns lams :- Lams facts :- Facts
+                    tab :- (Vector str)] :- CkRes
+  (match (check-defns (clone defs) (DNil) (clone facts) (clone tab) (clone defs))
+    (CKErr [msg] (CKErr msg))
+    (CKOk [defs2 lams0]
+      (match (check-lams (clone lams) (LMNil) (clone facts) (clone tab) (clone defs))
+        (LErrL [msg] (CKErr msg))
+        (LOkL [lams2] (CKOk defs2 lams2))))))
+

@@ -536,7 +536,7 @@
         (match nm
           (I1Res [tab2 nsid]
             (let [ps1 (ps-with-tab (clone ps) tab2)
-                  idx (adts-depth (ps-tab (clone ps1)))
+                  idx (adts-depth (ps-adts (clone ps1)))
                   ps2 (ps-with-adts (clone ps1) (adts-append-info (ps-adts (clone ps1)) (AdtInfo nsid (SNil) (VNil) tpl (clone args))))
                   rv (fill-variants tpl (clone args) 0 (VNil) (clone ps2))]
               (match rv

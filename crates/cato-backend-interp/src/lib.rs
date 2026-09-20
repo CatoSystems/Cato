@@ -74,6 +74,12 @@ fn wrap(v: i64, ty: cato_core::hir::Ty) -> i64 {
     }
 }
 
+/// The innermost defn being run (`call_fn` sets it) so a panicked `int_of`
+/// names the function whose value shapes disagree — kernel debugging aid.
+thread_local! {
+    static INTERP_FN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
 /// Public interpreter: executes a program and captures printed output.
 pub struct Interpreter<'p> {
     defns: HashMap<String, &'p cato_core::Defn>,
@@ -188,6 +194,7 @@ impl<'p> Interpreter<'p> {
             .zip(args.iter())
             .map(|((p, _), v)| (p.clone(), v.clone()))
             .collect();
+        INTERP_FN.with(|f| *f.borrow_mut() = name.to_string());
         self.eval(&defn.body, &mut env)
     }
 
@@ -1020,7 +1027,7 @@ fn int_of(v: &Value) -> i64 {
     match v {
         Value::Int(i) => *i,
         Value::Bool(b) => *b as i64,
-        o => panic!("interp: expected int, got {:?}", o),
+        o => panic!("interp: expected int, got {:?} (fn {})", o, INTERP_FN.with(|f| f.borrow().clone())),
     }
 }
 

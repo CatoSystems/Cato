@@ -25,7 +25,13 @@ const CONCAT_FILES: &[&str] = &[
     "lib/result",
     "reader/read",
     "reader/dump",
+    "hir/types",
     "hir/expand",
+    "hir/forms",
+    "hir/hexpr",
+    "hir/lower",
+    "hir/moveck",
+    "hir/dump",
     "hir/hir_ref",
 ];
 
@@ -49,8 +55,10 @@ fn setup() -> Paths {
     let concat = root.join("target/selfhost_hir.cato");
     std::fs::write(&concat, &src).expect("write concat");
 
+    // Compile check only: the S6 driver runs through the seed interpreter
+    // (native codegen of the full kernel hits a seed emitter bug recorded
+    // in the S6 spec notes; revisit with S7).
     let ll = root.join("target/selfhost_hir.ll");
-    let exe = root.join("target/selfhost_hir_bin");
     let status = Command::new(&cato)
         .arg(&concat)
         .arg("--emit-ir")
@@ -59,16 +67,8 @@ fn setup() -> Paths {
         .status()
         .expect("cato emit");
     assert!(status.success(), "seed failed to compile the kernel hir");
-    let status = Command::new("clang")
-        .arg(&ll)
-        .arg(root.join("runtime/runtime.c"))
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(status.success(), "clang rejected the kernel hir's IR");
 
-    Paths { root, concat, exe }
+    Paths { root, concat, exe: cato }
 }
 
 impl Paths {
@@ -93,7 +93,13 @@ impl Paths {
     }
 
     fn run_kernel(&self, file: &std::path::Path, mode: &str) -> String {
-        let out = Command::new(&self.exe).arg(file).arg(mode).output().expect("kernel run");
+        let out = Command::new(&self.exe)
+            .arg("run")
+            .arg(&self.concat)
+            .arg(file)
+            .arg(mode)
+            .output()
+            .expect("kernel run");
         assert!(
             out.status.success(),
             "kernel failed on {}: {}",

@@ -1,43 +1,13 @@
-; STATUS: WIP — the lowering core (NOT yet in the test concat). In place:
-; the LRes threading shape (state returns inside results; nothing global),
-; ty_of (exhaustive, mirrors the seed's typing incl. the i64 fallback for
-; print-* calls), arithmetic/cmp promotion, unify (scalar + vector-element
-; parameters; ADT-typed parameters fail with a clear diagnostic — kernel
-; restriction, see the spec), substitution, instantiate (cache-before-body
-; so gensym numbering interleaves identically), destructuring let, if,
-; match (+ :when guard rewrite), loop/recur (+ tail validation), closures
-; (+ capture collection), the builtin arms, and the head dispatch.
-; Remaining before this file joins CONCAT order in kernel_hir.rs:
-;   - the call arm proper (closure calls, ctor resolution wiring, generic
-;     dispatch through `instantiate`, even?, unknown-function errors) —
-;     the ctor/variant lookup and `instantiate` exist, the dispatch arm
-;     is a stub,
-;   - conj's literal folds and nth's three-argument desugar,
-;   - moveck.cato (BCheck port: frees/in_place/capture-own bits),
-;   - dump.cato (the wire grammar from the spec),
-;   - build wiring in the driver + the IR differential fixtures.
-
-; lower.cato — S6: expression lowering + typing + monomorphization.
-;
-; A port of `hir/lower.rs` + `hir/mono.rs` over the kernel's tables. State
-; threads as parameters; everything that can grow (intern table, ADT
-; instances, mono instances, closure signatures, lambdas, call-ret table)
-; returns inside `LRes`. The seed's observable order is mirrored exactly
-; where the dump observes it:
-; - `$d{n}` / `_wild{n}` gensyms number off `ncached` (the seed's mono
-;   cache length), which advances at the call site BEFORE an instance
-;   body lowers;
-; - lambdas mint `lambda_{n}` after their body lowers (inner first);
-; - `Fn` annotations register signatures during form parsing, closures
-;   during lowering;
-; - the three-argument `nth` desugars to a match with binder `$b`;
-; - guard arms re-enter lowering with a rewritten arm list plus a routing
-;   `_` arm (the scrutinee lowers twice on that path, as in the seed);
-; - `Call` ret typing: the rets table (static + mono), else the i64
-;   fallback (`print-i64` et al. are in no table — the fallback IS the
-;   seed's answer).
-;
-; op codes: BinOp 0 Add 1 Sub 2 Mul 3 Div; CmpOp 0 Eq 1 Ne 2 Lt 3 Gt 4 Le 5 Ge.
+; STATUS: S6 in progress — the full pipeline exists and compiles through
+; the seed: expand (S5/S6) → build-program (pass 0a/0b headers, pass 1
+; raws, plain-defn lowering in source order, mono instances appended after
+; externs) → move check (moveck.cato, the BCheck port: frees/in_place/
+; capture-own bits) → dump (dump.cato, the wire grammar). Driver modes:
+; `ast` (expander differential) and default (typed-IR dump).
+; Remaining before green: runtime polish of the build path (a let-binding
+; env misalignment in lower-let-binds surfaces as interp `expected int`
+; on some fixtures), the S6 fixtures corpus, and the Rust oracle test
+; over build_program_located. See the S6 spec for the wire grammar.
 
 (deftype LRes (LOk [tab :- (Vector str) adts :- AdtTab insts :- IMap
                    sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
@@ -861,22 +831,27 @@
                 rets :- TyEnv ncached :- i64 defs :- Defns raws :- Raws] :- LRes
   (match items
     (KNil [] (LErr "let bindings must be a vector"))
-    (KCons [bvec body]
+    ; brest is the KCons tail: the chain of body forms AFTER the bindings
+    ; vector — the second destructure name is a chain, not a form
+    (KCons [bvec brest]
       (if (not (= (ast-tag (clone bvec)) 6))
         (LErr "let bindings must be a vector")
         (if (not (even? (asts-depth (ast-kids-of (clone bvec)))))
           (LErr "let bindings must be key/value pairs")
-          (let [rb (lower-let-binds (ast-kids-of (clone bvec)) 0 (clone env) (TENil) (TENil)
-                                    tab (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) (clone raws))]
-            (match rb
-              (LBErr [msg] (LErr msg))
-              (LBRes [t2 a2 i2 s2 l2 r2 n2 d2 env2 binds2]
-                ; multiple body forms form an implicit sequence
-                (let [rbody (lower-body-1 (asts-tail (clone items)) body env2 (clone expected) t2 a2 i2 s2 l2 r2 n2 d2 (clone raws))]
-                  (match rbody
-                    (LErr [msg] (LErr msg))
-                    (LOk [t3 a3 i3 s3 l3 r3 n3 d3 e3]
-                      (lok t3 a3 i3 s3 l3 r3 n3 d3 (HLet (binds-rev binds2 (BNil)) e3 (SNil))))))))))))))
+          (if (asts-null (clone brest))
+            (LErr "let body required")
+            (let [rb (lower-let-binds (ast-kids-of (clone bvec)) 0 (clone env) (clone env) (BNil)
+                                      tab (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) (clone raws))]
+              (match rb
+                (LBErr [msg] (LErr msg))
+                (LBRes [t2 a2 i2 s2 l2 r2 n2 d2 env2 binds2]
+                  ; multiple body forms form an implicit sequence
+                  (let [body (asts-idx (clone brest) 0)
+                        rbody (lower-body-1 (asts-tail (clone brest)) body env2 (clone expected) t2 a2 i2 s2 l2 r2 n2 d2 (clone raws))]
+                    (match rbody
+                      (LErr [msg] (LErr msg))
+                      (LOk [t3 a3 i3 s3 l3 r3 n3 d3 e3]
+                        (lok t3 a3 i3 s3 l3 r3 n3 d3 (HLet (binds-rev binds2 (BNil)) e3 (SNil)))))))))))))))
 
 ; the body after the bindings vector: one form, or an implicit Seq
 (defn lower-body-1 [rest :- Asts body :- Ast env :- TyEnv expected :- Ty
@@ -939,7 +914,7 @@
                     (match rtmp
                       (I1Res [t3 tmp] 
                         (let [pat (ast-kids-of (clone name-node))
-                              rp (destructure-binds (clone pat) 0 tmp elc (clone env) t3 a2 i2 s2 l2 r2 n2 d2 (clone defs) (clone acc))]
+                              rp (destructure-binds (clone pat) 0 tmp elc (clone env) t3 a2 i2 s2 l2 r2 n2 d2 (clone acc))]
                           (match rp
                             (LBErr [msg] (LBErr msg))
                             (LBRes [t4 a4 i4 s4 l4 r4 n4 d4 env4 acc4]
@@ -1694,7 +1669,7 @@
 ; scalars, the vec/map/set spellings, or a fresh uppercase type parameter
 (deftype CtyRes (CtyRes [tps :- Sids ty :- Ty msg :- str]))
 
-(defn closure-ty-sym [s :- str tps :- Sids] :- CtyRes
+(defn closure-ty-sym [s :- str tps :- Sids tab :- (Vector str)] :- CtyRes
   (cond
     (= s "i64")    (CtyRes tps (t-i64) "")
     (= s "i32")    (CtyRes tps (t-i32) "")
@@ -1714,7 +1689,10 @@
     (= s "map")    (CtyRes tps (t-map) "")
     (= s "set")    (CtyRes tps (t-set) "")
     (if (is-upper s)
-      (CtyRes (sids-append (clone tps) s) (t-param (sids-depth (clone tps))) "")
+      (let [r (intern1 (clone tab) s)]
+        (match r
+          (I1Res [tab2 sid]
+            (CtyRes (sids-append (clone tps) sid) (t-param (sids-depth (clone tps))) ""))))
       (CtyRes tps (t-none) (str "unknown type name " s)))))
 
 (defn closure-params [els :- Asts i :- i64 acc :- PList ps :- PS tps :- Sids] :- PParRes
@@ -1727,7 +1705,7 @@
         (if (not (and (= (ast-tag (clone sep)) 1) (= (ast-sid-of (clone sep)) (s-sep))))
           (PParRes (ps-err (clone ps) (str "fn param " (node-str (clone nm) (ps-tab (clone ps))) " needs a type annotation in this slice (x :- i64)")) (PNil))
           (let [tyn (asts-idx (clone els) (+ i 2))
-                rt (closure-ty-sym (node-str (clone tyn) (ps-tab (clone ps))) tps)]
+                rt (closure-ty-sym (node-str (clone tyn) (ps-tab (clone ps))) tps (ps-tab (clone ps)))]
             (match rt
               (CtyRes [tps2 ty msg]
                 (if (> (count msg) 0)
@@ -1788,8 +1766,9 @@
             (LBErr [msg] (LErr msg))
             (LBRes [t2 a2 i2 s2 l2 r2 n2 d2 env2 binds2]
               ; multiple body forms form an implicit sequence; the last
-              ; carries the loop's type
-              (let [body-forms (asts-tail (clone items))
+              ; carries the loop's type. items includes the `loop` head
+              ; and the bindings vector — the body starts at index 2.
+              (let [body-forms (asts-drop (clone items) 2)
                     rb2 (lower-do (clone body-forms) env2 (t-none) t2 a2 i2 s2 l2 r2 n2 d2 (clone raws))]
                 (match rb2
                   (LErr [msg] (LErr msg))
@@ -2027,7 +2006,7 @@
                 (if (not covered)
                   (LErr (str "guard arm " (sym-str (clone tab) (asts-head-sid (ast-kids-of (clone garm)))) " falls through, but the later arms do not cover every variant (add a _ arm)"))
                   (let [arms0 (asts-drop (clone items) 2)
-                        before-g (asts-take (clone arms0) gi (KNil))
+                        before-g (match-asts-take (clone arms0) gi (KNil))
                         inner (mk-match-call (asts-idx (clone items) 1) (clone rest))
                         if-body (mk-guard-if (binder-cond (ast-kids-of (arm-binders (clone garm))))
                                              (arm-body (clone garm))
@@ -2056,16 +2035,16 @@
         (asts-idx (clone rest) 0)
         (binder-cond (clone rest))))))
 
-(defn asts-take [ks :- Asts n :- i64 acc :- Asts] :- Asts
+(defn match-asts-take [ks :- Asts n :- i64 acc :- Asts] :- Asts
   (if (<= n 0)
-    (asts-rev (clone acc) (KNil))
+    (match-asts-rev (clone acc) (KNil))
     (match ks
-      (KNil [] (asts-rev (clone acc) (KNil)))
-      (KCons [kid rest] (asts-take (clone rest) (- n 1) (KCons (clone kid) (clone acc)))))))
+      (KNil [] (match-asts-rev (clone acc) (KNil)))
+      (KCons [kid rest] (match-asts-take (clone rest) (- n 1) (KCons (clone kid) (clone acc)))))))
 
-(defn asts-rev [ks :- Asts acc :- Asts] :- Asts
+(defn match-asts-rev [ks :- Asts acc :- Asts] :- Asts
   (match ks
-    (KCons [kid rest] (asts-rev (clone rest) (KCons (clone kid) (clone acc))))
+    (KCons [kid rest] (match-asts-rev (clone rest) (KCons (clone kid) (clone acc))))
     (KNil [] (clone acc))))
 
 (defn asts-drop-last-n [ks :- Asts n :- i64 acc :- i64] :- Asts
@@ -3091,8 +3070,9 @@
 
 ; pass 0a: deftype headers, in form order
 (defn collect-decls [forms :- Asts i :- i64 n :- i64 decls :- Decls ps :- PS] :- DeclRes
+  ; ndecls starts at 1: adt 0 is the prelude's (Option a)
   (if (>= i n)
-    (DeclRes decls 0 "")
+    (DeclRes decls 1 "")
     (let [f (asts-idx (clone forms) i)]
       (if (not (= (form-head-sid (clone f)) (s-deftype)))
         (match (collect-decls (clone forms) (+ i 1) n (clone decls) (clone ps))
@@ -3220,16 +3200,23 @@
 
 (defn build-program [forms :- Asts tab :- (Vector str)] :- POut
   (let [n (asts-depth (clone forms))
-        ps0 (PS (clone tab) (DLNil) (ATNil) (SGNil) (SNil) "")]
-    (match (collect-decls (clone forms) 0 n (DLNil) (clone ps0))
+        ; the prelude: the (Option a) template seeded as adt 0, with its
+        ; declaration registered so annotations resolve
+        ps0 (ps-new (clone tab))
+        decls0 (dl-put (DLNil) (s-option) (Decl 0 (SCons (s-aparam) (SNil))))
+        ; user deftype indices start at 1: adt 0 is the prelude's Option
+        dres (collect-decls (clone forms) 0 n (clone decls0) (clone ps0))]
+    (match dres
       (DeclRes [decls ndecls msg]
         (if (> (count msg) 0)
           (PErr msg)
-          (match (build-variants (clone forms) 0 n (clone decls) (ATNil) (clone tab) (SGNil))
+          (match (build-variants (clone forms) 0 n (clone decls)
+                                 (ps-adts (clone ps0)) (ps-tab (clone ps0)) (SGNil))
             (VarRes [adts vmsg]
               (if (> (count vmsg) 0)
                 (PErr vmsg)
-                (match (build-raws (clone forms) 0 n (PS (clone tab) (clone decls) (clone adts) (SGNil) (SNil) "") (RNil))
+                (match (build-raws (clone forms) 0 n
+                                   (PS (clone tab) (clone decls) adts (SGNil) (SNil) "") (RNil))
                   (RawsRes [ps1 raws rmsg]
                     (if (> (count rmsg) 0)
                       (PErr rmsg)
@@ -3247,8 +3234,13 @@
                                   ; instances
                                   (let [plains (plain-defns-of (clone defs) (clone raws) (DNil))
                                         externs (extern-defns-of (clone defs) (DNil))
-                                        merged (defns-append (defns-append plains externs) instdefs)]
+                                        merged (defns-concat (defns-concat plains externs) instdefs)]
                                     (POk t2 a2 merged l2 s2)))))))))))))))))))
+
+(defn defns-concat [xs :- Defns ys :- Defns] :- Defns
+  (match xs
+    (DNil [] ys)
+    (DCons [h t] (DCons h (defns-concat (clone t) ys)))))
 
 (defn plain-defns-of [ds :- Defns rs :- Raws acc :- Defns] :- Defns
   ; plain defns keep their source order; externs and mono instances are

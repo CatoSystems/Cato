@@ -1,0 +1,327 @@
+; dump.cato — S6: the typed-IR wire format.
+;
+; One line per record; bodies as compact s-expressions; names rendered
+; through the symtab; f64 through the S3 `%g` contract (`(str f)`).
+; Records: `(adt I NAME PARAMS VARIANTS)` for declared templates,
+; `(adtinst I TPL NAME)` for instances, `(defn NAME [p:T ...] :- T EXT
+; BODY)`, `(lambda MANGLED [c:T:OWN ...] [p:T ...] :- T BODY)`, `(fnsig
+; [T ...] T)`. Ops render as the kernel's integer codes (binw: 0 add 1
+; sub 2 mul 3 div; cmp: 0 = 1 /= 2 < 3 > 4 <= 5 >=).
+
+; --- types ------------------------------------------------------------------
+
+(defn d-ty [ty :- Ty] :- str
+  (let [t (ty-tag (clone ty))
+        a (ty-arg (clone ty))]
+    (cond
+      (= t 0) "i64"
+      (= t 1) "i32"
+      (= t 2) "i8"
+      (= t 3) "i16"
+      (= t 4) "u8"
+      (= t 5) "u16"
+      (= t 6) "u32"
+      (= t 7) "u64"
+      (= t 8) "usize"
+      (= t 9) "f64"
+      (= t 10) "f32"
+      (= t 11) "bool"
+      (= t 12) "str"
+      (= t 13) "map"
+      (= t 14) "set"
+      (= t 15) (cond
+                 (= a 0) "(Vector i64)"
+                 (= a 1) "(Vector f64)"
+                 (= a 2) "(Vector str)"
+                 (str "(Vector " (d-ty (elem-ty (clone a))) ")"))
+      (= t 16) (str "(Adt " a ")")
+      (= t 17) (str "(Fn " a ")")
+      (= t 18) (str "(Param " a ")")
+      "none")))
+
+(defn d-tys [tys :- TyList] :- str
+  ; a bracket list of type words: [T T T]
+  (let [parts (d-tys-parts tys)]
+    (str "[" parts "]")))
+
+(defn d-tys-parts [tys :- TyList] :- str
+  (match tys
+    (TyNil [] "")
+    (TyCons [h t]
+      (if (tys-null (clone t))
+        (d-ty h)
+        (str (d-ty h) " " (d-tys-parts t))))))
+
+; --- expressions --------------------------------------------------------------
+
+(defn d-e [e :- HExpr tab :- (Vector str)] :- str
+  (match e
+    (HConstI64 [v] (str "(const " v ")"))
+    (HConstF64 [v] (str "(f64lit " (str v) ")"))
+    (HConstB [v] (str "(bool " v ")"))
+    (HVar [name] (str "(var " (sym-str (clone (clone tab)) name) ")"))
+    (HStrLit [v] (str "(str " (esc-str v 0 (count v) "") ")"))
+    (HVecLit [el vals] (str "(veclit " el " " (d-vvals vals) ")"))
+    (HBinW [op a b ty] (str "(binw " op " " (d-e a (clone tab)) " " (d-e b (clone tab)) " " (d-ty ty) ")"))
+    (HBinF [op a b] (str "(binf " op " " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HCmpW [op a b ty] (str "(cmp " op " " (d-e a (clone tab)) " " (d-e b (clone tab)) " " (d-ty ty) ")"))
+    (HStrCmp [p a b] (str "(strcmp " p " " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HStrOrd [op a b] (str "(strord " op " " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HICast [x from to] (str "(icast " (d-e x (clone tab)) " " (d-ty from) " " (d-ty to) ")"))
+    (HCount [x] (str "(count " (d-e x (clone tab)) ")"))
+    (HToStr [x ty] (str "(tostr " (d-e x (clone tab)) " " (d-ty ty) ")"))
+    (HStrCat [args] (str "(strcat" (d-args args (clone tab)) ")"))
+    (HSubs [s a b] (str "(subs " (d-e s (clone tab)) " " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HSplit [s sep] (str "(split " (d-e s (clone tab)) " " (d-e sep (clone tab)) ")"))
+    (HJoin [sep xs] (str "(join " (d-e sep (clone tab)) " " (d-e xs (clone tab)) ")"))
+    (HStrNth [s idx res] (str "(nth " (d-e s (clone tab)) " " (d-e idx (clone tab)) " " (d-ty res) ")"))
+    (HCharStr [x] (str "(charstr " (d-e x (clone tab)) ")"))
+    (HGet [src idx dflt ty res]
+      (if (hes-null (clone dflt))
+        (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-ty ty) " " (d-ty res) ")")
+        (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-e (hes-head-hes (clone dflt)) (clone tab)) " " (d-ty ty) " " (d-ty res) ")")))
+    (HConj [v x el inplace] (str "(conj " (d-e v (clone tab)) " " (d-e x (clone tab)) " " el " " inplace ")"))
+    (HIf [c t e2 ty] (str "(if " (d-e c (clone tab)) " " (d-e t (clone tab)) " " (d-e e2 (clone tab)) " " (d-ty ty) ")"))
+    (HAnd [a b] (str "(and " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HOr [a b] (str "(or " (d-e a (clone tab)) " " (d-e b (clone tab)) ")"))
+    (HNot [x] (str "(not " (d-e x (clone tab)) ")"))
+    (HAbs [x ty] (str "(abs " (d-e x (clone tab)) " " (d-ty ty) ")"))
+    (HMin [a b ty] (str "(min " (d-e a (clone tab)) " " (d-e b (clone tab)) " " (d-ty ty) ")"))
+    (HMax [a b ty] (str "(max " (d-e a (clone tab)) " " (d-e b (clone tab)) " " (d-ty ty) ")"))
+    (HSeq [es] (str "(seq" (d-args es (clone tab)) ")"))
+    (HLet [binds body frees]
+      (str "(let " (d-binds binds (clone tab)) " " (d-sids-list frees (clone tab)) " " (d-e body (clone tab)) ")"))
+    (HLoop [binds ty body]
+      (str "(loop " (d-loop-binds binds (clone tab)) " " (d-ty ty) " " (d-e body (clone tab)) ")"))
+    (HRecur [args] (str "(recur" (d-args args (clone tab)) ")"))
+    (HCtor [adt variant args] (str "(ctor " adt " " variant (d-args args (clone tab)) ")"))
+    (HMatch [scrut arms ty] (str "(match " (d-e scrut (clone tab)) " " (d-ty ty) (d-arms arms (clone tab)) ")"))
+    (HClone [x] (str "(clone " (d-e x (clone tab)) ")"))
+    (HDrop [x] (str "(drop " (d-e x (clone tab)) ")"))
+    (HClosure [sig mangled params caps body]
+      (str "(closure " sig " " (sym-str (clone (clone tab)) mangled)
+           " " (d-params params (clone tab))
+           " " (d-caps caps (clone tab))
+           " " (d-e body (clone tab)) ")"))
+    (HClosureCall [f args sig]
+      (str "(closurecall " (d-e f (clone tab)) " " sig (d-args args (clone tab)) ")"))
+    (HCall [name args] (str "(call " (sym-str (clone (clone tab)) name) (d-args args (clone tab)) ")"))
+    (HSlurp [p] (str "(slurp " (d-e p (clone tab)) ")"))
+    (HSpit [path data] (str "(spit " (d-e path (clone tab)) " " (d-e data (clone tab)) ")"))
+    (HArgs [] "(args)")
+    (HExit [x] (str "(exit " (d-e x (clone tab)) ")"))
+    (HParseNum [s intf res] (str "(parse " (d-e s (clone tab)) " " intf " " (d-ty res) ")"))))
+
+(defn d-vvals [vals :- VVals] :- str
+  ; a bracket list of raw literal numbers
+  (match vals
+    (VVNil [] "[]")
+    (VVI64 [v next]
+      (if (vvals-null (clone next))
+        (str "[" v "]")
+        (str "[" v (d-vvals-rest next) "]")))
+    (VVF64 [v next]
+      (if (vvals-null (clone next))
+        (str "[" (str v) "]")
+        (str "[" (str v) (d-vvals-rest next) "]")))))
+
+(defn vvals-null [vals :- VVals] :- bool
+  (match vals
+    (VVNil [] true)
+    (VVI64 [v next] false)
+    (VVF64 [v next] false)))
+
+(defn d-vvals-rest [vals :- VVals] :- str
+  (match vals
+    (VVNil [] "")
+    (VVI64 [v next] (str " " v (d-vvals-rest next)))
+    (VVF64 [v next] (str " " (str v) (d-vvals-rest next)))))
+
+(defn d-args [es :- HExprs tab :- (Vector str)] :- str
+  ; a space-separated run of child expressions: " e1 e2"
+  (match es
+    (HENil [] "")
+    (HECons [kid next] (str " " (d-e kid (clone tab)) (d-args next (clone tab))))))
+
+(defn d-binds [binds :- Binds tab :- (Vector str)] :- str
+  ; bracket list of flattened triples: [n e T n e T ...]
+  (str "[" (d-binds-parts binds (clone tab)) "]"))
+
+(defn d-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+  (match binds
+    (BNil [] "")
+    (BCons [name v ty next]
+      (let [piece (str (sym-str (clone (clone tab)) name) " " (d-e v (clone tab)) " " (d-ty ty))]
+        (if (binds-null (clone next))
+          piece
+          (str piece " " (d-binds-parts next (clone tab))))))))
+
+(defn binds-null [binds :- Binds] :- bool
+  (match binds
+    (BNil [] true)
+    (BCons [name v ty next] false)))
+
+(defn d-loop-binds [binds :- Binds tab :- (Vector str)] :- str
+  ; bracket list of flattened triples: [n T e n T e ...]
+  (str "[" (d-loop-binds-parts binds (clone tab)) "]"))
+
+(defn d-loop-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+  (match binds
+    (BNil [] "")
+    (BCons [name v ty next]
+      (let [piece (str (sym-str (clone (clone tab)) name) " " (d-ty ty) " " (d-e v (clone tab)))]
+        (if (binds-null (clone next))
+          piece
+          (str piece " " (d-loop-binds-parts next (clone tab))))))))
+
+(defn d-sids-list [ks :- Sids tab :- (Vector str)] :- str
+  (str "[" (d-sids-parts ks (clone tab)) "]"))
+
+(defn d-sids-parts [ks :- Sids tab :- (Vector str)] :- str
+  (match ks
+    (SNil [] "")
+    (SCons [h t]
+      (if (sids-null (clone t))
+        (sym-str (clone (clone tab)) h)
+        (str (sym-str (clone (clone tab)) h) " " (d-sids-parts t (clone tab)))))))
+
+(defn d-arms [arms :- HArms tab :- (Vector str)] :- str
+  (match arms
+    (HANil [] "")
+    (HACons [variant binders body next]
+      (let [vname (if (= variant -1) "_" (str variant))
+            piece (str " (arm " vname " " (d-sids-list binders (clone tab)) " " (d-e body (clone tab)) ")")]
+        (str piece (d-arms next (clone tab)))))))
+
+(defn d-params [ps :- PList tab :- (Vector str)] :- str
+  ; bracket list of named params: [p:T p:T]
+  (str "[" (d-params-parts ps (clone tab)) "]"))
+
+(defn d-params-parts [ps :- PList tab :- (Vector str)] :- str
+  (match ps
+    (PNil [] "")
+    (PCons [h t]
+      (match h
+        (Param [name ty]
+          (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty))]
+            (if (plist-null (clone t))
+              piece
+              (str piece " " (d-params-parts t (clone tab))))))))))
+
+(defn plist-null [ps :- PList] :- bool
+  (match ps
+    (PNil [] true)
+    (PCons [h t] false)))
+
+(defn d-caps [caps :- Caps tab :- (Vector str)] :- str
+  ; bracket list of captures with ownership bits: [c:T:OWN c:T:OWN]
+  (str "[" (d-caps-parts caps (clone tab)) "]"))
+
+(defn d-caps-parts [caps :- Caps tab :- (Vector str)] :- str
+  (match caps
+    (CNil [] "")
+    (CCons [name ty own next]
+      (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty) ":" own)]
+        (if (caps-null (clone next))
+          piece
+          (str piece " " (d-caps-parts next (clone tab))))))))
+
+(defn caps-null [caps :- Caps] :- bool
+  (match caps
+    (CNil [] true)
+    (CCons [name ty own next] false)))
+
+; --- records ------------------------------------------------------------------
+
+(defn d-adt-variants [variants :- VList tab :- (Vector str)] :- str
+  ; bracket list of (VName [T ...]) pairs
+  (str "[" (d-variants-parts variants (clone tab)) "]"))
+
+(defn d-variants-parts [variants :- VList tab :- (Vector str)] :- str
+  (match variants
+    (VNil [] "")
+    (VCons [h t]
+      (match h
+        (Varnt [vname fields]
+          (let [piece (str "(" (sym-str (clone (clone tab)) vname) " " (d-tys fields) ")")]
+            (if (vlist-null (clone t))
+              piece
+              (str piece " " (d-variants-parts t (clone tab))))))))))
+
+(defn vlist-null [vs :- VList] :- bool
+  (match vs
+    (VNil [] true)
+    (VCons [h t] false)))
+
+(defn d-adts [adts :- AdtTab tab :- (Vector str) i :- i64 sb :- StrBuf] :- StrBuf
+  (match adts
+    (ATNil [] sb)
+    (ATCons [h t]
+      (match h
+        (AdtInfo [name typarams variants tpl tplargs]
+          (let [sb2 (if (= tpl -1)
+                      (sb-add-line sb
+                        (str "(adt " i " " (sym-str (clone (clone tab)) name)
+                             " " (d-typarams typarams (clone tab))
+                             " " (d-adt-variants variants (clone tab)) ")"))
+                      (sb-add-line sb
+                        (str "(adtinst " i " " tpl " " (sym-str (clone (clone tab)) name) ")")))]
+            (d-adts t (clone tab) (+ i 1) sb2)))))))
+
+(defn d-typarams [typarams :- Sids tab :- (Vector str)] :- str
+  ; a bracket list of the header's type parameter NAMES: [a] or [a b]
+  (str "[" (d-typarams-parts typarams (clone tab)) "]"))
+
+(defn d-typarams-parts [ks :- Sids tab :- (Vector str)] :- str
+  (match ks
+    (SNil [] "")
+    (SCons [h t]
+      (if (sids-null (clone t))
+        (sym-str (clone (clone tab)) h)
+        (str (sym-str (clone (clone tab)) h) " " (d-typarams-parts t (clone tab)))))))
+
+(defn d-defn-line [d :- Defn tab :- (Vector str)] :- str
+  (match d
+    (Defn [name params ret isextern body]
+      (str "(defn " (sym-str (clone (clone tab)) name)
+           " " (d-params params (clone tab))
+           " :- " (d-ty ret)
+           " " isextern
+           " " (d-e body (clone tab)) ")"))))
+
+(defn d-defns [ds :- Defns tab :- (Vector str) sb :- StrBuf] :- StrBuf
+  (match ds
+    (DNil [] sb)
+    (DCons [h t] (d-defns t (clone tab) (sb-add-line sb (d-defn-line h (clone tab)))))))
+
+(defn d-lams [ls :- Lams tab :- (Vector str) sb :- StrBuf] :- StrBuf
+  (match ls
+    (LMNil [] sb)
+    (LMCons [h t]
+      (match h
+        (Lam [mangled caps params ret body]
+          (let [line (str "(lambda " (sym-str (clone (clone tab)) mangled)
+                          " " (d-caps caps (clone tab))
+                          " " (d-params params (clone tab))
+                          " :- " (d-ty ret) " " (d-e body (clone tab)) ")")]
+            (d-lams t (clone tab) (sb-add-line sb line))))))))
+
+(defn d-sigs [ss :- Sigs sb :- StrBuf] :- StrBuf
+  (match ss
+    (SGNil [] sb)
+    (SGCons [h t]
+      (match h
+        (Sig [params ret]
+          (let [line (str "(fnsig " (d-tys params) " " (d-ty ret) ")")]
+            (d-sigs t (sb-add-line sb line))))))))
+
+; the whole program: adts (declared then instances, combined order),
+; defns (plain in source order, then externs, then mono instances),
+; lambdas, fn sigs
+(defn dump-program [adts :- AdtTab defs :- Defns lams :- Lams sigs :- Sigs
+                   tab :- (Vector str)] :- str
+  (let [sb0 (d-adts (clone adts) (clone tab) 0 (sb-new))
+        sb1 (d-defns (clone defs) (clone tab) sb0)
+        sb2 (d-lams (clone lams) (clone tab) sb1)
+        sb3 (d-sigs (clone sigs) sb2)]
+    (sb-str sb3)))
