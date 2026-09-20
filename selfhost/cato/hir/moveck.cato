@@ -354,14 +354,12 @@
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
       (if (= (h-tag (clone kid)) 3)
-        (match (use-var (name-of (clone kid)) (clone rem) (clone tys) (clone st) (clone bcx))
-          (UseRes [rem2 msg]
-            (if (> (count msg) 0)
-              (B4Err msg)
-              (match (move-var (name-of (clone kid)) st owns cons)
-                (MoveRes [st2 owns2 cons2]
-                  (b-call-move-walk (clone next) st2 owns2 rem2 cons2 (clone tys) (clone bcx)))))))
-        (b-call-move-walk (clone next) st owns rem cons (clone tys) (clone bcx))))))
+        ; the seed's kinds loop: use + move only NON-COPY Var args
+        (match (move-if-nc (name-of (clone kid)) st owns rem cons (clone tys) (clone (clone bcx)))
+          (MncErr [msg] (B4Err msg))
+          (MncRes [st2 owns2 rem2 cons2]
+            (b-call-move-walk (clone next) st2 owns2 rem2 cons2 (clone tys) (clone (clone bcx)))))
+        (b-call-move-walk (clone next) st owns rem cons (clone tys) (clone (clone bcx)))))))
 
 ; let bindings: sequential; the transfer-on-Var-init ownership rule
 (deftype BLRes (BLRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
@@ -420,7 +418,7 @@
                  (= (im-get (clone owns) name 0) 1)
                  (= (im-get (clone st) name 0) 0)
                  (not (sids-has (clone escaped) name))
-                 (im-has (clone cons) name)
+                 (not (im-has (clone cons) name))
                  (not (sids-has (clone shadowed) name)))
           (SCons name rest)
           rest)))))

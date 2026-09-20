@@ -74,8 +74,8 @@ fn wrap(v: i64, ty: cato_core::hir::Ty) -> i64 {
     }
 }
 
-/// The innermost defn being run (`call_fn` sets it) so a panicked `int_of`
-/// names the function whose value shapes disagree — kernel debugging aid.
+// The innermost defn being run (`call_fn` sets it) so a panicked `int_of`
+// names the function whose value shapes disagree — kernel debugging aid.
 thread_local! {
     static INTERP_FN: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
 }

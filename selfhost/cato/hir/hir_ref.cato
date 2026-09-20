@@ -43,7 +43,7 @@
   (match (build-program forms tab)
     (PErr [msg] (print-string (str "err " msg)))
     (POk [tab2 adts defs lams sigs]
-      (let [facts (facts-compute adts)]
+      (let [facts (facts-compute (adts-templates adts))]
         (match (check-program defs lams facts tab2)
           (CKErr [msg] (print-string (str "err " msg)))
           (CKOk [defs2 lams2]
