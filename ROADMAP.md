@@ -201,14 +201,21 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
   kernel driver hits a seed emitter bug and is deferred to S7, so the
   driver itself runs through the seed interpreter.)*
 
-## Phase S7 — Kernel LLVM emitter
+## Phase S7 — Kernel LLVM emitter *(shipped)*
 
 - Textual IR via the string builder: `%VecI64`/`%Closure`/tagged-union ADT
   layouts, `malloc`/`free` declares, runtime.c calls — a Cato port of the seed
   emitter's *shape* for the subset, not its full feature set.
 - Acceptance: emit → `clang` → run over a growing program suite; where the
   subset overlaps the seed, byte-compare against seed `--emit-ir` output
-  (informational signal, not a requirement).
+  (informational signal, not a requirement). *(Met: the emit differential in
+  `crates/cato-backend-interp/tests/kernel_emit.rs` drives the kernel driver
+  (read → expand → build → moveck → emit) over the S6 fixtures, clangs the
+  module with `runtime/runtime.c`, runs the binary, and byte-matches stdout
+  against the seed interpreter — `host.cato`'s argv-derived stdout is exempt
+  (S3 interp excludes argv[0]), and dump-mode fixtures without a `main` get
+  a compile-only clang check. The seed `--emit-ir` byte-compare stays a
+  development-time signal.)*
 
 ## Phase S8 — Stage 1: the kernel builds itself
 

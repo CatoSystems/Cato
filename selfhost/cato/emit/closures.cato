@@ -1,0 +1,265 @@
+
+
+; closures.cato — S7: first-class closures — the port of the seed
+; emitter's closures.rs. A closure value is a %Closure {code, env, drop}
+; alloca; the env block is one ownership-bitmap word plus the captures
+; in slot order (1 slot for scalars/str/boxed ADT, 3 for collections
+; and captured closures). @lambda_N loads captures back out of the env;
+; @drop__lambda_N frees the owned ones per the bitmap, then the env.
+
+(defn emit-closure-val [e :- HExpr st :- Emit] :- ESRes
+  (match e
+    (HClosure [sig mangled params caps body]
+      (emit-closure-creation sig (clone mangled) (clone caps) st))
+    (HLet [binds body frees]
+      (match (emit-let binds st)
+        (EURes [st2]
+          (match (emit-closure-val (clone body) st2)
+            (ESRes [st3 v]
+              (match (emit-frees frees st3)
+                (EURes [st4] (ESRes st4 v))))))))
+    (HSeq [es]
+      (match (emit-stmts-ex-last es st)
+        (ELRes [st2 last] (emit-closure-val (clone last) st2))))
+    (_ (sf st "expected a closure value"))))
+
+; Env slots a capture occupies: collections and closures take 3.
+(defn capture-slots [ty :- Ty] :- i64
+  (let [tg (ty-tag (clone ty))]
+    (if (or (= tg 15) (= tg 17)) 3 1)))
+
+(defn caps-slot-sum [cs :- Caps] :- i64
+  (match cs
+    (CNil [] 0)
+    (CCons [name ty own next] (+ (capture-slots ty) (caps-slot-sum (clone next))))))
+
+(defn caps-bitmap [cs :- Caps i :- i64 acc :- i64] :- i64
+  (match cs
+    (CNil [] acc)
+    (CCons [name ty own next]
+      (caps-bitmap (clone next) (+ i 1)
+                   (if (= own 1) (+ acc (shl1 i)) acc)))))
+
+(defn shl1 [i :- i64] :- i64
+  (if (= i 0) 1 (* 2 (shl1 (- i 1)))))
+
+(defn clo-header-word [slot :- str k :- i64 v :- str st :- Emit] :- EURes
+  (match (em-temp st)
+    (ETRes [st1 f]
+      (let [st2 (em-line st1 (str f " = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 " k))]
+        (EURes (em-line st2 (str "  store ptr " v ", ptr " f ", align 8")))))))
+
+(defn clo-header [slot :- str mname :- str env :- str st :- Emit] :- EURes
+  (match (clo-header-word slot 0 (str "@" mname) st)
+    (EURes [st1]
+      (match (clo-header-word slot 1 env st1)
+        (EURes [st2]
+          (match (clo-header-word slot 2 (str "@drop__" mname) st2)
+            (EURes [st3] (EURes st3))))))))
+
+(defn capture-word [env :- str at :- i64 v :- str st :- Emit] :- EURes
+  (match (em-temp st)
+    (ETRes [st1 g]
+      (let [st2 (em-line st1 (str g " = getelementptr inbounds i64, ptr " env ", i64 " at))]
+        (EURes (em-line st2 (str "  store i64 " v ", ptr " g ", align 8")))))))
+
+; ptr captures ride the i64 env words via ptrtoint (the load side
+; inttoptrs them back out — the seed's phase-14 convention).
+(defn capture-word-ptr [env :- str at :- i64 v :- str st :- Emit] :- EURes
+  (match (em-ins st (str "  ~ = ptrtoint ptr " v " to i64"))
+    (ETRes [st1 n] (capture-word env at n st1))))
+
+(defn capture-header [name :- i64 ty :- Ty st :- Emit] :- ET3Res
+  (match st
+    (Emit [c mdl sigs]
+      (if (fc-gr-has c name)
+        (match (fc-gr-get c name)
+          (GroVal [slot gel]
+            (match (em-ins4 st
+                     (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
+                     (str "  ~ = load ptr, ptr ^1, align 8")
+                     (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 1")
+                     (str "  ~ = load i64, ptr ^1, align 8"))
+              (ET4Res [st1 f0 p f1 l]
+                (match (em-ins2 st1
+                         (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 2")
+                         (str "  ~ = load i64, ptr ^1, align 8"))
+                  (ET2Res [st2 f2 cp] (ET3Res st2 p l cp) ))))))
+          (match (fc-vc-get c name)
+            (VecVal [p l el]
+              (ET3Res st p l l)))))))
+
+(defn store-captures [cs :- Caps env :- str at :- i64 st :- Emit] :- EURes
+  (match cs
+    (CNil [] (EURes st))
+    (CCons [name ty own next]
+      (match (store-one-capture name ty env at st)
+        (EURes [st2]
+          (store-captures (clone next) env (+ at (capture-slots ty)) st2))))))
+
+(defn store-one-capture [name :- i64 ty :- Ty env :- str at :- i64 st :- Emit] :- EURes
+  (let [tg (ty-tag (clone ty))]
+    (cond
+      (= tg 15)
+      (match (capture-header name ty st)
+        (ET3Res [st1 p l cp]
+          (match (capture-word-ptr env at p st1)
+            (EURes [st2]
+              (match (capture-word env (+ at 1) l st2)
+                (EURes [st3]
+                  (match (capture-word env (+ at 2) cp st3)
+                    (EURes [st4] (EURes st4)))))))))
+
+      (= tg 17)
+      (match st
+        (Emit [c mdl sigs]
+          (let [rv (fc-sc-get c name)]
+            (match rv
+              (RegVal [slot rty]
+                (match (em-ins st (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 0"))
+                  (ETRes [st1 f0]
+                    (match (em-ins st1 (str "  ~ = load ptr, ptr " f0 ", align 8"))
+                      (ETRes [st2 w0]
+                        (match (capture-word-ptr env at w0 st2)
+                          (EURes [st3]
+                            (match (em-ins st3 (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 1"))
+                              (ETRes [st4 f1]
+                                (match (em-ins st4 (str "  ~ = load ptr, ptr " f1 ", align 8"))
+                                  (ETRes [st5 w1]
+                                    (match (capture-word-ptr env (+ at 1) w1 st5)
+                                      (EURes [st6]
+                                        (match (em-ins st6 (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 2"))
+                                          (ETRes [st7 f2]
+                                            (match (em-ins st7 (str "  ~ = load ptr, ptr " f2 ", align 8"))
+                                              (ETRes [st8 w2]
+                                                (match (capture-word-ptr env (+ at 2) w2 st8)
+                                                  (EURes [st9] (EURes st9))))))))))))))))))))))))
+
+      (= tg 11)
+      (match st
+        (Emit [c mdl sigs]
+          (let [rv (fc-sc-get c name)]
+            (match rv
+              (RegVal [v vty]
+                (match (em-ins st (str "  ~ = zext i1 " v " to i8"))
+                  (ETRes [st1 z]
+                    (match (capture-word env at z st1)
+                      (EURes [st2] (EURes st2))))))))))
+
+      (match st
+        (Emit [c mdl sigs]
+          (let [rv (fc-sc-get c name)]
+            (match rv
+              (RegVal [v vty]
+                (match (capture-word env at v st)
+                  (EURes [st2] (EURes st2)))))))))))
+
+(defn emit-closure-creation [sig :- i64 mangled :- i64 caps :- Caps
+                             st :- Emit] :- ESRes
+  (match st
+    (Emit [c mdl sigs]
+      (let [n (+ 1 (caps-slot-sum (clone caps)))
+            mname (sym-str (md-tab mdl) mangled)]
+        (match (em-ins2 st
+                 (str "~ = add i64 " n ", 0")
+                 (str "~ = mul i64 ^1, 8"))
+          (ET2Res [st1 nreg nbytes]
+            (match (em-malloc st1 nbytes)
+              (ETRes [st2 env]
+                (match (em-ins st2 (str "~ = getelementptr inbounds i64, ptr " env ", i64 0"))
+                  (ETRes [st3 bw]
+                    (let [st4 (em-line st3 (str "  store i64 " (caps-bitmap (clone caps) 0 0) ", ptr " bw ", align 8"))]
+                      (match (store-captures caps env 1 st4)
+                        (EURes [st5]
+                          (match (em-temp st5)
+                            (ETRes [st6 slot]
+                              (let [st7 (em-pre st6 (str slot " = alloca %Closure, align 8"))]
+                                (match (clo-header slot mname env st7)
+                                  (EURes [st8] (ESRes st8 slot))))))))))))) ))))))
+
+(defn clo-code-env [slot :- str st :- Emit] :- ET4Res
+  (match (em-ins4 st
+           (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 0")
+           (str "  ~ = load ptr, ptr ^1, align 8")
+           (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 1")
+           (str "  ~ = load ptr, ptr ^1, align 8"))
+    (ET4Res [st1 cf code ef env] (ET4Res st1 code env "" ""))))
+
+(defn emit-closure-call [f :- HExpr args :- HExprs sig :- i64 st :- Emit] :- ESRes
+  (match st
+    (Emit [c mdl sigs]
+      (let [sg (esigs-at mdl (md-csigs mdl) sig)]
+        (match sg
+          (ESig [ptys ret]
+            (match f
+              (HVar [v]
+                (match st
+                  (Emit [c2 mdl2 sigs2]
+                    (let [rv (fc-sc-get c2 v)]
+                      (match rv
+                        (RegVal [fslot fty]
+                          (match (clo-code-env fslot st)
+                            (ET4Res [st1 code env x y]
+                              (match (cc-marshal args ptys st1 (CSCons (str "ptr " env) (CSNil)))
+                                (ECARes [st2 items]
+                                  (let [rev (cs-rev items (CSNil))
+                                        pl (str "ptr" (cc-param-list ptys))
+                                        retag (ty-tag (clone ret))
+                                        ret-ll (cond
+                                                 (= retag 11) "i1"
+                                                 (= retag 12) "ptr"
+                                                 (= retag 9) "double"
+                                                 (= retag 10) "float"
+                                                 (< retag 12) (ll-scalar ret)
+                                                 "i64")]
+                                    (match (em-ins st2 (str "  ~ = call " ret-ll " (" pl ") " code "(" (cs-join rev true) ")"))
+                                      (ETRes [st3 r] (ESRes st3 r))))))))))))))
+              (_ (sf st "closure callee must be a var")))))))))
+
+(defn esigs-at [mdl :- Mdl ss :- Sigs i :- i64] :- ESig
+  (match ss
+    (SGCons [h t]
+      (match h
+        (Sig [params ret] (if (= i 0) (ESig (clone params) (clone ret)) (esigs-at mdl (clone t) (- i 1))))))
+    (SGNil [] (ESig (TyNil) (t-none)))))
+
+(defn cc-marshal [args :- HExprs ptys :- TyList st :- Emit acc :- ECalls] :- ECARes
+  (match args
+    (HENil [] (ECARes st acc))
+    (HECons [kid next]
+      (match ptys
+        (TyCons [pty prest]
+          (let [tg (ty-tag (clone pty))]
+            (cond
+              (= tg 9)
+              (match (emit-float (clone kid) st)
+                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "double " v) acc))))
+              (= tg 10)
+              (match (emit-float (clone kid) st)
+                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "float " v) acc))))
+              (= tg 11)
+              (match (emit-bool (clone kid) st)
+                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "i1 " v) acc))))
+              (= tg 12)
+              (match (emit-str-val (clone kid) st)
+                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))))
+              (< tg 12)
+              (match (emit-int (clone kid) st)
+                (ESRes [st1 v]
+                  (cc-marshal (hes-rest args) prest st1 (CSCons (str (ll-scalar pty) " " v) acc))))
+              (ECARes (do (cg-fail-i "closure arg type not supported") st) acc))))
+        (_ (ECARes (do (cg-fail-i "closure arg/param mismatch") st) acc))))))
+
+(defn cc-param-list [ptys :- TyList] :- str
+  (match ptys
+    (TyNil [] "")
+    (TyCons [h t]
+      (let [tg (ty-tag (clone h))]
+        (str ", " (cond
+                    (= tg 9) "double"
+                    (= tg 10) "float"
+                    (= tg 11) "i1"
+                    (= tg 12) "ptr"
+                    (< tg 12) (ll-scalar h)
+                    "i64")
+             (cc-param-list (clone t)))))))

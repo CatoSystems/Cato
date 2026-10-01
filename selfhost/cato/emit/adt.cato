@@ -1,0 +1,699 @@
+; adt.cato — S7: ADT value emission (constructors, field loads/stores,
+; clone), the let-binding ladder, scope-exit frees, statements, and user
+; calls — the port of the seed emitter's adt.rs, exprs_val.rs's
+; emit_let, heap_vec.rs's free paths and calls.rs.
+
+(defn ctor-tag-store [args :- HExprs adt :- i64 variant :- i64
+                            name :- str slot :- str st :- Emit] :- ESRes
+  (match (em-ins st (str "~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 0"))
+    (ETRes [st1 tg]
+      (let [st2 (em-line st1 (str "  store i64 " variant ", ptr " tg ", align 8"))]
+        (match (ctor-store-args args adt variant 0 slot st2)
+          (EURes [st3] (ESRes st3 slot)))))))
+
+(defn emit-ctor [adt :- i64 variant :- i64 args :- HExprs st :- Emit] :- ESRes
+  (match st
+    (Emit [c mdl sigs]
+      (let [name (md-adt-name mdl adt)
+            boxed (md-owns-at mdl adt)
+            slots (fs-total (md-adts mdl) (md-owns mdl) adt)]
+        (if (= boxed 1)
+          (match (em-malloc st (str (* 8 (+ slots 1))))
+            (ETRes [st1 slot] (ctor-tag-store args adt variant name slot st1)))
+          (match (em-temp st)
+            (ETRes [st1 slot]
+              (let [st2 (em-pre st1 (str slot " = alloca %" name ", align 8"))]
+                (ctor-tag-store args adt variant name slot st2)))))))))
+
+(defn emit-clone-adt [x :- HExpr st :- Emit] :- ESRes
+  (let [ai (adt-of (clone x) (clone st))]
+    (match (clone st)
+      (Emit [c mdl sigs]
+        (let [boxed (md-owns-at mdl ai)
+              name (md-adt-name mdl ai)]
+          (if (= boxed 1)
+            (match (emit-adt (clone x) st)
+              (ESRes [st1 v]
+                (match (em-ins st1 (str "  ~ = call ptr @clone__" name "(ptr " v ")"))
+                  (ETRes [st2 r] (ESRes st2 r)))))
+            (match (emit-adt (clone x) st)
+              (ESRes [st1 v]
+                (match (em-temp st1)
+                  (ETRes [st2 slot]
+                    (let [st2a (em-pre st2 (str slot " = alloca %" name ", align 8"))]
+                      (match (em-ins st2a (str "~ = load %" name ", ptr " v ", align 8"))
+                        (ETRes [st3 lv]
+                          (let [st4 (em-line st3 (str "  store %" name " " lv ", ptr " slot ", align 8"))]
+                            (ESRes st4 slot)))))))))))))))
+
+(defn emit-adt [e :- HExpr st :- Emit] :- ESRes
+  (match e
+    (HVar [v]
+      (match st
+        (Emit [c mdl sigs]
+          (let [rv (fc-sc-get c v)]
+            (match rv (RegVal [r ty] (ESRes st r)))))))
+    (HCtor [adt variant args] (emit-ctor adt variant (clone args) st))
+    (HClone [x] (emit-clone-adt (clone x) st))
+    (HIf [c t e2 ty] (emit-if-node (clone c) (clone t) (clone e2) (clone ty) st))
+    (HMatch [scrut arms ty] (emit-match-node (clone scrut) (clone arms) (clone ty) st))
+    (HLet [binds body frees]
+      (match (emit-let binds st)
+        (EURes [st2]
+          (match (emit-adt (clone body) st2)
+            (ESRes [st3 v]
+              (match (emit-frees frees st3)
+                (EURes [st4] (ESRes st4 v))))))))
+    (HSeq [es]
+      (match (emit-stmts-ex-last es st)
+        (ELRes [st2 last] (emit-adt (clone last) st2))))
+    (HStrNth [s idx res]
+      (emit-strnth-opt (clone s) (clone idx) (ty-arg (clone res)) st))
+    (HGet [src idx dflt ty res]
+      (emit-get-opt (clone src) (clone idx) (ty-arg (clone res)) st))
+    (HCall [name args] (call-user name args st))
+    (HConstI64 [v] (sf st "expected an ADT expression"))
+    (HConstF64 [v] (sf st "expected an ADT expression"))
+    (HConstB [v] (sf st "expected an ADT expression"))
+    (HStrLit [v] (sf st "expected an ADT expression"))
+    (HVecLit [el vals] (sf st "expected an ADT expression"))
+    (HBinW [op a b ty] (sf st "expected an ADT expression"))
+    (HBinF [op a b] (sf st "expected an ADT expression"))
+    (HCmpW [op a b ty] (sf st "expected an ADT expression"))
+    (HStrCmp [pol a b] (sf st "expected an ADT expression"))
+    (HStrOrd [op a b] (sf st "expected an ADT expression"))
+    (HICast [x from to] (sf st "expected an ADT expression"))
+    (HCount [x] (sf st "expected an ADT expression"))
+    (HToStr [x ty] (sf st "expected an ADT expression"))
+    (HStrCat [args] (sf st "expected an ADT expression"))
+    (HSubs [s a b] (sf st "expected an ADT expression"))
+    (HSplit [s sep] (sf st "expected an ADT expression"))
+    (HJoin [sep xs] (sf st "expected an ADT expression"))
+    (HCharStr [x] (sf st "expected an ADT expression"))
+    (HConj [v x el inplace] (sf st "expected an ADT expression"))
+    (HAnd [a b] (sf st "expected an ADT expression"))
+    (HOr [a b] (sf st "expected an ADT expression"))
+    (HNot [x] (sf st "expected an ADT expression"))
+    (HAbs [x ty] (sf st "expected an ADT expression"))
+    (HMin [a b ty] (sf st "expected an ADT expression"))
+    (HMax [a b ty] (sf st "expected an ADT expression"))
+    (HLoop [binds ty body] (sf st "expected an ADT expression"))
+    (HRecur [args] (sf st "recur outside loop"))
+    (HDrop [x] (sf st "drop produces no ADT value"))
+    (HClosure [sig mangled params caps body] (sf st "closure value must be bound with let"))
+    (HClosureCall [f args sig] (sf st "expected an ADT expression"))
+    (HSlurp [p] (sf st "expected an ADT expression"))
+    (HSpit [path data] (sf st "expected an ADT expression"))
+    (HArgs [] (sf st "expected an ADT expression"))
+    (HExit [x] (sf st "expected an ADT expression"))
+    (HParseNum [s int res] (sf st "expected an ADT expression"))))
+
+(defn ctor-store-args [args :- HExprs adt :- i64 variant :- i64 k :- i64
+                       slot :- str st :- Emit] :- EURes
+  (if (hes-null (clone args))
+    (EURes st)
+    (match st
+      (Emit [c mdl sigs]
+        (let [fty (fs-field-ty (md-adts mdl) adt variant k)
+              off (fs-off (md-adts mdl) (md-owns mdl) adt variant k)]
+          (match (emit-field-store (hes-first (clone args)) fty off adt slot st)
+            (EURes [st2]
+              (ctor-store-args (hes-rest args) adt variant (+ k 1) slot st2))))))))
+
+(defn emit-field-store [arg :- HExpr fty :- Ty off :- i64 ai :- i64
+                        slot :- str st :- Emit] :- EURes
+  (match st
+    (Emit [c mdl sigs]
+      (let [name (md-adt-name mdl ai)
+            tg (ty-tag (clone fty))]
+        (cond
+          (= tg 0)
+          (match (emit-int (clone arg) st)
+            (ESRes [st1 v]
+              (match (em-ins2 st1
+                       (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                       (str "  store i64 " v ", ptr ^1, align 8"))
+                (ET2Res [st2 f s2] (EURes st2) ))))
+
+          (= tg 1)
+          (match (emit-int (clone arg) st)
+            (ESRes [st1 v]
+              (match (em-ins3 st1
+                       (str "  ~ = sext i32 " v " to i64")
+                       (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                       (str "  store i64 ^3, ptr ^2, align 8"))
+                (ET3Res [st2 x f s2] (EURes st2)))))
+
+          (= tg 9)
+          (match (emit-float (clone arg) st)
+            (ESRes [st1 v]
+              (match (em-ins3 st1
+                       (str "  ~ = bitcast double " v " to i64")
+                       (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                       (str "  store i64 ^3, ptr ^2, align 8"))
+                (ET3Res [st2 b f s2] (EURes st2)))))
+
+          (= tg 11)
+          (match (emit-bool (clone arg) st)
+            (ESRes [st1 v]
+              (match (em-ins3 st1
+                       (str "  ~ = zext i1 " v " to i64")
+                       (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                       (str "  store i64 ^3, ptr ^2, align 8"))
+                (ET3Res [st2 z f s2] (EURes st2)))))
+
+          (= tg 12)
+          (match (emit-str-val (clone arg) st)
+            (ESRes [st1 v]
+              (match (em-ins st1 (str "  ~ = call ptr @strdup(ptr " v ")"))
+                (ETRes [st2 copy]
+                  (match (em-ins2 (em-decl st2 "declare ptr @strdup(ptr)")
+                           (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                           (str "  ~ = ptrtoint ptr " copy " to i64"))
+                    (ET2Res [st3 f x]
+                      (EURes (em-line st3 (str "  store i64 " x ", ptr " f ", align 8"))) ))))))
+
+          (= tg 15)
+          (match (emit-vec-header (clone arg) st)
+            (HRes [st1 p l cap]
+              (match (em-ins st1 (str "  ~ = mul i64 " l ", 8"))
+                (ETRes [st2 nlen]
+                  (match (em-malloc st2 nlen)
+                    (ETRes [st3 np]
+                      (let [st4 (em-line st3 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " np ", ptr " p ", i64 " nlen ", i1 false, i1 false)"))
+                            st5 (vec-field-word name slot off 0 np st4)
+                            st6 (vec-field-word name slot (+ off 1) 1 l st5)
+                            st7 (vec-field-word name slot (+ off 2) 1 l st6)]
+                        (EURes st7))))))))
+
+          (= tg 16)
+          (let [j (ty-arg (clone fty))
+                jboxed (md-owns-at mdl j)]
+            (match (emit-adt (clone arg) st)
+              (ESRes [st1 v]
+                (if (= jboxed 1)
+                  (match (em-ins2 st1
+                           (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                           (str "  ~ = ptrtoint ptr " v " to i64"))
+                    (ET2Res [st2 f x]
+                      (EURes (em-line st2 (str "  store i64 " x ", ptr " f ", align 8"))) ))
+                  (let [child (md-adt-name mdl j)]
+                    (match (em-ins2 st1
+                             (str "  ~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off)
+                             (str "  ~ = load %" child ", ptr " v ", align 8"))
+                      (ET2Res [st2 f lv]
+                        (EURes (em-line st2 (str "  store %" child " " lv ", ptr " f ", align 8"))) )))))))
+
+          (EURes (do (cg-fail-i "unsupported ADT field type") st)))))))
+
+(defn vec-field-word [name :- str slot :- str off :- i64 k :- i64 v :- str
+                      st :- Emit] :- Emit
+  (match (em-temp st)
+    (ETRes [st1 f]
+      (let [st2 (em-line st1 (str f " = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 " off))]
+        (if (= k 0)
+          (match (em-ins st2 (str "~ = ptrtoint ptr " v " to i64"))
+            (ETRes [st3 x] (em-line st3 (str "  store i64 " x ", ptr " f ", align 8"))))
+          (em-line st2 (str "  store i64 " v ", ptr " f ", align 8")))))))
+
+(defn emit-vec-header [arg :- HExpr st :- Emit] :- HRes
+  (match arg
+    (HVar [v]
+      (match st
+        (Emit [c mdl sigs]
+          (if (fc-gr-has c v)
+            (match (fc-gr-get c v)
+              (GroVal [slot gel]
+                (match (gr-slot-pl slot st)
+                  (ET2Res [st1 p l] (HRes st1 p l l) ))))
+            (match (fc-vc-get c v)
+              (VecVal [p l el] (HRes st p l l)))))))
+    (_
+      (match (vec-arg arg st)
+        (EVRes [st1 p l el]
+          (match (vec-clone-buf p l el st1)
+            (ETRes [st2 dp] (HRes st2 dp l l))))))))
+
+(defn emit-field-load [binder :- i64 ai :- i64 vi :- i64 k :- i64 st :- Emit
+                       scrut :- str name :- str] :- EURes
+  (match st
+    (Emit [c mdl sigs]
+      (let [fty (fs-field-ty (md-adts mdl) ai vi k)
+            off (fs-off (md-adts mdl) (md-owns mdl) ai vi k)
+            tg (ty-tag (clone fty))]
+        (cond
+          (= tg 0)
+          (match (em-ins2 st
+                   (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                   (str "~ = load i64, ptr ^1, align 8"))
+            (ET2Res [st2 f v] (EURes (em-sc-put st2 binder v (t-i64))) ))
+
+          (= tg 1)
+          (match (em-ins3 st
+                   (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                   (str "~ = load i64, ptr ^1, align 8")
+                   (str "~ = trunc i64 ^1 to i32"))
+            (ET3Res [st3 f v t] (EURes (em-sc-put st3 binder t (t-i32)))))
+
+          (= tg 9)
+          (match (em-ins3 st
+                   (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                   (str "~ = load i64, ptr ^1, align 8")
+                   (str "~ = bitcast i64 ^1 to double"))
+            (ET3Res [st3 f v d] (EURes (em-sc-put st3 binder d (t-f64)))))
+
+          (= tg 11)
+          (match (em-ins3 st
+                   (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                   (str "~ = load i64, ptr ^1, align 8")
+                   (str "~ = trunc i64 ^1 to i1"))
+            (ET3Res [st3 f v b] (EURes (em-sc-put st3 binder b (t-bool)))))
+
+          (= tg 12)
+          (match (em-ins3 st
+                   (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                   (str "~ = load i64, ptr ^1, align 8")
+                   (str "~ = inttoptr i64 ^1 to ptr"))
+            (ET3Res [st3 f v p] (EURes (em-sc-put st3 binder p (t-str)))))
+
+          (= tg 15)
+          (match (em-temp st)
+            (ETRes [st2 slot]
+              (let [st3 (em-pre st2 (str slot " = alloca %VecI64, align 8"))]
+                (match (field-load-vec-word off 0 slot scrut name st3)
+                  (EURes [st4]
+                    (match (field-load-vec-word (+ off 1) 1 slot scrut name st4)
+                      (EURes [st5]
+                        (match (field-load-vec-word (+ off 2) 2 slot scrut name st5)
+                          (EURes [st6]
+                            (EURes (em-gr-put st6 binder slot (ty-arg (clone fty)))))))))))))
+
+          (= tg 16)
+          (let [j (ty-arg (clone fty))
+                jboxed (md-owns-at mdl j)]
+            (if (= jboxed 1)
+              (match (em-ins3 st
+                       (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+                       (str "~ = load i64, ptr ^1, align 8")
+                       (str "~ = inttoptr i64 ^1 to ptr"))
+                (ET3Res [st3 f v p] (EURes (em-sc-put st3 binder p (t-adt j)))))
+              (match (em-ins st (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off))
+                (ETRes [st2 f] (EURes (em-sc-put st2 binder f (t-adt j)))))))
+
+          (EURes (do (cg-fail-i "unsupported ADT field type") st)))))))
+
+(defn field-load-vec-word [off :- i64 k :- i64 slot :- str scrut :- str
+                           name :- str st :- Emit] :- EURes
+  (match (em-ins3 st
+           (str "~ = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " off)
+           (str "~ = load i64, ptr ^1, align 8")
+           (str "~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 " k))
+    (ET3Res [st1 f raw dst]
+      (if (= k 0)
+        (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
+          (ETRes [st2 p]
+            (EURes (em-line st2 (str "  store ptr " p ", ptr " dst ", align 8")))))
+        (EURes (em-line st1 (str "  store i64 " raw ", ptr " dst ", align 8")))))))
+
+(defn emit-let [binds :- Binds st :- Emit] :- EURes
+  (match binds
+    (BNil [] (EURes st))
+    (BCons [name value ty next]
+      (match (emit-one-bind name (clone value) (clone ty) st)
+        (EURes [st2] (emit-let (clone next) st2))))))
+
+; Bind one name to one value: the seed's emit_let decision ladder.
+(defn emit-one-bind [name :- i64 value :- HExpr ty :- Ty st :- Emit] :- EURes
+  (let [vtag (h-tag (clone value))
+        ttag (ty-tag (clone ty))]
+    (cond
+      (and (= vtag 39) (= ttag 15))
+      (match (emit-vec-pair value st)
+        (EVRes [st1 p l el] (EURes (em-vc-put st1 name p l el))))
+
+      (= vtag 44)
+      (match value
+        (HParseNum [s int res]
+          (match (emit-str-val (clone s) st)
+            (ESRes [st1 sv]
+              (let [helper (if (= int 1) "cato_parse_i64" "cato_parse_f64")
+                    decl (if (= int 1)
+                           "declare ptr @cato_parse_i64(ptr)"
+                           "declare ptr @cato_parse_f64(ptr)")]
+                (match (em-ins st1 (str "  ~ = call ptr @" helper "(ptr " sv ")"))
+                  (ETRes [st2 p]
+                    (EURes (em-sc-put (em-decl st2 decl) name p ty))))))))
+        (_ (EURes st)))
+
+      (= vtag 42)
+      (match st
+        (Emit [c mdl sigs]
+          (match (em-temp st)
+            (ETRes [st1 lptr]
+              (let [st2 (em-pre st1 (str lptr " = alloca i64, align 8"))]
+                (match (em-ins2 st2
+                         (str "  ~ = call ptr @cato_args(ptr " lptr ")")
+                         (str "  ~ = load i64, ptr " lptr ", align 8"))
+                  (ET2Res [st3 arr l]
+                    (EURes (em-vc-put (em-decl st3 "declare ptr @cato_args(ptr)")
+                                      name arr l 2)) )))))))
+
+      (and (= vtag 20) (= (ty-tag (hget-res (clone value))) 16))
+      (match value
+        (HGet [src idx dflt ty2 res]
+          (match (emit-get-opt (clone src) (clone idx) (ty-arg (clone res)) st)
+            (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
+        (_ (EURes st)))
+
+      (and (= vtag 18) (= (ty-tag (hget-res (clone value))) 16))
+      (match value
+        (HStrNth [s idx res]
+          (match (emit-strnth-opt (clone s) (clone idx) (ty-arg (clone res)) st)
+            (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
+        (_ (EURes st)))
+
+      (= vtag 21)
+      (match value
+        (HConj [v x el inplace]
+          (match (emit-conj (clone v) (clone x) el inplace st)
+            (ETRes [st1 slot] (EURes (em-gr-put st1 name slot el)))))
+        (_ (EURes st)))
+
+      (= vtag 14)
+      (match value
+        (HStrCat [args]
+          (match (emit-strcat (clone args) st)
+            (ESRes [st1 p] (EURes (em-sc-put st1 name p (t-str))))))
+        (_ (EURes st)))
+
+      (= vtag 15)
+      (match value
+        (HSubs [s a b]
+          (match (emit-subs (clone s) (clone a) (clone b) st)
+            (ESRes [st1 p] (EURes (em-sc-put st1 name p (t-str))))))
+        (_ (EURes st)))
+
+      (= vtag 16)
+      (match value
+        (HSplit [s sep]
+          (match (emit-split (clone s) (clone sep) st)
+            (EVRes [st1 arr l el] (EURes (em-vc-put st1 name arr l el)))))
+        (_ (EURes st)))
+
+      (= vtag 17)
+      (match value
+        (HJoin [sep xs]
+          (match (emit-join (clone sep) (clone xs) st)
+            (ESRes [st1 p] (EURes (em-sc-put st1 name p (t-str))))))
+        (_ (EURes st)))
+
+      (= ttag 17)
+      (match (emit-closure-val value st)
+        (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+
+      (= ttag 15)
+      (if (= vtag 3)
+        (match value
+          (HVar [src]
+            (match st
+              (Emit [c mdl sigs]
+                (cond
+                  (fc-gr-has c src)
+                  (match (fc-gr-get c src)
+                    (GroVal [slot el] (EURes (em-gr-put st name slot el))))
+                  (fc-vc-has c src)
+                  (match (fc-vc-get c src)
+                    (VecVal [p l el] (EURes (em-vc-put st name p l el))))
+                  (EURes (do (cg-fail-i "alias of unknown vector") st))))))
+          (_ (EURes st)))
+        (match (emit-vec-pair value st)
+          (EVRes [st1 p l el] (EURes (em-vc-put st1 name p l el)))))
+
+      (= ttag 16)
+      (match (emit-adt value st)
+        (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+
+      (= ttag 9)  (match (emit-float value st)  (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+      (= ttag 10) (match (emit-float value st)  (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+      (= ttag 11) (match (emit-bool value st)   (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+      (= ttag 12)
+      ; a literal bind OWNS its string: strdup the constant (the free
+      ; list frees the binding at scope exit / drop); non-literal values
+      ; already produce an owned register.
+      (match value
+        (HStrLit [sv]
+          (match (emit-str-val value st)
+            (ESRes [st1 gep]
+              (match (em-ins st1 (str "  ~ = call ptr @strdup(ptr " gep ")"))
+                (ETRes [st2 sd] (EURes (em-sc-put st2 name sd ty)))))))
+        (_
+          (match (emit-str-val value st)
+            (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))))
+      (< ttag 12)
+      (match (emit-int value st)
+        (ESRes [st1 v] (EURes (em-sc-put st1 name v ty))))
+      (EURes (do (cg-fail-i "unbound let type") st)))))
+
+(defn hget-res [e :- HExpr] :- Ty
+  (match e
+    (HGet [src idx dflt ty res] (clone res))
+    (HStrNth [s idx res] (clone res))
+    (HParseNum [s int res] (clone res))
+    (HConstI64 [v] (t-none))
+    (HConstF64 [v] (t-none))
+    (HConstB [v] (t-none))
+    (HVar [name] (t-none))
+    (HStrLit [v] (t-none))
+    (HVecLit [el vals] (t-none))
+    (HBinW [op a b ty] (t-none))
+    (HBinF [op a b] (t-none))
+    (HCmpW [op a b ty] (t-none))
+    (HStrCmp [pol a b] (t-none))
+    (HStrOrd [op a b] (t-none))
+    (HICast [x from to] (t-none))
+    (HCount [x] (t-none))
+    (HToStr [x ty] (t-none))
+    (HStrCat [args] (t-none))
+    (HSubs [s a b] (t-none))
+    (HSplit [s sep] (t-none))
+    (HJoin [sep xs] (t-none))
+    (HCharStr [x] (t-none))
+    (HConj [v x el inplace] (t-none))
+    (HIf [c t e2 ty] (t-none))
+    (HAnd [a b] (t-none))
+    (HOr [a b] (t-none))
+    (HNot [x] (t-none))
+    (HAbs [x ty] (t-none))
+    (HMin [a b ty] (t-none))
+    (HMax [a b ty] (t-none))
+    (HSeq [es] (t-none))
+    (HLet [binds body frees] (t-none))
+    (HLoop [binds ty body] (t-none))
+    (HRecur [args] (t-none))
+    (HCtor [adt variant args] (t-none))
+    (HMatch [scrut arms ty] (t-none))
+    (HClone [x] (t-none))
+    (HDrop [x] (t-none))
+    (HClosure [sig mangled params caps body] (t-none))
+    (HClosureCall [f args sig] (t-none))
+    (HCall [name args] (t-none))
+    (HSlurp [p] (t-none))
+    (HSpit [path data] (t-none))
+    (HArgs [] (t-none))
+    (HExit [x] (t-none))))
+
+(defn emit-frees [frees :- Sids st :- Emit] :- EURes
+  (if (sids-null (clone frees))
+    (EURes st)
+    (match (free-binding-storage (sids-idx (clone frees) 0) st)
+      (EURes [st2]
+        (emit-frees (sids-drop (clone frees) 1) st2)))))
+
+(defn free-binding-storage [k :- i64 st :- Emit] :- EURes
+  (match st
+    (Emit [c mdl sigs]
+      (let [rv (fc-sc-get c k)]
+        (match rv
+          (RegVal [r ty]
+            (let [tg (ty-tag (clone ty))]
+              (cond
+                (= tg 12)
+                (EURes (em-decl-line st (str "  call void @free(ptr " r ")")
+                      "declare void @free(ptr)"))
+
+                (= tg 16)
+                (let [i (ty-arg (clone ty))]
+                  (if (= (md-owns-at mdl i) 1)
+                    (let [nm (md-adt-name mdl i)]
+                      (EURes (em-line st (str "  call void @drop__" nm "(ptr " r ")"))))
+                    (fallthrough-free k st)))
+
+                (= tg 17)
+                (match (em-ins4 st
+                         (str "  ~ = getelementptr inbounds %Closure, ptr " r ", i32 0, i32 1")
+                         (str "  ~ = load ptr, ptr ^1, align 8")
+                         (str "  ~ = getelementptr inbounds %Closure, ptr " r ", i32 0, i32 2")
+                         (str "  ~ = load ptr, ptr ^1, align 8"))
+                  (ET4Res [st2 ef env df dfn]
+                    (EURes (em-line st2 (str "  call void " dfn "(ptr " env ")")))))
+
+                (fallthrough-free k st))))
+          (_ (fallthrough-free k st)))))))
+
+(defn fallthrough-free [k :- i64 st :- Emit] :- EURes
+  (match st
+    (Emit [c mdl sigs]
+      (if (fc-gr-has c k)
+        (match (fc-gr-get c k)
+          (GroVal [slot el]
+            (match (em-ins2 st
+                     (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
+                     (str "  ~ = load ptr, ptr ^1, align 8"))
+              (ET2Res [st1 pf p]
+                (EURes (em-decl-line st1 (str "  call void @free(ptr " p ")")
+                      "declare void @free(ptr)")) ))))
+        (EURes st)))))
+
+(defn emit-stmt [e :- HExpr st :- Emit] :- EURes
+  (match e
+    (HCall [name args]
+      (if (= name (s-printstr))
+        (match (emit-str-val (hes-first args) st)
+          (ESRes [st1 v]
+            (EURes (em-decl-line st1 (str "  call void @cato_print_str_raw(ptr " v ")")
+                  "declare void @cato_print_str_raw(ptr)"))))
+        (match (emit-int e st)
+          (ESRes [st1 v] (EURes st1)))))
+    (HSpit [path data]
+      (match (emit-str-val (clone path) st)
+        (ESRes [st1 pv]
+          (match (emit-str-val (clone data) st1)
+            (ESRes [st2 dv]
+              (EURes (em-decl-line st2 (str "  call void @cato_spit(ptr " pv ", ptr " dv ")")
+                    "declare void @cato_spit(ptr, ptr)")))))))
+    (HExit [x]
+      (match (emit-int (clone x) st)
+        (ESRes [st1 v]
+          (EURes (em-decl-line st1 (str "  call void @cato_exit(i64 " v ")")
+                "declare void @cato_exit(i64)")))))
+    (HDrop [inner]
+      (match inner
+        (HVar [v] (free-binding-storage v st))
+        (_ (EURes st))))
+    (_
+      (match (emit-int e st)
+        (ESRes [st1 v] (EURes st1))))))
+
+(deftype ECalls (CSNil) (CSCons [h :- str t :- ECalls]))
+(deftype ECARes (ECARes [st :- Emit items :- ECalls]))
+
+(defn call-user [name :- i64 args :- HExprs st :- Emit] :- ESRes
+  (match st
+    (Emit [c mdl sigs]
+      (let [sg (sigs-lookup sigs name)]
+        (match sg
+          (ESig [params ret]
+            (match (call-marshal args params st (CSNil))
+              (ECARes [st1 items]
+                (let [rev (cs-rev items (CSNil))
+                      retag (ty-tag (clone ret))
+                      boxed-ret (if (= retag 16)
+                                  (md-owns-at mdl (ty-arg (clone ret)))
+                                  0)
+                      ret-ll (cond
+                               (= retag 11) "i1"
+                               (< retag 12) (ll-scalar ret)
+                               (= retag 12) "ptr"
+                               (= retag 15) "%VecI64"
+                               (= retag 16)
+                               (if (= boxed-ret 1)
+                                 "ptr"
+                                 (str "%" (md-adt-name mdl (ty-arg (clone ret)))))
+                               "i64")]
+                  (match (em-ins st1 (str "  ~ = call " ret-ll " @" (mangle (sym-str (md-tab mdl) name))
+                                          "(" (cs-join rev true) ")"))
+                    (ETRes [st2 v]
+                      (if (and (= retag 16) (= boxed-ret 0))
+                        (let [an (ty-arg (clone ret))
+                              nm (md-adt-name mdl an)]
+                          (match (em-temp st2)
+                            (ETRes [st3 slot]
+                              (let [st4 (em-pre st3 (str slot " = alloca %" nm ", align 8"))]
+                                (ESRes (em-line st4 (str "  store %" nm " " v ", ptr " slot ", align 8")) slot)))))
+                        (ESRes st2 v)))))))))))))
+
+(defn call-marshal [args :- HExprs params :- TyList st :- Emit acc :- ECalls] :- ECARes
+  (match args
+    (HENil [] (ECARes st acc))
+    (HECons [kid next]
+      (match params
+        (TyCons [pty prest]
+          (let [tg (ty-tag (clone pty))]
+            (cond
+              (= tg 15)
+              (match (emit-vec-pair (clone kid) st)
+                (EVRes [st1 p l el]
+                  (call-marshal (hes-rest args) prest st1
+                                (CSCons (str "i64 " l) (CSCons (str "ptr " p) acc)))))
+
+              (= tg 9)
+              (match (emit-float (clone kid) st)
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "double " v) acc))))
+
+              (= tg 10)
+              (match (emit-float (clone kid) st)
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "float " v) acc))))
+
+              (= tg 11)
+              (match (emit-bool (clone kid) st)
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "i1 " v) acc))))
+
+              (= tg 12)
+              (match (emit-str-val (clone kid) st)
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))))
+
+              (= tg 17)
+              (match kid
+                (HVar [v]
+                  (match st
+                    (Emit [c mdl sigs]
+                      (let [rv (fc-sc-get c v)]
+                        (match rv
+                          (RegVal [r rty]
+                            (match (em-ins st (str "  ~ = load %Closure, ptr " r ", align 8"))
+                              (ETRes [st1 lv]
+                                (call-marshal (hes-rest args) prest st1 (CSCons (str "%Closure " lv) acc))))))))))
+                (_ (ECARes (do (cg-fail-i "closure arg must be a var") st) acc)))
+              (= tg 16)
+              (let [j (ty-arg (clone pty))
+                    jboxed (md-owns-at (match st (Emit [c mdl sigs] mdl)) j)]
+                (match (emit-adt (clone kid) st)
+                  (ESRes [st1 v]
+                    (if (= jboxed 1)
+                      (call-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))
+                      (let [nm (md-adt-name (match st1 (Emit [c mdl sigs] mdl)) j)]
+                        (match (em-ins st1 (str "  ~ = load %" nm ", ptr " v ", align 8"))
+                          (ETRes [st2 lv]
+                            (call-marshal (hes-rest args) prest st2 (CSCons (str "%" nm " " lv) acc)))))))))
+
+              (< tg 12)
+              (match (emit-int (clone kid) st)
+                (ESRes [st1 v]
+                  (call-marshal (hes-rest args) prest st1
+                                (CSCons (str (ll-scalar pty) " " v) acc))))
+
+              (ECARes (do (cg-fail-i "unresolved type parameter in call args") st) acc))))
+        (_ (ECARes (do (cg-fail-i "arg/param mismatch") st) acc))))))
+
+(defn cs-rev [cs :- ECalls acc :- ECalls] :- ECalls
+  (match cs
+    (CSNil [] acc)
+    (CSCons [h t] (cs-rev (clone t) (CSCons h acc)))))
+
+(defn cs-join [cs :- ECalls first :- bool] :- str
+  (match cs
+    (CSNil [] "")
+    (CSCons [h t]
+      (if first
+        (str h (cs-join (clone t) false))
+        (str ", " h (cs-join (clone t) false))))))
