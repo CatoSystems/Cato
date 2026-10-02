@@ -7,6 +7,19 @@ pub(crate) fn is_non_copy(ty: Ty) -> bool {
     matches!(ty, Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_))
 }
 
+/// Does a match binder over this field type alias the scrutinee's box?
+/// Str fields ride as strdup'd pointers the box's drop glue frees; vec/map/
+/// set fields live in the box's payload; boxed ADT children are pointers
+/// into the same allocation graph. Scalars and inline-ADT children copy by
+/// value, so their binders may escape or move freely.
+pub(crate) fn binder_field_aliases(fty: Option<Ty>, boxed: &[bool]) -> bool {
+    match fty {
+        Some(Ty::Str) | Some(Ty::Vec(_)) | Some(Ty::Map) | Some(Ty::Set) | Some(Ty::Fn(_)) => true,
+        Some(Ty::Adt(j)) => boxed.get(j as usize).copied().unwrap_or(false),
+        _ => false,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum VState {
     Owned,
@@ -32,6 +45,12 @@ pub(crate) struct BCheck<'a> {
     pub(crate) no_move: HashSet<String>,
     /// Representation facts (boxing/ownership) for ADT eligibility.
     pub(crate) facts: &'a AdtFacts,
+    /// The ADT table, for binder field types (alias detection below).
+    pub(crate) adts: &'a [AdtDef],
+    /// Boxedness over the full (template + instance) table: match
+    /// scrutinees carry combined-table indices, which the build-stage
+    /// facts (templates only) cannot answer.
+    pub(crate) boxed_full: Vec<bool>,
     /// Names in tail (returned) position: the caller inherits their drops.
     pub(crate) escaped: HashSet<String>,
     /// Names bound more than once in the defn: codegen shares the env slot,
@@ -59,6 +78,7 @@ pub(crate) fn plan_drops(
     body: &mut HExpr,
     sigs: &HashMap<String, Vec<Borrow>>,
     facts: &AdtFacts,
+    adts: &[AdtDef],
     with_param_frees: bool,
 ) -> Result<(), String> {
     let mut escaped = HashSet::new();
@@ -76,6 +96,7 @@ pub(crate) fn plan_drops(
 
     let mut var_counts: HashMap<String, i64> = HashMap::new();
     count_vars(body, &mut var_counts);
+    let boxed_full = compute_adt_facts(adts).boxed;
     let mut bc = BCheck {
         sigs,
         no_move: params
@@ -85,6 +106,8 @@ pub(crate) fn plan_drops(
             .map(|((n, _), _)| n.clone())
             .collect(),
         facts,
+        adts,
+        boxed_full,
         escaped,
         shadowed,
         consumed: HashSet::new(),
@@ -507,12 +530,59 @@ impl<'a> BCheck<'a> {
                 let post_scrut = st.clone();
                 let post_owns = owns.clone();
                 let post_tys = tys.clone();
+                // A boxed scrutinee keeps every field inside one heap box;
+                // its binders are aliases into that box. A binder that
+                // escapes the arm or is moved would outlive the box once
+                // the scrutinee frees at scope exit, so the source must
+                // clone it (the same discipline collections follow at
+                // every boundary). Scalar and inline-ADT fields copy by
+                // value and may flow freely.
+                // The scrutinee's own type (the match's `ty` field is the
+                // result's). Only a named scrutinee has a planned free at
+                // scope exit; fresh temps are never freed, so their alias
+                // binders are sound.
+                let scrut_adt = match &**scrut {
+                    HExpr::Var(v) => match tys.get(v) {
+                        Some(Ty::Adt(i)) => Some(*i),
+                        _ => None,
+                    },
+                    _ => None,
+                };
+                let scrut_boxed = scrut_adt
+                    .map(|i| self.boxed_full.get(i as usize).copied().unwrap_or(false))
+                    .unwrap_or(false);
                 for arm in arms.iter_mut() {
                     let mut arm_tys = post_tys.clone();
                     let mut arm_st = post_scrut.clone();
                     let mut arm_owns = post_owns.clone();
-                    for b in &arm.binders {
-                        arm_tys.insert(b.clone(), Ty::I64);
+                    let arm_fields: Option<&(String, Vec<Ty>)> = scrut_adt
+                        .and_then(|i| self.adts.get(i as usize))
+                        .and_then(|def| arm.variant.and_then(|v| def.variants.get(v as usize)));
+                    for (k, b) in arm.binders.iter().enumerate() {
+                        // Boxed-scrutinee binders carry their real field
+                        // type so moves through them register (they alias
+                        // the scrutinee's box); the I64 stand-in remains
+                        // for inline scrutinees, whose binders are copies
+                        // with no memory stake.
+                        // Move-registration only for fields whose binder
+                        // aliases the scrutinee's heap (vec/map/set/boxed
+                        // children). Str fields are Copy in this model
+                        // (each use re-strdups at its store) and inline
+                        // children copy whole, so their binders keep the
+                        // unrestricted I64 stand-in.
+                        let fty = match scrut_boxed
+                            .then(|| arm_fields)
+                            .flatten()
+                            .and_then(|f| f.1.get(k).copied())
+                        {
+                            Some(t @ (Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Adt(_)))
+                                if binder_field_aliases(Some(t), &self.boxed_full) =>
+                            {
+                                t
+                            }
+                            _ => Ty::I64,
+                        };
+                        arm_tys.insert(b.clone(), fty);
                         arm_st.insert(b.clone(), VState::Owned);
                         arm_owns.insert(b.clone(), false);
                     }
@@ -520,6 +590,44 @@ impl<'a> BCheck<'a> {
                     // binders alias the scrutinee's fields, so they never
                     // own (I64 is the historical state-tracking stand-in).
                     self.check(&mut arm.body, &mut arm_tys, &mut arm_st, &mut arm_owns);
+                    if scrut_boxed {
+                        if let HExpr::Var(sv) = &**scrut {
+                        if let Some(Ty::Adt(ai)) = tys.get(sv) {
+                            if let Some(def) = self.adts.get(*ai as usize) {
+                                if let Some(fields) =
+                                    arm.variant.and_then(|v| def.variants.get(v as usize))
+                                {
+                                    // Per-arm escape set: binder names repeat
+                                    // across arms with different field types,
+                                    // so the defn-wide set would blame an
+                                    // alias arm for a copy arm's return.
+                                    let mut arm_escaped = HashSet::new();
+                                    tail_escape(&arm.body, &mut arm_escaped);
+                                    for (k, b) in arm.binders.iter().enumerate() {
+                                        if !binder_field_aliases(
+                                            fields.1.get(k).copied(),
+                                            &self.boxed_full,
+                                        ) {
+                                            continue;
+                                        }
+                                        if arm_escaped.contains(b) {
+                                            self.errs.push(format!(
+                                                "cannot return {}: it aliases a field of the matched value — clone it first",
+                                                b
+                                            ));
+                                        }
+                                        if arm_st.get(b) == Some(&VState::Moved) {
+                                            self.errs.push(format!(
+                                                "cannot move {}: it aliases a field of the matched value — clone it first",
+                                                b
+                                            ));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        }
+                    }
                     // A value moved or consumed in any arm counts as moved
                     // and unconsumed-eligible afterwards.
                     for (k, v) in arm_st.iter() {

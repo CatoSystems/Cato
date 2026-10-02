@@ -1,5 +1,14 @@
 use super::*;
 
+/// Saved binding-map entries for the names one emission scope rebinds.
+#[derive(Default)]
+pub(crate) struct BindScope {
+    scalar: Vec<(String, Option<(String, Ty)>)>,
+    vecs: Vec<(String, Option<(String, String, Elem)>)>,
+    grow: Vec<(String, Option<(String, Elem)>)>,
+    growm: Vec<(String, Option<(String, Ty)>)>,
+}
+
 pub(crate) struct FnCtx {
     pub(crate) counter: usize,
     pub(crate) blk: usize,
@@ -49,6 +58,65 @@ impl FnCtx {
         self.cur = l.clone();
         l
     }
+    /// Snapshot the binding maps for `names` before a scope rebinds them.
+    /// `let` bodies, match arm binders and loop variables must not leak
+    /// past their extent: the flat maps would hand a shadowed name's
+    /// register to code outside the scope — a dominance failure across
+    /// sibling match arms, or a silently wrong read after a shadowing let.
+    pub(crate) fn save_binds(&self, names: &[String]) -> BindScope {
+        let mut s = BindScope::default();
+        for n in names {
+            s.scalar.push((n.clone(), self.scalar.get(n).cloned()));
+            s.vecs.push((n.clone(), self.vecs.get(n).cloned()));
+            s.grow.push((n.clone(), self.grow.get(n).cloned()));
+            s.growm.push((n.clone(), self.growm.get(n).cloned()));
+        }
+        s
+    }
+    /// Put back what `save_binds` captured, dropping entries the scope
+    /// introduced fresh.
+    pub(crate) fn restore_binds(&mut self, s: BindScope) {
+        for (n, prev) in s.scalar {
+            match prev {
+                Some(b) => {
+                    self.scalar.insert(n, b);
+                }
+                None => {
+                    self.scalar.remove(&n);
+                }
+            }
+        }
+        for (n, prev) in s.vecs {
+            match prev {
+                Some(b) => {
+                    self.vecs.insert(n, b);
+                }
+                None => {
+                    self.vecs.remove(&n);
+                }
+            }
+        }
+        for (n, prev) in s.grow {
+            match prev {
+                Some(b) => {
+                    self.grow.insert(n, b);
+                }
+                None => {
+                    self.grow.remove(&n);
+                }
+            }
+        }
+        for (n, prev) in s.growm {
+            match prev {
+                Some(b) => {
+                    self.growm.insert(n, b);
+                }
+                None => {
+                    self.growm.remove(&n);
+                }
+            }
+        }
+    }
     pub(crate) fn line(&mut self, s: &str) {
         self.lines.push(s.to_string());
     }
@@ -92,7 +160,39 @@ pub(crate) fn elem_ty_of(e: Elem) -> Ty {
 }
 
 pub(crate) fn mangle(name: &str) -> String {
-    name.replace('-', "_")
+    let m = name.replace('-', "_");
+    if reserved_local_shape(&m) {
+        // User identifiers and the emitter's synthesized locals share the
+        // function's local-value namespace: temps are `%t<n>`, block labels
+        // are `b<n>` (branch targets are `%b<n>`), the entry label is
+        // `entry`. A name in one of those shapes takes another `_u`; the
+        // escaped form matches the same shape, so the map stays injective
+        // and no user local can shadow a synthesized one.
+        format!("{}_u", m)
+    } else {
+        m
+    }
+}
+
+/// Does `s` (already `-`→`_` folded) collide with an emitter-minted local?
+fn reserved_local_shape(s: &str) -> bool {
+    if s == "entry" {
+        return true;
+    }
+    let rest = match s.strip_prefix('t').or_else(|| s.strip_prefix('b')) {
+        Some(r) => r,
+        None => return false,
+    };
+    let digits: usize = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return false;
+    }
+    // Prior escapes leave zero or more `_u` pairs after the digits.
+    let mut tail = &rest[digits..];
+    while let Some(t) = tail.strip_prefix("_u") {
+        tail = t;
+    }
+    tail.is_empty()
 }
 
 pub(crate) fn llvm_f64(v: f64) -> String {

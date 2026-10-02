@@ -7,10 +7,9 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
         HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_float(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+                emit_float(body, c, mdl, sigs)
+            })
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
@@ -71,10 +70,9 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             }
         }
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_float(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+                emit_float(body, c, mdl, sigs)
+            })
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
@@ -170,7 +168,11 @@ pub(crate) fn emit_loop_node(
     c.line(&format!("  br label %{}", head));
     let l = c.open(&head);
     c.line(&format!("{}:", l));
-    // Each iteration reads the variables into fresh registers.
+    // Each iteration reads the variables into fresh registers. The
+    // bindings end with the loop: an outer name a loop variable shadows
+    // must be visible again after the merge.
+    let names: Vec<String> = slots.iter().map(|(n, _, _)| n.clone()).collect();
+    let scope = c.save_binds(&names);
     for (name, slot, ty) in &slots {
         let r = c.temp();
         c.line(&format!(
@@ -185,6 +187,7 @@ pub(crate) fn emit_loop_node(
     c.loop_frame = Some((slots, head));
     let completing = emit_loop_tail(body, *ty, c, mdl, sigs);
     c.loop_frame = saved;
+    c.restore_binds(scope);
     let after = c.block_name();
     match completing {
         Some(v) => {
@@ -282,6 +285,8 @@ fn emit_loop_tail(
             }
         }
         HExpr::Let(binds, body, frees) => {
+            let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
+            let scope = c.save_binds(&names);
             emit_let(binds, c, mdl, sigs);
             let v = emit_loop_tail(body, ty, c, mdl, sigs);
             // Scope-exit frees run only on the completing path — a `recur`
@@ -289,6 +294,7 @@ fn emit_loop_tail(
             if v.is_some() {
                 emit_let_frees(frees, c, mdl);
             }
+            c.restore_binds(scope);
             v
         }
         HExpr::Seq(vs) => {

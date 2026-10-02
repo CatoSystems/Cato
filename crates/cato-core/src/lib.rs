@@ -123,6 +123,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &mut d.body,
                 &sigs,
                 &facts,
+                &program.adts,
                 true,
             )?;
         }
@@ -137,6 +138,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &mut lam.body,
                 &sigs,
                 &facts,
+                &program.adts,
                 false,
             )?;
         }

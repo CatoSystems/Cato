@@ -162,10 +162,7 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             r.clone()
         }
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_bool(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_bool(body, c, mdl, sigs))
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
@@ -354,9 +351,20 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 l
             }
             HExpr::Clone(inner) => {
-                // Count of a cloned vector: the copy's length.
-                let (_, l, _) = vec_arg(inner, c, mdl, sigs);
-                l
+                // Count of a clone: the copy's length equals the
+                // original's, so no copy is emitted. A vector clone
+                // reads the original's length; a str clone falls to the
+                // strlen path below.
+                if count_expr_is_vec(inner, c, sigs) {
+                    let (_, l, _) = vec_arg(inner, c, mdl, sigs);
+                    l
+                } else {
+                    let p = emit_str_val(inner, c, mdl, sigs);
+                    mdl.declare("declare i64 @strlen(ptr)".to_string());
+                    let t = c.temp();
+                    c.line(&format!("  {} = call i64 @strlen(ptr {})", t, p));
+                    t
+                }
             }
             other if count_expr_is_vec(other, c, sigs) => {
                 let (_, l, _) = vec_arg(other, c, mdl, sigs);
@@ -388,10 +396,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             }
         }
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_int(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_int(body, c, mdl, sigs))
         }
         HExpr::Seq(vs) => {
             for v in vs {

@@ -550,9 +550,14 @@ pub(crate) fn emit_vec_pair(
             (m0, m1, elem)
         }
         HExpr::Let(binds, body, frees) => {
+            // The vec context returns a (ptr, len) pair, so the scoped
+            // wrapper is inlined here.
+            let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
+            let scope = c.save_binds(&names);
             emit_let(binds, c, mdl, sigs);
             let v = emit_vec_pair(body, c, mdl, sigs);
             emit_let_frees(frees, c, mdl);
+            c.restore_binds(scope);
             v
         }
         HExpr::Seq(vs) => {

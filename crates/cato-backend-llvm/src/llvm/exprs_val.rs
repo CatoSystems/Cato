@@ -177,10 +177,9 @@ pub(crate) fn emit_str_val(
         HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
         HExpr::Match { ty: Ty::Str, .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_str_val(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+                emit_str_val(body, c, mdl, sigs)
+            })
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
@@ -609,6 +608,26 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
     }
 }
 
+/// `let` with scope discipline: bind the names, emit the body inside that
+/// scope, run the scope-exit frees, then restore everything the binds
+/// shadowed — a binder must not stay visible past its `let`.
+pub(crate) fn emit_let_scoped(
+    binds: &[(String, HExpr, Ty)],
+    frees: &[String],
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+    emit_body: impl FnOnce(&mut FnCtx, &mut Mdl) -> String,
+) -> String {
+    let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
+    let scope = c.save_binds(&names);
+    emit_let(binds, c, mdl, sigs);
+    let v = emit_body(c, mdl);
+    emit_let_frees(frees, c, mdl);
+    c.restore_binds(scope);
+    v
+}
+
 /// Evaluate an expression that yields a closure value (a Closure literal,
 /// possibly wrapped in lets/seqs), binding intermediate scopes properly.
 pub(crate) fn emit_closure_val(
@@ -628,10 +647,9 @@ pub(crate) fn emit_closure_val(
             emit_closure_creation(mangled, *sig, captures, capture_owns, c, mdl, sigs)
         }
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_closure_val(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+                emit_closure_val(body, c, mdl, sigs)
+            })
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {

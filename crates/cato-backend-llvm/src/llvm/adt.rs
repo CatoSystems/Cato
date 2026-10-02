@@ -8,6 +8,7 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         },
         HExpr::Ctor { adt, .. } => *adt,
         HExpr::Match { ty: Ty::Adt(i), .. } => *i,
+        HExpr::If(_, _, _, Ty::Adt(i)) => *i,
         // A clone of an ADT value has that ADT's representation; emit_adt
         // handles the copy itself (boxed helper or inline struct load).
         HExpr::Clone(inner) => adt_of(inner, c, sigs),
@@ -18,6 +19,8 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
         | HExpr::Get { res: Some(Ty::Adt(i)), .. }
         | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => *i,
+        // parse-i64/parse-f64: the runtime's Option box, typed by `res`.
+        HExpr::ParseNum { res: Ty::Adt(i), .. } => *i,
         other => panic!("codegen: expected an ADT value, got {:?}", other),
     }
 }
@@ -111,10 +114,7 @@ pub(crate) fn emit_adt(
             emit_if_node(cond, then, els, Ty::Adt(*i), c, mdl, sigs)
         }
         HExpr::Let(binds, body, frees) => {
-            emit_let(binds, c, mdl, sigs);
-            let v = emit_adt(body, c, mdl, sigs);
-            emit_let_frees(frees, c, mdl);
-            v
+            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_adt(body, c, mdl, sigs))
         }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
@@ -125,6 +125,21 @@ pub(crate) fn emit_adt(
         HExpr::DropStmt(_) => panic!("codegen: drop produces no ADT value"),
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(..) => call_user_node(e, c, mdl, sigs),
+        // parse-i64/parse-f64 in value position (e.g. a match scrutinee):
+        // the runtime's 16-byte Option box, a ptr to the inline
+        // {tag, payload} layout the match consumes.
+        HExpr::ParseNum { s, int, .. } => {
+            let sv = emit_str_val(s, c, mdl, sigs);
+            let (decl, helper) = if *int {
+                ("declare ptr @cato_parse_i64(ptr)", "cato_parse_i64")
+            } else {
+                ("declare ptr @cato_parse_f64(ptr)", "cato_parse_f64")
+            };
+            mdl.ensure_decl(decl);
+            let p = c.temp();
+            c.line(&format!("  {} = call ptr @{}(ptr {})", p, helper, sv));
+            p
+        }
         other => panic!("codegen: expected an ADT expression, got {:?}", other),
     }
 }
@@ -182,6 +197,7 @@ pub(crate) fn emit_match_node(
     for (arm, (_, lbl)) in arms.iter().zip(arm_labels.iter()) {
         let l = c.open(lbl);
         c.line(&format!("{}:", l));
+        let scope = c.save_binds(&arm.binders);
         if let Some(vi) = arm.variant {
             let def = mdl.adts[ai as usize].clone();
             let fields = def.variants[vi as usize].1.clone();
@@ -191,6 +207,9 @@ pub(crate) fn emit_match_node(
             }
         }
         let v = emit_typed(&arm.body, *ty, c, mdl, sigs);
+        // The arm's binders end here: a sibling arm referencing a shadowed
+        // name must see the outer binding, not this arm's register.
+        c.restore_binds(scope);
         let v = match ty {
             Ty::Adt(_) => v,
             t => pin_value(

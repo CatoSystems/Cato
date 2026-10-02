@@ -78,6 +78,7 @@ pub fn build_program_located(
     // so map/filter and calls can resolve any function regardless of order.
     let mut fn_sigs: Vec<(Vec<Ty>, Ty)> = Vec::new();
     let mut raws: Vec<(RawDefn, crate::ast::Span)> = Vec::new();
+    let mut defn_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (form, span) in prog.iter() {
         if is_deftype(form) {
             continue;
@@ -88,6 +89,12 @@ pub fn build_program_located(
             parse_raw(form, &tcx, &mut fn_sigs)
         }
         .map_err(|e| locate(*span, &e))?;
+        // The interpreter resolves a name to its last definition, but the
+        // emitter would define the symbol twice — reject instead of
+        // diverging between backends.
+        if !defn_names.insert(raw.name.clone()) {
+            return Err(locate(*span, &format!("duplicate defn {}", raw.name)));
+        }
         raws.push((raw, *span));
     }
     let raw_by_name: HashMap<&str, &RawDefn> = raws
@@ -194,7 +201,7 @@ pub fn build_program_located(
         if d.is_extern {
             continue;
         }
-        plan_drops(&d.name, &d.params, &d.borrows, &mut d.body, &sigs, &facts, false).map_err(|e| {
+        plan_drops(&d.name, &d.params, &d.borrows, &mut d.body, &sigs, &facts, &adts, false).map_err(|e| {
             let span = span_by_name
                 .get(d.name.as_str())
                 .copied()
@@ -211,6 +218,7 @@ pub fn build_program_located(
             &mut lam.body,
             &sigs,
             &facts,
+            &adts,
             false,
         )?;
     }

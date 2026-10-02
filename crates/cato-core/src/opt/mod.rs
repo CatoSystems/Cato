@@ -69,6 +69,7 @@ fn recompute_frees(program: &mut Program) {
             &mut d.body,
             &sigs,
             &facts,
+            &program.adts,
             false,
         );
     }
@@ -82,6 +83,7 @@ fn recompute_frees(program: &mut Program) {
             &mut lam.body,
             &sigs,
             &facts,
+            &program.adts,
             false,
         );
     }
@@ -124,6 +126,7 @@ fn verify_ownership(program: &Program) -> Result<(), String> {
             &mut d.body,
             &sigs,
             &facts,
+            &program.adts,
             false,
         )?;
     }
