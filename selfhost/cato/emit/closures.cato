@@ -12,14 +12,14 @@
     (HClosure [sig mangled params caps body]
       (emit-closure-creation sig (clone mangled) (clone caps) st))
     (HLet [binds body frees]
-      (match (emit-let binds st)
+      (match (emit-let (clone binds) st)
         (EURes [st2]
           (match (emit-closure-val (clone body) st2)
             (ESRes [st3 v]
-              (match (emit-frees frees st3)
+              (match (emit-frees (clone frees) st3)
                 (EURes [st4] (ESRes st4 v))))))))
     (HSeq [es]
-      (match (emit-stmts-ex-last es st)
+      (match (emit-stmts-ex-last (clone es) st)
         (ELRes [st2 last] (emit-closure-val (clone last) st2))))
     (_ (sf st "expected a closure value"))))
 
@@ -72,8 +72,8 @@
 (defn capture-header [name :- i64 ty :- Ty st :- Emit] :- ET3Res
   (match st
     (Emit [c mdl sigs]
-      (if (fc-gr-has c name)
-        (match (fc-gr-get c name)
+      (if (fc-gr-has (clone c) name)
+        (match (fc-gr-get (clone c) name)
           (GroVal [slot gel]
             (match (em-ins4 st
                      (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -85,7 +85,7 @@
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 2")
                          (str "  ~ = load i64, ptr ^1, align 8"))
                   (ET2Res [st2 f2 cp] (ET3Res st2 p l cp) ))))))
-          (match (fc-vc-get c name)
+          (match (fc-vc-get (clone c) name)
             (VecVal [p l el]
               (ET3Res st p l l)))))))
 
@@ -113,7 +113,7 @@
       (= tg 17)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get c name)]
+          (let [rv (fc-sc-get (clone c) name)]
             (match rv
               (RegVal [slot rty]
                 (match (em-ins st (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 0"))
@@ -138,7 +138,7 @@
       (= tg 11)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get c name)]
+          (let [rv (fc-sc-get (clone c) name)]
             (match rv
               (RegVal [v vty]
                 (match (em-ins st (str "  ~ = zext i1 " v " to i8"))
@@ -148,7 +148,7 @@
 
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get c name)]
+          (let [rv (fc-sc-get (clone c) name)]
             (match rv
               (RegVal [v vty]
                 (match (capture-word env at v st)
@@ -159,7 +159,7 @@
   (match st
     (Emit [c mdl sigs]
       (let [n (+ 1 (caps-slot-sum (clone caps)))
-            mname (sym-str (md-tab mdl) mangled)]
+            mname (sym-str (md-tab (clone mdl)) mangled)]
         (match (em-ins2 st
                  (str "~ = add i64 " n ", 0")
                  (str "~ = mul i64 ^1, 8"))
@@ -188,22 +188,22 @@
 (defn emit-closure-call [f :- HExpr args :- HExprs sig :- i64 st :- Emit] :- ESRes
   (match st
     (Emit [c mdl sigs]
-      (let [sg (esigs-at mdl (md-csigs mdl) sig)]
+      (let [sg (esigs-at (clone mdl) (md-csigs (clone mdl)) sig)]
         (match sg
           (ESig [ptys ret]
             (match f
               (HVar [v]
                 (match st
                   (Emit [c2 mdl2 sigs2]
-                    (let [rv (fc-sc-get c2 v)]
+                    (let [rv (fc-sc-get (clone c2) v)]
                       (match rv
                         (RegVal [fslot fty]
                           (match (clo-code-env fslot st)
                             (ET4Res [st1 code env x y]
-                              (match (cc-marshal args ptys st1 (CSCons (str "ptr " env) (CSNil)))
+                              (match (cc-marshal args (clone ptys) st1 (CSCons (str "ptr " env) (CSNil)))
                                 (ECARes [st2 items]
                                   (let [rev (cs-rev items (CSNil))
-                                        pl (str "ptr" (cc-param-list ptys))
+                                        pl (str "ptr" (cc-param-list (clone ptys)))
                                         retag (ty-tag (clone ret))
                                         ret-ll (cond
                                                  (= retag 11) "i1"
@@ -233,20 +233,20 @@
             (cond
               (= tg 9)
               (match (emit-float (clone kid) st)
-                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "double " v) acc))))
+                (ESRes [st1 v] (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str "double " v) acc))))
               (= tg 10)
               (match (emit-float (clone kid) st)
-                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "float " v) acc))))
+                (ESRes [st1 v] (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str "float " v) acc))))
               (= tg 11)
               (match (emit-bool (clone kid) st)
-                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "i1 " v) acc))))
+                (ESRes [st1 v] (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str "i1 " v) acc))))
               (= tg 12)
               (match (emit-str-val (clone kid) st)
-                (ESRes [st1 v] (cc-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))))
+                (ESRes [st1 v] (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str "ptr " v) acc))))
               (< tg 12)
               (match (emit-int (clone kid) st)
                 (ESRes [st1 v]
-                  (cc-marshal (hes-rest args) prest st1 (CSCons (str (ll-scalar pty) " " v) acc))))
+                  (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str (ll-scalar pty) " " v) acc))))
               (ECARes (do (cg-fail-i "closure arg type not supported") st) acc))))
         (_ (ECARes (do (cg-fail-i "closure arg/param mismatch") st) acc))))))
 

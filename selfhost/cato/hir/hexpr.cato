@@ -86,7 +86,7 @@
 
 (defn hes-rev [ks :- HExprs acc :- HExprs] :- HExprs
   (match ks
-    (HECons [kid next] (hes-rev (clone next) (HECons kid acc)))
+    (HECons [kid next] (hes-rev (clone next) (HECons (clone kid) acc)))
     (HENil [] acc)))
 
 (defn binds-depth [ks :- Binds] :- i64
@@ -117,7 +117,7 @@
 
 (defn arms-rev [ks :- HArms acc :- HArms] :- HArms
   (match ks
-    (HACons [variant binders body next] (arms-rev (clone next) (HACons variant binders (clone body) acc)))
+    (HACons [variant binders body next] (arms-rev (clone next) (HACons variant (clone binders) (clone body) acc)))
     (HANil [] acc)))
 
 ; Get's optional default (absent = HENil)

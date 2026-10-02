@@ -266,11 +266,11 @@
     (PS [tab decls adts sigs typarams err]
       (if (sids-has (clone typarams) name)
         (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err))
-        (PS (clone tab) (clone decls) (clone adts) (clone sigs) (sids-append typarams name) (clone err))))))
+        (PS (clone tab) (clone decls) (clone adts) (clone sigs) (sids-append (clone typarams) name) (clone err))))))
 
 (defn typaram-index [ps :- PS name :- i64] :- i64
   (match ps
-    (PS [tab decls adts sigs typarams err] (sids-idx-of typarams name 0))))
+    (PS [tab decls adts sigs typarams err] (sids-idx-of (clone typarams) name 0))))
 
 (defn is-upper [s :- str] :- bool
   (if (= (count s) 0)
@@ -326,14 +326,14 @@
               (let [d (dl-get (clone decls) sid)]
                 (match d
                   (Decl [idx tps]
-                    (PTyRes (PS tab2 (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err))
+                    (PTyRes (PS (clone tab2) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err))
                             (t-adt idx)))))
               (if (is-upper s)
                 (let [ps0 (PS (clone tab2) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err))
                       ps2 (register-ty-param (clone ps0) sid)]
                   (match ps2
                     (PS [t3 d3 a3 s3 y3 e3]
-                      (PTyRes (clone ps2) (t-param (sids-idx-of y3 sid 0))))))
+                      (PTyRes (clone ps2) (t-param (sids-idx-of (clone y3) sid 0))))))
                 (let [ps0 (PS (clone tab2) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err))]
                   (PTyRes (ps-err (clone ps0) (str "unknown type name " s)) (t-none)))))))))))
 
@@ -347,7 +347,7 @@
       (let [r (intern1 (ps-tab (clone ps)) s)]
         (match r
           (I1Res [tab2 sid]
-            (let [ps2 (register-ty-param (ps-with-tab (clone ps) tab2) sid)]
+            (let [ps2 (register-ty-param (ps-with-tab (clone ps) (clone tab2)) sid)]
               (match ps2
                 (PS [t d a sg y e]
                   (PTyRes (clone ps2) (t-vec (+ 100 (sids-idx-of (clone y) sid 0))))))))))
@@ -453,16 +453,16 @@
       (let [r (parse-fn-elem (clone e) (clone ps))]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed ps2)
-              (PTyRes ps2 (t-none))
-              (parse-fn-elems (clone rest) (TyCons ty (clone acc)) (clone ret) ps2))))))
+            (if (ps-failed (clone ps2))
+              (PTyRes (clone ps2) (t-none))
+              (parse-fn-elems (clone rest) (TyCons ty (clone acc)) (clone ret) (clone ps2)))))))
     (KNil []
       (let [r (parse-fn-elem (clone ret) (clone ps))]
         (match r
           (PTyRes [ps2 rty]
-            (if (ps-failed ps2)
-              (PTyRes ps2 (t-none))
-              (register-sig ps2 (tys-rev (clone acc) (TyNil)) rty))))))))
+            (if (ps-failed (clone ps2))
+              (PTyRes (clone ps2) (t-none))
+              (register-sig (clone ps2) (tys-rev (clone acc) (TyNil)) rty))))))))
 
 ; Applied ADT annotation: (Name arg ...) — instantiate the template
 ; eagerly. The name must be a generic declared template.
@@ -477,16 +477,16 @@
               (match d
                 (Decl [idx tps]
                   (if (= (sids-depth (clone tps)) 0)
-                    (PTyRes (ps-err (clone ps) (str (sym-str tab h) " takes no type parameters")) (t-none))
+                    (PTyRes (ps-err (clone ps) (str (sym-str (clone tab) h) " takes no type parameters")) (t-none))
                     (let [rargs (parse-ty-args (asts-drop (clone kids) 1) (TyNil) (clone ps))]
                       (match rargs
                         (PArgsRes [ps2 args]
-                          (if (ps-failed ps2)
-                            (PTyRes ps2 (t-none))
-                            (let [ri (instantiate-adt idx args ps2)]
+                          (if (ps-failed (clone ps2))
+                            (PTyRes (clone ps2) (t-none))
+                            (let [ri (instantiate-adt idx (clone args) (clone ps2))]
                               (match ri
-                                (PIARes [ps3 idx2] (PTyRes ps3 (t-adt idx2)))))))))))))
-            (PTyRes (ps-err (clone ps) (str "unknown type name " (sym-str tab h))) (t-none))))))))
+                                (PIARes [ps3 idx2] (PTyRes (clone ps3) (t-adt idx2)))))))))))))
+            (PTyRes (ps-err (clone ps) (str "unknown type name " (sym-str (clone tab) h))) (t-none))))))))
 
 (deftype PArgsRes (PArgsRes [ps :- PS args :- TyList]))
 
@@ -496,9 +496,9 @@
       (let [r (parse-ty (clone e) (clone ps))]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed ps2)
-              (PArgsRes ps2 (TyNil))
-              (parse-ty-args (clone rest) (TyCons ty (clone acc)) ps2))))))
+            (if (ps-failed (clone ps2))
+              (PArgsRes (clone ps2) (TyNil))
+              (parse-ty-args (clone rest) (TyCons ty (clone acc)) (clone ps2)))))))
     (KNil [] (PArgsRes (clone ps) (tys-rev (clone acc) (TyNil))))))
 
 ; --- ADT instantiation (the combined-table rule of `instantiate_adt`) -------
@@ -538,7 +538,7 @@
       (AdtInfo [name tps variants vtpl vargs]
         (match nm
           (I1Res [tab2 nsid]
-            (let [ps1 (ps-with-tab (clone ps) tab2)
+            (let [ps1 (ps-with-tab (clone ps) (clone tab2))
                   idx (adts-depth (ps-adts (clone ps1)))
                   ps2 (ps-with-adts (clone ps1) (adts-append-info (ps-adts (clone ps1)) (AdtInfo nsid (SNil) (VNil) tpl (clone args))))
                   rv (fill-variants tpl (clone args) 0 (VNil) (clone ps2))]
@@ -595,9 +595,9 @@
                 (let [rf (fill-fields (clone fields) (TyNil) (clone args) (clone ps))]
                   (match rf
                     (PFRes [ps2 fs]
-                      (if (ps-failed ps2)
-                        (PVRes ps2 (VNil))
-                        (fill-variants tpl (clone args) (+ vi 1) (VCons (Varnt vn fs) (clone acc)) ps2)))))))))))))
+                      (if (ps-failed (clone ps2))
+                        (PVRes (clone ps2) (VNil))
+                        (fill-variants tpl (clone args) (+ vi 1) (VCons (Varnt vn (clone fs)) (clone acc)) (clone ps2))))))))))))))
 
 (defn fill-fields [fs :- TyList acc :- TyList args :- TyList ps :- PS] :- PFRes
   (match fs
@@ -605,9 +605,9 @@
       (let [r (subst-field-ty h (clone args) (clone ps))]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed ps2)
-              (PFRes ps2 (TyNil))
-              (fill-fields (clone t) (TyCons ty (clone acc)) (clone args) ps2))))))
+            (if (ps-failed (clone ps2))
+              (PFRes (clone ps2) (TyNil))
+              (fill-fields (clone t) (TyCons ty (clone acc)) (clone args) (clone ps2)))))))
     (TyNil [] (PFRes (clone ps) (tys-rev (clone acc) (TyNil))))))
 
 (defn subst-field-ty [f :- Ty args :- TyList ps :- PS] :- PTyRes
@@ -625,7 +625,7 @@
             (if (> (sids-depth (clone tps)) 0)
               (let [ri (instantiate-adt j (clone args) (clone ps))]
                 (match ri
-                  (PIARes [ps2 idx] (PTyRes ps2 (t-adt idx)))))
+                  (PIARes [ps2 idx] (PTyRes (clone ps2) (t-adt idx)))))
               (PTyRes (clone ps) (clone f))))))
       (PTyRes (clone ps) (clone f)))))
 
@@ -714,9 +714,9 @@
       (let [r (parse-variant (clone v) (clone ps))]
         (match r
           (PVOne [ps2 vt]
-            (if (ps-failed ps2)
-              (PVRes2 ps2 (VNil))
-              (parse-variants-1 (clone rest) (VCons vt (clone acc)) ps2))))))
+            (if (ps-failed (clone ps2))
+              (PVRes2 (clone ps2) (VNil))
+              (parse-variants-1 (clone rest) (VCons (clone vt) (clone acc)) (clone ps2)))))))
     (KNil [] (PVRes2 (clone ps) (vlist-rev (clone acc) (VNil))))))
 
 ; One variant: name + optional fields vector.
@@ -736,7 +736,7 @@
                   (PVOne (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " takes only a fields vector")) (Varnt -1 (TyNil)))
                   (let [rf (parse-fields (ast-kids-of (clone fvec)) 0 (TyNil) vn (clone ps))]
                     (match rf
-                      (PFRes [ps2 fs] (PVOne ps2 (Varnt vn fs))))))))
+                      (PFRes [ps2 fs] (PVOne (clone ps2) (Varnt vn (clone fs)))))))))
              (PVOne (clone ps) (Varnt vn (TyNil)))))))
     (ANil [at] (PVOne (ps-err (clone ps) "deftype variant must be a list") (Varnt -1 (TyNil))))
     (ASym [sid at] (PVOne (ps-err (clone ps) "deftype variant must be a list") (Varnt -1 (TyNil))))
@@ -767,9 +767,9 @@
                       rt (parse-field-ty (clone ty-node) (clone ps))]
                   (match rt
                     (PTyRes [ps2 ty]
-                      (if (ps-failed ps2)
-                        (PFRes ps2 (TyNil))
-                        (parse-fields (clone fs) (+ i 3) (TyCons ty (clone acc)) vn ps2)))))))))))))
+                      (if (ps-failed (clone ps2))
+                        (PFRes (clone ps2) (TyNil))
+                        (parse-fields (clone fs) (+ i 3) (TyCons ty (clone acc)) vn (clone ps2))))))))))))))
 
 ; A deftype field type (parse_field_ty): scalars, this deftype's own
 ; parameters, concrete ADT names, (Vector el), or an applied template
@@ -837,7 +837,7 @@
                     (if (not (= (asts-depth (clone args)) (sids-depth (clone tps))))
                       (let [msg (str (ps-str-of (clone ps) h) " expects " (sids-depth (clone tps)) " type argument(s) in a field type, got " (asts-depth (clone args)))]
                         (PTyRes (ps-err (clone ps) msg) (t-none)))
-                      (check-positional (clone args) tps 0 (clone ps) h idx))))))
+                      (check-positional (clone args) (clone tps) 0 (clone ps) h idx))))))
             (PTyRes (ps-err (clone ps) (str "unknown ADT name " (ps-str-of (clone ps) h) " in field type")) (t-none))))))
     (ANil [at] (PTyRes (ps-err (clone ps) "field type must be a symbol or an applied ADT name") (t-none)))
     (ASym [sid at] (PTyRes (ps-err (clone ps) "field type must be a symbol or an applied ADT name") (t-none)))
@@ -899,10 +899,10 @@
                          (parse-ty (clone ty-node) (clone ps)))]
                 (match rt
                   (PTyRes [ps2 ty]
-                    (if (ps-failed ps2)
-                      (PParRes ps2 (PNil))
+                    (if (ps-failed (clone ps2))
+                      (PParRes (clone ps2) (PNil))
                       (let [p (Param (ast-sid-of (clone nm-node)) ty)]
-                        (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) ps2)))))))))))))
+                        (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2))))))))))))))
 
 ; (defn name [params] [:- ret] body...) / (extern name [params] [:- ret])
 (defn parse-defn [a :- Ast ps :- PS isextern :- i64] :- RawRes
@@ -923,9 +923,9 @@
                       rp (parse-params (ast-kids-of (clone pvec)) 0 (PNil) (clone ps0))]
                   (match rp
                     (PParRes [ps1 params]
-                      (if (ps-failed ps1)
-                        (RawRes ps1 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-                        (parse-defn-ret items n 3 params name-sid isextern ps1)))))))))))
+                      (if (ps-failed (clone ps1))
+                        (RawRes (clone ps1) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                        (parse-defn-ret (clone items) n 3 (clone params) name-sid isextern (clone ps1))))))))))))
     (ANil [at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
     (ASym [sid at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
     (AInt [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
@@ -950,9 +950,9 @@
       (let [rt (parse-ty (asts-idx (clone items) (+ i 1)) (clone ps))]
         (match rt
           (PTyRes [ps2 ret]
-            (if (ps-failed ps2)
-              (RawRes ps2 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-              (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret isextern ps2)))))
+            (if (ps-failed (clone ps2))
+              (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+              (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret isextern (clone ps2))))))
       (parse-defn-body (clone items) n i (clone params) name-sid (t-i64) isextern (clone ps)))))
 
 (defn parse-defn-body [items :- Asts n :- i64 i :- i64 params :- PList
@@ -968,17 +968,17 @@
         (if (< i n)
           (RawRes (ps-err (clone ps) "extern declarations take no body")
                   (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) typarams 1 (AList (KNil) (Span 0 0 0)))))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)))))
 
         (>= i n)
         (RawRes (ps-err (clone ps) "defn body required")
                 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
 
         (= (- n i) 1)
-        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) typarams 0 (asts-idx (clone (clone items)) i)))
+        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 (asts-idx (clone (clone items)) i)))
 
         (let [doform (AList (KCons (ASym (s-do) (asts-at-of (clone items) i)) (asts-drop (clone items) i)) (asts-at-of (clone items) i))]
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) typarams 0 doform)))))))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 doform)))))))
 
 (defn asts-at-of [ks :- Asts i :- i64] :- Span
   (ast-at (asts-idx (clone ks) i)))
@@ -1018,10 +1018,10 @@
 (defn adts-templates [ts :- AdtTab] :- AdtTab
   (match ts
     (ATCons [h t]
-      (match h
+      (match (clone h)
         (AdtInfo [name tps variants tpl tplargs]
           (if (= tpl -1)
-            (ATCons h (adts-templates (clone t)))
+            (ATCons (clone h) (adts-templates (clone t)))
             (ATNil)))))
     (ATNil [] (ATNil))))
 

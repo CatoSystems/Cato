@@ -58,7 +58,7 @@
     (match r
       (ROk [forms tab]
         (if (= mode "ast")
-          (dump-ast-mode tab forms)
-          (dump-hir-mode tab forms)))
+          (dump-ast-mode (clone tab) (clone forms))
+          (dump-hir-mode (clone tab) (clone forms))))
       (RErr [msg at]
         (print-string (str "err " (spat (clone at)) " " (clone msg)))))))

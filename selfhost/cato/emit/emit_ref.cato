@@ -40,7 +40,7 @@
     (match r
       (ROk [forms tab]
         (match (expand-all (clone forms) (KNil))
-          (EOk [xforms] (emit-build tab xforms))
+          (EOk [xforms] (emit-build (clone tab) xforms))
           (EErr [msg at]
             (print-string (str "err " (spat (clone at)) " " (clone msg))))))
       (RErr [msg at]

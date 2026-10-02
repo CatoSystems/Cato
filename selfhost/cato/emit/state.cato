@@ -43,32 +43,32 @@
 ; map-overwrite-under-shadowing).
 (defn esc-get [t :- EScTab k :- i64] :- RegVal
   (match t
-    (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get next k)))
+    (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get (clone next) k)))
     (EScNil [] (RegVal "" (t-none)))))
 
 (defn esc-has [t :- EScTab k :- i64] :- bool
   (match t
-    (EScCons [ek ev next] (if (= ek k) true (esc-has next k)))
+    (EScCons [ek ev next] (if (= ek k) true (esc-has (clone next) k)))
     (EScNil [] false)))
 
 (defn evc-get [t :- EVcTab k :- i64] :- VecVal
   (match t
-    (EVcCons [ek ev next] (if (= ek k) (clone ev) (evc-get next k)))
+    (EVcCons [ek ev next] (if (= ek k) (clone ev) (evc-get (clone next) k)))
     (EVcNil [] (VecVal "" "" -1))))
 
 (defn evc-has [t :- EVcTab k :- i64] :- bool
   (match t
-    (EVcCons [ek ev next] (if (= ek k) true (evc-has next k)))
+    (EVcCons [ek ev next] (if (= ek k) true (evc-has (clone next) k)))
     (EVcNil [] false)))
 
 (defn egr-get [t :- EGrTab k :- i64] :- GroVal
   (match t
-    (EGrCons [ek ev next] (if (= ek k) (clone ev) (egr-get next k)))
+    (EGrCons [ek ev next] (if (= ek k) (clone ev) (egr-get (clone next) k)))
     (EGrNil [] (GroVal "" -1))))
 
 (defn egr-has [t :- EGrTab k :- i64] :- bool
   (match t
-    (EGrCons [ek ev next] (if (= ek k) true (egr-has next k)))
+    (EGrCons [ek ev next] (if (= ek k) true (egr-has (clone next) k)))
     (EGrNil [] false)))
 
 (defn fn-new [] :- FnCtx
@@ -142,17 +142,10 @@
     (StrsCons [h t] (md-decls-lines-1 (clone t) (sb-add-line (clone b) (clone h))))
     (StrsNil [] (clone b))))
 
-; dedup: scan the declared-lines chain before appending (the seed's
-; Vec::contains, as a cons-chain walk).
-(defn strs-has [ss :- Strs line :- str] :- bool
-  (match ss
-    (StrsNil [] false)
-    (StrsCons [h t] (if (= (clone h) (clone line)) true (strs-has (clone t) (clone line))))))
-
 (defn md-ensure [m :- Mdl line :- str] :- Mdl
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has decls (clone line))
+      (if (strs-has (clone decls) (clone line))
         m
         (md-decl (clone m) (clone line))))))
 
@@ -219,7 +212,7 @@
 (defn fc-temp [c :- FnCtx] :- EFcT
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcT (FnCtx (+ tmpc 1) blkc cur body pre sc ve gr lfr)
+      (EFcT (FnCtx (+ tmpc 1) blkc cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr))
             (str "%t" tmpc)))))
 
 (deftype EFcB (EFcB [c :- FnCtx v :- str]))
@@ -227,67 +220,67 @@
 (defn fc-block [c :- FnCtx] :- EFcB
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcB (FnCtx tmpc (+ blkc 1) cur body pre sc ve gr lfr)
+      (EFcB (FnCtx tmpc (+ blkc 1) cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr))
             (str "b" blkc)))))
 
 (defn fc-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (sb-add-line body s) pre sc ve gr lfr))))
+      (FnCtx tmpc blkc cur (sb-add-line (clone body) s) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr)))))
 
 (defn fc-pre-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body (sb-add-line pre s) sc ve gr lfr))))
+      (FnCtx tmpc blkc cur (clone body) (sb-add-line (clone pre) s) (clone sc) (clone ve) (clone gr) (clone lfr)))))
 
 (defn fc-open [c :- FnCtx label :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc label
-             (sb-add-line body (str (clone label) ":"))
-             pre sc ve gr lfr))))
+             (sb-add-line (clone body) (str (clone label) ":"))
+             (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr)))))
 
 (defn fc-sc-put [c :- FnCtx k :- i64 r :- str ty :- Ty] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr))))
+      (FnCtx tmpc blkc cur (clone body) (clone pre) (EScCons k (RegVal r ty) (clone sc)) (clone ve) (clone gr) (clone lfr)))))
 
 (defn fc-sc-get [c :- FnCtx k :- i64] :- RegVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (esc-get sc k))))
+      (esc-get (clone sc) k))))
 
 (defn fc-sc-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has (clone sc) k))))
 
 (defn fc-vc-put [c :- FnCtx k :- i64 p :- str l :- str el :- i64] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr))))
+      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (EVcCons k (VecVal p l el) (clone ve)) (clone gr) (clone lfr)))))
 
 (defn fc-vc-get [c :- FnCtx k :- i64] :- VecVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (evc-get ve k))))
+      (evc-get (clone ve) k))))
 
 (defn fc-vc-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has (clone ve) k))))
 
 (defn fc-gr-put [c :- FnCtx k :- i64 slot :- str el :- i64] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr))))
+      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (clone ve) (EGrCons k (GroVal slot el) (clone gr)) (clone lfr)))))
 
 (defn fc-gr-get [c :- FnCtx k :- i64] :- GroVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (egr-get gr k))))
+      (egr-get (clone gr) k))))
 
 (defn fc-gr-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has (clone gr) k))))
 
 (defn fc-lfr [c :- FnCtx] :- LoopFr
   (match c
@@ -296,7 +289,7 @@
 (defn fc-with-lfr [c :- FnCtx lfr :- LoopFr] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr l]
-      (FnCtx tmpc blkc cur body pre sc ve gr lfr))))
+      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) lfr))))
 
 ; --- LLVM text helpers -----------------------------------------------------------
 
@@ -573,7 +566,7 @@
 
 (defn sigs-lookup [ss :- ESigTab k :- i64] :- ESig
   (match ss
-    (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup next k)))
+    (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup (clone next) k)))
     (ESTNil [] (ESig (TyNil) (t-none)))))
 
 ; --- the emission bundle ---------------------------------------------------------

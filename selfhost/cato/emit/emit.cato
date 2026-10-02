@@ -321,8 +321,8 @@
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (str header "entry:\n"
-           (sb-str pre)
-           (sb-str body)
+           (sb-str (clone pre))
+           (sb-str (clone body))
            tail))))
 
 (defn emit-defns [ds :- Defns st :- Emit out :- EOut] :- EORes
@@ -338,10 +338,10 @@
                 ; (the seed's Vec::contains chain), not the function text.
                 (let [line (str "declare " (extern-ret-ll ret) " @"
                                 (mangle (sym-str (md-tab (clone mdl)) name))
-                                "(" (extern-params params) ")")]
+                                "(" (extern-params (clone params)) ")")]
                   (emit-defns (clone t) (em-decl st line) out))
                 (match (emit-plain name (clone params) (clone ret) (clone body)
-                                   (Emit (fn-new) mdl sigs))
+                                   (Emit (fn-new) (clone mdl) (clone sigs)))
                   (EDRes [st2 text]
                     (emit-defns (clone t) st2
                                 (EOut (sb-add-line
@@ -364,7 +364,7 @@
         (Param [pname pty]
           (match st
             (Emit [c mdl sigs]
-              (let [nstr (sym-str (md-tab mdl) pname)
+              (let [nstr (sym-str (md-tab (clone mdl)) pname)
                     r (str "%" (mangle nstr))
                     tg (ty-tag (clone pty))]
                 (cond
@@ -391,14 +391,14 @@
                                 (ET2Res [st4 acc2 _] (ET2Res st4 acc2 "")))))))))
 
                   (= tg 16)
-                  (let [boxed (md-owns-at mdl (ty-arg (clone pty)))]
+                  (let [boxed (md-owns-at (clone mdl) (ty-arg (clone pty)))]
                     (if (= boxed 1)
                       (let [p2 (if (> (count acc) 0)
                                  (str acc ", ptr " r)
                                  (str acc "ptr " r))]
                         (match (defn-params (clone t) (em-sc-put st pname r pty) p2)
                           (ET2Res [st2 acc2 _] (ET2Res st2 acc2 ""))))
-                      (let [nm (md-adt-name mdl (ty-arg (clone pty)))
+                      (let [nm (md-adt-name (clone mdl) (ty-arg (clone pty)))
                             p2 (if (> (count acc) 0)
                                  (str acc ", %" nm " " r)
                                  (str acc "%" nm " " r))]
@@ -435,7 +435,7 @@
                   st :- Emit] :- EDRes
   (match st
     (Emit [c mdl sigs]
-      (let [nm-str (sym-str (md-tab mdl) name)
+      (let [nm-str (sym-str (md-tab (clone mdl)) name)
             fname (mangle nm-str)
             ismain (= nm-str "main")]
         (match (defn-params params st "")
@@ -478,13 +478,13 @@
 
         (= tg 16)
         (let [ai (ty-arg (clone ret))
-              boxed (md-owns-at (match st (Emit [c m s] m)) ai)]
+              boxed (md-owns-at (match st (Emit [c m s] (clone m))) ai)]
           (match (emit-adt body st)
             (ESRes [st1 v]
               (if (= boxed 1)
                 (let [st2 (em-line st1 (str "  ret ptr " v))]
                   (ET2Res st2 "" ""))
-                (let [nm (md-adt-name (match st1 (Emit [c m s] m)) ai)]
+                (let [nm (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
                   (match (em-ins st1 (str "~ = load %" nm ", ptr " v ", align 8"))
                     (ETRes [st2 lv]
                       (let [st3 (em-line st2 (str "  ret %" nm " " lv))]
@@ -537,7 +537,7 @@
         (Param [pname pty]
           (match st
             (Emit [c mdl sigs]
-              (let [r (str "%" (mangle (sym-str (md-tab mdl) pname)))]
+              (let [r (str "%" (mangle (sym-str (md-tab (clone mdl)) pname)))]
                 (match (lambda-bind-params (clone t) (em-sc-put st pname r pty))
                   (EURes [st2] (EURes st2)))))))))))
 
@@ -578,7 +578,7 @@
                   (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))]
                     (match (lambda-cap-vec-word at 0 slot st2)
                       (EURes [st3]
-                        (match (lambda-cap-vec-word (+ at 1) 1 slot st3)
+                        (match (lambda-cap-vec-word (+ at 1) 1 slot (clone st3))
                           (EURes [st4]
                             (match (lambda-cap-vec-word (+ at 2) 2 slot st4)
                               (EURes [st5]
@@ -591,7 +591,7 @@
                   (let [st2 (em-pre st1 (str slot " = alloca %Closure, align 8"))]
                     (match (lambda-cap-clo-word at 0 slot st2)
                       (EURes [st3]
-                        (match (lambda-cap-clo-word (+ at 1) 1 slot st3)
+                        (match (lambda-cap-clo-word (+ at 1) 1 slot (clone st3))
                           (EURes [st4]
                             (match (lambda-cap-clo-word (+ at 2) 2 slot st4)
                               (EURes [st5]
@@ -606,7 +606,7 @@
                   (match (em-ins st1 (str "~ = trunc i8 " v " to i1"))
                     (ETRes [st2 b]
                       (match (lambda-load-caps (clone next) (+ at 1) (em-sc-put st2 cname b ty))
-                        (ET2Res [st3 at3 _] (ET2Res st3 at3 "") )))) ))
+                        (ET2Res [st3 at3 _] (ET2Res (clone st3) at3 "") )))) ))
 
               (match (em-ins2 st
                          (str "~ = getelementptr inbounds i64, ptr %env, i64 " at)
@@ -615,14 +615,14 @@
                     (let [r2 (cond
                                (= tg 12)
                                (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
-                                 (ETRes [st3 p] (EPR2 st3 p)))
+                                 (ETRes [st3 p] (EPR2 (clone st3) p)))
                                (= tg 16)
                                (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
-                                 (ETRes [st3 p] (EPR2 st3 p)))
+                                 (ETRes [st3 p] (EPR2 (clone st3) p)))
                                (EPR2 st1 raw))]
                       (match r2
                         (EPR2 [st3 v]
-                          (match (lambda-load-caps (clone next) (+ at (capture-slots ty)) (em-sc-put st3 cname v ty))
+                          (match (lambda-load-caps (clone next) (+ at (capture-slots ty)) (em-sc-put (clone st3) cname v ty))
                             (ET2Res [st4 at4 _] (ET2Res st4 at4 "") ))))) )))))))))
 
 (defn lambda-body [mname :- str caps :- Caps params :- PList ret :- Ty
@@ -666,9 +666,9 @@
           (match st
             (Emit [c mdl sigs]
               (match (emit-lambda-pair (clone mangled) (clone caps) (clone params)
-                                       (clone ret) (clone body) mdl sigs)
+                                       (clone ret) (clone body) (clone mdl) (clone sigs))
                 (ELPR [mdl2 text drop-text]
-                  (emit-lams (clone t) (Emit (fn-new) mdl2 sigs)
+                  (emit-lams (clone t) (Emit (fn-new) mdl2 (clone sigs))
                              (EOut (sb-add-line
                                     (sb-add-line
                                       (sb-add-line (out2-sb out) text)
