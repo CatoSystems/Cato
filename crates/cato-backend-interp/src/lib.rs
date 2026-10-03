@@ -179,6 +179,23 @@ impl<'p> Interpreter<'p> {
                     return Ok(Value::Int(s.len() as i64));
                 }
             }
+            "system" => {
+                // libc semantics: the wait status (exit code << 8), or -1
+                // when the shell could not run. The kernel CLI decodes the
+                // code with an arithmetic shift; native links the real
+                // libc symbol.
+                if let Value::Str(cmd) = &args[0] {
+                    let status = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(cmd.as_str())
+                        .status();
+                    let code = match status {
+                        Ok(s) => s.code().unwrap_or(-1),
+                        Err(_) => -1,
+                    };
+                    return Ok(Value::Int((code as i64) << 8));
+                }
+            }
             _ => {}
         }
         let defn: &'p cato_core::Defn = *self
