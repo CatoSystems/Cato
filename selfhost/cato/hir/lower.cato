@@ -606,7 +606,7 @@
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match argtys
             (TyNil [] (UResErr))
             (TyCons [a arest]
@@ -649,20 +649,20 @@
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty pb]
           (let [r (subst-ty (clone pty) (clone subs) tab (clone adts))]
             (match r
               (SRes [tab2 adts2 ty msg]
                 (if (> (count msg) 0)
                   (SPRes (clone tab2) (clone adts2) (PNil) msg)
-                  (subst-params (clone prest) (clone subs) (clone tab2) (clone adts2) (PCons (Param pname ty) (clone acc))))))))))
+                  (subst-params (clone prest) (clone subs) (clone tab2) (clone adts2) (PCons (Param pname ty pb) (clone acc))))))))))
     (PNil [] (SPRes tab (clone adts) (plist-rev (clone acc) (PNil)) ""))))
 
 (defn binds-of-params [params :- PList] :- TyEnv
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty] (te-put (binds-of-params (clone prest)) pname pty))))
+        (Param [pname pty _pb] (te-put (binds-of-params (clone prest)) pname pty))))
     (PNil [] (TENil))))
 
 ; lower a raw defn body (implicit do when multiple forms) — the instance
@@ -699,8 +699,32 @@
 (defn resolve-ann-applied [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PTyRes
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))
-            hit (find-declared-adts (clone adts) h 0)]
+      (let [h (asts-head-sid (clone kids))]
+        ; `(Vector el)` — the built-in generic (S8: loop-bind annotations
+        ; carry full type forms, e.g. the reader's `tab :- (Vector str)`)
+        (if (= h (s-vec))
+          (match (asts-tail (clone kids))
+            (KCons [eln rest]
+              (if (asts-null (clone rest))
+                (let [es (sym-str (clone tab) (ast-sid-of (clone eln)))]
+                  (cond
+                    (= es "i64") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 0))
+                    (= es "f64") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 1))
+                    (= es "str") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 2))
+                    (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                    (str "(Vector " es ") element must be i64, f64 or str")) (t-none))))
+                (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                "(Vector expects exactly one element type") (t-none))))
+            (KNil [] (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                "(Vector expects exactly one element type") (t-none))))
+          (resolve-ann-adt a tab adts sigs h))))
+    (_ (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) "type annotation must be a symbol or applied ADT") (t-none)))))
+
+; the declared-ADT application path of resolve-ann-applied
+(defn resolve-ann-adt [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs h :- i64] :- PTyRes
+  (match a
+    (AList [kids at]
+      (let [hit (find-declared-adts (clone adts) h 0)]
         (if (< (ty-arg-of-info (clone hit)) 0)
           (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) (str "unknown type name " (sym-str (clone tab) h))) (t-none))
           (let [rargs (resolve-ann-args (asts-tail (clone kids)) (clone tab) (clone adts) (clone sigs))]
@@ -824,6 +848,34 @@
 
 ; --- if (forms.rs lower_if) -----------------------------------------------------
 
+; does every path through e end in a recur? Such an expression never
+; completes with a value, so an if with it on one side takes the other
+; side's type (S8: the reader's scan wraps its recur continuations in
+; match/let/if tails — a bare HRecur tag check is not enough).
+(defn all-paths-recur [e :- HExpr] :- bool
+  (let [tag (h-tag (clone e))]
+    (cond
+      (= tag 32) true
+      (= tag 22) (and (all-paths-recur (hv-b (clone e)))
+                      (all-paths-recur (hv-c (clone e))))
+      (= tag 30) (all-paths-recur (hv-b (clone e)))
+      (= tag 29) (seq-all-recur (hargs-of (clone e)))
+      (= tag 34) (arms-all-recur (arms-of (clone e)))
+      false)))
+
+(defn seq-all-recur [es :- HExprs] :- bool
+  (if (asts-null (clone es))
+    false
+    (if (asts-null (asts-tail-hes (clone es)))
+      (all-paths-recur (hes-head-hes (clone es)))
+      (seq-all-recur (asts-tail-hes (clone es))))))
+
+(defn arms-all-recur [arms :- HArms] :- bool
+  (match arms
+    (HANil [] true)
+    (HACons [variant binders body next]
+      (and (all-paths-recur (clone body)) (arms-all-recur (clone next))))))
+
 (defn lower-if [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
                insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                ncached :- i64 defs :- Defns raws :- Raws] :- LRes
@@ -848,9 +900,10 @@
                       (LOk [t3 a3 i3 s3 l3 r3 n3 d3 els2]
                         (let [tt (ty-of (clone then2) (clone env) (clone r3) (clone s3))
                               et (ty-of (clone els2) (clone env) (clone r3) (clone s3))
-                              ; a recur branch takes the other branch's type
-                              tt2 (if (= (h-tag (clone then2)) 32) (clone et) (clone tt))
-                              et2 (if (= (h-tag (clone els2)) 32) (clone tt) (clone et))]
+                              ; a branch whose every path recurs takes the
+                              ; other branch's type
+                              tt2 (if (all-paths-recur (clone then2)) (clone et) (clone tt))
+                              et2 (if (all-paths-recur (clone els2)) (clone tt) (clone et))]
                           (if (and (not (ty-eq (clone tt2) (clone et2)))
                                    (not (ty-eq (clone tt2) (t-f64)))
                                    (not (ty-eq (clone et2) (t-f64))))
@@ -1725,7 +1778,7 @@
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (SCons name (plist-names (clone t))))))
+        (Param [name ty _pb] (SCons name (plist-names (clone t))))))
     (PNil [] (SNil))))
 
 ; the outer env extended with the fn params, in order
@@ -1733,14 +1786,14 @@
   (match ps
     (PCons [p rest]
       (match p
-        (Param [name ty] (params-extend (te-put (clone env) name (clone ty)) (clone rest)))))
+        (Param [name ty _pb] (params-extend (te-put (clone env) name (clone ty)) (clone rest)))))
     (PNil [] (clone env))))
 
 (defn plist-tys [ps :- PList] :- TyList
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (TyCons ty (plist-tys (clone t))))))
+        (Param [name ty _pb] (TyCons ty (plist-tys (clone t))))))
     (PNil [] (TyNil))))
 
 ; register-sig over the plain tables; returns the table index
@@ -1797,7 +1850,7 @@
               (CtyRes [tps2 ty msg]
                 (if (> (count msg) 0)
                   (PParRes (ps-err (clone ps) msg) (PNil))
-                  (closure-params (clone els) (+ i 3) (PCons (Param (ast-sid-of (clone nm)) ty) (clone acc)) ps (clone tps2)))))))))))
+                  (closure-params (clone els) (+ i 3) (PCons (Param (ast-sid-of (clone nm)) ty 0) (clone acc)) ps (clone tps2)))))))))))
 
 ; --- loop / recur -----------------------------------------------------------------
 
@@ -1822,8 +1875,17 @@
                   (LBErr (ps-err-msg (clone ps2)))
                   (match (clone ps2)
                     (PS [t2 d2 a2 s2 y2 e2]
-                      (if (not (is-copy-ty (clone ty)))
-                        (LBErr (str "loop variable " (node-str (clone nm) (clone t2)) " has non-Copy type " (ty-name ty) " — loop variables are numeric/bool/str in this slice"))
+                      ; S8: loop variables may also be boxed ADTs and
+                      ; collection headers — the reader threads its frame
+                      ; stack, children and intern table through one loop.
+                      ; Loop variables are never freed and never moved, so
+                      ; the recursion the loop replaces cannot double-free.
+                      (if (and (not (is-copy-ty (clone ty)))
+                               (not (or (= (ty-tag (clone ty)) 16)
+                                        (= (ty-tag (clone ty)) 15)
+                                        (= (ty-tag (clone ty)) 13)
+                                        (= (ty-tag (clone ty)) 14))))
+                        (LBErr (str "loop variable " (node-str (clone nm) (clone t2)) " has non-Copy type " (ty-name ty) " — loop variables are numeric/bool/str/ADT/collection in this slice"))
                         (let [ri (lower-e (clone initn) (clone env) ty (clone t2) (clone a2) (clone insts) (clone s2) (clone lams) (clone rets) ncached (clone defs) (clone raws))]
                           (match ri
                             (LErr [msg] (LBErr msg))
@@ -3151,32 +3213,35 @@
     (DLCons [k v next] (+ 1 (dl-depth (clone next))))
     (DLNil [] 0)))
 
-(defn form-head-sid [f :- Ast] :- i64
-  (if (= (ast-tag (clone f)) 5)
-    (asts-head-sid (ast-kids-of (clone f)))
-    -1))
+(defn form-head-sid [f :- &Ast] :- i64
+  ; borrowed read: match the node, hand the kids chain to the borrowed
+  ; head-sid query — no move, no clone
+  (match f
+    (AList [kids at] (asts-head-sid kids))
+    (_ -1)))
 
 ; pass 0a: deftype headers, in form order
 (defn collect-decls [forms :- Asts i :- i64 n :- i64 decls :- Decls ps :- PS] :- DeclRes
-  ; ndecls starts at 1: adt 0 is the prelude's (Option a)
-  (if (>= i n)
-    (DeclRes decls 1 "")
-    (let [f (asts-idx (clone forms) i)]
-      (if (not (= (form-head-sid (clone f)) (s-deftype)))
-        (match (collect-decls (clone forms) (+ i 1) n (clone decls) (clone ps))
-          (DeclRes [d nd msg] (DeclRes d nd msg)))
-        (let [r (parse-deftype-header (clone f) (clone ps))]
+  ; ndecls starts at 1: adt 0 is the prelude's (Option a). The chain is
+  ; consumed by match — an asts-idx per form deep-cloned the whole
+  ; program per form and made the self-compile quadratic (S8).
+  (match forms
+    (KNil [] (DeclRes decls 1 ""))
+    (KCons [f rest]
+      (if (not (= (form-head-sid f) (s-deftype)))
+        (collect-decls rest (+ i 1) n decls ps)
+        (let [r (parse-deftype-header f (clone ps))]
           (match r
             (HDRRes [ps2 name typarams]
               (if (< name 0)
                 (DeclRes (DLNil) 0 (ps-err-msg (clone ps2)))
                 (if (dl-has (clone decls) name)
                   (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab (clone ps)) name)))
-                  (match (collect-decls forms (+ i 1) n decls (clone ps2))
+                  (match (collect-decls rest (+ i 1) n decls ps2)
                     (DeclRes [d nd msg]
                       (if (> (count msg) 0)
                         (DeclRes (DLNil) 0 msg)
-                        (DeclRes (dl-put d name (Decl nd (clone typarams))) (+ 1 nd) "")))))))))))))
+                        (DeclRes (dl-put d name (Decl nd typarams)) (+ 1 nd) "")))))))))))))
 
 (deftype VarRes (VarRes [adts :- AdtTab msg :- str]))
 
@@ -3184,64 +3249,69 @@
 ; parameters are in scope while its fields parse
 (defn build-variants [forms :- Asts i :- i64 n :- i64 decls :- Decls adts :- AdtTab
                      tab :- (Vector str) sigs :- Sigs] :- VarRes
-  (if (>= i n)
-    (VarRes adts "")
-    (let [f (asts-idx (clone forms) i)]
-      (if (not (= (form-head-sid (clone f)) (s-deftype)))
-        (build-variants (clone forms) (+ i 1) n (clone decls) (clone adts) (clone tab) (clone sigs))
-        (let [rh (parse-deftype-header (clone f) (PS (clone tab) (clone decls) (clone adts) (clone sigs) (SNil) ""))]
+  ; match-walk, as collect-decls (S8)
+  (match forms
+    (KNil [] (VarRes adts ""))
+    (KCons [f rest]
+      (if (not (= (form-head-sid f) (s-deftype)))
+        (build-variants rest (+ i 1) n decls adts tab sigs)
+        (let [f2 (clone f)
+              rh (parse-deftype-header f (PS (clone tab) (clone decls) (clone adts) (clone sigs) (SNil) ""))]
           (match rh
             (HDRRes [ps1 name typarams]
               (if (< name 0)
                 (VarRes (ATNil) (ps-err-msg (clone ps1)))
-                (let [rv (parse-deftype-variants (clone f) (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) ""))]
+                (let [rv (parse-deftype-variants f2 (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) ""))]
                   (match rv
                     (PVRes2 [ps2 vs]
                       (if (ps-failed (clone ps2))
                         (VarRes (ATNil) (ps-err-msg (clone ps2)))
-                        (match (build-variants (clone forms) (+ i 1) n (clone decls) (clone adts) (clone tab) (clone sigs))
-                          (VarRes [rest msg]
+                        (match (build-variants rest (+ i 1) n decls adts tab sigs)
+                          (VarRes [restv msg]
                             (if (> (count msg) 0)
                               (VarRes (ATNil) msg)
-                              (VarRes (adts-append-info rest (AdtInfo name (clone typarams) (clone vs) -1 (TyNil))) ""))))))))))))))))
+                              (VarRes (adts-append-info restv (AdtInfo name typarams vs -1 (TyNil))) ""))))))))))))))))
 
 (deftype RawsRes (RawsRes [ps :- PS raws :- Raws msg :- str]))
 
 ; pass 1: defn/extern headers, in form order
 (defn build-raws [forms :- Asts i :- i64 n :- i64 ps :- PS acc :- Raws] :- RawsRes
-  (if (>= i n)
-    (RawsRes ps acc "")
-    (let [f (asts-idx (clone forms) i)
-          h (form-head-sid (clone f))]
-      (cond
-        (= h (s-deftype))
-        (build-raws (clone forms) (+ i 1) n (clone ps) (clone acc))
+  ; match-walk (S8): the chain is consumed, the per-form asts-idx with its
+  ; whole-program clone is gone. The parse result raw is moved into the
+  ; accumulator after the recursion — one move, no clone.
+  (match forms
+    (KNil [] (RawsRes ps acc ""))
+    (KCons [f rest]
+      (let [h (form-head-sid f)]
+        (cond
+          (= h (s-deftype))
+          (build-raws rest (+ i 1) n ps acc)
 
-        (= h (s-extern))
-        (let [r (parse-defn (clone f) (clone ps) 1)]
-          (match r
-            (RawRes [ps2 raw]
-              (if (ps-failed (clone ps2))
-                (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
-                (match (build-raws (clone forms) (+ i 1) n (clone ps2) acc)
-                  (RawsRes [ps3 rs msg]
-                    (if (> (count msg) 0)
-                      (RawsRes ps3 (RNil) msg)
-                      (RawsRes ps3 (RCons (clone raw) rs) ""))))))))
+          (= h (s-extern))
+          (let [r (parse-defn f (clone ps) 1)]
+            (match r
+              (RawRes [ps2 raw]
+                (if (ps-failed (clone ps2))
+                  (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
+                  (match (build-raws rest (+ i 1) n ps2 acc)
+                    (RawsRes [ps3 rs msg]
+                      (if (> (count msg) 0)
+                        (RawsRes (clone ps3) (RNil) msg)
+                        (RawsRes (clone ps3) (RCons raw rs) ""))))))))
 
-        (= h (s-defn))
-        (let [r (parse-defn (clone f) (clone ps) 0)]
-          (match r
-            (RawRes [ps2 raw]
-              (if (ps-failed (clone ps2))
-                (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
-                (match (build-raws (clone forms) (+ i 1) n (clone ps2) acc)
-                  (RawsRes [ps3 rs msg]
-                    (if (> (count msg) 0)
-                      (RawsRes ps3 (RNil) msg)
-                      (RawsRes ps3 (RCons (clone raw) rs) ""))))))))
+          (= h (s-defn))
+          (let [r (parse-defn f (clone ps) 0)]
+            (match r
+              (RawRes [ps2 raw]
+                (if (ps-failed (clone ps2))
+                  (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
+                  (match (build-raws rest (+ i 1) n ps2 acc)
+                    (RawsRes [ps3 rs msg]
+                      (if (> (count msg) 0)
+                        (RawsRes (clone ps3) (RNil) msg)
+                        (RawsRes (clone ps3) (RCons raw rs) ""))))))))
 
-        (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h)))))))
+          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h))))))))
 
 ; static (non-generic) callee rets, for ty_of's Call arm
 (defn seed-rets [rs :- Raws rets :- TyEnv] :- TyEnv

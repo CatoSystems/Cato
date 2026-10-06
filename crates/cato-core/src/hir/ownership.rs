@@ -53,6 +53,9 @@ pub(crate) struct BCheck<'a> {
     pub(crate) boxed_full: Vec<bool>,
     /// Names in tail (returned) position: the caller inherits their drops.
     pub(crate) escaped: HashSet<String>,
+    /// Non-Copy loop variables (S8): the checker treats them as Copy —
+    /// reads never move, calls never consume, and no scope frees one.
+    pub(crate) loop_copy: HashSet<String>,
     /// Names bound more than once in the defn: codegen shares the env slot,
     /// so frees stay suppressed (known limitation).
     pub(crate) shadowed: HashSet<String>,
@@ -109,6 +112,7 @@ pub(crate) fn plan_drops(
         adts,
         boxed_full,
         escaped,
+        loop_copy: HashSet::new(),
         shadowed,
         consumed: HashSet::new(),
         remaining: var_counts,
@@ -263,7 +267,10 @@ impl<'a> BCheck<'a> {
             *r -= 1;
         }
         if let Some(ty) = tys.get(v) {
-            if is_non_copy(*ty) && st.get(v) == Some(&VState::Moved) {
+            if is_non_copy(*ty)
+                && !self.loop_copy.contains(v)
+                && st.get(v) == Some(&VState::Moved)
+            {
                 self.errs.push(format!("use of moved value {}", v));
             }
         }
@@ -295,10 +302,16 @@ impl<'a> BCheck<'a> {
     fn move_if_non_copy(
         &mut self,
         v: &str,
-        tys: &HashMap<String, Ty>,
+        tys: &mut HashMap<String, Ty>,
         st: &mut HashMap<String, VState>,
         owns: &mut HashMap<String, bool>,
     ) {
+        // Non-Copy loop variables ride as Copy: a call argument that is a
+        // loop variable neither moves nor consumes (S8).
+        if self.loop_copy.contains(v) {
+            self.use_var(v, tys, st);
+            return;
+        }
         if tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) {
             self.use_var(v, tys, st);
             self.move_var(v, st, owns);
@@ -327,9 +340,24 @@ impl<'a> BCheck<'a> {
                 let mut shadowed_vars: Vec<(String, Option<VState>)> = Vec::new();
                 for (n, ty, init) in binds.iter_mut() {
                     self.check(init, tys, st, owns);
+                    // A non-Copy Var initializer moves into the loop: the
+                    // value rides the loop slot for the whole scan and no
+                    // scope ever frees it, so the source's drop duty ends
+                    // here (without this, a boxed parameter that seeds a
+                    // loop would free live state at body exit).
+                    if let HExpr::Var(v) = init {
+                        if !ty.is_copy_ty() && !self.loop_copy.contains(v) {
+                            self.move_var(v, st, owns);
+                        }
+                    }
                     shadowed_vars.push((n.clone(), st.get(n).copied()));
                     tys.insert(n.clone(), *ty);
                     st.insert(n.clone(), VState::Owned);
+                    // Non-Copy loop variables ride as Copy (S8): reads and
+                    // calls never move them, and no scope frees them.
+                    if !ty.is_copy_ty() {
+                        self.loop_copy.insert(n.clone());
+                    }
                 }
                 self.check(body, tys, st, owns);
                 for (n, prev) in shadowed_vars.iter().rev() {
@@ -342,6 +370,7 @@ impl<'a> BCheck<'a> {
                             st.remove(n);
                         }
                     }
+                    self.loop_copy.remove(n);
                 }
             }
             HExpr::Recur(args) => {
@@ -551,6 +580,25 @@ impl<'a> BCheck<'a> {
                 let scrut_boxed = scrut_adt
                     .map(|i| self.boxed_full.get(i as usize).copied().unwrap_or(false))
                     .unwrap_or(false);
+                // Boxed-scrutinee binder analysis, refined by S8. The
+                // binders alias the scrutinee's one heap box, so the box
+                // must outlive every alias:
+                // - A binder that escapes the arm or moves out transfers
+                //   the box's drop duty to its new holder — the scrutinee's
+                //   own scope free is suppressed (the box leaks through the
+                //   alias). Without this, threading a match binder into a
+                //   recursive call forced a whole-chain clone at every
+                //   step, which made self-compilation quadratic.
+                // - If no aliasing binder escapes, the scrutinee frees at
+                //   its own scope exit exactly as before (drop duty runs
+                //   exactly once, in the final consumer).
+                // - The one unsound case is a borrowed (`&`) boxed
+                //   parameter: the caller owns the box and frees it, so its
+                //   binders must stay inside the arm (an error below).
+                let scrut_borrowed_param = match &**scrut {
+                    HExpr::Var(sv) => self.no_move.contains(sv),
+                    _ => false,
+                };
                 for arm in arms.iter_mut() {
                     let mut arm_tys = post_tys.clone();
                     let mut arm_st = post_scrut.clone();
@@ -591,9 +639,9 @@ impl<'a> BCheck<'a> {
                     // own (I64 is the historical state-tracking stand-in).
                     self.check(&mut arm.body, &mut arm_tys, &mut arm_st, &mut arm_owns);
                     if scrut_boxed {
-                        if let HExpr::Var(sv) = &**scrut {
-                        if let Some(Ty::Adt(ai)) = tys.get(sv) {
-                            if let Some(def) = self.adts.get(*ai as usize) {
+                        let mut any_alias_escape = false;
+                        if let Some(ai) = scrut_adt {
+                            if let Some(def) = self.adts.get(ai as usize) {
                                 if let Some(fields) =
                                     arm.variant.and_then(|v| def.variants.get(v as usize))
                                 {
@@ -604,28 +652,54 @@ impl<'a> BCheck<'a> {
                                     let mut arm_escaped = HashSet::new();
                                     tail_escape(&arm.body, &mut arm_escaped);
                                     for (k, b) in arm.binders.iter().enumerate() {
-                                        if !binder_field_aliases(
-                                            fields.1.get(k).copied(),
-                                            &self.boxed_full,
-                                        ) {
+                                        let fty = fields.1.get(k).copied();
+                                        // Boxed-ADT children, vec/map/set and
+                                        // str fields alias the box's heap. An
+                                        // inline-ADT binder does not copy the
+                                        // value either: the backend
+                                        // materializes it as the field's
+                                        // address inside the box, so a binder
+                                        // that escapes (a bare-Var return)
+                                        // aliases too (S8 — the UAF behind
+                                        // ast-at's zeroed spans).
+                                        let aliases = binder_field_aliases(fty, &self.boxed_full)
+                                            || matches!(fty, Some(Ty::Adt(_)));
+                                        if !aliases {
                                             continue;
                                         }
-                                        if arm_escaped.contains(b) {
-                                            self.errs.push(format!(
-                                                "cannot return {}: it aliases a field of the matched value — clone it first",
-                                                b
-                                            ));
-                                        }
-                                        if arm_st.get(b) == Some(&VState::Moved) {
-                                            self.errs.push(format!(
-                                                "cannot move {}: it aliases a field of the matched value — clone it first",
-                                                b
-                                            ));
+                                        if arm_escaped.contains(b)
+                                            || arm_st.get(b) == Some(&VState::Moved)
+                                        {
+                                            any_alias_escape = true;
+                                            if scrut_borrowed_param {
+                                                if arm_escaped.contains(b) {
+                                                    self.errs.push(format!(
+                                                        "cannot return {}: it aliases a field of the matched value — clone it first",
+                                                        b
+                                                    ));
+                                                }
+                                                if arm_st.get(b) == Some(&VState::Moved) {
+                                                    self.errs.push(format!(
+                                                        "cannot move {}: it aliases a field of the matched value — clone it first",
+                                                        b
+                                                    ));
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        // An alias left the arm: the box's drop duty
+                        // transfers to its new holder, so the scrutinee's
+                        // own scope free (let drop or param free) is
+                        // suppressed. Loop variables never free anyway.
+                        if any_alias_escape {
+                            if let HExpr::Var(sv) = &**scrut {
+                                if !self.loop_copy.contains(sv) && !scrut_borrowed_param {
+                                    self.move_var(sv, st, owns);
+                                }
+                            }
                         }
                     }
                     // A value moved or consumed in any arm counts as moved
@@ -677,7 +751,9 @@ impl<'a> BCheck<'a> {
                     // duty transfers to the new binding. Read the source's
                     // ownership before the move clears it.
                     let transferred = if let HExpr::Var(v) = &*value {
-                        if is_non_copy(*ty) {
+                        // A non-Copy loop variable rides as Copy: the let
+                        // aliases the loop's slot, it does not consume it.
+                        if is_non_copy(*ty) && !self.loop_copy.contains(v) {
                             let src_owns = owns.get(v).copied().unwrap_or(false);
                             self.move_var(v, st, owns);
                             Some(src_owns)

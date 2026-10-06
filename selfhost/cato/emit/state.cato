@@ -334,7 +334,7 @@
 (defn elem-ll [el :- i64] :- str
   (if (= el 1) "double" "i64"))
 
-(defn ll-loop-slot-ty [t :- Ty] :- str
+(defn ll-loop-slot-ty [t :- Ty mdl :- Mdl] :- str
   (let [tag (ty-tag (clone t))]
     (cond
       (= tag 9) "double"
@@ -342,7 +342,16 @@
       (= tag 11) "i1"
       (= tag 12) "ptr"
       (< tag 12) (ll-scalar (clone t))
-      (cg-fail-s "loop variable of non-Copy type"))))
+      ; S8: a boxed ADT loop variable's slot is the owning pointer; a
+      ; vector's slot is the {ptr,len,cap} header
+      (and (= tag 16) (= (md-owns-at mdl (ty-arg (clone t))) 1)) "ptr"
+      (= tag 15) "%VecI64"
+      (cg-fail-s "loop variable of unsupported type"))))
+
+; a vector loop variable's slot kind (the scalar path handles everything
+; whose value is one machine word, including boxed ADT pointers)
+(defn loop-slot-vec [t :- Ty] :- bool
+  (= (ty-tag (clone t)) 15))
 
 ; --- ADT layout (the seed's field_slot_count / payload / offsets) ----------------
 
@@ -388,8 +397,9 @@
     at
     (match fs
       (TyCons [h rest]
+        ; k counts down the fields consumed; at accumulates their widths
         (fs-off-1 (clone rest) (clone owns) (clone adts)
-                  (+ at (fs-count (clone h) (clone owns) (clone adts))) k))
+                  (+ at (fs-count (clone h) (clone owns) (clone adts))) (- k 1)))
       (TyNil [] at))))
 
 ; Slot count of field k in variant vi of ADT ai.
@@ -561,7 +571,7 @@
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (pl-tylist (clone t) (TyCons ty (clone acc))))))
+        (Param [name ty _pb] (pl-tylist (clone t) (TyCons ty (clone acc))))))
     (PNil [] (tys-rev (clone acc) (TyNil)))))
 
 (defn sigs-lookup [ss :- ESigTab k :- i64] :- ESig

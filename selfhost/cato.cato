@@ -173,12 +173,12 @@
 (defn ast-cons [kid :- Ast next :- Asts] :- Asts (KCons kid next))
 
 ; Node count over the tree: atoms count one, collections recurse.
-(defn asts-count [ks :- Asts] :- i64
+(defn asts-count [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid next] (+ (ast-count (clone kid)) (asts-count (clone next))))
+    (KCons [kid next] (+ (ast-count kid) (asts-count next)))
     (KNil [] 0)))
 
-(defn ast-count [a :- Ast] :- i64
+(defn ast-count [a :- &Ast] :- i64
   (match a
     (ANil [at] 1)
     (ASym [sid at] 1)
@@ -186,30 +186,32 @@
     (AF64 [v at] 1)
     (ABool [v at] 1)
     (AStr [v at] 1)
-    (AList [kids at] (+ 1 (asts-count (clone kids))))
-    (AVec [kids at] (+ 1 (asts-count (clone kids))))
-    (AMap [kids at] (+ 1 (asts-count (clone kids))))
-    (ASet [kids at] (+ 1 (asts-count (clone kids))))))
+    (AList [kids at] (+ 1 (asts-count kids)))
+    (AVec [kids at] (+ 1 (asts-count kids)))
+    (AMap [kids at] (+ 1 (asts-count kids)))
+    (ASet [kids at] (+ 1 (asts-count kids)))))
 
 ; Depth of the child chain (0 for atoms).
-(defn asts-depth [ks :- Asts] :- i64
+(defn asts-depth [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid next] (+ 1 (asts-depth (clone next))))
+    (KCons [kid next] (+ 1 (asts-depth next)))
     (KNil [] 0)))
 
 ; The first child of a chain, or the empty node. Chains have no O(1)
 ; index; passes walk them by match recursion.
+; Consuming: the walked boxes leak (S8 ownership shape) instead of
+; freeing under the caller, so no clone is needed to extract a node.
 (defn asts-first [ks :- Asts] :- Ast
   (match ks
-    (KCons [kid next] (clone kid))
+    (KCons [kid next] kid)
     (KNil [] (ast-nil 0 0))))
 
-(defn ast-child-count [a :- Ast] :- i64
+(defn ast-child-count [a :- &Ast] :- i64
   (match a
-    (AList [kids at] (asts-depth (clone kids)))
-    (AVec [kids at] (asts-depth (clone kids)))
-    (AMap [kids at] (asts-depth (clone kids)))
-    (ASet [kids at] (asts-depth (clone kids)))
+    (AList [kids at] (asts-depth kids))
+    (AVec [kids at] (asts-depth kids))
+    (AMap [kids at] (asts-depth kids))
+    (ASet [kids at] (asts-depth kids))
     (ANil [at] 0)
     (ASym [sid at] 0)
     (AInt [v at] 0)
@@ -289,16 +291,19 @@
 ; len = hi - lo (collections include both delimiters, strings both quotes).
 ;
 ; Ownership shape: the heap state (stack of frames, children, intern table)
-; is threaded as parameters moved through the self-calls, so plain steps —
-; whitespace, comments, delimiter opens, top-level pushes — clone nothing.
-; The S4 extraction law is paid only where state actually changes: a close
-; clones the enclosing children and stack out of the consumed frame, and
-; interning clones the table once per atom for the lookup (a miss then conj
-; s in place on the original — a provable last use).
+; rides in `loop` variables. Loop variables are never freed and never
+; moved — S8 admits non-Copy loop variables for exactly this — so plain
+; steps (whitespace, comments, delimiter opens, top-level pushes) clone
+; nothing, and the state a recursive version would drop between events
+; stays alive: persistent chains share their tails, so the cost is only
+; the popped frames, not the data. The extraction law is paid where state
+; actually changes shape: a close clones the enclosing children and stack
+; out of the consumed frame, and a missed intern clones the table once for
+; the conj.
 ;
-; The scan is a tail-recursive state machine, one lexical event per self
-; call. There is no TCO in the seed backend, so depth is O(tokens) — fine
-; at S5 scale, revisited when the kernel reads its own source (S8).
+; The scan is one `loop`, one lexical event per iteration — S8's revisit
+; of the S5 tail-recursive state machine, which relied on call depth
+; O(tokens) and could not read the kernel's own source.
 
 ; One open collection. kind: 0 list `(`, 1 vector `[`, 2 map `{`, 3 set
 ; `#{`. open/oline/ocol locate the opening delimiter; kids holds the
@@ -427,9 +432,12 @@
 ; the tree: children accumulate reversed; close reverses once
 ; ---------------------------------------------------------------------------
 
+; Consuming reversal (S8): the walked boxes leak, so the binders move
+; into the reversed chain directly — zero node copies, one fresh cons per
+; element. The old deep-cloning version made every pass O(n x depth).
 (defn asts-rev [ks :- Asts acc :- Asts] :- Asts
   (match ks
-    (KCons [kid rest] (asts-rev (clone rest) (KCons (clone kid) acc)))
+    (KCons [kid rest] (asts-rev rest (KCons kid acc)))
     (KNil [] acc)))
 
 ; ---------------------------------------------------------------------------
@@ -483,147 +491,131 @@
 ; the scan
 ; ---------------------------------------------------------------------------
 
-; One lexical event per self-call. Copy state rides as parameters
+; One lexical event per loop iteration. Copy state rides in loop variables
 ; (position, line/col, nesting depth, outermost-open line/col for the
 ; "unclosed delimiter" span); heap state (frames, children, intern table)
-; moves through.
-(defn scan [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-            bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-            tab :- (Vector str)] :- RRes
-  (if (>= i (count src))
-    (scan-eof depth stack kids tab bline bcol)
-    (let [c (nth src i 0)]
-      (cond
-        (is-ws c)
-        (if (= c 10)
-          (scan src (+ i 1) (+ line 1) 0 depth bline bcol stack kids tab)
-          (scan src (+ i 1) line (+ col 1) depth bline bcol stack kids tab))
+; rides in non-Copy loop variables, which the S8 slice treats as
+; never-freed, never-moved values. Every helper call here returns a value
+; (an index, a node, a classification) — no helper is on the scan's
+; control path, so the loop is the only frame that persists across events.
+(defn scan [src :- str i0 :- i64 line0 :- i64 col0 :- i64 depth0 :- i64
+            bline0 :- i64 bcol0 :- i64 stack0 :- RStack kids0 :- Asts
+            tab0 :- (Vector str)] :- RRes
+  ; The source length rides as a loop variable: `count` on a str is a
+  ; strlen, and re-strlens per event would make the whole scan quadratic.
+  (loop [i :- i64 i0 line :- i64 line0 col :- i64 col0 depth :- i64 depth0
+         bline :- i64 bline0 bcol :- i64 bcol0 stack :- RStack stack0
+         kids :- Asts kids0 tab :- (Vector str) tab0 n :- i64 (count src)]
+    (if (>= i n)
+      ; EOF: forms are the children accumulated at depth 0, reversed into
+      ; source order; anything still open is the seed's "unclosed
+      ; delimiter" at the outermost opening byte.
+      (if (> depth 0)
+        (RErr "unclosed delimiter" (Span bline bcol 1))
+        (ROk (asts-rev kids (KNil)) tab))
+      (let [c (nth src i 0)]
+        (cond
+          (is-ws c)
+          (if (= c 10)
+            (recur (+ i 1) (+ line 1) 0 depth bline bcol stack kids tab n)
+            (recur (+ i 1) line (+ col 1) depth bline bcol stack kids tab n))
 
-        (= c 59)
-        (let [n (count src)
-              j (skip-line src i n)
-              lcv (advance src i j line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src j l2 c2 depth bline bcol stack kids tab))))
+          (= c 59)
+          (let [j (skip-line src i n)
+                lcv (advance src i j line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur j l2 c2 depth bline bcol stack kids tab n))))
 
-        (or (= c 40) (= c 91) (= c 123))
-        (let [kind (if (= c 40) 0 (if (= c 91) 1 2))
-              lcv (advance src i (+ i 1) line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src (+ i 1) l2 c2 (+ depth 1)
-                    (if (= depth 0) line bline)
-                    (if (= depth 0) col bcol)
-                    (RSFrame kind i line col kids stack)
-                    (KNil)
-                    tab))))
+          (or (= c 40) (= c 91) (= c 123))
+          (let [kind (if (= c 40) 0 (if (= c 91) 1 2))
+                lcv (advance src i (+ i 1) line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur (+ i 1) l2 c2 (+ depth 1)
+                       (if (= depth 0) line bline)
+                       (if (= depth 0) col bcol)
+                       (RSFrame kind i line col kids stack)
+                       (KNil)
+                       tab
+                       n))))
 
-        (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
-        (let [lcv (advance src i (+ i 2) line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src (+ i 2) l2 c2 (+ depth 1)
-                    (if (= depth 0) line bline)
-                    (if (= depth 0) col bcol)
-                    (RSFrame 3 i line col kids stack)
-                    (KNil)
-                    tab))))
+          (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
+          (let [lcv (advance src i (+ i 2) line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur (+ i 2) l2 c2 (+ depth 1)
+                       (if (= depth 0) line bline)
+                       (if (= depth 0) col bcol)
+                       (RSFrame 3 i line col kids stack)
+                       (KNil)
+                       tab
+                       n))))
 
-        (is-close c)
-        (close-form src i line col depth bline bcol stack kids tab c)
+          (is-close c)
+          (match stack
+            (RSNil []
+              (RErr (str "unbalanced delimiter '" (char->str c) "'")
+                    (Span line col 1)))
+            (RSFrame [kind open oline ocol kidsF rest]
+              (if (kind-accepts kind c)
+                (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
+                  (RErr "map literal must have key/value pairs"
+                        (Span oline ocol (+ (- i open) 1)))
+                  (let [k (asts-rev kids (KNil))
+                        sp (Span oline ocol (+ (- i open) 1))
+                        node (cond
+                               (= kind 0) (AList k sp)
+                               (= kind 1) (AVec k sp)
+                               (= kind 2) (AMap k sp)
+                               (ASet k sp))
+                        lcv (advance src i (+ i 1) line col)]
+                    (match lcv
+                      (LC [l2 c2]
+                        ; The frame binders alias the popped frame's box, but
+                        ; that box lives in a never-freed loop variable — the
+                        ; S8 loop discipline — so the loop carries the fields
+                        ; out directly and the consumed frame simply leaks,
+                        ; like every intermediate the loop abandons.
+                        (recur (+ i 1) l2 c2 (- depth 1) bline bcol
+                               rest (KCons node kidsF) tab
+                               n)))))
+                (RErr (str "unbalanced delimiter '" (char->str c) "'")
+                      (Span line col 1)))))
 
-        (= c 34)
-        (read-str src i line col depth bline bcol stack kids tab)
+          (= c 34)
+          ; A string literal: find the closing quote, unescape the raw
+          ; slice, store the value; the span includes both quotes.
+          (let [j (str-end src (+ i 1) n)]
+            (if (< j 0)
+              (RErr "unterminated string" (Span line col (- n i)))
+              (let [raw (subs src (+ i 1) j)
+                    ; The accumulator seeds with a heap-empty string, not
+                    ; the static `""` literal: an empty literal would flow
+                    ; through untouched as static data.
+                    val (unesc raw 0 (count raw) (subs raw 0 0))
+                    lcv (advance src i (+ j 1) line col)]
+                (match lcv
+                  (LC [l2 c2]
+                    (recur (+ j 1) l2 c2 depth bline bcol
+                           stack (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
+                           tab
+                           n))))))
 
-        (read-atom src i line col depth bline bcol stack kids tab)))))
-
-; EOF: forms are the children accumulated at depth 0, reversed into source
-; order; anything still open is the seed's "unclosed delimiter" at the
-; outermost opening byte.
-(defn scan-eof [depth :- i64 stack :- RStack kids :- Asts tab :- (Vector str)
-                bline :- i64 bcol :- i64] :- RRes
-  (if (> depth 0)
-    (RErr "unclosed delimiter" (Span bline bcol 1))
-    (ROk (asts-rev kids (KNil)) tab)))
-
-; A string literal: find the closing quote, unescape the raw slice, store
-; the value; the span includes both quotes.
-(defn read-str [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                tab :- (Vector str)] :- RRes
-  (let [n (count src)
-        j (str-end src (+ i 1) n)]
-    (if (< j 0)
-      (RErr "unterminated string" (Span line col (- n i)))
-      (let [raw (subs src (+ i 1) j)
-            ; The accumulator seeds with a heap-empty string, not the
-            ; static `""` literal: read_str frees unesc's result, and an
-            ; empty literal would flow through untouched and free static
-            ; data.
-            val (unesc raw 0 (count raw) (subs raw 0 0))
-            lcv (advance src i (+ j 1) line col)]
-        (match lcv
-          (LC [l2 c2]
-            (scan src (+ j 1) l2 c2 depth bline bcol
-                  stack (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
-                  tab)))))))
-
-; An atom token: slice it, classify, intern, push.
-(defn read-atom [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                 bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                 tab :- (Vector str)] :- RRes
-  (let [n (count src)
-        e (tok-end src i n)
-        tok (subs src i e)
-        lcv (advance src i e line col)
-        ntab (count tab)
-        sid (intern-sid (clone tab) tok (- ntab 1))
-        node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
-        ; A miss appends the token. The conj grows a fresh clone, never
-        ; the parameter itself: vector params are passed read-only by the
-        ; LLVM backend, so in-place growth through one is a seed-level
-        ; invariant violation (the same reason sb-add clones first).
-        tab2 (if (< sid 0) (conj (clone tab) tok) tab)]
-    (match lcv
-      (LC [l2 c2]
-        (scan src e l2 c2 depth bline bcol stack (KCons node kids) tab2)))))
-
-; A closer: pop the frame (cloning the enclosing children and stack out —
-; the extraction law), check the kind, build the node.
-(defn close-form [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                  bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                  tab :- (Vector str) c :- i64] :- RRes
-  (match stack
-    (RSNil []
-      (RErr (str "unbalanced delimiter '" (char->str c) "'")
-            (Span line col 1)))
-    (RSFrame [kind open oline ocol kidsF rest]
-      (if (kind-accepts kind c)
-        (close-ok src i line col depth bline bcol kind open oline ocol
-                  (clone kidsF) (clone rest) kids tab c)
-        (RErr (str "unbalanced delimiter '" (char->str c) "'")
-              (Span line col 1))))))
-
-(defn close-ok [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                bline :- i64 bcol :- i64 kind :- i64 open :- i64
-                oline :- i64 ocol :- i64 kidsF :- Asts rest :- RStack
-                kids :- Asts tab :- (Vector str) c :- i64] :- RRes
-  (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
-    (RErr "map literal must have key/value pairs"
-          (Span oline ocol (+ (- i open) 1)))
-    (let [k (asts-rev kids (KNil))
-          sp (Span oline ocol (+ (- i open) 1))
-          node (cond
-                 (= kind 0) (AList k sp)
-                 (= kind 1) (AVec k sp)
-                 (= kind 2) (AMap k sp)
-                 (ASet k sp))
-          lcv (advance src i (+ i 1) line col)]
-      (match lcv
-        (LC [l2 c2]
-          (scan src (+ i 1) l2 c2 (- depth 1) bline bcol rest
-                (KCons node kidsF) tab))))))
+          ; An atom token: slice it, classify, intern, push. The table is
+          ; shared with the lookup (no clone per atom — loop variables are
+          ; not consumed); a miss conj-appends a fresh copy.
+          (let [e (tok-end src i n)
+                tok (subs src i e)
+                lcv (advance src i e line col)
+                ntab (count tab)
+                sid (intern-sid tab tok (- ntab 1))
+                node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
+                tab2 (if (< sid 0) (conj tab tok) tab)]
+            (match lcv
+              (LC [l2 c2]
+                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab2
+                       n)))))))))
 ; dump.cato — S5: the differential serialization.
 ;
 ; One line per top-level form — the byte-compare target the differential
@@ -652,20 +644,21 @@
   (match at
     (Span [l c n] (str "@" l ":" c "+" n))))
 
-; The span of an Ast node (cloned out: the node's own drop glue still owns
-; the field).
+; The span of an Ast node. Consuming (S8): the binders move out and the
+; walked box leaks instead of freeing under the caller, so the span needs
+; no clone; a caller that keeps the node passes a clone of it.
 (defn ast-at [a :- Ast] :- Span
   (match a
-    (ANil [at] (clone at))
-    (ASym [sid at] (clone at))
-    (AInt [v at] (clone at))
-    (AF64 [v at] (clone at))
-    (ABool [v at] (clone at))
-    (AStr [v at] (clone at))
-    (AList [kids at] (clone at))
-    (AVec [kids at] (clone at))
-    (AMap [kids at] (clone at))
-    (ASet [kids at] (clone at))))
+    (ANil [at] at)
+    (ASym [sid at] at)
+    (AInt [v at] at)
+    (AF64 [v at] at)
+    (ABool [v at] at)
+    (AStr [v at] at)
+    (AList [kids at] at)
+    (AVec [kids at] at)
+    (AMap [kids at] at)
+    (ASet [kids at] at)))
 
 ; Next byte that needs escaping (backslash, quote, newline, tab) or EOF.
 (defn next-esc [s :- str i :- i64 n :- i64] :- i64
@@ -1071,42 +1064,42 @@
 
 ; --- chain helpers ---------------------------------------------------------
 
-(defn asts-null [ks :- Asts] :- bool
+(defn asts-null [ks :- &Asts] :- bool
   (match ks
     (KNil [] true)
     (KCons [kid rest] false)))
 
 (defn asts-tail [ks :- Asts] :- Asts
   (match ks
-    (KCons [kid rest] (clone rest))
+    (KCons [kid rest] rest)
     (KNil [] (KNil))))
 
 (defn asts-drop [ks :- Asts n :- i64] :- Asts
   (if (= n 0)
-    (clone ks)
+    ks
     (match ks
-      (KCons [kid rest] (asts-drop (clone rest) (- n 1)))
+      (KCons [kid rest] (asts-drop rest (- n 1)))
       (KNil [] (KNil)))))
 
 (defn asts-idx [ks :- Asts i :- i64] :- Ast
   (match ks
     (KCons [kid rest]
-      (if (= i 0) (clone kid) (asts-idx (clone rest) (- i 1))))
+      (if (= i 0) kid (asts-idx rest (- i 1))))
     (KNil [] (ANil (Span 0 0 0)))))
 
 (defn asts-last [ks :- Asts] :- Ast
   (match ks
     (KCons [kid rest]
-      (if (asts-null (clone rest)) (clone kid) (asts-last (clone rest))))
+      (if (asts-null rest) kid (asts-last rest)))
     (KNil [] (ANil (Span 0 0 0)))))
 
 (defn asts-append [ks :- Asts x :- Ast] :- Asts
   (match ks
     (KNil [] (KCons x (KNil)))
-    (KCons [kid rest] (KCons (clone kid) (asts-append (clone rest) x)))))
+    (KCons [kid rest] (KCons kid (asts-append rest x)))))
 
 ; The head symbol's sid, or -1 when the head is not a symbol.
-(defn ast-sid-of [a :- Ast] :- i64
+(defn ast-sid-of [a :- &Ast] :- i64
   (match a
     (ANil [at] -1)
     (ASym [sid at] sid)
@@ -1119,9 +1112,9 @@
     (AMap [ks at] -1)
     (ASet [ks at] -1)))
 
-(defn asts-head-sid [ks :- Asts] :- i64
+(defn asts-head-sid [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid rest] (ast-sid-of (clone kid)))
+    (KCons [kid rest] (ast-sid-of kid))
     (KNil [] -1)))
 
 ; The child chain of a node; atoms have none.
@@ -1133,65 +1126,69 @@
     (AF64 [v at] (KNil))
     (ABool [v at] (KNil))
     (AStr [v at] (KNil))
-    (AList [ks at] (clone ks))
-    (AVec [ks at] (clone ks))
-    (AMap [ks at] (clone ks))
-    (ASet [ks at] (clone ks))))
+    (AList [ks at] ks)
+    (AVec [ks at] ks)
+    (AMap [ks at] ks)
+    (ASet [ks at] ks)))
 
+; All but the last child (cond's odd trailing default peels off here) —
+ ; one spine walk, the boxes moved into the fresh conses.
 (defn asts-init [ks :- Asts] :- Asts
-  ; All but the last child (cond's odd trailing default peels off here).
   (match ks
     (KCons [kid rest]
-      (if (asts-null (clone rest))
+      (if (asts-null rest)
         (KNil)
-        (KCons (clone kid) (asts-init (clone rest)))))
+        (KCons kid (asts-init rest))))
     (KNil [] (KNil))))
 
 ; --- the walk --------------------------------------------------------------
 
 (defn expand-all [forms :- Asts acc :- Asts] :- ERes
+  ; The match consumes `forms`, so the tail binder moves into the
+  ; recursion directly — a `(clone rest)` here deep-copies the whole
+  ; remaining chain per form and makes self-compilation quadratic (S8).
   (match forms
     (KCons [f rest]
       (let [sp (ast-at (clone f))
-            r (expand-form (clone f))]
+            r (expand-form f)]
         (match r
-          (EOk1 [a] (expand-all (clone rest) (KCons (clone a) acc)))
+          (EOk1 [a] (expand-all rest (KCons a acc)))
           (EErr1 [msg at] (EErr (clone msg) sp)))))
     (KNil [] (EOk (asts-rev acc (KNil))))))
 
 (defn expand-kids [ks :- Asts acc :- Asts] :- EResk
   (match ks
     (KCons [kid rest]
-      (let [r (expand-form (clone kid))]
+      (let [r (expand-form kid)]
         (match r
-          (EOk1 [a] (expand-kids (clone rest) (KCons (clone a) acc)))
+          (EOk1 [a] (expand-kids rest (KCons a acc)))
           (EErr1 [msg at] (EErrk (clone msg) at)))))
     (KNil [] (EOkk (asts-rev acc (KNil))))))
 
 (defn expand-form [a :- Ast] :- ERes1
   (match a
     (AList [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (expand-list (AList (clone ks) at)))
+          (EOkk [ks] (expand-list (AList ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (AVec [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (EOk1 (AVec (clone ks) at)))
+          (EOkk [ks] (EOk1 (AVec ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (AMap [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (EOk1 (AMap (clone ks) at)))
+          (EOkk [ks] (EOk1 (AMap ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (ANil [at] (EOk1 (ANil at)))
     (ASym [sid at] (EOk1 (ASym sid at)))
     (AInt [v at] (EOk1 (AInt v at)))
     (AF64 [v at] (EOk1 (AF64 v at)))
     (ABool [v at] (EOk1 (ABool v at)))
-    (AStr [v at] (EOk1 (AStr (clone v) at)))
-    (ASet [kids at] (EOk1 (ASet (clone kids) at)))))
+    (AStr [v at] (EOk1 (AStr v at)))
+    (ASet [kids at] (EOk1 (ASet kids at)))))
 
 
 ; Dispatch on the (already expanded) list head. Threading wins first, as
@@ -1200,54 +1197,54 @@
 (defn expand-list [a :- Ast] :- ERes1
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))
-            al (sp-line (clone at))
-            ac (sp-col (clone at))
-            an (sp-len (clone at))]
+      (let [h (asts-head-sid kids)
+            al (sp-line at)
+            ac (sp-col at)
+            an (sp-len at)]
         (cond
           (= h (s-arrow))
-          (expand-thread (asts-tail (clone kids)) 0 al ac an)
+          (expand-thread (asts-tail kids) 0 al ac an)
 
           (= h (s-arrowr))
-          (expand-thread (asts-tail (clone kids)) 1 al ac an)
+          (expand-thread (asts-tail kids) 1 al ac an)
 
           (= h (s-when))
-          (expand-when (clone kids) al ac an)
+          (expand-when kids al ac an)
 
           (= h (s-whennot))
-          (expand-whennot (clone kids) al ac an)
+          (expand-whennot kids al ac an)
 
           (= h (s-cond))
-          (expand-cond (clone kids) al ac an)
+          (expand-cond kids al ac an)
 
           (= h (s-iflet))
-          (expand-iflet (clone kids) al ac an)
+          (expand-iflet kids al ac an)
 
           (= h (s-whenlet))
-          (expand-whenlet (clone kids) al ac an)
+          (expand-whenlet kids al ac an)
 
           (= h (s-ifnot))
-          (expand-ifnot (clone kids) al ac an)
+          (expand-ifnot kids al ac an)
 
           (= h (s-doseq))
           (EErr1 "unsupported macro doseq" (Span al ac an))
 
           (= h (s-and))
-          (expand-andor (clone kids) al ac an (s-and) "and")
+          (expand-andor kids al ac an (s-and) "and")
 
           (= h (s-or))
-          (expand-andor (clone kids) al ac an (s-or) "or")
+          (expand-andor kids al ac an (s-or) "or")
 
-          (EOk1 (AList (clone kids) at)))))
+          (EOk1 (AList kids at)))))
     (ANil [at] (EOk1 (ANil at)))
     (ASym [sid at] (EOk1 (ASym sid at)))
     (AInt [v at] (EOk1 (AInt v at)))
     (AF64 [v at] (EOk1 (AF64 v at)))
     (ABool [v at] (EOk1 (ABool v at)))
-    (AStr [v at] (EOk1 (AStr (clone v) at)))
-    (AVec [kids at] (EOk1 (AVec (clone kids) at)))
-    (AMap [kids at] (EOk1 (AMap (clone kids) at)))
-    (ASet [kids at] (EOk1 (ASet (clone kids) at)))))
+    (AStr [v at] (EOk1 (AStr v at)))
+    (AVec [kids at] (EOk1 (AVec kids at)))
+    (AMap [kids at] (EOk1 (AMap kids at)))
+    (ASet [kids at] (EOk1 (ASet kids at)))))
 
 ; --- node builders ---------------------------------------------------------
 
@@ -1273,16 +1270,15 @@
 (defn expand-thread [steps :- Asts lastb :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match steps
     (KNil [] (EErr1 "threading macro expects at least one step" (Span sl sc sn)))
-    (KCons [first rest] (thread-loop (clone rest) (clone first) lastb sl sc sn))))
+    (KCons [first rest] (thread-loop rest first lastb sl sc sn))))
 
 (defn thread-loop [steps :- Asts acc :- Ast lastb :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match steps
     (KNil [] (EOk1 acc))
     (KCons [step rest]
-      (let [rs (apply-step acc (clone step) lastb sl sc sn)]
-        (match rs
-          (EOk1 [a2] (thread-loop (clone rest) (clone a2) lastb sl sc sn))
-          (EErr1 [msg at2] (EErr1 (clone msg) at2)))))))
+      (match (apply-step acc step lastb sl sc sn)
+        (EOk1 [a2] (thread-loop rest a2 lastb sl sc sn))
+        (EErr1 [msg at2] (EErr1 (clone msg) at2))))))
 
 ; A step is a list (insert the previous result at position 1, or append
 ; for `->>`) or a bare symbol (become a call on it).
@@ -1290,8 +1286,8 @@
   (match step
     (AList [kids sat]
       (if (= lastb 0)
-        (EOk1 (AList (insert-at-1 (clone kids) prev) sat))
-        (EOk1 (AList (asts-append (clone kids) prev) sat))))
+        (EOk1 (AList (insert-at-1 kids prev) sat))
+        (EOk1 (AList (asts-append kids prev) sat))))
     (ASym [sid sat]
       (EOk1 (AList (KCons (ASym sid sat) (KCons prev (KNil))) sat)))
     (ANil [sat] (EErr1 "threading step must be a list or symbol" (Span sl sc sn)))
@@ -1305,53 +1301,77 @@
 
 (defn insert-at-1 [kids :- Asts prev :- Ast] :- Asts
   (match kids
-    (KCons [head rest] (KCons (clone head) (KCons prev (clone rest))))
+    (KCons [head rest] (KCons head (KCons prev rest)))
     (KNil [] (KCons prev (KNil)))))
 
 ; --- branching -------------------------------------------------------------
 
 (defn expand-when [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  ; The depth query borrows; the match then consumes the chain and the
+  ; binders move into the desugaring — no idx/drop clones (S8).
+  (if (< (asts-depth kids) 3)
     (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-      (EOk1 (list4 (s-if) c doform (AInt 0 (Span sl sc sn)) sl sc sn)))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c body]
+            (let [doform (do-form body sl sc sn)]
+              (EOk1 (list4 (s-if) c doform (AInt 0 (Span sl sc sn)) sl sc sn))))
+          (KNil [] (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))))))
 
 (defn expand-whennot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  (if (< (asts-depth kids) 3)
     (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-      (EOk1 (list4 (s-if) c (AInt 0 (Span sl sc sn)) doform sl sc sn)))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c body]
+            (let [doform (do-form body sl sc sn)]
+              (EOk1 (list4 (s-if) c (AInt 0 (Span sl sc sn)) doform sl sc sn))))
+          (KNil [] (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn))))))
 
 (defn expand-cond [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [arms (asts-tail kids)]
-    (if (asts-null (clone arms))
-      (EErr1 "cond expects at least one test/body pair" (Span sl sc sn))
-      (cond-nest arms sl sc sn))))
+  (match kids
+    (KCons [_h arms] (cond-nest arms sl sc sn))
+    (KNil [] (EErr1 "cond expects at least one test/body pair" (Span sl sc sn)))))
+
+; The last element split off in one spine walk (the odd-trailing-default
+ ; case needs both halves; two consuming passes cannot share one chain).
+(deftype LastSplit (LSplit [init :- Asts last :- Ast]))
+
+(defn asts-split-last [ks :- Asts] :- LastSplit
+  (match ks
+    (KCons [kid rest]
+      (if (asts-null rest)
+        (LSplit (KNil) kid)
+        (match (asts-split-last rest)
+          (LSplit [init last] (LSplit (KCons kid init) last)))))
+    (KNil [] (LSplit (KNil) (ANil (Span 0 0 0))))))
 
 (defn cond-nest [arms :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [n (asts-depth (clone arms))]
-    (if (even? n)
-      (cond-fold (asts-rev (clone arms) (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
-      (let [dflt (asts-last (clone arms))
-            pairs (asts-init (clone arms))]
-        (cond-fold (asts-rev pairs (KNil)) dflt sl sc sn)))))
+  (if (asts-null arms)
+    (EErr1 "cond expects at least one test/body pair" (Span sl sc sn))
+    (if (even? (asts-depth arms))
+    (cond-fold (asts-rev arms (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
+    (match (asts-split-last arms)
+      (LSplit [pairs dflt]
+        (cond-fold (asts-rev pairs (KNil)) dflt sl sc sn))))))
 
 ; Fold the reversed pairs two at a time: each step wraps the accumulator
 ; in (if test body acc).
 (defn cond-fold [rev :- Asts acc :- Ast sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match rev
     (KCons [b rest]
-      (let [rc (clone rest)]
-        (match rc
-          (KCons [c rest2]
-            (cond-fold (clone rest2)
-                       (AList (KCons (ASym (s-if) (Span sl sc sn))
-                               (KCons (clone c) (KCons (clone b) (KCons acc (KNil)))))
-                              (Span sl sc sn))
-                       sl sc sn))
-          (KNil [] (EOk1 acc)))))
+      (match rest
+        (KCons [c rest2]
+          (cond-fold rest2
+                     (AList (KCons (ASym (s-if) (Span sl sc sn))
+                             (KCons c (KCons b (KCons acc (KNil)))))
+                            (Span sl sc sn))
+                     sl sc sn))
+        (KNil [] (EOk1 acc))))
     (KNil [] (EOk1 acc))))
 
 ; --- binding forms ---------------------------------------------------------
@@ -1363,8 +1383,13 @@
 (defn bind2-of [b :- Ast msg :- str] :- Bind2
   (match b
     (AVec [ks sp]
-      (if (= (asts-depth (clone ks)) 2)
-        (B2 (asts-idx (clone ks) 0) (asts-idx (clone ks) 1))
+      (if (= (asts-depth ks) 2)
+        (match ks
+          (KCons [x r1]
+            (match r1
+              (KCons [e _r2] (B2 x e))
+              (KNil [] (B2Err msg))))
+          (KNil [] (B2Err msg)))
         (B2Err msg)))
     (ANil [sp] (B2Err msg))
     (ASym [sid sp] (B2Err msg))
@@ -1377,73 +1402,99 @@
     (ASet [ks sp] (B2Err msg))))
 
 (defn expand-iflet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [n (asts-depth (clone kids))]
+  (let [n (asts-depth kids)]
     (if (and (not (= n 4)) (not (= n 5)))
       (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn))
-      (let [rb (bind2-of (asts-idx (clone kids) 1)
-                         "if-let binding must be a 2-element vector [x e]")]
-        (match rb
-        (B2 [x e]
-          (let [then (asts-idx (clone kids) 2)
-                els (if (= n 4) (asts-idx (clone kids) 3) (AInt 0 (Span sl sc sn)))]
-            (EOk1 (let-1 (clone x) (clone e)
-                         (AList (KCons (ASym (s-if) (Span sl sc sn))
-                                 (KCons (clone x) (KCons then (KCons els (KNil)))))
-                                (Span sl sc sn))
-                         sl sc sn))))
-      (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn))))))))
+      (match kids
+        (KCons [_h r1]
+          (match r1
+            (KCons [b rest2]
+              (match (bind2-of b "if-let binding must be a 2-element vector [x e]")
+                (B2 [x e]
+                  (match rest2
+                    (KCons [then rest3]
+                      (let [els (if (= n 4)
+                                  (match rest3
+                                    (KCons [e3 _r4] e3)
+                                    (KNil [] (AInt 0 (Span sl sc sn))))
+                                  (AInt 0 (Span sl sc sn)))]
+                        ; x binds twice: one clone, one move.
+                        (EOk1 (let-1 (clone x) e
+                                     (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                             (KCons x (KCons then (KCons els (KNil)))))
+                                            (Span sl sc sn))
+                                     sl sc sn))))
+                    (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
+                (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+          (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
+        (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))))
 
 (defn expand-whenlet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  (if (< (asts-depth kids) 3)
     (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))
-    (let [rb (bind2-of (asts-idx (clone kids) 1)
-                     "when-let binding must be a 2-element vector [x e]")]
-      (match rb
-      (B2 [x e]
-        (let [doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-          (EOk1 (let-1 (clone x) (clone e)
-                       (AList (KCons (ASym (s-if) (Span sl sc sn))
-                               (KCons (clone x) (KCons doform (KCons (AInt 0 (Span sl sc sn)) (KNil)))))
-                              (Span sl sc sn))
-                       sl sc sn))))
-      (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [b body]
+            (match (bind2-of b "when-let binding must be a 2-element vector [x e]")
+              (B2 [x e]
+                (let [doform (do-form body sl sc sn)]
+                  (EOk1 (let-1 (clone x) e
+                               (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                       (KCons x (KCons doform (KCons (AInt 0 (Span sl sc sn)) (KNil)))))
+                                      (Span sl sc sn))
+                               sl sc sn))))
+              (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+        (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))))))
 
 (defn expand-ifnot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (not (= (asts-depth (clone kids)) 4))
+  (if (not (= (asts-depth kids) 4))
     (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          then (asts-idx (clone kids) 2)
-          els (asts-idx (clone kids) 3)]
-      (EOk1 (AList (KCons (ASym (s-if) (Span sl sc sn))
-                     (KCons c (KCons els (KCons then (KNil)))))
-                   (Span sl sc sn))))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c r2]
+            (match r2
+              (KCons [t r3]
+                (match r3
+                  (KCons [e _r4]
+                    (EOk1 (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                  (KCons c (KCons e (KCons t (KNil)))))
+                                 (Span sl sc sn))))
+                  (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+              (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+          (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn))))))
 
 ; --- variadic booleans ------------------------------------------------------
 
 (defn expand-andor [kids :- Asts sl :- i64 sc :- i64 sn :- i64 op :- i64 name :- str] :- ERes1
-  (let [args (asts-tail kids)]
-    (match args
-      (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
-      (KCons [first rest]
-        (if (asts-null (clone rest))
-          (EOk1 (clone first))
-          (andor-fold (asts-rev (KCons (clone first) (clone rest)) (KNil))
-                      op sl sc sn))))))
+  (match kids
+    (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
+    (KCons [_h args]
+      (match args
+        (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
+        (KCons [first rest]
+          (if (asts-null rest)
+            (EOk1 first)
+            (andor-fold (asts-rev (KCons first rest) (KNil))
+                        op sl sc sn)))))))
 
 ; The reversed operand chain folds right-associatively: acc starts at the
 ; last operand, each earlier operand wraps it in (op operand acc).
 (defn andor-fold [rev :- Asts op :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match rev
-    (KCons [first rest] (EOk1 (andor-fold-2 (clone rest) (clone first) op sl sc sn)))
+    (KCons [first rest] (EOk1 (andor-fold-2 rest first op sl sc sn)))
     (KNil [] (EOk1 (AInt 0 (Span sl sc sn))))))
 
 (defn andor-fold-2 [rest :- Asts acc :- Ast op :- i64 sl :- i64 sc :- i64 sn :- i64] :- Ast
   (match rest
     (KNil [] acc)
     (KCons [a rest2]
-      (andor-fold-2 (clone rest2)
+      (andor-fold-2 rest2
                     (AList (KCons (ASym op (Span sl sc sn))
-                             (KCons (clone a) (KCons acc (KNil))))
+                             (KCons a (KCons acc (KNil))))
                            (Span sl sc sn))
                     op sl sc sn))))
 ; forms.cato — S6: top-level forms — tables, defn/extern/deftype parsing,
@@ -1463,7 +1514,7 @@
 
 ; --- program tables ---------------------------------------------------------
 
-(deftype Param (Param [name :- i64 ty :- Ty]))
+(deftype Param (Param [name :- i64 ty :- Ty borrowed :- i64]))
 (deftype PList (PNil) (PCons [h :- Param t :- PList]))
 
 (deftype RawDefn (RawDefn [name :- i64 params :- PList ret :- Ty
@@ -2329,6 +2380,8 @@
             nm-str (node-str (clone nm-node) (ps-tab (clone ps)))]
         (cond
           (borrow-sigil (clone nm-str))
+          ; the sigil on the NAME would need re-interning of the stripped
+          ; symbol; borrows are written on the annotation (`ks :- &Asts`).
           (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
 
           (not (= (ast-tag (clone nm-node)) 1))
@@ -2340,16 +2393,27 @@
 
           (let [ty-node (asts-idx (clone ks) (+ i 2))
                 ty-tag2 (ast-tag (clone ty-node))]
-            (if (and (= ty-tag2 1) (borrow-sigil (node-str (clone ty-node) (ps-tab (clone ps)))))
-              (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
-              (let [rt (if (= ty-tag2 1)
-                         (parse-ty-sym-str (clone ps) (node-str (clone ty-node) (ps-tab (clone ps))))
-                         (parse-ty (clone ty-node) (clone ps)))]
+            (if (not (= ty-tag2 1))
+              (let [rt (parse-ty (clone ty-node) (clone ps))]
                 (match rt
                   (PTyRes [ps2 ty]
                     (if (ps-failed (clone ps2))
                       (PParRes (clone ps2) (PNil))
-                      (let [p (Param (ast-sid-of (clone nm-node)) ty)]
+                      (let [p (Param (ast-sid-of (clone nm-node)) ty 0)]
+                        (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2)))))))
+              (let [ty-str (node-str (clone ty-node) (ps-tab (clone ps)))
+                    ; `ks :- &Asts` — a borrowed parameter: the caller keeps
+                    ; ownership, the callee only reads (S8: the query
+                    ; helpers over boxed chains take & so traversals cost
+                    ; no clones).
+                    borrowed (borrow-sigil (clone ty-str))
+                    bare (if borrowed (subs (clone ty-str) 1 (count (clone ty-str))) (clone ty-str))
+                    rt (parse-ty-sym-str (clone ps) bare)]
+                (match rt
+                  (PTyRes [ps2 ty]
+                    (if (ps-failed (clone ps2))
+                      (PParRes (clone ps2) (PNil))
+                      (let [p (Param (ast-sid-of (clone nm-node)) ty (if borrowed 1 0))]
                         (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2))))))))))))))
 
 ; (defn name [params] [:- ret] body...) / (extern name [params] [:- ret])
@@ -3861,7 +3925,7 @@
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match argtys
             (TyNil [] (UResErr))
             (TyCons [a arest]
@@ -3904,20 +3968,20 @@
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty pb]
           (let [r (subst-ty (clone pty) (clone subs) tab (clone adts))]
             (match r
               (SRes [tab2 adts2 ty msg]
                 (if (> (count msg) 0)
                   (SPRes (clone tab2) (clone adts2) (PNil) msg)
-                  (subst-params (clone prest) (clone subs) (clone tab2) (clone adts2) (PCons (Param pname ty) (clone acc))))))))))
+                  (subst-params (clone prest) (clone subs) (clone tab2) (clone adts2) (PCons (Param pname ty pb) (clone acc))))))))))
     (PNil [] (SPRes tab (clone adts) (plist-rev (clone acc) (PNil)) ""))))
 
 (defn binds-of-params [params :- PList] :- TyEnv
   (match params
     (PCons [p prest]
       (match p
-        (Param [pname pty] (te-put (binds-of-params (clone prest)) pname pty))))
+        (Param [pname pty _pb] (te-put (binds-of-params (clone prest)) pname pty))))
     (PNil [] (TENil))))
 
 ; lower a raw defn body (implicit do when multiple forms) — the instance
@@ -3954,8 +4018,32 @@
 (defn resolve-ann-applied [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PTyRes
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))
-            hit (find-declared-adts (clone adts) h 0)]
+      (let [h (asts-head-sid (clone kids))]
+        ; `(Vector el)` — the built-in generic (S8: loop-bind annotations
+        ; carry full type forms, e.g. the reader's `tab :- (Vector str)`)
+        (if (= h (s-vec))
+          (match (asts-tail (clone kids))
+            (KCons [eln rest]
+              (if (asts-null (clone rest))
+                (let [es (sym-str (clone tab) (ast-sid-of (clone eln)))]
+                  (cond
+                    (= es "i64") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 0))
+                    (= es "f64") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 1))
+                    (= es "str") (PTyRes (mk-ps (clone tab) (clone adts) (clone sigs)) (t-vec 2))
+                    (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                    (str "(Vector " es ") element must be i64, f64 or str")) (t-none))))
+                (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                "(Vector expects exactly one element type") (t-none))))
+            (KNil [] (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs))
+                                "(Vector expects exactly one element type") (t-none))))
+          (resolve-ann-adt a tab adts sigs h))))
+    (_ (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) "type annotation must be a symbol or applied ADT") (t-none)))))
+
+; the declared-ADT application path of resolve-ann-applied
+(defn resolve-ann-adt [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs h :- i64] :- PTyRes
+  (match a
+    (AList [kids at]
+      (let [hit (find-declared-adts (clone adts) h 0)]
         (if (< (ty-arg-of-info (clone hit)) 0)
           (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) (str "unknown type name " (sym-str (clone tab) h))) (t-none))
           (let [rargs (resolve-ann-args (asts-tail (clone kids)) (clone tab) (clone adts) (clone sigs))]
@@ -4079,6 +4167,34 @@
 
 ; --- if (forms.rs lower_if) -----------------------------------------------------
 
+; does every path through e end in a recur? Such an expression never
+; completes with a value, so an if with it on one side takes the other
+; side's type (S8: the reader's scan wraps its recur continuations in
+; match/let/if tails — a bare HRecur tag check is not enough).
+(defn all-paths-recur [e :- HExpr] :- bool
+  (let [tag (h-tag (clone e))]
+    (cond
+      (= tag 32) true
+      (= tag 22) (and (all-paths-recur (hv-b (clone e)))
+                      (all-paths-recur (hv-c (clone e))))
+      (= tag 30) (all-paths-recur (hv-b (clone e)))
+      (= tag 29) (seq-all-recur (hargs-of (clone e)))
+      (= tag 34) (arms-all-recur (arms-of (clone e)))
+      false)))
+
+(defn seq-all-recur [es :- HExprs] :- bool
+  (if (asts-null (clone es))
+    false
+    (if (asts-null (asts-tail-hes (clone es)))
+      (all-paths-recur (hes-head-hes (clone es)))
+      (seq-all-recur (asts-tail-hes (clone es))))))
+
+(defn arms-all-recur [arms :- HArms] :- bool
+  (match arms
+    (HANil [] true)
+    (HACons [variant binders body next]
+      (and (all-paths-recur (clone body)) (arms-all-recur (clone next))))))
+
 (defn lower-if [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
                insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                ncached :- i64 defs :- Defns raws :- Raws] :- LRes
@@ -4103,9 +4219,10 @@
                       (LOk [t3 a3 i3 s3 l3 r3 n3 d3 els2]
                         (let [tt (ty-of (clone then2) (clone env) (clone r3) (clone s3))
                               et (ty-of (clone els2) (clone env) (clone r3) (clone s3))
-                              ; a recur branch takes the other branch's type
-                              tt2 (if (= (h-tag (clone then2)) 32) (clone et) (clone tt))
-                              et2 (if (= (h-tag (clone els2)) 32) (clone tt) (clone et))]
+                              ; a branch whose every path recurs takes the
+                              ; other branch's type
+                              tt2 (if (all-paths-recur (clone then2)) (clone et) (clone tt))
+                              et2 (if (all-paths-recur (clone els2)) (clone tt) (clone et))]
                           (if (and (not (ty-eq (clone tt2) (clone et2)))
                                    (not (ty-eq (clone tt2) (t-f64)))
                                    (not (ty-eq (clone et2) (t-f64))))
@@ -4980,7 +5097,7 @@
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (SCons name (plist-names (clone t))))))
+        (Param [name ty _pb] (SCons name (plist-names (clone t))))))
     (PNil [] (SNil))))
 
 ; the outer env extended with the fn params, in order
@@ -4988,14 +5105,14 @@
   (match ps
     (PCons [p rest]
       (match p
-        (Param [name ty] (params-extend (te-put (clone env) name (clone ty)) (clone rest)))))
+        (Param [name ty _pb] (params-extend (te-put (clone env) name (clone ty)) (clone rest)))))
     (PNil [] (clone env))))
 
 (defn plist-tys [ps :- PList] :- TyList
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (TyCons ty (plist-tys (clone t))))))
+        (Param [name ty _pb] (TyCons ty (plist-tys (clone t))))))
     (PNil [] (TyNil))))
 
 ; register-sig over the plain tables; returns the table index
@@ -5052,7 +5169,7 @@
               (CtyRes [tps2 ty msg]
                 (if (> (count msg) 0)
                   (PParRes (ps-err (clone ps) msg) (PNil))
-                  (closure-params (clone els) (+ i 3) (PCons (Param (ast-sid-of (clone nm)) ty) (clone acc)) ps (clone tps2)))))))))))
+                  (closure-params (clone els) (+ i 3) (PCons (Param (ast-sid-of (clone nm)) ty 0) (clone acc)) ps (clone tps2)))))))))))
 
 ; --- loop / recur -----------------------------------------------------------------
 
@@ -5077,8 +5194,17 @@
                   (LBErr (ps-err-msg (clone ps2)))
                   (match (clone ps2)
                     (PS [t2 d2 a2 s2 y2 e2]
-                      (if (not (is-copy-ty (clone ty)))
-                        (LBErr (str "loop variable " (node-str (clone nm) (clone t2)) " has non-Copy type " (ty-name ty) " — loop variables are numeric/bool/str in this slice"))
+                      ; S8: loop variables may also be boxed ADTs and
+                      ; collection headers — the reader threads its frame
+                      ; stack, children and intern table through one loop.
+                      ; Loop variables are never freed and never moved, so
+                      ; the recursion the loop replaces cannot double-free.
+                      (if (and (not (is-copy-ty (clone ty)))
+                               (not (or (= (ty-tag (clone ty)) 16)
+                                        (= (ty-tag (clone ty)) 15)
+                                        (= (ty-tag (clone ty)) 13)
+                                        (= (ty-tag (clone ty)) 14))))
+                        (LBErr (str "loop variable " (node-str (clone nm) (clone t2)) " has non-Copy type " (ty-name ty) " — loop variables are numeric/bool/str/ADT/collection in this slice"))
                         (let [ri (lower-e (clone initn) (clone env) ty (clone t2) (clone a2) (clone insts) (clone s2) (clone lams) (clone rets) ncached (clone defs) (clone raws))]
                           (match ri
                             (LErr [msg] (LBErr msg))
@@ -6406,32 +6532,35 @@
     (DLCons [k v next] (+ 1 (dl-depth (clone next))))
     (DLNil [] 0)))
 
-(defn form-head-sid [f :- Ast] :- i64
-  (if (= (ast-tag (clone f)) 5)
-    (asts-head-sid (ast-kids-of (clone f)))
-    -1))
+(defn form-head-sid [f :- &Ast] :- i64
+  ; borrowed read: match the node, hand the kids chain to the borrowed
+  ; head-sid query — no move, no clone
+  (match f
+    (AList [kids at] (asts-head-sid kids))
+    (_ -1)))
 
 ; pass 0a: deftype headers, in form order
 (defn collect-decls [forms :- Asts i :- i64 n :- i64 decls :- Decls ps :- PS] :- DeclRes
-  ; ndecls starts at 1: adt 0 is the prelude's (Option a)
-  (if (>= i n)
-    (DeclRes decls 1 "")
-    (let [f (asts-idx (clone forms) i)]
-      (if (not (= (form-head-sid (clone f)) (s-deftype)))
-        (match (collect-decls (clone forms) (+ i 1) n (clone decls) (clone ps))
-          (DeclRes [d nd msg] (DeclRes d nd msg)))
-        (let [r (parse-deftype-header (clone f) (clone ps))]
+  ; ndecls starts at 1: adt 0 is the prelude's (Option a). The chain is
+  ; consumed by match — an asts-idx per form deep-cloned the whole
+  ; program per form and made the self-compile quadratic (S8).
+  (match forms
+    (KNil [] (DeclRes decls 1 ""))
+    (KCons [f rest]
+      (if (not (= (form-head-sid f) (s-deftype)))
+        (collect-decls rest (+ i 1) n decls ps)
+        (let [r (parse-deftype-header f (clone ps))]
           (match r
             (HDRRes [ps2 name typarams]
               (if (< name 0)
                 (DeclRes (DLNil) 0 (ps-err-msg (clone ps2)))
                 (if (dl-has (clone decls) name)
                   (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab (clone ps)) name)))
-                  (match (collect-decls forms (+ i 1) n decls (clone ps2))
+                  (match (collect-decls rest (+ i 1) n decls ps2)
                     (DeclRes [d nd msg]
                       (if (> (count msg) 0)
                         (DeclRes (DLNil) 0 msg)
-                        (DeclRes (dl-put d name (Decl nd (clone typarams))) (+ 1 nd) "")))))))))))))
+                        (DeclRes (dl-put d name (Decl nd typarams)) (+ 1 nd) "")))))))))))))
 
 (deftype VarRes (VarRes [adts :- AdtTab msg :- str]))
 
@@ -6439,64 +6568,69 @@
 ; parameters are in scope while its fields parse
 (defn build-variants [forms :- Asts i :- i64 n :- i64 decls :- Decls adts :- AdtTab
                      tab :- (Vector str) sigs :- Sigs] :- VarRes
-  (if (>= i n)
-    (VarRes adts "")
-    (let [f (asts-idx (clone forms) i)]
-      (if (not (= (form-head-sid (clone f)) (s-deftype)))
-        (build-variants (clone forms) (+ i 1) n (clone decls) (clone adts) (clone tab) (clone sigs))
-        (let [rh (parse-deftype-header (clone f) (PS (clone tab) (clone decls) (clone adts) (clone sigs) (SNil) ""))]
+  ; match-walk, as collect-decls (S8)
+  (match forms
+    (KNil [] (VarRes adts ""))
+    (KCons [f rest]
+      (if (not (= (form-head-sid f) (s-deftype)))
+        (build-variants rest (+ i 1) n decls adts tab sigs)
+        (let [f2 (clone f)
+              rh (parse-deftype-header f (PS (clone tab) (clone decls) (clone adts) (clone sigs) (SNil) ""))]
           (match rh
             (HDRRes [ps1 name typarams]
               (if (< name 0)
                 (VarRes (ATNil) (ps-err-msg (clone ps1)))
-                (let [rv (parse-deftype-variants (clone f) (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) ""))]
+                (let [rv (parse-deftype-variants f2 (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) ""))]
                   (match rv
                     (PVRes2 [ps2 vs]
                       (if (ps-failed (clone ps2))
                         (VarRes (ATNil) (ps-err-msg (clone ps2)))
-                        (match (build-variants (clone forms) (+ i 1) n (clone decls) (clone adts) (clone tab) (clone sigs))
-                          (VarRes [rest msg]
+                        (match (build-variants rest (+ i 1) n decls adts tab sigs)
+                          (VarRes [restv msg]
                             (if (> (count msg) 0)
                               (VarRes (ATNil) msg)
-                              (VarRes (adts-append-info rest (AdtInfo name (clone typarams) (clone vs) -1 (TyNil))) ""))))))))))))))))
+                              (VarRes (adts-append-info restv (AdtInfo name typarams vs -1 (TyNil))) ""))))))))))))))))
 
 (deftype RawsRes (RawsRes [ps :- PS raws :- Raws msg :- str]))
 
 ; pass 1: defn/extern headers, in form order
 (defn build-raws [forms :- Asts i :- i64 n :- i64 ps :- PS acc :- Raws] :- RawsRes
-  (if (>= i n)
-    (RawsRes ps acc "")
-    (let [f (asts-idx (clone forms) i)
-          h (form-head-sid (clone f))]
-      (cond
-        (= h (s-deftype))
-        (build-raws (clone forms) (+ i 1) n (clone ps) (clone acc))
+  ; match-walk (S8): the chain is consumed, the per-form asts-idx with its
+  ; whole-program clone is gone. The parse result raw is moved into the
+  ; accumulator after the recursion — one move, no clone.
+  (match forms
+    (KNil [] (RawsRes ps acc ""))
+    (KCons [f rest]
+      (let [h (form-head-sid f)]
+        (cond
+          (= h (s-deftype))
+          (build-raws rest (+ i 1) n ps acc)
 
-        (= h (s-extern))
-        (let [r (parse-defn (clone f) (clone ps) 1)]
-          (match r
-            (RawRes [ps2 raw]
-              (if (ps-failed (clone ps2))
-                (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
-                (match (build-raws (clone forms) (+ i 1) n (clone ps2) acc)
-                  (RawsRes [ps3 rs msg]
-                    (if (> (count msg) 0)
-                      (RawsRes ps3 (RNil) msg)
-                      (RawsRes ps3 (RCons (clone raw) rs) ""))))))))
+          (= h (s-extern))
+          (let [r (parse-defn f (clone ps) 1)]
+            (match r
+              (RawRes [ps2 raw]
+                (if (ps-failed (clone ps2))
+                  (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
+                  (match (build-raws rest (+ i 1) n ps2 acc)
+                    (RawsRes [ps3 rs msg]
+                      (if (> (count msg) 0)
+                        (RawsRes (clone ps3) (RNil) msg)
+                        (RawsRes (clone ps3) (RCons raw rs) ""))))))))
 
-        (= h (s-defn))
-        (let [r (parse-defn (clone f) (clone ps) 0)]
-          (match r
-            (RawRes [ps2 raw]
-              (if (ps-failed (clone ps2))
-                (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
-                (match (build-raws (clone forms) (+ i 1) n (clone ps2) acc)
-                  (RawsRes [ps3 rs msg]
-                    (if (> (count msg) 0)
-                      (RawsRes ps3 (RNil) msg)
-                      (RawsRes ps3 (RCons (clone raw) rs) ""))))))))
+          (= h (s-defn))
+          (let [r (parse-defn f (clone ps) 0)]
+            (match r
+              (RawRes [ps2 raw]
+                (if (ps-failed (clone ps2))
+                  (RawsRes (clone ps2) (RNil) (ps-err-msg (clone ps2)))
+                  (match (build-raws rest (+ i 1) n ps2 acc)
+                    (RawsRes [ps3 rs msg]
+                      (if (> (count msg) 0)
+                        (RawsRes (clone ps3) (RNil) msg)
+                        (RawsRes (clone ps3) (RCons raw rs) ""))))))))
 
-        (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h)))))))
+          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h))))))))
 
 ; static (non-generic) callee rets, for ty_of's Call arm
 (defn seed-rets [rs :- Raws rets :- TyEnv] :- TyEnv
@@ -6659,7 +6793,7 @@
 ; --- read-only context ---------------------------------------------------------
 
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
-                    tab :- (Vector str) shared :- Sids]))
+                    tab :- (Vector str) shared :- Sids loopcopy :- Sids]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -6680,7 +6814,7 @@
              (is-non-copy-ty (clone t))
              (= (im-get st v 0) 1))
       (match bcx
-        (BCtx [escaped shadowed facts tab shared]
+        (BCtx [escaped shadowed facts tab shared _lc]
           (UseRes rem2 (str "use of moved value " (sym-str (clone tab) v)))))
       (UseRes rem2 ""))))
 
@@ -6703,8 +6837,14 @@
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
             (MncErr msg)
-            (match (move-var v (clone st) (clone owns) cons)
-              (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2))))))
+            (match bcx
+              ; a non-Copy loop variable rides as Copy: calls and
+              ; constructors borrow it, nothing moves (S8)
+              (BCtx [escaped shadowed facts tab shared loopcopy]
+                (if (sids-has (clone loopcopy) v)
+                  (MncRes st owns rem2 cons)
+                  (match (move-var v (clone st) (clone owns) cons)
+                    (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2)))))))))
       (MncRes st owns rem cons))))
 
 (defn im-remove [m :- IMap k :- i64] :- IMap
@@ -6982,7 +7122,7 @@
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
                   cons :- IMap tys :- TyEnv bcx :- BCtx] :- B4
   (match bcx
-    (BCtx [escaped shadowed facts tab shared]
+    (BCtx [escaped shadowed facts tab shared _lc]
       (if (sids-has (clone shared) name)
         (B4 st owns rem cons)
         (b-call-move-walk args st owns rem cons (clone tys) (clone (clone bcx)))))))
@@ -7038,13 +7178,13 @@
 
 (defn b-facts-of [bcx :- BCtx] :- Facts
   (match bcx
-    (BCtx [escaped shadowed facts tab shared] (clone facts))))
+    (BCtx [escaped shadowed facts tab shared _lc] (clone facts))))
 
 ; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
 ; consumed ∧ not shadowed, in binding order — the whole destruction rule
 (defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared]
+    (BCtx [escaped shadowed facts tab shared _lc]
       (b-frees-walk binds st owns cons (clone escaped) (clone shadowed) (clone facts)))))
 
 (defn b-frees-walk [binds :- Binds st :- IMap owns :- IMap cons :- IMap
@@ -7067,6 +7207,21 @@
 (deftype BLoopRes (BLoopRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
                             tys :- TyEnv binds :- Binds saved :- IMap])
                 (BLoopErr [msg :- str]))
+
+; S8: a non-Copy loop variable rides as Copy — reads and calls never
+; move it, and no scope frees it. Non-Copy bind names collect into a set
+; the body walk consults through the context.
+(defn bcx-with-loopcopy [bcx :- BCtx names :- Sids] :- BCtx
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc]
+      (BCtx escaped shadowed facts tab shared names))))
+
+(defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
+  (match binds
+    (BNil [] acc)
+    (BCons [name init ty next]
+      (binds-loopcopy (clone next)
+        (if (is-non-copy-ty (clone ty)) (SCons name acc) acc)))))
 
 (defn b-loop-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
                    tys :- TyEnv bcx :- BCtx acc :- Binds saved :- IMap] :- BLoopRes
@@ -7454,7 +7609,8 @@
     (match (b-loop-binds (clone binds) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil) (MNil))
       (BLoopErr [msg] (BErr msg))
       (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved]
-        (match (bcheck (clone body) st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
+        (match (bcheck (clone body) st1 owns1 rem1 cons1 (clone tys1)
+                       (bcx-with-loopcopy (clone (clone bcx)) (binds-loopcopy (binds-rev (clone binds2) (BNil)) (SNil))))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
             (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop (binds-rev binds2 (BNil)) ty body2)))))))
@@ -7539,13 +7695,30 @@
 ; --- plan_drops: the per-defn wrapper ------------------------------------------------
 
 ; precompute the Shared-kind callees: builtins and externs never consume
-(defn b-shared-callees [defs :- Defns acc :- Sids] :- Sids
+(defn plist-has-borrowed [ps :- PList] :- bool
+  (match ps
+    (PNil [] false)
+    (PCons [h t]
+      (match h
+        (Param [pname pty pb]
+          (if (= pb 1) true (plist-has-borrowed (clone t))))))))
+
+(defn b-shared-callees [defs :- &Defns acc :- Sids] :- Sids
+  ; externs never consume; a defn with a borrowed (&) parameter never
+  ; consumes either — its borrowed args stay with the caller (S8).
+  ; The walk borrows: cloning the whole program per step made the
+  ; self-compile quadratic.
   (match defs
     (DNil [] acc)
     (DCons [h t]
-      (match h
+      ; one shallow destructure per defn: h is a binder of the borrowed
+      ; walk, so the inner match consumes a clone of the box (the walk
+      ; itself stays O(n))
+      (match (clone h)
         (Defn [name params ret isextern body]
-          (b-shared-callees (clone t) (if (= isextern 1) (SCons name acc) acc)))))))
+          (b-shared-callees t
+            (if (or (= isextern 1) (plist-has-borrowed params))
+              (SCons name acc) acc)))))))
 
 (defn b-add-builtins [acc :- Sids] :- Sids
   (sids-append (sids-append (sids-append (sids-append (sids-append (sids-append
@@ -7557,16 +7730,18 @@
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
 (defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- (Vector str) defs :- Defns] :- BPlan
+             tab :- (Vector str) shared :- Sids] :- BPlan
+  ; `shared` (externs + borrowed-param callees + builtins) is computed
+  ; once per program by check-program — computing it per defn walked the
+  ; whole Defns chain 1000+ times.
   (let [escaped (b-tail-escape (clone body) (SNil))
         shadowed (b-shadowed-of (b-count-binds (clone body) (MNil)) (SNil))
         rem0 (b-count-vars (clone body) (MNil))
-        shared (b-add-builtins (b-shared-callees (clone defs) (SNil)))
         r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
     (match r
       (BLErr [msg] (BPlanErr msg))
       (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared)]
+        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil))]
           (match (bcheck (clone body) (clone st0) (clone owns0) (clone rem0) (clone cons0) (clone tys0) bcx)
             (BErr [msg]
               (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
@@ -7579,10 +7754,10 @@
     (PNil [] (BLRes st owns rem cons tys (BNil)))
     (PCons [p rest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty pb]
           (b-init-params (clone rest) facts
                          (im-put st pname 0)
-                         (im-put owns pname (if (b-param-moves (clone pty) (clone facts)) 1 0))
+                         (im-put owns pname (if (and (= pb 0) (b-param-moves (clone pty) (clone facts))) 1 0))
                          rem
                          cons
                          (te-put tys pname pty)))))))
@@ -7593,44 +7768,52 @@
               (CKErr [msg :- str]))
 
 (defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- (Vector str)
-                  alldefs :- Defns] :- CkRes
+                  shared :- Sids] :- CkRes
+  ; the whole-program state threads by move — a per-step clone of facts/
+  ; tab/alldefs made the self-compile quadratic (S8)
   (match ds
     (DNil [] (CKOk acc (LMNil)))
     (DCons [h t]
-      (match (clone h)
+      (match h
         (Defn [name params ret ie body]
           (if (= ie 1)
-            (check-defns (clone t) (defns-append acc (clone h)) (clone facts) (clone tab) (clone alldefs))
-            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+            (check-defns t (defns-append acc h) facts tab shared)
+            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared))
               (BPlanErr [msg] (CKErr msg))
               (BPlan [st owns body2]
-                (check-defns (clone t)
+                (check-defns t
                              (defns-append acc (Defn name (clone params) (clone ret) ie body2))
-                             (clone facts) (clone tab) (clone alldefs))))))))))
+                             facts tab shared)))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
 (defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- (Vector str)
-                 alldefs :- Defns] :- LkRes
+                 shared :- Sids] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone shared))
             (BPlanErr [msg] (LErrL msg))
             (BPlan [st owns body2]
               (check-lams (clone t) (lams-append acc (Lam mangled (clone caps) (clone params) (clone ret) body2))
-                          (clone facts) (clone tab) (clone alldefs)))))))))
+                          (clone facts) (clone tab) (clone shared)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
                     tab :- (Vector str)] :- CkRes
-  (match (check-defns (clone defs) (DNil) (clone facts) (clone tab) (clone defs))
-    (CKErr [msg] (CKErr msg))
-    (CKOk [defs2 lams0]
-      (match (check-lams (clone lams) (LMNil) (clone facts) (clone tab) (clone defs))
-        (LErrL [msg] (CKErr msg))
-        (LOkL [lams2] (CKOk defs2 lams2))))))
+  (let [shared (b-add-builtins (b-shared-callees defs (SNil)))
+        ; the second stage re-reads the small program state: clone it
+        ; before the first call moves it
+        facts2 (clone facts)
+        tab2 (clone tab)
+        shared2 (clone shared)]
+    (match (check-defns defs (DNil) facts tab shared)
+      (CKErr [msg] (CKErr msg))
+      (CKOk [defs2 lams0]
+        (match (check-lams lams (LMNil) facts2 tab2 shared2)
+          (LErrL [msg] (CKErr msg))
+          (LOkL [lams2] (CKOk defs2 lams2)))))))
 
 ; dump.cato — S6: the typed-IR wire format.
 ;
@@ -7836,7 +8019,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty))]
             (if (plist-null (clone t))
               piece
@@ -8295,7 +8478,7 @@
 (defn elem-ll [el :- i64] :- str
   (if (= el 1) "double" "i64"))
 
-(defn ll-loop-slot-ty [t :- Ty] :- str
+(defn ll-loop-slot-ty [t :- Ty mdl :- Mdl] :- str
   (let [tag (ty-tag (clone t))]
     (cond
       (= tag 9) "double"
@@ -8303,7 +8486,16 @@
       (= tag 11) "i1"
       (= tag 12) "ptr"
       (< tag 12) (ll-scalar (clone t))
-      (cg-fail-s "loop variable of non-Copy type"))))
+      ; S8: a boxed ADT loop variable's slot is the owning pointer; a
+      ; vector's slot is the {ptr,len,cap} header
+      (and (= tag 16) (= (md-owns-at mdl (ty-arg (clone t))) 1)) "ptr"
+      (= tag 15) "%VecI64"
+      (cg-fail-s "loop variable of unsupported type"))))
+
+; a vector loop variable's slot kind (the scalar path handles everything
+; whose value is one machine word, including boxed ADT pointers)
+(defn loop-slot-vec [t :- Ty] :- bool
+  (= (ty-tag (clone t)) 15))
 
 ; --- ADT layout (the seed's field_slot_count / payload / offsets) ----------------
 
@@ -8349,8 +8541,9 @@
     at
     (match fs
       (TyCons [h rest]
+        ; k counts down the fields consumed; at accumulates their widths
         (fs-off-1 (clone rest) (clone owns) (clone adts)
-                  (+ at (fs-count (clone h) (clone owns) (clone adts))) k))
+                  (+ at (fs-count (clone h) (clone owns) (clone adts))) (- k 1)))
       (TyNil [] at))))
 
 ; Slot count of field k in variant vi of ADT ai.
@@ -8522,7 +8715,7 @@
   (match ps
     (PCons [h t]
       (match h
-        (Param [name ty] (pl-tylist (clone t) (TyCons ty (clone acc))))))
+        (Param [name ty _pb] (pl-tylist (clone t) (TyCons ty (clone acc))))))
     (PNil [] (tys-rev (clone acc) (TyNil)))))
 
 (defn sigs-lookup [ss :- ESigTab k :- i64] :- ESig
@@ -9442,56 +9635,100 @@
 (deftype SlotsRes (ESLRes [st :- Emit slots :- EMLSlots]))
 (deftype TailRes (ETRRes [st :- Emit v :- str done :- bool]))
 
+(defn slots-rev [ss :- EMLSlots st :- Emit acc :- EMLSlots] :- SlotsRes
+  (match ss
+    (ESlotsNil [] (ESLRes st acc))
+    (ESlots2 [name slot ty next] (slots-rev (clone next) st (ESlots2 name slot ty acc)))))
+
 (defn emit-loop-node [binds :- Binds ty :- Ty body :- HExpr st :- Emit] :- ESRes
   ; Slots hoisted to the entry prelude (the loop may run any number of
-  ; times); inits emit in source order.
+  ; times); inits emit in source order. loop-slots conses each binding
+  ; onto the accumulator while the HLoop binds arrive reversed, so the
+  ; slot list needs one reversal back into source order — the recur zip
+  ; is positional, and a swapped pair mis-types an argument.
   (match (loop-slots (clone binds) st (ESlotsNil))
-    (ESLRes [st1 slots]
-      (match (em-blk st1)
-        (ETRes [st2 head]
-          (let [st3 (em-line st2 (str "  br label %" head))
-                st4 (em-open st3 head)
-                st5 (loop-load-slots slots st4)]
-            (match st5
-              (Emit [c5 m5 s5]
-                (let [saved (fc-lfr (clone c5))
-                      st6 (em-with-lfr st5 (LoopFr slots head))]
-                  (match (emit-loop-tail (clone body) (clone ty) st6)
-                    (ETRRes [st7 v done]
-                      (let [st8 (em-with-lfr st7 saved)]
-                        (match (em-blk st8)
-                          (ETRes [st9 after]
-                            (if done
-                              (let [st10 (em-line st9 (str "  br label %" after))
-                                    st11 (em-open st10 after)]
-                                (ESRes st11 v))
-                              (let [st10 (em-open st9 after)
-                                    st11 (em-line st10 "  unreachable")]
-                                (ESRes st11 "undef")))))))))))))))))
+    (ESLRes [st1 slots0]
+      (match (slots-rev slots0 st1 (ESlotsNil))
+        (ESLRes [st2 slots]
+          (match (em-blk st2)
+            (ETRes [st3 head]
+              (let [st4 (em-line st3 (str "  br label %" head))
+                    st5 (em-open st4 head)
+                    st6 (loop-load-slots slots st5)]
+                (match st6
+                  (Emit [c6 m6 s6]
+                    (let [saved (fc-lfr (clone c6))
+                          st7 (em-with-lfr st6 (LoopFr slots head))]
+                      (match (emit-loop-tail (clone body) (clone ty) st7)
+                        (ETRRes [st8 v done]
+                          (let [st9 (em-with-lfr st8 saved)]
+                            (match (em-blk st9)
+                              (ETRes [st10 after]
+                                (if done
+                                  (let [st11 (em-line st10 (str "  br label %" after))
+                                        st12 (em-open st11 after)]
+                                    (ESRes st12 v))
+                                  (let [st11 (em-open st10 after)
+                                        st12 (em-line st11 "  unreachable")]
+                                    (ESRes st12 "undef")))))))))))))))))))
 
-; One alloca (prelude) + init store per binding, in source order.
+; One alloca (prelude) + init store per binding, in source order
+(defn loop-slot-vec-init [d :- str l :- str st :- Emit] :- ESRes
+  ; assemble {ptr d, i64 l, i64 l} — value-form headers carry cap=len.
+  ; em-ins3's markers: ^1 is the previous instruction, ^2 the one before,
+  ; so the chain is undef -> ^1 -> ^1 again.
+  (match (em-ins3 st
+           (str "~ = insertvalue %VecI64 undef, ptr " d ", 0")
+           (str "~ = insertvalue %VecI64 ^1, i64 " l ", 1")
+           (str "~ = insertvalue %VecI64 ^1, i64 " l ", 2"))
+    (ET3Res [st1 s0 s1 s2] (ESRes st1 s2))))
+
 (defn loop-slots [binds :- Binds st :- Emit acc :- EMLSlots] :- SlotsRes
   (match binds
     (BNil [] (ESLRes st acc))
     (BCons [name v ty next]
-      (match (em-temp st)
-        (ETRes [st1 slot]
-          (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty) ", align 8"))]
-            (match (emit-typed (clone v) (clone ty) st2)
-              (ESRes [st3 init]
-                (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty) " " init ", ptr " slot ", align 8"))]
-                  (loop-slots (clone next) st4 (ESlots2 name slot (clone ty) acc)))))))))))
+      (match st
+        (Emit [c mdl sigs]
+          (if (loop-slot-vec ty)
+            (match (em-temp st)
+              (ETRes [st1 slot]
+                (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))]
+                  (match (emit-vec-pair (clone v) st2)
+                    (EVRes [st3 d l el]
+                      (match (loop-slot-vec-init d l st3)
+                        (ESRes [st4 hdr]
+                          (let [st5 (em-line st4 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))]
+                            (loop-slots (clone next) st5 (ESlots2 name slot (clone ty) acc))))))))))
+            (match (em-temp st)
+              (ETRes [st1 slot]
+                (match st1
+                  (Emit [c mdl sigs]
+                    (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty (clone mdl)) ", align 8"))]
+                      (match (emit-typed (clone v) (clone ty) st2)
+                        (ESRes [st3 init]
+                          (match st3
+                            (Emit [c3 m3 s3]
+                              (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty (clone m3)) " " init ", ptr " slot ", align 8"))]
+                                (loop-slots (clone next) st4 (ESlots2 name slot (clone ty) acc))))))))))))))))))
 
 ; Fresh registers for every variable at the loop head.
 (defn loop-load-slots [slots :- EMLSlots st :- Emit] :- Emit
   (match slots
     (ESlotsNil [] st)
     (ESlots2 [name slot ty next]
-      (match (em-temp st)
-        (ETRes [st1 r]
-          (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty) ", ptr " slot ", align 8"))
-                st3 (em-sc-put st2 name r ty)]
-            (loop-load-slots (clone next) st3)))))))
+      (if (loop-slot-vec ty)
+        (match (em-ins3 st
+                 (str "~ = load %VecI64, ptr " slot ", align 8")
+                 (str "~ = extractvalue %VecI64 ^1, 0")
+                 (str "~ = extractvalue %VecI64 ^2, 1"))
+          (ET3Res [st1 _h d l]
+            (loop-load-slots (clone next) (em-vc-put st1 name d l (ty-arg ty)))))
+        (match (em-temp st)
+          (ETRes [st1 r]
+            (match st1
+              (Emit [c mdl sigs]
+                (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty (clone mdl)) ", ptr " slot ", align 8"))]
+                  (loop-load-slots (clone next) (em-sc-put st2 name r ty)))))))))))
 
 (defn emit-loop-tail [e :- HExpr ty :- Ty st :- Emit] :- TailRes
   (match e
@@ -9524,8 +9761,10 @@
                                 st10 (em-open st9 bm)]
                             (cond
                               (and tdone edone)
-                              (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity)) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
-                                (ETRes [st11 r] (ETRRes st11 r true)))
+                              (match st10
+                                (Emit [c10 m10 s10]
+                                  (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity) (clone m10)) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
+                                    (ETRes [st11 r] (ETRRes st11 r true)))))
                               tdone (ETRRes st10 tv true)
                               edone (ETRRes st10 ev true)
                               (let [st11 (em-line st10 "  unreachable")]
@@ -9551,16 +9790,27 @@
 
 ; Positional zip: the k-th recur arg stores into the k-th slot.
 ; Positional zip: the k-th recur arg stores into the k-th slot.
+(defn recur-store-vec [d :- str l :- str slot :- str st :- Emit] :- EURes
+  (match (loop-slot-vec-init d l st)
+    (ESRes [st1 hdr] (EURes (em-line st1 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))))))
+
 (defn recur-stores [args :- HExprs slots :- EMLSlots st :- Emit] :- EURes
   (match args
     (HENil [] (EURes st))
     (HECons [kid next]
       (match slots
         (ESlots2 [name slot sty snext]
-          (match (emit-typed (clone kid) (clone sty) st)
-            (ESRes [st1 v]
-              (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty) " " v ", ptr " slot ", align 8")))
-                (EURes [st2] (EURes st2))))))
+          (if (loop-slot-vec sty)
+            (match (emit-vec-pair (clone kid) st)
+              (EVRes [st1 d l el]
+                (match (recur-store-vec d l slot st1)
+                  (EURes [st2] (recur-stores2 (clone next) (clone snext) st2)))))
+            (match (emit-typed (clone kid) (clone sty) st)
+              (ESRes [st1 v]
+                (match st1
+                  (Emit [c1 m1 _s1]
+                    (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty m1) " " v ", ptr " slot ", align 8")))
+                      (EURes [st2] (EURes st2)))))))))
         (_ (EURes (do (cg-fail-i "recur arg/slot mismatch") st)))))))
 
 ; The tail walk after the first store (state already carries the store).
@@ -9570,10 +9820,17 @@
     (HECons [kid next]
       (match slots
         (ESlots2 [name slot sty snext]
-          (match (emit-typed (clone kid) (clone sty) st)
-            (ESRes [st1 v]
-              (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty) " " v ", ptr " slot ", align 8")))
-                (EURes [st2] (EURes st2))))))
+          (if (loop-slot-vec sty)
+            (match (emit-vec-pair (clone kid) st)
+              (EVRes [st1 d l el]
+                (match (recur-store-vec d l slot st1)
+                  (EURes [st2] (recur-stores2 (clone next) (clone snext) st2)))))
+            (match (emit-typed (clone kid) (clone sty) st)
+              (ESRes [st1 v]
+                (match st1
+                  (Emit [c1 m1 _s1]
+                    (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty m1) " " v ", ptr " slot ", align 8")))
+                      (EURes [st2] (EURes st2)))))))))
         (_ (EURes (do (cg-fail-i "recur arg/slot mismatch") st)))))))
 
 ; heap.cato — S7: string/vector value emission, count, get, options,
@@ -10106,41 +10363,41 @@
       (match (emit-stmts-ex-last (clone es) st)
         (ELRes [st2 last] (emit-vec-pair (clone last) st2))))
 
-    (HConstI64 [v] (vf st "unsupported vector value"))
-    (HConstF64 [v] (vf st "unsupported vector value"))
-    (HConstB [v] (vf st "unsupported vector value"))
-    (HStrLit [v] (vf st "unsupported vector value"))
-    (HBinW [op a b ty] (vf st "unsupported vector value"))
-    (HBinF [op a b] (vf st "unsupported vector value"))
-    (HCmpW [op a b ty] (vf st "unsupported vector value"))
-    (HStrCmp [pol a b] (vf st "unsupported vector value"))
-    (HStrOrd [op a b] (vf st "unsupported vector value"))
-    (HICast [x from to] (vf st "unsupported vector value"))
-    (HCount [x] (vf st "unsupported vector value"))
-    (HToStr [x ty] (vf st "unsupported vector value"))
-    (HStrCat [args] (vf st "unsupported vector value"))
-    (HSubs [s a b] (vf st "unsupported vector value"))
-    (HJoin [sep xs] (vf st "unsupported vector value"))
-    (HStrNth [s idx res] (vf st "unsupported vector value"))
-    (HCharStr [x] (vf st "unsupported vector value"))
-    (HGet [src idx dflt ty res] (vf st "unsupported vector value"))
-    (HAnd [a b] (vf st "unsupported vector value"))
-    (HOr [a b] (vf st "unsupported vector value"))
-    (HNot [x] (vf st "unsupported vector value"))
-    (HAbs [x ty] (vf st "unsupported vector value"))
-    (HMin [a b ty] (vf st "unsupported vector value"))
-    (HMax [a b ty] (vf st "unsupported vector value"))
-    (HLoop [binds ty body] (vf st "unsupported vector value"))
-    (HRecur [args] (vf st "unsupported vector value"))
-    (HCtor [adt variant args] (vf st "unsupported vector value"))
-    (HDrop [x] (vf st "unsupported vector value"))
-    (HClosure [sig mangled params caps body] (vf st "unsupported vector value"))
-    (HClosureCall [f args sig] (vf st "unsupported vector value"))
-    (HSlurp [p] (vf st "unsupported vector value"))
-    (HSpit [path data] (vf st "unsupported vector value"))
-    (HArgs [] (vf st "unsupported vector value"))
-    (HExit [x] (vf st "unsupported vector value"))
-    (HParseNum [s int res] (vf st "unsupported vector value"))))
+    (HConstI64 [v] (vf st (str "unsupported vector value site1 tag " (h-tag e))))
+    (HConstF64 [v] (vf st (str "unsupported vector value site2 tag " (h-tag e))))
+    (HConstB [v] (vf st (str "unsupported vector value site3 tag " (h-tag e))))
+    (HStrLit [v] (vf st (str "unsupported vector value site4 tag " (h-tag e))))
+    (HBinW [op a b ty] (vf st (str "unsupported vector value site5 tag " (h-tag e))))
+    (HBinF [op a b] (vf st (str "unsupported vector value site6 tag " (h-tag e))))
+    (HCmpW [op a b ty] (vf st (str "unsupported vector value site7 tag " (h-tag e))))
+    (HStrCmp [pol a b] (vf st (str "unsupported vector value site8 tag " (h-tag e))))
+    (HStrOrd [op a b] (vf st (str "unsupported vector value site9 tag " (h-tag e))))
+    (HICast [x from to] (vf st (str "unsupported vector value site10 tag " (h-tag e))))
+    (HCount [x] (vf st (str "unsupported vector value site11 tag " (h-tag e))))
+    (HToStr [x ty] (vf st (str "unsupported vector value site12 tag " (h-tag e))))
+    (HStrCat [args] (vf st (str "unsupported vector value site13 tag " (h-tag e))))
+    (HSubs [s a b] (vf st (str "unsupported vector value site14 tag " (h-tag e))))
+    (HJoin [sep xs] (vf st (str "unsupported vector value site15 tag " (h-tag e))))
+    (HStrNth [s idx res] (vf st (str "unsupported vector value site16 tag " (h-tag e))))
+    (HCharStr [x] (vf st (str "unsupported vector value site17 tag " (h-tag e))))
+    (HGet [src idx dflt ty res] (vf st (str "unsupported vector value site18 tag " (h-tag e))))
+    (HAnd [a b] (vf st (str "unsupported vector value site19 tag " (h-tag e))))
+    (HOr [a b] (vf st (str "unsupported vector value site20 tag " (h-tag e))))
+    (HNot [x] (vf st (str "unsupported vector value site21 tag " (h-tag e))))
+    (HAbs [x ty] (vf st (str "unsupported vector value site22 tag " (h-tag e))))
+    (HMin [a b ty] (vf st (str "unsupported vector value site23 tag " (h-tag e))))
+    (HMax [a b ty] (vf st (str "unsupported vector value site24 tag " (h-tag e))))
+    (HLoop [binds ty body] (vf st (str "unsupported vector value site25 tag " (h-tag e))))
+    (HRecur [args] (vf st (str "unsupported vector value site26 tag " (h-tag e))))
+    (HCtor [adt variant args] (vf st (str "unsupported vector value site27 tag " (h-tag e))))
+    (HDrop [x] (vf st (str "unsupported vector value site28 tag " (h-tag e))))
+    (HClosure [sig mangled params caps body] (vf st (str "unsupported vector value site29 tag " (h-tag e))))
+    (HClosureCall [f args sig] (vf st (str "unsupported vector value site30 tag " (h-tag e))))
+    (HSlurp [p] (vf st (str "unsupported vector value site31 tag " (h-tag e))))
+    (HSpit [path data] (vf st (str "unsupported vector value site32 tag " (h-tag e))))
+    (HArgs [] (vf st (str "unsupported vector value site33 tag " (h-tag e))))
+    (HExit [x] (vf st (str "unsupported vector value site34 tag " (h-tag e))))
+    (HParseNum [s int res] (vf st (str "unsupported vector value site35 tag " (h-tag e))))))
 
 (deftype EVPRes (EVPRes [st :- Emit ps :- EMPS ls :- EMPS]))
 
@@ -10527,7 +10784,9 @@
     (HAbs [x ty] (sf st "expected an ADT expression"))
     (HMin [a b ty] (sf st "expected an ADT expression"))
     (HMax [a b ty] (sf st "expected an ADT expression"))
-    (HLoop [binds ty body] (sf st "expected an ADT expression"))
+    ; a loop completing with a boxed ADT (the reader's scan returns the
+    ; RRes from its loop): the loop machinery's completing register
+    (HLoop [binds ty body] (emit-loop-node (clone binds) (clone ty) (clone body) st))
     (HRecur [args] (sf st "recur outside loop"))
     (HDrop [x] (sf st "drop produces no ADT value"))
     (HClosure [sig mangled params caps body] (sf st "closure value must be bound with let"))
@@ -11574,20 +11833,16 @@
          (adt-clone-words nm off (- cnt 1) u))))
 
 (defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
-  (let [nm (adt-name-at (clone adts) i (clone tab))
-        nv (vlist-depth (adts-variants-at (clone adts) i))
-        dflt (if (> nv 0) "freebox" "done")]
+  ; S8 bootstrap: drop glue is a no-op. The kernel's self-compile hit a
+  ; premature-free class the ownership model does not see yet (a drop of
+  ; a still-referenced chain corrupts live state), and the pipeline
+  ; already tolerates leaks (match-scrutinee temps never freed). Frees
+  ; return with the post-fixpoint memory pass; correctness first.
+  (let [nm (adt-name-at (clone adts) i (clone tab))]
     (str "define void @drop__" nm "(ptr %src) {\n"
          "entry:\n"
-         "  %tag = load i64, ptr %src\n"
-         (glue-switch (clone adts) i 0 dflt)
-         (if (> nv 0)
-           "bad:\n  unreachable\n\n"
-           "")
-         (adt-drop-variants (clone adts) (clone owns) i 0 (clone tab))
-         (if (> nv 0)
-           "freebox:\n  call void @free(ptr %src)\n  ret void\n}\n"
-           "done:\n  ret void\n}\n"))))
+         "  ret void\n"
+         "}\n")))
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                          tab :- (Vector str)] :- str
@@ -11683,7 +11938,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [tg (ty-tag (clone ty))]
             (cond
               (= tg 15) (extern-params-rest (clone t) "ptr noalias nocapture readonly %data, i64 %len")
@@ -11698,7 +11953,7 @@
     (PNil [] acc)
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [tg (ty-tag (clone ty))]
             (cond
               (= tg 15) (extern-params-rest (clone t) (str acc ", ptr noalias nocapture readonly %data, i64 %len"))
@@ -11733,11 +11988,11 @@
                 (let [line (str "declare " (extern-ret-ll ret) " @"
                                 (mangle (sym-str (md-tab (clone mdl)) name))
                                 "(" (extern-params (clone params)) ")")]
-                  (emit-defns (clone t) (em-decl st line) out))
+                  (emit-defns t (em-decl st line) out))
                 (match (emit-plain name (clone params) (clone ret) (clone body)
-                                   (Emit (fn-new) (clone mdl) (clone sigs)))
+                                   (Emit (fn-new) mdl sigs))
                   (EDRes [st2 text]
-                    (emit-defns (clone t) st2
+                    (emit-defns t st2
                                 (EOut (sb-add-line
                                        (sb-add-line (out2-sb out) text)
                                        "")))))))))))))
@@ -11755,7 +12010,7 @@
     (PNil [] (ET2Res st acc ""))
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
               (let [nstr (sym-str (md-tab (clone mdl)) pname)
@@ -11919,7 +12174,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (str ", " (lambda-ll pty) " %" (mangle (sym-str (md-tab (clone mdl)) pname))
                (lambda-params (clone t) (clone mdl))))))))
 
@@ -11928,7 +12183,7 @@
     (PNil [] (EURes st))
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
               (let [r (str "%" (mangle (sym-str (md-tab (clone mdl)) pname)))]

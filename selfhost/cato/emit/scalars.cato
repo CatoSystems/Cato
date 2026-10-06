@@ -850,56 +850,100 @@
 (deftype SlotsRes (ESLRes [st :- Emit slots :- EMLSlots]))
 (deftype TailRes (ETRRes [st :- Emit v :- str done :- bool]))
 
+(defn slots-rev [ss :- EMLSlots st :- Emit acc :- EMLSlots] :- SlotsRes
+  (match ss
+    (ESlotsNil [] (ESLRes st acc))
+    (ESlots2 [name slot ty next] (slots-rev (clone next) st (ESlots2 name slot ty acc)))))
+
 (defn emit-loop-node [binds :- Binds ty :- Ty body :- HExpr st :- Emit] :- ESRes
   ; Slots hoisted to the entry prelude (the loop may run any number of
-  ; times); inits emit in source order.
+  ; times); inits emit in source order. loop-slots conses each binding
+  ; onto the accumulator while the HLoop binds arrive reversed, so the
+  ; slot list needs one reversal back into source order — the recur zip
+  ; is positional, and a swapped pair mis-types an argument.
   (match (loop-slots (clone binds) st (ESlotsNil))
-    (ESLRes [st1 slots]
-      (match (em-blk st1)
-        (ETRes [st2 head]
-          (let [st3 (em-line st2 (str "  br label %" head))
-                st4 (em-open st3 head)
-                st5 (loop-load-slots slots st4)]
-            (match st5
-              (Emit [c5 m5 s5]
-                (let [saved (fc-lfr (clone c5))
-                      st6 (em-with-lfr st5 (LoopFr slots head))]
-                  (match (emit-loop-tail (clone body) (clone ty) st6)
-                    (ETRRes [st7 v done]
-                      (let [st8 (em-with-lfr st7 saved)]
-                        (match (em-blk st8)
-                          (ETRes [st9 after]
-                            (if done
-                              (let [st10 (em-line st9 (str "  br label %" after))
-                                    st11 (em-open st10 after)]
-                                (ESRes st11 v))
-                              (let [st10 (em-open st9 after)
-                                    st11 (em-line st10 "  unreachable")]
-                                (ESRes st11 "undef")))))))))))))))))
+    (ESLRes [st1 slots0]
+      (match (slots-rev slots0 st1 (ESlotsNil))
+        (ESLRes [st2 slots]
+          (match (em-blk st2)
+            (ETRes [st3 head]
+              (let [st4 (em-line st3 (str "  br label %" head))
+                    st5 (em-open st4 head)
+                    st6 (loop-load-slots slots st5)]
+                (match st6
+                  (Emit [c6 m6 s6]
+                    (let [saved (fc-lfr (clone c6))
+                          st7 (em-with-lfr st6 (LoopFr slots head))]
+                      (match (emit-loop-tail (clone body) (clone ty) st7)
+                        (ETRRes [st8 v done]
+                          (let [st9 (em-with-lfr st8 saved)]
+                            (match (em-blk st9)
+                              (ETRes [st10 after]
+                                (if done
+                                  (let [st11 (em-line st10 (str "  br label %" after))
+                                        st12 (em-open st11 after)]
+                                    (ESRes st12 v))
+                                  (let [st11 (em-open st10 after)
+                                        st12 (em-line st11 "  unreachable")]
+                                    (ESRes st12 "undef")))))))))))))))))))
 
-; One alloca (prelude) + init store per binding, in source order.
+; One alloca (prelude) + init store per binding, in source order
+(defn loop-slot-vec-init [d :- str l :- str st :- Emit] :- ESRes
+  ; assemble {ptr d, i64 l, i64 l} — value-form headers carry cap=len.
+  ; em-ins3's markers: ^1 is the previous instruction, ^2 the one before,
+  ; so the chain is undef -> ^1 -> ^1 again.
+  (match (em-ins3 st
+           (str "~ = insertvalue %VecI64 undef, ptr " d ", 0")
+           (str "~ = insertvalue %VecI64 ^1, i64 " l ", 1")
+           (str "~ = insertvalue %VecI64 ^1, i64 " l ", 2"))
+    (ET3Res [st1 s0 s1 s2] (ESRes st1 s2))))
+
 (defn loop-slots [binds :- Binds st :- Emit acc :- EMLSlots] :- SlotsRes
   (match binds
     (BNil [] (ESLRes st acc))
     (BCons [name v ty next]
-      (match (em-temp st)
-        (ETRes [st1 slot]
-          (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty) ", align 8"))]
-            (match (emit-typed (clone v) (clone ty) st2)
-              (ESRes [st3 init]
-                (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty) " " init ", ptr " slot ", align 8"))]
-                  (loop-slots (clone next) st4 (ESlots2 name slot (clone ty) acc)))))))))))
+      (match st
+        (Emit [c mdl sigs]
+          (if (loop-slot-vec ty)
+            (match (em-temp st)
+              (ETRes [st1 slot]
+                (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))]
+                  (match (emit-vec-pair (clone v) st2)
+                    (EVRes [st3 d l el]
+                      (match (loop-slot-vec-init d l st3)
+                        (ESRes [st4 hdr]
+                          (let [st5 (em-line st4 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))]
+                            (loop-slots (clone next) st5 (ESlots2 name slot (clone ty) acc))))))))))
+            (match (em-temp st)
+              (ETRes [st1 slot]
+                (match st1
+                  (Emit [c mdl sigs]
+                    (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty (clone mdl)) ", align 8"))]
+                      (match (emit-typed (clone v) (clone ty) st2)
+                        (ESRes [st3 init]
+                          (match st3
+                            (Emit [c3 m3 s3]
+                              (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty (clone m3)) " " init ", ptr " slot ", align 8"))]
+                                (loop-slots (clone next) st4 (ESlots2 name slot (clone ty) acc))))))))))))))))))
 
 ; Fresh registers for every variable at the loop head.
 (defn loop-load-slots [slots :- EMLSlots st :- Emit] :- Emit
   (match slots
     (ESlotsNil [] st)
     (ESlots2 [name slot ty next]
-      (match (em-temp st)
-        (ETRes [st1 r]
-          (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty) ", ptr " slot ", align 8"))
-                st3 (em-sc-put st2 name r ty)]
-            (loop-load-slots (clone next) st3)))))))
+      (if (loop-slot-vec ty)
+        (match (em-ins3 st
+                 (str "~ = load %VecI64, ptr " slot ", align 8")
+                 (str "~ = extractvalue %VecI64 ^1, 0")
+                 (str "~ = extractvalue %VecI64 ^2, 1"))
+          (ET3Res [st1 _h d l]
+            (loop-load-slots (clone next) (em-vc-put st1 name d l (ty-arg ty)))))
+        (match (em-temp st)
+          (ETRes [st1 r]
+            (match st1
+              (Emit [c mdl sigs]
+                (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty (clone mdl)) ", ptr " slot ", align 8"))]
+                  (loop-load-slots (clone next) (em-sc-put st2 name r ty)))))))))))
 
 (defn emit-loop-tail [e :- HExpr ty :- Ty st :- Emit] :- TailRes
   (match e
@@ -932,8 +976,10 @@
                                 st10 (em-open st9 bm)]
                             (cond
                               (and tdone edone)
-                              (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity)) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
-                                (ETRes [st11 r] (ETRRes st11 r true)))
+                              (match st10
+                                (Emit [c10 m10 s10]
+                                  (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity) (clone m10)) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
+                                    (ETRes [st11 r] (ETRRes st11 r true)))))
                               tdone (ETRRes st10 tv true)
                               edone (ETRRes st10 ev true)
                               (let [st11 (em-line st10 "  unreachable")]
@@ -959,16 +1005,27 @@
 
 ; Positional zip: the k-th recur arg stores into the k-th slot.
 ; Positional zip: the k-th recur arg stores into the k-th slot.
+(defn recur-store-vec [d :- str l :- str slot :- str st :- Emit] :- EURes
+  (match (loop-slot-vec-init d l st)
+    (ESRes [st1 hdr] (EURes (em-line st1 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))))))
+
 (defn recur-stores [args :- HExprs slots :- EMLSlots st :- Emit] :- EURes
   (match args
     (HENil [] (EURes st))
     (HECons [kid next]
       (match slots
         (ESlots2 [name slot sty snext]
-          (match (emit-typed (clone kid) (clone sty) st)
-            (ESRes [st1 v]
-              (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty) " " v ", ptr " slot ", align 8")))
-                (EURes [st2] (EURes st2))))))
+          (if (loop-slot-vec sty)
+            (match (emit-vec-pair (clone kid) st)
+              (EVRes [st1 d l el]
+                (match (recur-store-vec d l slot st1)
+                  (EURes [st2] (recur-stores2 (clone next) (clone snext) st2)))))
+            (match (emit-typed (clone kid) (clone sty) st)
+              (ESRes [st1 v]
+                (match st1
+                  (Emit [c1 m1 _s1]
+                    (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty m1) " " v ", ptr " slot ", align 8")))
+                      (EURes [st2] (EURes st2)))))))))
         (_ (EURes (do (cg-fail-i "recur arg/slot mismatch") st)))))))
 
 ; The tail walk after the first store (state already carries the store).
@@ -978,9 +1035,16 @@
     (HECons [kid next]
       (match slots
         (ESlots2 [name slot sty snext]
-          (match (emit-typed (clone kid) (clone sty) st)
-            (ESRes [st1 v]
-              (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty) " " v ", ptr " slot ", align 8")))
-                (EURes [st2] (EURes st2))))))
+          (if (loop-slot-vec sty)
+            (match (emit-vec-pair (clone kid) st)
+              (EVRes [st1 d l el]
+                (match (recur-store-vec d l slot st1)
+                  (EURes [st2] (recur-stores2 (clone next) (clone snext) st2)))))
+            (match (emit-typed (clone kid) (clone sty) st)
+              (ESRes [st1 v]
+                (match st1
+                  (Emit [c1 m1 _s1]
+                    (match (recur-stores2 (clone next) (clone snext) (em-line st1 (str "  store " (ll-loop-slot-ty sty m1) " " v ", ptr " slot ", align 8")))
+                      (EURes [st2] (EURes st2)))))))))
         (_ (EURes (do (cg-fail-i "recur arg/slot mismatch") st)))))))
 

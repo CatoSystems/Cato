@@ -169,7 +169,14 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         let header = emit_collection_ret(&defn.body, defn.ret, &mut c, mdl, sigs);
         c.line(&format!("  ret %VecI64 {}", header));
     } else {
-        let val = emit_for_ret(&defn.body, &mut c, mdl, sigs, defn.ret);
+        // A returned str is caller-freed, so borrowed-shape leaves (literals,
+        // vector element loads) must materialize an owned copy first.
+        let body = if defn.ret == Ty::Str {
+            own_str_return(&defn.body)
+        } else {
+            defn.body.clone()
+        };
+        let val = emit_for_ret(&body, &mut c, mdl, sigs, defn.ret);
         if let Ty::Adt(i) = defn.ret {
             if mdl.adt_boxed(i) {
                 // Boxed: the pointer itself is returned; ownership moves.
@@ -365,9 +372,49 @@ pub(crate) fn emit_typed(
         }
         Ty::Adt(_) => emit_adt(e, c, mdl, sigs),
         Ty::Str => emit_str_val(e, c, mdl, sigs),
-        Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_) => {
-            panic!("codegen: control flow cannot produce an aggregate")
+        // Collection values in recur position: the loop slot holds the
+        // {ptr, len, cap} header, so growable bindings load it live (cap
+        // included) and other forms assemble a fresh header with cap=len
+        // (maps carry their representation tag in cap, sets 0).
+        Ty::Vec(_) => match e {
+            HExpr::Var(v) if c.grow.contains_key(v) => {
+                let slot = c.grow.get(v).unwrap().0.clone();
+                let s = c.temp();
+                c.line(&format!("  {} = load %VecI64, ptr {}, align 8", s, slot));
+                s
+            }
+            _ => {
+                let (p, l, _) = emit_vec_pair(e, c, mdl, sigs);
+                let s0 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+                let s1 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+                let s2 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, l));
+                s2
+            }
+        },
+        Ty::Map => {
+            let (p, l, cap) = map_val(e, c, mdl, sigs);
+            let s0 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+            let s1 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+            let s2 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+            s2
         }
+        Ty::Set => {
+            let (p, l) = set_val(e, c, mdl, sigs);
+            let s0 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+            let s1 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+            let s2 = c.temp();
+            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 0, 2", s2, s1));
+            s2
+        }
+        Ty::Fn(_) => panic!("codegen: control flow cannot produce a closure"),
         Ty::Param(_) => panic!("codegen: unresolved type parameter"),
     }
 }

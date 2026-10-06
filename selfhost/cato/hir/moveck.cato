@@ -20,7 +20,7 @@
 ; --- read-only context ---------------------------------------------------------
 
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
-                    tab :- (Vector str) shared :- Sids]))
+                    tab :- (Vector str) shared :- Sids loopcopy :- Sids]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -41,7 +41,7 @@
              (is-non-copy-ty (clone t))
              (= (im-get st v 0) 1))
       (match bcx
-        (BCtx [escaped shadowed facts tab shared]
+        (BCtx [escaped shadowed facts tab shared _lc]
           (UseRes rem2 (str "use of moved value " (sym-str (clone tab) v)))))
       (UseRes rem2 ""))))
 
@@ -64,8 +64,14 @@
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
             (MncErr msg)
-            (match (move-var v (clone st) (clone owns) cons)
-              (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2))))))
+            (match bcx
+              ; a non-Copy loop variable rides as Copy: calls and
+              ; constructors borrow it, nothing moves (S8)
+              (BCtx [escaped shadowed facts tab shared loopcopy]
+                (if (sids-has (clone loopcopy) v)
+                  (MncRes st owns rem2 cons)
+                  (match (move-var v (clone st) (clone owns) cons)
+                    (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2)))))))))
       (MncRes st owns rem cons))))
 
 (defn im-remove [m :- IMap k :- i64] :- IMap
@@ -343,7 +349,7 @@
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
                   cons :- IMap tys :- TyEnv bcx :- BCtx] :- B4
   (match bcx
-    (BCtx [escaped shadowed facts tab shared]
+    (BCtx [escaped shadowed facts tab shared _lc]
       (if (sids-has (clone shared) name)
         (B4 st owns rem cons)
         (b-call-move-walk args st owns rem cons (clone tys) (clone (clone bcx)))))))
@@ -399,13 +405,13 @@
 
 (defn b-facts-of [bcx :- BCtx] :- Facts
   (match bcx
-    (BCtx [escaped shadowed facts tab shared] (clone facts))))
+    (BCtx [escaped shadowed facts tab shared _lc] (clone facts))))
 
 ; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
 ; consumed ∧ not shadowed, in binding order — the whole destruction rule
 (defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared]
+    (BCtx [escaped shadowed facts tab shared _lc]
       (b-frees-walk binds st owns cons (clone escaped) (clone shadowed) (clone facts)))))
 
 (defn b-frees-walk [binds :- Binds st :- IMap owns :- IMap cons :- IMap
@@ -428,6 +434,21 @@
 (deftype BLoopRes (BLoopRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
                             tys :- TyEnv binds :- Binds saved :- IMap])
                 (BLoopErr [msg :- str]))
+
+; S8: a non-Copy loop variable rides as Copy — reads and calls never
+; move it, and no scope frees it. Non-Copy bind names collect into a set
+; the body walk consults through the context.
+(defn bcx-with-loopcopy [bcx :- BCtx names :- Sids] :- BCtx
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc]
+      (BCtx escaped shadowed facts tab shared names))))
+
+(defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
+  (match binds
+    (BNil [] acc)
+    (BCons [name init ty next]
+      (binds-loopcopy (clone next)
+        (if (is-non-copy-ty (clone ty)) (SCons name acc) acc)))))
 
 (defn b-loop-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
                    tys :- TyEnv bcx :- BCtx acc :- Binds saved :- IMap] :- BLoopRes
@@ -815,7 +836,8 @@
     (match (b-loop-binds (clone binds) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (BNil) (MNil))
       (BLoopErr [msg] (BErr msg))
       (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved]
-        (match (bcheck (clone body) st1 owns1 rem1 cons1 (clone tys1) (clone (clone bcx)))
+        (match (bcheck (clone body) st1 owns1 rem1 cons1 (clone tys1)
+                       (bcx-with-loopcopy (clone (clone bcx)) (binds-loopcopy (binds-rev (clone binds2) (BNil)) (SNil))))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
             (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop (binds-rev binds2 (BNil)) ty body2)))))))
@@ -900,13 +922,30 @@
 ; --- plan_drops: the per-defn wrapper ------------------------------------------------
 
 ; precompute the Shared-kind callees: builtins and externs never consume
-(defn b-shared-callees [defs :- Defns acc :- Sids] :- Sids
+(defn plist-has-borrowed [ps :- PList] :- bool
+  (match ps
+    (PNil [] false)
+    (PCons [h t]
+      (match h
+        (Param [pname pty pb]
+          (if (= pb 1) true (plist-has-borrowed (clone t))))))))
+
+(defn b-shared-callees [defs :- &Defns acc :- Sids] :- Sids
+  ; externs never consume; a defn with a borrowed (&) parameter never
+  ; consumes either — its borrowed args stay with the caller (S8).
+  ; The walk borrows: cloning the whole program per step made the
+  ; self-compile quadratic.
   (match defs
     (DNil [] acc)
     (DCons [h t]
-      (match h
+      ; one shallow destructure per defn: h is a binder of the borrowed
+      ; walk, so the inner match consumes a clone of the box (the walk
+      ; itself stays O(n))
+      (match (clone h)
         (Defn [name params ret isextern body]
-          (b-shared-callees (clone t) (if (= isextern 1) (SCons name acc) acc)))))))
+          (b-shared-callees t
+            (if (or (= isextern 1) (plist-has-borrowed params))
+              (SCons name acc) acc)))))))
 
 (defn b-add-builtins [acc :- Sids] :- Sids
   (sids-append (sids-append (sids-append (sids-append (sids-append (sids-append
@@ -918,16 +957,18 @@
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
 (defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- (Vector str) defs :- Defns] :- BPlan
+             tab :- (Vector str) shared :- Sids] :- BPlan
+  ; `shared` (externs + borrowed-param callees + builtins) is computed
+  ; once per program by check-program — computing it per defn walked the
+  ; whole Defns chain 1000+ times.
   (let [escaped (b-tail-escape (clone body) (SNil))
         shadowed (b-shadowed-of (b-count-binds (clone body) (MNil)) (SNil))
         rem0 (b-count-vars (clone body) (MNil))
-        shared (b-add-builtins (b-shared-callees (clone defs) (SNil)))
         r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
     (match r
       (BLErr [msg] (BPlanErr msg))
       (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared)]
+        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil))]
           (match (bcheck (clone body) (clone st0) (clone owns0) (clone rem0) (clone cons0) (clone tys0) bcx)
             (BErr [msg]
               (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
@@ -940,10 +981,10 @@
     (PNil [] (BLRes st owns rem cons tys (BNil)))
     (PCons [p rest]
       (match p
-        (Param [pname pty]
+        (Param [pname pty pb]
           (b-init-params (clone rest) facts
                          (im-put st pname 0)
-                         (im-put owns pname (if (b-param-moves (clone pty) (clone facts)) 1 0))
+                         (im-put owns pname (if (and (= pb 0) (b-param-moves (clone pty) (clone facts))) 1 0))
                          rem
                          cons
                          (te-put tys pname pty)))))))
@@ -954,42 +995,50 @@
               (CKErr [msg :- str]))
 
 (defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- (Vector str)
-                  alldefs :- Defns] :- CkRes
+                  shared :- Sids] :- CkRes
+  ; the whole-program state threads by move — a per-step clone of facts/
+  ; tab/alldefs made the self-compile quadratic (S8)
   (match ds
     (DNil [] (CKOk acc (LMNil)))
     (DCons [h t]
-      (match (clone h)
+      (match h
         (Defn [name params ret ie body]
           (if (= ie 1)
-            (check-defns (clone t) (defns-append acc (clone h)) (clone facts) (clone tab) (clone alldefs))
-            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+            (check-defns t (defns-append acc h) facts tab shared)
+            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared))
               (BPlanErr [msg] (CKErr msg))
               (BPlan [st owns body2]
-                (check-defns (clone t)
+                (check-defns t
                              (defns-append acc (Defn name (clone params) (clone ret) ie body2))
-                             (clone facts) (clone tab) (clone alldefs))))))))))
+                             facts tab shared)))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
 (defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- (Vector str)
-                 alldefs :- Defns] :- LkRes
+                 shared :- Sids] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone alldefs))
+          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone shared))
             (BPlanErr [msg] (LErrL msg))
             (BPlan [st owns body2]
               (check-lams (clone t) (lams-append acc (Lam mangled (clone caps) (clone params) (clone ret) body2))
-                          (clone facts) (clone tab) (clone alldefs)))))))))
+                          (clone facts) (clone tab) (clone shared)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
                     tab :- (Vector str)] :- CkRes
-  (match (check-defns (clone defs) (DNil) (clone facts) (clone tab) (clone defs))
-    (CKErr [msg] (CKErr msg))
-    (CKOk [defs2 lams0]
-      (match (check-lams (clone lams) (LMNil) (clone facts) (clone tab) (clone defs))
-        (LErrL [msg] (CKErr msg))
-        (LOkL [lams2] (CKOk defs2 lams2))))))
+  (let [shared (b-add-builtins (b-shared-callees defs (SNil)))
+        ; the second stage re-reads the small program state: clone it
+        ; before the first call moves it
+        facts2 (clone facts)
+        tab2 (clone tab)
+        shared2 (clone shared)]
+    (match (check-defns defs (DNil) facts tab shared)
+      (CKErr [msg] (CKErr msg))
+      (CKOk [defs2 lams0]
+        (match (check-lams lams (LMNil) facts2 tab2 shared2)
+          (LErrL [msg] (CKErr msg))
+          (LOkL [lams2] (CKOk defs2 lams2)))))))
 

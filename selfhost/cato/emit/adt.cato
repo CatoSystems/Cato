@@ -97,7 +97,9 @@
     (HAbs [x ty] (sf st "expected an ADT expression"))
     (HMin [a b ty] (sf st "expected an ADT expression"))
     (HMax [a b ty] (sf st "expected an ADT expression"))
-    (HLoop [binds ty body] (sf st "expected an ADT expression"))
+    ; a loop completing with a boxed ADT (the reader's scan returns the
+    ; RRes from its loop): the loop machinery's completing register
+    (HLoop [binds ty body] (emit-loop-node (clone binds) (clone ty) (clone body) st))
     (HRecur [args] (sf st "recur outside loop"))
     (HDrop [x] (sf st "drop produces no ADT value"))
     (HClosure [sig mangled params caps body] (sf st "closure value must be bound with let"))

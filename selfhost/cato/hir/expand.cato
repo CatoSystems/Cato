@@ -151,42 +151,42 @@
 
 ; --- chain helpers ---------------------------------------------------------
 
-(defn asts-null [ks :- Asts] :- bool
+(defn asts-null [ks :- &Asts] :- bool
   (match ks
     (KNil [] true)
     (KCons [kid rest] false)))
 
 (defn asts-tail [ks :- Asts] :- Asts
   (match ks
-    (KCons [kid rest] (clone rest))
+    (KCons [kid rest] rest)
     (KNil [] (KNil))))
 
 (defn asts-drop [ks :- Asts n :- i64] :- Asts
   (if (= n 0)
-    (clone ks)
+    ks
     (match ks
-      (KCons [kid rest] (asts-drop (clone rest) (- n 1)))
+      (KCons [kid rest] (asts-drop rest (- n 1)))
       (KNil [] (KNil)))))
 
 (defn asts-idx [ks :- Asts i :- i64] :- Ast
   (match ks
     (KCons [kid rest]
-      (if (= i 0) (clone kid) (asts-idx (clone rest) (- i 1))))
+      (if (= i 0) kid (asts-idx rest (- i 1))))
     (KNil [] (ANil (Span 0 0 0)))))
 
 (defn asts-last [ks :- Asts] :- Ast
   (match ks
     (KCons [kid rest]
-      (if (asts-null (clone rest)) (clone kid) (asts-last (clone rest))))
+      (if (asts-null rest) kid (asts-last rest)))
     (KNil [] (ANil (Span 0 0 0)))))
 
 (defn asts-append [ks :- Asts x :- Ast] :- Asts
   (match ks
     (KNil [] (KCons x (KNil)))
-    (KCons [kid rest] (KCons (clone kid) (asts-append (clone rest) x)))))
+    (KCons [kid rest] (KCons kid (asts-append rest x)))))
 
 ; The head symbol's sid, or -1 when the head is not a symbol.
-(defn ast-sid-of [a :- Ast] :- i64
+(defn ast-sid-of [a :- &Ast] :- i64
   (match a
     (ANil [at] -1)
     (ASym [sid at] sid)
@@ -199,9 +199,9 @@
     (AMap [ks at] -1)
     (ASet [ks at] -1)))
 
-(defn asts-head-sid [ks :- Asts] :- i64
+(defn asts-head-sid [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid rest] (ast-sid-of (clone kid)))
+    (KCons [kid rest] (ast-sid-of kid))
     (KNil [] -1)))
 
 ; The child chain of a node; atoms have none.
@@ -213,65 +213,69 @@
     (AF64 [v at] (KNil))
     (ABool [v at] (KNil))
     (AStr [v at] (KNil))
-    (AList [ks at] (clone ks))
-    (AVec [ks at] (clone ks))
-    (AMap [ks at] (clone ks))
-    (ASet [ks at] (clone ks))))
+    (AList [ks at] ks)
+    (AVec [ks at] ks)
+    (AMap [ks at] ks)
+    (ASet [ks at] ks)))
 
+; All but the last child (cond's odd trailing default peels off here) —
+ ; one spine walk, the boxes moved into the fresh conses.
 (defn asts-init [ks :- Asts] :- Asts
-  ; All but the last child (cond's odd trailing default peels off here).
   (match ks
     (KCons [kid rest]
-      (if (asts-null (clone rest))
+      (if (asts-null rest)
         (KNil)
-        (KCons (clone kid) (asts-init (clone rest)))))
+        (KCons kid (asts-init rest))))
     (KNil [] (KNil))))
 
 ; --- the walk --------------------------------------------------------------
 
 (defn expand-all [forms :- Asts acc :- Asts] :- ERes
+  ; The match consumes `forms`, so the tail binder moves into the
+  ; recursion directly — a `(clone rest)` here deep-copies the whole
+  ; remaining chain per form and makes self-compilation quadratic (S8).
   (match forms
     (KCons [f rest]
       (let [sp (ast-at (clone f))
-            r (expand-form (clone f))]
+            r (expand-form f)]
         (match r
-          (EOk1 [a] (expand-all (clone rest) (KCons (clone a) acc)))
+          (EOk1 [a] (expand-all rest (KCons a acc)))
           (EErr1 [msg at] (EErr (clone msg) sp)))))
     (KNil [] (EOk (asts-rev acc (KNil))))))
 
 (defn expand-kids [ks :- Asts acc :- Asts] :- EResk
   (match ks
     (KCons [kid rest]
-      (let [r (expand-form (clone kid))]
+      (let [r (expand-form kid)]
         (match r
-          (EOk1 [a] (expand-kids (clone rest) (KCons (clone a) acc)))
+          (EOk1 [a] (expand-kids rest (KCons a acc)))
           (EErr1 [msg at] (EErrk (clone msg) at)))))
     (KNil [] (EOkk (asts-rev acc (KNil))))))
 
 (defn expand-form [a :- Ast] :- ERes1
   (match a
     (AList [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (expand-list (AList (clone ks) at)))
+          (EOkk [ks] (expand-list (AList ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (AVec [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (EOk1 (AVec (clone ks) at)))
+          (EOkk [ks] (EOk1 (AVec ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (AMap [kids at]
-      (let [rk (expand-kids (clone kids) (KNil))]
+      (let [rk (expand-kids kids (KNil))]
         (match rk
-          (EOkk [ks] (EOk1 (AMap (clone ks) at)))
+          (EOkk [ks] (EOk1 (AMap ks at)))
           (EErrk [msg at2] (EErr1 (clone msg) at2)))))
     (ANil [at] (EOk1 (ANil at)))
     (ASym [sid at] (EOk1 (ASym sid at)))
     (AInt [v at] (EOk1 (AInt v at)))
     (AF64 [v at] (EOk1 (AF64 v at)))
     (ABool [v at] (EOk1 (ABool v at)))
-    (AStr [v at] (EOk1 (AStr (clone v) at)))
-    (ASet [kids at] (EOk1 (ASet (clone kids) at)))))
+    (AStr [v at] (EOk1 (AStr v at)))
+    (ASet [kids at] (EOk1 (ASet kids at)))))
 
 
 ; Dispatch on the (already expanded) list head. Threading wins first, as
@@ -280,54 +284,54 @@
 (defn expand-list [a :- Ast] :- ERes1
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))
-            al (sp-line (clone at))
-            ac (sp-col (clone at))
-            an (sp-len (clone at))]
+      (let [h (asts-head-sid kids)
+            al (sp-line at)
+            ac (sp-col at)
+            an (sp-len at)]
         (cond
           (= h (s-arrow))
-          (expand-thread (asts-tail (clone kids)) 0 al ac an)
+          (expand-thread (asts-tail kids) 0 al ac an)
 
           (= h (s-arrowr))
-          (expand-thread (asts-tail (clone kids)) 1 al ac an)
+          (expand-thread (asts-tail kids) 1 al ac an)
 
           (= h (s-when))
-          (expand-when (clone kids) al ac an)
+          (expand-when kids al ac an)
 
           (= h (s-whennot))
-          (expand-whennot (clone kids) al ac an)
+          (expand-whennot kids al ac an)
 
           (= h (s-cond))
-          (expand-cond (clone kids) al ac an)
+          (expand-cond kids al ac an)
 
           (= h (s-iflet))
-          (expand-iflet (clone kids) al ac an)
+          (expand-iflet kids al ac an)
 
           (= h (s-whenlet))
-          (expand-whenlet (clone kids) al ac an)
+          (expand-whenlet kids al ac an)
 
           (= h (s-ifnot))
-          (expand-ifnot (clone kids) al ac an)
+          (expand-ifnot kids al ac an)
 
           (= h (s-doseq))
           (EErr1 "unsupported macro doseq" (Span al ac an))
 
           (= h (s-and))
-          (expand-andor (clone kids) al ac an (s-and) "and")
+          (expand-andor kids al ac an (s-and) "and")
 
           (= h (s-or))
-          (expand-andor (clone kids) al ac an (s-or) "or")
+          (expand-andor kids al ac an (s-or) "or")
 
-          (EOk1 (AList (clone kids) at)))))
+          (EOk1 (AList kids at)))))
     (ANil [at] (EOk1 (ANil at)))
     (ASym [sid at] (EOk1 (ASym sid at)))
     (AInt [v at] (EOk1 (AInt v at)))
     (AF64 [v at] (EOk1 (AF64 v at)))
     (ABool [v at] (EOk1 (ABool v at)))
-    (AStr [v at] (EOk1 (AStr (clone v) at)))
-    (AVec [kids at] (EOk1 (AVec (clone kids) at)))
-    (AMap [kids at] (EOk1 (AMap (clone kids) at)))
-    (ASet [kids at] (EOk1 (ASet (clone kids) at)))))
+    (AStr [v at] (EOk1 (AStr v at)))
+    (AVec [kids at] (EOk1 (AVec kids at)))
+    (AMap [kids at] (EOk1 (AMap kids at)))
+    (ASet [kids at] (EOk1 (ASet kids at)))))
 
 ; --- node builders ---------------------------------------------------------
 
@@ -353,16 +357,15 @@
 (defn expand-thread [steps :- Asts lastb :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match steps
     (KNil [] (EErr1 "threading macro expects at least one step" (Span sl sc sn)))
-    (KCons [first rest] (thread-loop (clone rest) (clone first) lastb sl sc sn))))
+    (KCons [first rest] (thread-loop rest first lastb sl sc sn))))
 
 (defn thread-loop [steps :- Asts acc :- Ast lastb :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match steps
     (KNil [] (EOk1 acc))
     (KCons [step rest]
-      (let [rs (apply-step acc (clone step) lastb sl sc sn)]
-        (match rs
-          (EOk1 [a2] (thread-loop (clone rest) (clone a2) lastb sl sc sn))
-          (EErr1 [msg at2] (EErr1 (clone msg) at2)))))))
+      (match (apply-step acc step lastb sl sc sn)
+        (EOk1 [a2] (thread-loop rest a2 lastb sl sc sn))
+        (EErr1 [msg at2] (EErr1 (clone msg) at2))))))
 
 ; A step is a list (insert the previous result at position 1, or append
 ; for `->>`) or a bare symbol (become a call on it).
@@ -370,8 +373,8 @@
   (match step
     (AList [kids sat]
       (if (= lastb 0)
-        (EOk1 (AList (insert-at-1 (clone kids) prev) sat))
-        (EOk1 (AList (asts-append (clone kids) prev) sat))))
+        (EOk1 (AList (insert-at-1 kids prev) sat))
+        (EOk1 (AList (asts-append kids prev) sat))))
     (ASym [sid sat]
       (EOk1 (AList (KCons (ASym sid sat) (KCons prev (KNil))) sat)))
     (ANil [sat] (EErr1 "threading step must be a list or symbol" (Span sl sc sn)))
@@ -385,53 +388,77 @@
 
 (defn insert-at-1 [kids :- Asts prev :- Ast] :- Asts
   (match kids
-    (KCons [head rest] (KCons (clone head) (KCons prev (clone rest))))
+    (KCons [head rest] (KCons head (KCons prev rest)))
     (KNil [] (KCons prev (KNil)))))
 
 ; --- branching -------------------------------------------------------------
 
 (defn expand-when [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  ; The depth query borrows; the match then consumes the chain and the
+  ; binders move into the desugaring — no idx/drop clones (S8).
+  (if (< (asts-depth kids) 3)
     (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-      (EOk1 (list4 (s-if) c doform (AInt 0 (Span sl sc sn)) sl sc sn)))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c body]
+            (let [doform (do-form body sl sc sn)]
+              (EOk1 (list4 (s-if) c doform (AInt 0 (Span sl sc sn)) sl sc sn))))
+          (KNil [] (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))))))
 
 (defn expand-whennot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  (if (< (asts-depth kids) 3)
     (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-      (EOk1 (list4 (s-if) c (AInt 0 (Span sl sc sn)) doform sl sc sn)))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c body]
+            (let [doform (do-form body sl sc sn)]
+              (EOk1 (list4 (s-if) c (AInt 0 (Span sl sc sn)) doform sl sc sn))))
+          (KNil [] (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn))))))
 
 (defn expand-cond [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [arms (asts-tail kids)]
-    (if (asts-null (clone arms))
-      (EErr1 "cond expects at least one test/body pair" (Span sl sc sn))
-      (cond-nest arms sl sc sn))))
+  (match kids
+    (KCons [_h arms] (cond-nest arms sl sc sn))
+    (KNil [] (EErr1 "cond expects at least one test/body pair" (Span sl sc sn)))))
+
+; The last element split off in one spine walk (the odd-trailing-default
+ ; case needs both halves; two consuming passes cannot share one chain).
+(deftype LastSplit (LSplit [init :- Asts last :- Ast]))
+
+(defn asts-split-last [ks :- Asts] :- LastSplit
+  (match ks
+    (KCons [kid rest]
+      (if (asts-null rest)
+        (LSplit (KNil) kid)
+        (match (asts-split-last rest)
+          (LSplit [init last] (LSplit (KCons kid init) last)))))
+    (KNil [] (LSplit (KNil) (ANil (Span 0 0 0))))))
 
 (defn cond-nest [arms :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [n (asts-depth (clone arms))]
-    (if (even? n)
-      (cond-fold (asts-rev (clone arms) (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
-      (let [dflt (asts-last (clone arms))
-            pairs (asts-init (clone arms))]
-        (cond-fold (asts-rev pairs (KNil)) dflt sl sc sn)))))
+  (if (asts-null arms)
+    (EErr1 "cond expects at least one test/body pair" (Span sl sc sn))
+    (if (even? (asts-depth arms))
+    (cond-fold (asts-rev arms (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
+    (match (asts-split-last arms)
+      (LSplit [pairs dflt]
+        (cond-fold (asts-rev pairs (KNil)) dflt sl sc sn))))))
 
 ; Fold the reversed pairs two at a time: each step wraps the accumulator
 ; in (if test body acc).
 (defn cond-fold [rev :- Asts acc :- Ast sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match rev
     (KCons [b rest]
-      (let [rc (clone rest)]
-        (match rc
-          (KCons [c rest2]
-            (cond-fold (clone rest2)
-                       (AList (KCons (ASym (s-if) (Span sl sc sn))
-                               (KCons (clone c) (KCons (clone b) (KCons acc (KNil)))))
-                              (Span sl sc sn))
-                       sl sc sn))
-          (KNil [] (EOk1 acc)))))
+      (match rest
+        (KCons [c rest2]
+          (cond-fold rest2
+                     (AList (KCons (ASym (s-if) (Span sl sc sn))
+                             (KCons c (KCons b (KCons acc (KNil)))))
+                            (Span sl sc sn))
+                     sl sc sn))
+        (KNil [] (EOk1 acc))))
     (KNil [] (EOk1 acc))))
 
 ; --- binding forms ---------------------------------------------------------
@@ -443,8 +470,13 @@
 (defn bind2-of [b :- Ast msg :- str] :- Bind2
   (match b
     (AVec [ks sp]
-      (if (= (asts-depth (clone ks)) 2)
-        (B2 (asts-idx (clone ks) 0) (asts-idx (clone ks) 1))
+      (if (= (asts-depth ks) 2)
+        (match ks
+          (KCons [x r1]
+            (match r1
+              (KCons [e _r2] (B2 x e))
+              (KNil [] (B2Err msg))))
+          (KNil [] (B2Err msg)))
         (B2Err msg)))
     (ANil [sp] (B2Err msg))
     (ASym [sid sp] (B2Err msg))
@@ -457,72 +489,98 @@
     (ASet [ks sp] (B2Err msg))))
 
 (defn expand-iflet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [n (asts-depth (clone kids))]
+  (let [n (asts-depth kids)]
     (if (and (not (= n 4)) (not (= n 5)))
       (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn))
-      (let [rb (bind2-of (asts-idx (clone kids) 1)
-                         "if-let binding must be a 2-element vector [x e]")]
-        (match rb
-        (B2 [x e]
-          (let [then (asts-idx (clone kids) 2)
-                els (if (= n 4) (asts-idx (clone kids) 3) (AInt 0 (Span sl sc sn)))]
-            (EOk1 (let-1 (clone x) (clone e)
-                         (AList (KCons (ASym (s-if) (Span sl sc sn))
-                                 (KCons (clone x) (KCons then (KCons els (KNil)))))
-                                (Span sl sc sn))
-                         sl sc sn))))
-      (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn))))))))
+      (match kids
+        (KCons [_h r1]
+          (match r1
+            (KCons [b rest2]
+              (match (bind2-of b "if-let binding must be a 2-element vector [x e]")
+                (B2 [x e]
+                  (match rest2
+                    (KCons [then rest3]
+                      (let [els (if (= n 4)
+                                  (match rest3
+                                    (KCons [e3 _r4] e3)
+                                    (KNil [] (AInt 0 (Span sl sc sn))))
+                                  (AInt 0 (Span sl sc sn)))]
+                        ; x binds twice: one clone, one move.
+                        (EOk1 (let-1 (clone x) e
+                                     (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                             (KCons x (KCons then (KCons els (KNil)))))
+                                            (Span sl sc sn))
+                                     sl sc sn))))
+                    (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
+                (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+          (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
+        (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))))
 
 (defn expand-whenlet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth (clone kids)) 3)
+  (if (< (asts-depth kids) 3)
     (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))
-    (let [rb (bind2-of (asts-idx (clone kids) 1)
-                     "when-let binding must be a 2-element vector [x e]")]
-      (match rb
-      (B2 [x e]
-        (let [doform (do-form (asts-drop (clone kids) 2) sl sc sn)]
-          (EOk1 (let-1 (clone x) (clone e)
-                       (AList (KCons (ASym (s-if) (Span sl sc sn))
-                               (KCons (clone x) (KCons doform (KCons (AInt 0 (Span sl sc sn)) (KNil)))))
-                              (Span sl sc sn))
-                       sl sc sn))))
-      (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [b body]
+            (match (bind2-of b "when-let binding must be a 2-element vector [x e]")
+              (B2 [x e]
+                (let [doform (do-form body sl sc sn)]
+                  (EOk1 (let-1 (clone x) e
+                               (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                       (KCons x (KCons doform (KCons (AInt 0 (Span sl sc sn)) (KNil)))))
+                                      (Span sl sc sn))
+                               sl sc sn))))
+              (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+        (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))))))
 
 (defn expand-ifnot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (not (= (asts-depth (clone kids)) 4))
+  (if (not (= (asts-depth kids) 4))
     (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn))
-    (let [c (asts-idx (clone kids) 1)
-          then (asts-idx (clone kids) 2)
-          els (asts-idx (clone kids) 3)]
-      (EOk1 (AList (KCons (ASym (s-if) (Span sl sc sn))
-                     (KCons c (KCons els (KCons then (KNil)))))
-                   (Span sl sc sn))))))
+    (match kids
+      (KCons [_h r1]
+        (match r1
+          (KCons [c r2]
+            (match r2
+              (KCons [t r3]
+                (match r3
+                  (KCons [e _r4]
+                    (EOk1 (AList (KCons (ASym (s-if) (Span sl sc sn))
+                                  (KCons c (KCons e (KCons t (KNil)))))
+                                 (Span sl sc sn))))
+                  (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+              (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+          (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn)))))
+      (KNil [] (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn))))))
 
 ; --- variadic booleans ------------------------------------------------------
 
 (defn expand-andor [kids :- Asts sl :- i64 sc :- i64 sn :- i64 op :- i64 name :- str] :- ERes1
-  (let [args (asts-tail kids)]
-    (match args
-      (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
-      (KCons [first rest]
-        (if (asts-null (clone rest))
-          (EOk1 (clone first))
-          (andor-fold (asts-rev (KCons (clone first) (clone rest)) (KNil))
-                      op sl sc sn))))))
+  (match kids
+    (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
+    (KCons [_h args]
+      (match args
+        (KNil [] (EErr1 (str name " expects at least one operand") (Span sl sc sn)))
+        (KCons [first rest]
+          (if (asts-null rest)
+            (EOk1 first)
+            (andor-fold (asts-rev (KCons first rest) (KNil))
+                        op sl sc sn)))))))
 
 ; The reversed operand chain folds right-associatively: acc starts at the
 ; last operand, each earlier operand wraps it in (op operand acc).
 (defn andor-fold [rev :- Asts op :- i64 sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (match rev
-    (KCons [first rest] (EOk1 (andor-fold-2 (clone rest) (clone first) op sl sc sn)))
+    (KCons [first rest] (EOk1 (andor-fold-2 rest first op sl sc sn)))
     (KNil [] (EOk1 (AInt 0 (Span sl sc sn))))))
 
 (defn andor-fold-2 [rest :- Asts acc :- Ast op :- i64 sl :- i64 sc :- i64 sn :- i64] :- Ast
   (match rest
     (KNil [] acc)
     (KCons [a rest2]
-      (andor-fold-2 (clone rest2)
+      (andor-fold-2 rest2
                     (AList (KCons (ASym op (Span sl sc sn))
-                             (KCons (clone a) (KCons acc (KNil))))
+                             (KCons a (KCons acc (KNil))))
                            (Span sl sc sn))
                     op sl sc sn))))

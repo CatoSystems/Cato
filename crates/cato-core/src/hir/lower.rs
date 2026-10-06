@@ -36,6 +36,22 @@ pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
             let Some(Expr::LitSym(h)) = items.first() else {
                 return Err("type annotation must be a symbol or applied ADT".into());
             };
+            // `(Vector el)` — the built-in generic, same as fn-param
+            // annotations (S8: loop bindings take full annotation forms).
+            if h == "Vector" && items.len() == 2 {
+                let el = match resolve_ann_ty(&items[1], ctx)? {
+                    Ty::I64 => Elem::I64,
+                    Ty::F64 => Elem::F64,
+                    Ty::Str => Elem::Str,
+                    other => {
+                        return Err(format!(
+                            "(Vector {:?}) element must be i64, f64 or str",
+                            other
+                        ))
+                    }
+                };
+                return Ok(Ty::Vec(el));
+            }
             let Some(i) = ctx.adts.iter().position(|a| &a.name == h) else {
                 return Err(format!("unknown type name {}", h));
             };
@@ -1331,13 +1347,21 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
                 name
             ));
         }
-        let Some(Expr::LitSym(tyname)) = binds.get(i + 2) else {
+        let Some(ty_ann) = binds.get(i + 2) else {
             return Err(format!("loop binding {} expects a type after :-", name));
         };
-        let ty = resolve_ann_ty(&Expr::LitSym(tyname.clone()), ctx)?;
-        if !ty.is_copy_ty() {
+        let ty = resolve_ann_ty(ty_ann, ctx)?;
+        // S8: loop variables may also be boxed ADTs and collection headers
+        // (the kernel reader threads its frame stack, children and intern
+        // table through one `loop`). The checker treats every loop variable
+        // as Copy — no move tracking, and no scope ever frees one — so the
+        // recursion the loop replaces cannot double-free; intermediates a
+        // recursive version would have dropped are simply left to process
+        // exit (persistent chains share their tails, so the cost is the
+        // popped frames, not the data).
+        if !ty.is_copy_ty() && !matches!(ty, Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set) {
             return Err(format!(
-                "loop variable {} has non-Copy type {:?} — loop variables are numeric/bool/str in this slice",
+                "loop variable {} has non-Copy type {:?} — loop variables are numeric/bool/str/ADT/collection in this slice",
                 name, ty
             ));
         }

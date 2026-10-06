@@ -46,11 +46,14 @@ pub(crate) fn lower_if(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, St
     let mut tt = ty_of(&then, env, ctx);
     let mut et = ty_of(&els, env, ctx);
     // A `recur` branch carries no type of its own: it takes the other
-    // branch's type (validation guarantees recur is the branch tail).
-    if matches!(then, HExpr::Recur(_)) {
+    // branch's type. The branch tail may wrap the recur in control
+    // structure (a match dispatch, a let, nested ifs) — any branch whose
+    // every path ends in a recur never completes with a value (S8: the
+    // reader's scan loop drives every continuation through recur).
+    if all_paths_recur(&then) {
         tt = et;
     }
-    if matches!(els, HExpr::Recur(_)) {
+    if all_paths_recur(&els) {
         et = tt;
     }
     if tt != et && tt != Ty::F64 && et != Ty::F64 {
@@ -352,3 +355,17 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
 }
 
 
+
+/// Does every path through `e` end in a `recur`? Such an expression never
+/// completes with a value, so an `if` with it on one side takes the other
+/// side's type. Reads the same tail positions `validate_recurs` accepts.
+fn all_paths_recur(e: &HExpr) -> bool {
+    match e {
+        HExpr::Recur(_) => true,
+        HExpr::If(_, t, f, _) => all_paths_recur(t) && all_paths_recur(f),
+        HExpr::Match { arms, .. } => arms.iter().all(|a| all_paths_recur(&a.body)),
+        HExpr::Let(_, body, _) => all_paths_recur(body),
+        HExpr::Seq(vs) => vs.last().map(all_paths_recur).unwrap_or(false),
+        _ => false,
+    }
+}

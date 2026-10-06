@@ -433,7 +433,14 @@ pub(crate) fn emit_lambda(
         t if t.is_int() => Mdl::ll_scalar(t),
         o => panic!("codegen: lambda ret {:?} not supported", o),
     };
-    let val = emit_for_ret(&lambda.body, &mut c, mdl, sigs, lambda.ret);
+    // Same caller-frees convention as plain fns: materialize borrowed-shape
+    // str leaves at the lambda's return boundary.
+    let body = if lambda.ret == Ty::Str {
+        own_str_return(&lambda.body)
+    } else {
+        lambda.body.clone()
+    };
+    let val = emit_for_ret(&body, &mut c, mdl, sigs, lambda.ret);
     let mut text = format!(
         "define {} @{}({}) {{\n",
         ret_ll,

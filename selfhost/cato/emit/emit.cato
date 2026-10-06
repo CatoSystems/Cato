@@ -180,20 +180,16 @@
          (adt-clone-words nm off (- cnt 1) u))))
 
 (defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
-  (let [nm (adt-name-at (clone adts) i (clone tab))
-        nv (vlist-depth (adts-variants-at (clone adts) i))
-        dflt (if (> nv 0) "freebox" "done")]
+  ; S8 bootstrap: drop glue is a no-op. The kernel's self-compile hit a
+  ; premature-free class the ownership model does not see yet (a drop of
+  ; a still-referenced chain corrupts live state), and the pipeline
+  ; already tolerates leaks (match-scrutinee temps never freed). Frees
+  ; return with the post-fixpoint memory pass; correctness first.
+  (let [nm (adt-name-at (clone adts) i (clone tab))]
     (str "define void @drop__" nm "(ptr %src) {\n"
          "entry:\n"
-         "  %tag = load i64, ptr %src\n"
-         (glue-switch (clone adts) i 0 dflt)
-         (if (> nv 0)
-           "bad:\n  unreachable\n\n"
-           "")
-         (adt-drop-variants (clone adts) (clone owns) i 0 (clone tab))
-         (if (> nv 0)
-           "freebox:\n  call void @free(ptr %src)\n  ret void\n}\n"
-           "done:\n  ret void\n}\n"))))
+         "  ret void\n"
+         "}\n")))
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                          tab :- (Vector str)] :- str
@@ -289,7 +285,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [tg (ty-tag (clone ty))]
             (cond
               (= tg 15) (extern-params-rest (clone t) "ptr noalias nocapture readonly %data, i64 %len")
@@ -304,7 +300,7 @@
     (PNil [] acc)
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [tg (ty-tag (clone ty))]
             (cond
               (= tg 15) (extern-params-rest (clone t) (str acc ", ptr noalias nocapture readonly %data, i64 %len"))
@@ -339,11 +335,11 @@
                 (let [line (str "declare " (extern-ret-ll ret) " @"
                                 (mangle (sym-str (md-tab (clone mdl)) name))
                                 "(" (extern-params (clone params)) ")")]
-                  (emit-defns (clone t) (em-decl st line) out))
+                  (emit-defns t (em-decl st line) out))
                 (match (emit-plain name (clone params) (clone ret) (clone body)
-                                   (Emit (fn-new) (clone mdl) (clone sigs)))
+                                   (Emit (fn-new) mdl sigs))
                   (EDRes [st2 text]
-                    (emit-defns (clone t) st2
+                    (emit-defns t st2
                                 (EOut (sb-add-line
                                        (sb-add-line (out2-sb out) text)
                                        "")))))))))))))
@@ -361,7 +357,7 @@
     (PNil [] (ET2Res st acc ""))
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
               (let [nstr (sym-str (md-tab (clone mdl)) pname)
@@ -525,7 +521,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (str ", " (lambda-ll pty) " %" (mangle (sym-str (md-tab (clone mdl)) pname))
                (lambda-params (clone t) (clone mdl))))))))
 
@@ -534,7 +530,7 @@
     (PNil [] (EURes st))
     (PCons [h t]
       (match h
-        (Param [pname pty]
+        (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
               (let [r (str "%" (mangle (sym-str (md-tab (clone mdl)) pname)))]

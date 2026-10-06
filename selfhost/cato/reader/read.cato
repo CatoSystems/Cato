@@ -15,16 +15,19 @@
 ; len = hi - lo (collections include both delimiters, strings both quotes).
 ;
 ; Ownership shape: the heap state (stack of frames, children, intern table)
-; is threaded as parameters moved through the self-calls, so plain steps —
-; whitespace, comments, delimiter opens, top-level pushes — clone nothing.
-; The S4 extraction law is paid only where state actually changes: a close
-; clones the enclosing children and stack out of the consumed frame, and
-; interning clones the table once per atom for the lookup (a miss then conj
-; s in place on the original — a provable last use).
+; rides in `loop` variables. Loop variables are never freed and never
+; moved — S8 admits non-Copy loop variables for exactly this — so plain
+; steps (whitespace, comments, delimiter opens, top-level pushes) clone
+; nothing, and the state a recursive version would drop between events
+; stays alive: persistent chains share their tails, so the cost is only
+; the popped frames, not the data. The extraction law is paid where state
+; actually changes shape: a close clones the enclosing children and stack
+; out of the consumed frame, and a missed intern clones the table once for
+; the conj.
 ;
-; The scan is a tail-recursive state machine, one lexical event per self
-; call. There is no TCO in the seed backend, so depth is O(tokens) — fine
-; at S5 scale, revisited when the kernel reads its own source (S8).
+; The scan is one `loop`, one lexical event per iteration — S8's revisit
+; of the S5 tail-recursive state machine, which relied on call depth
+; O(tokens) and could not read the kernel's own source.
 
 ; One open collection. kind: 0 list `(`, 1 vector `[`, 2 map `{`, 3 set
 ; `#{`. open/oline/ocol locate the opening delimiter; kids holds the
@@ -153,9 +156,12 @@
 ; the tree: children accumulate reversed; close reverses once
 ; ---------------------------------------------------------------------------
 
+; Consuming reversal (S8): the walked boxes leak, so the binders move
+; into the reversed chain directly — zero node copies, one fresh cons per
+; element. The old deep-cloning version made every pass O(n x depth).
 (defn asts-rev [ks :- Asts acc :- Asts] :- Asts
   (match ks
-    (KCons [kid rest] (asts-rev (clone rest) (KCons (clone kid) acc)))
+    (KCons [kid rest] (asts-rev rest (KCons kid acc)))
     (KNil [] acc)))
 
 ; ---------------------------------------------------------------------------
@@ -209,144 +215,128 @@
 ; the scan
 ; ---------------------------------------------------------------------------
 
-; One lexical event per self-call. Copy state rides as parameters
+; One lexical event per loop iteration. Copy state rides in loop variables
 ; (position, line/col, nesting depth, outermost-open line/col for the
 ; "unclosed delimiter" span); heap state (frames, children, intern table)
-; moves through.
-(defn scan [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-            bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-            tab :- (Vector str)] :- RRes
-  (if (>= i (count src))
-    (scan-eof depth stack kids tab bline bcol)
-    (let [c (nth src i 0)]
-      (cond
-        (is-ws c)
-        (if (= c 10)
-          (scan src (+ i 1) (+ line 1) 0 depth bline bcol stack kids tab)
-          (scan src (+ i 1) line (+ col 1) depth bline bcol stack kids tab))
+; rides in non-Copy loop variables, which the S8 slice treats as
+; never-freed, never-moved values. Every helper call here returns a value
+; (an index, a node, a classification) — no helper is on the scan's
+; control path, so the loop is the only frame that persists across events.
+(defn scan [src :- str i0 :- i64 line0 :- i64 col0 :- i64 depth0 :- i64
+            bline0 :- i64 bcol0 :- i64 stack0 :- RStack kids0 :- Asts
+            tab0 :- (Vector str)] :- RRes
+  ; The source length rides as a loop variable: `count` on a str is a
+  ; strlen, and re-strlens per event would make the whole scan quadratic.
+  (loop [i :- i64 i0 line :- i64 line0 col :- i64 col0 depth :- i64 depth0
+         bline :- i64 bline0 bcol :- i64 bcol0 stack :- RStack stack0
+         kids :- Asts kids0 tab :- (Vector str) tab0 n :- i64 (count src)]
+    (if (>= i n)
+      ; EOF: forms are the children accumulated at depth 0, reversed into
+      ; source order; anything still open is the seed's "unclosed
+      ; delimiter" at the outermost opening byte.
+      (if (> depth 0)
+        (RErr "unclosed delimiter" (Span bline bcol 1))
+        (ROk (asts-rev kids (KNil)) tab))
+      (let [c (nth src i 0)]
+        (cond
+          (is-ws c)
+          (if (= c 10)
+            (recur (+ i 1) (+ line 1) 0 depth bline bcol stack kids tab n)
+            (recur (+ i 1) line (+ col 1) depth bline bcol stack kids tab n))
 
-        (= c 59)
-        (let [n (count src)
-              j (skip-line src i n)
-              lcv (advance src i j line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src j l2 c2 depth bline bcol stack kids tab))))
+          (= c 59)
+          (let [j (skip-line src i n)
+                lcv (advance src i j line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur j l2 c2 depth bline bcol stack kids tab n))))
 
-        (or (= c 40) (= c 91) (= c 123))
-        (let [kind (if (= c 40) 0 (if (= c 91) 1 2))
-              lcv (advance src i (+ i 1) line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src (+ i 1) l2 c2 (+ depth 1)
-                    (if (= depth 0) line bline)
-                    (if (= depth 0) col bcol)
-                    (RSFrame kind i line col kids stack)
-                    (KNil)
-                    tab))))
+          (or (= c 40) (= c 91) (= c 123))
+          (let [kind (if (= c 40) 0 (if (= c 91) 1 2))
+                lcv (advance src i (+ i 1) line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur (+ i 1) l2 c2 (+ depth 1)
+                       (if (= depth 0) line bline)
+                       (if (= depth 0) col bcol)
+                       (RSFrame kind i line col kids stack)
+                       (KNil)
+                       tab
+                       n))))
 
-        (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
-        (let [lcv (advance src i (+ i 2) line col)]
-          (match lcv
-            (LC [l2 c2]
-              (scan src (+ i 2) l2 c2 (+ depth 1)
-                    (if (= depth 0) line bline)
-                    (if (= depth 0) col bcol)
-                    (RSFrame 3 i line col kids stack)
-                    (KNil)
-                    tab))))
+          (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
+          (let [lcv (advance src i (+ i 2) line col)]
+            (match lcv
+              (LC [l2 c2]
+                (recur (+ i 2) l2 c2 (+ depth 1)
+                       (if (= depth 0) line bline)
+                       (if (= depth 0) col bcol)
+                       (RSFrame 3 i line col kids stack)
+                       (KNil)
+                       tab
+                       n))))
 
-        (is-close c)
-        (close-form src i line col depth bline bcol stack kids tab c)
+          (is-close c)
+          (match stack
+            (RSNil []
+              (RErr (str "unbalanced delimiter '" (char->str c) "'")
+                    (Span line col 1)))
+            (RSFrame [kind open oline ocol kidsF rest]
+              (if (kind-accepts kind c)
+                (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
+                  (RErr "map literal must have key/value pairs"
+                        (Span oline ocol (+ (- i open) 1)))
+                  (let [k (asts-rev kids (KNil))
+                        sp (Span oline ocol (+ (- i open) 1))
+                        node (cond
+                               (= kind 0) (AList k sp)
+                               (= kind 1) (AVec k sp)
+                               (= kind 2) (AMap k sp)
+                               (ASet k sp))
+                        lcv (advance src i (+ i 1) line col)]
+                    (match lcv
+                      (LC [l2 c2]
+                        ; The frame binders alias the popped frame's box, but
+                        ; that box lives in a never-freed loop variable — the
+                        ; S8 loop discipline — so the loop carries the fields
+                        ; out directly and the consumed frame simply leaks,
+                        ; like every intermediate the loop abandons.
+                        (recur (+ i 1) l2 c2 (- depth 1) bline bcol
+                               rest (KCons node kidsF) tab
+                               n)))))
+                (RErr (str "unbalanced delimiter '" (char->str c) "'")
+                      (Span line col 1)))))
 
-        (= c 34)
-        (read-str src i line col depth bline bcol stack kids tab)
+          (= c 34)
+          ; A string literal: find the closing quote, unescape the raw
+          ; slice, store the value; the span includes both quotes.
+          (let [j (str-end src (+ i 1) n)]
+            (if (< j 0)
+              (RErr "unterminated string" (Span line col (- n i)))
+              (let [raw (subs src (+ i 1) j)
+                    ; The accumulator seeds with a heap-empty string, not
+                    ; the static `""` literal: an empty literal would flow
+                    ; through untouched as static data.
+                    val (unesc raw 0 (count raw) (subs raw 0 0))
+                    lcv (advance src i (+ j 1) line col)]
+                (match lcv
+                  (LC [l2 c2]
+                    (recur (+ j 1) l2 c2 depth bline bcol
+                           stack (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
+                           tab
+                           n))))))
 
-        (read-atom src i line col depth bline bcol stack kids tab)))))
-
-; EOF: forms are the children accumulated at depth 0, reversed into source
-; order; anything still open is the seed's "unclosed delimiter" at the
-; outermost opening byte.
-(defn scan-eof [depth :- i64 stack :- RStack kids :- Asts tab :- (Vector str)
-                bline :- i64 bcol :- i64] :- RRes
-  (if (> depth 0)
-    (RErr "unclosed delimiter" (Span bline bcol 1))
-    (ROk (asts-rev kids (KNil)) tab)))
-
-; A string literal: find the closing quote, unescape the raw slice, store
-; the value; the span includes both quotes.
-(defn read-str [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                tab :- (Vector str)] :- RRes
-  (let [n (count src)
-        j (str-end src (+ i 1) n)]
-    (if (< j 0)
-      (RErr "unterminated string" (Span line col (- n i)))
-      (let [raw (subs src (+ i 1) j)
-            ; The accumulator seeds with a heap-empty string, not the
-            ; static `""` literal: read_str frees unesc's result, and an
-            ; empty literal would flow through untouched and free static
-            ; data.
-            val (unesc raw 0 (count raw) (subs raw 0 0))
-            lcv (advance src i (+ j 1) line col)]
-        (match lcv
-          (LC [l2 c2]
-            (scan src (+ j 1) l2 c2 depth bline bcol
-                  stack (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
-                  tab)))))))
-
-; An atom token: slice it, classify, intern, push.
-(defn read-atom [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                 bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                 tab :- (Vector str)] :- RRes
-  (let [n (count src)
-        e (tok-end src i n)
-        tok (subs src i e)
-        lcv (advance src i e line col)
-        ntab (count tab)
-        sid (intern-sid (clone tab) tok (- ntab 1))
-        node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
-        ; A miss appends the token. The conj grows a fresh clone, never
-        ; the parameter itself: vector params are passed read-only by the
-        ; LLVM backend, so in-place growth through one is a seed-level
-        ; invariant violation (the same reason sb-add clones first).
-        tab2 (if (< sid 0) (conj (clone tab) tok) tab)]
-    (match lcv
-      (LC [l2 c2]
-        (scan src e l2 c2 depth bline bcol stack (KCons node kids) tab2)))))
-
-; A closer: pop the frame (cloning the enclosing children and stack out —
-; the extraction law), check the kind, build the node.
-(defn close-form [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                  bline :- i64 bcol :- i64 stack :- RStack kids :- Asts
-                  tab :- (Vector str) c :- i64] :- RRes
-  (match stack
-    (RSNil []
-      (RErr (str "unbalanced delimiter '" (char->str c) "'")
-            (Span line col 1)))
-    (RSFrame [kind open oline ocol kidsF rest]
-      (if (kind-accepts kind c)
-        (close-ok src i line col depth bline bcol kind open oline ocol
-                  (clone kidsF) (clone rest) kids tab c)
-        (RErr (str "unbalanced delimiter '" (char->str c) "'")
-              (Span line col 1))))))
-
-(defn close-ok [src :- str i :- i64 line :- i64 col :- i64 depth :- i64
-                bline :- i64 bcol :- i64 kind :- i64 open :- i64
-                oline :- i64 ocol :- i64 kidsF :- Asts rest :- RStack
-                kids :- Asts tab :- (Vector str) c :- i64] :- RRes
-  (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
-    (RErr "map literal must have key/value pairs"
-          (Span oline ocol (+ (- i open) 1)))
-    (let [k (asts-rev kids (KNil))
-          sp (Span oline ocol (+ (- i open) 1))
-          node (cond
-                 (= kind 0) (AList k sp)
-                 (= kind 1) (AVec k sp)
-                 (= kind 2) (AMap k sp)
-                 (ASet k sp))
-          lcv (advance src i (+ i 1) line col)]
-      (match lcv
-        (LC [l2 c2]
-          (scan src (+ i 1) l2 c2 (- depth 1) bline bcol rest
-                (KCons node kidsF) tab))))))
+          ; An atom token: slice it, classify, intern, push. The table is
+          ; shared with the lookup (no clone per atom — loop variables are
+          ; not consumed); a miss conj-appends a fresh copy.
+          (let [e (tok-end src i n)
+                tok (subs src i e)
+                lcv (advance src i e line col)
+                ntab (count tab)
+                sid (intern-sid tab tok (- ntab 1))
+                node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
+                tab2 (if (< sid 0) (conj tab tok) tab)]
+            (match lcv
+              (LC [l2 c2]
+                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab2
+                       n)))))))))

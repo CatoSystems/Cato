@@ -63,12 +63,12 @@
 (defn ast-cons [kid :- Ast next :- Asts] :- Asts (KCons kid next))
 
 ; Node count over the tree: atoms count one, collections recurse.
-(defn asts-count [ks :- Asts] :- i64
+(defn asts-count [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid next] (+ (ast-count (clone kid)) (asts-count (clone next))))
+    (KCons [kid next] (+ (ast-count kid) (asts-count next)))
     (KNil [] 0)))
 
-(defn ast-count [a :- Ast] :- i64
+(defn ast-count [a :- &Ast] :- i64
   (match a
     (ANil [at] 1)
     (ASym [sid at] 1)
@@ -76,30 +76,32 @@
     (AF64 [v at] 1)
     (ABool [v at] 1)
     (AStr [v at] 1)
-    (AList [kids at] (+ 1 (asts-count (clone kids))))
-    (AVec [kids at] (+ 1 (asts-count (clone kids))))
-    (AMap [kids at] (+ 1 (asts-count (clone kids))))
-    (ASet [kids at] (+ 1 (asts-count (clone kids))))))
+    (AList [kids at] (+ 1 (asts-count kids)))
+    (AVec [kids at] (+ 1 (asts-count kids)))
+    (AMap [kids at] (+ 1 (asts-count kids)))
+    (ASet [kids at] (+ 1 (asts-count kids)))))
 
 ; Depth of the child chain (0 for atoms).
-(defn asts-depth [ks :- Asts] :- i64
+(defn asts-depth [ks :- &Asts] :- i64
   (match ks
-    (KCons [kid next] (+ 1 (asts-depth (clone next))))
+    (KCons [kid next] (+ 1 (asts-depth next)))
     (KNil [] 0)))
 
 ; The first child of a chain, or the empty node. Chains have no O(1)
 ; index; passes walk them by match recursion.
+; Consuming: the walked boxes leak (S8 ownership shape) instead of
+; freeing under the caller, so no clone is needed to extract a node.
 (defn asts-first [ks :- Asts] :- Ast
   (match ks
-    (KCons [kid next] (clone kid))
+    (KCons [kid next] kid)
     (KNil [] (ast-nil 0 0))))
 
-(defn ast-child-count [a :- Ast] :- i64
+(defn ast-child-count [a :- &Ast] :- i64
   (match a
-    (AList [kids at] (asts-depth (clone kids)))
-    (AVec [kids at] (asts-depth (clone kids)))
-    (AMap [kids at] (asts-depth (clone kids)))
-    (ASet [kids at] (asts-depth (clone kids)))
+    (AList [kids at] (asts-depth kids))
+    (AVec [kids at] (asts-depth kids))
+    (AMap [kids at] (asts-depth kids))
+    (ASet [kids at] (asts-depth kids))
     (ANil [at] 0)
     (ASym [sid at] 0)
     (AInt [v at] 0)

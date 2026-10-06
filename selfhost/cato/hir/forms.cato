@@ -15,7 +15,7 @@
 
 ; --- program tables ---------------------------------------------------------
 
-(deftype Param (Param [name :- i64 ty :- Ty]))
+(deftype Param (Param [name :- i64 ty :- Ty borrowed :- i64]))
 (deftype PList (PNil) (PCons [h :- Param t :- PList]))
 
 (deftype RawDefn (RawDefn [name :- i64 params :- PList ret :- Ty
@@ -881,6 +881,8 @@
             nm-str (node-str (clone nm-node) (ps-tab (clone ps)))]
         (cond
           (borrow-sigil (clone nm-str))
+          ; the sigil on the NAME would need re-interning of the stripped
+          ; symbol; borrows are written on the annotation (`ks :- &Asts`).
           (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
 
           (not (= (ast-tag (clone nm-node)) 1))
@@ -892,16 +894,27 @@
 
           (let [ty-node (asts-idx (clone ks) (+ i 2))
                 ty-tag2 (ast-tag (clone ty-node))]
-            (if (and (= ty-tag2 1) (borrow-sigil (node-str (clone ty-node) (ps-tab (clone ps)))))
-              (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
-              (let [rt (if (= ty-tag2 1)
-                         (parse-ty-sym-str (clone ps) (node-str (clone ty-node) (ps-tab (clone ps))))
-                         (parse-ty (clone ty-node) (clone ps)))]
+            (if (not (= ty-tag2 1))
+              (let [rt (parse-ty (clone ty-node) (clone ps))]
                 (match rt
                   (PTyRes [ps2 ty]
                     (if (ps-failed (clone ps2))
                       (PParRes (clone ps2) (PNil))
-                      (let [p (Param (ast-sid-of (clone nm-node)) ty)]
+                      (let [p (Param (ast-sid-of (clone nm-node)) ty 0)]
+                        (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2)))))))
+              (let [ty-str (node-str (clone ty-node) (ps-tab (clone ps)))
+                    ; `ks :- &Asts` — a borrowed parameter: the caller keeps
+                    ; ownership, the callee only reads (S8: the query
+                    ; helpers over boxed chains take & so traversals cost
+                    ; no clones).
+                    borrowed (borrow-sigil (clone ty-str))
+                    bare (if borrowed (subs (clone ty-str) 1 (count (clone ty-str))) (clone ty-str))
+                    rt (parse-ty-sym-str (clone ps) bare)]
+                (match rt
+                  (PTyRes [ps2 ty]
+                    (if (ps-failed (clone ps2))
+                      (PParRes (clone ps2) (PNil))
+                      (let [p (Param (ast-sid-of (clone nm-node)) ty (if borrowed 1 0))]
                         (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2))))))))))))))
 
 ; (defn name [params] [:- ret] body...) / (extern name [params] [:- ret])

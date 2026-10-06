@@ -26,20 +26,21 @@
   (match at
     (Span [l c n] (str "@" l ":" c "+" n))))
 
-; The span of an Ast node (cloned out: the node's own drop glue still owns
-; the field).
+; The span of an Ast node. Consuming (S8): the binders move out and the
+; walked box leaks instead of freeing under the caller, so the span needs
+; no clone; a caller that keeps the node passes a clone of it.
 (defn ast-at [a :- Ast] :- Span
   (match a
-    (ANil [at] (clone at))
-    (ASym [sid at] (clone at))
-    (AInt [v at] (clone at))
-    (AF64 [v at] (clone at))
-    (ABool [v at] (clone at))
-    (AStr [v at] (clone at))
-    (AList [kids at] (clone at))
-    (AVec [kids at] (clone at))
-    (AMap [kids at] (clone at))
-    (ASet [kids at] (clone at))))
+    (ANil [at] at)
+    (ASym [sid at] at)
+    (AInt [v at] at)
+    (AF64 [v at] at)
+    (ABool [v at] at)
+    (AStr [v at] at)
+    (AList [kids at] at)
+    (AVec [kids at] at)
+    (AMap [kids at] at)
+    (ASet [kids at] at)))
 
 ; Next byte that needs escaping (backslash, quote, newline, tab) or EOF.
 (defn next-esc [s :- str i :- i64 n :- i64] :- i64

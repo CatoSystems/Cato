@@ -202,7 +202,7 @@
     (PNil [] "")
     (PCons [h t]
       (match h
-        (Param [name ty]
+        (Param [name ty _pb]
           (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty))]
             (if (plist-null (clone t))
               piece

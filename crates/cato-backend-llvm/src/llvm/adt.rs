@@ -125,6 +125,10 @@ pub(crate) fn emit_adt(
         HExpr::DropStmt(_) => panic!("codegen: drop produces no ADT value"),
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(..) => call_user_node(e, c, mdl, sigs),
+        // A loop completing with a boxed ADT (the reader's scan returns the
+        // RRes from its `loop`): the loop machinery returns the completing
+        // register — an owning ptr for boxed results.
+        HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         // parse-i64/parse-f64 in value position (e.g. a match scrutinee):
         // the runtime's 16-byte Option box, a ptr to the inline
         // {tag, payload} layout the match consumes.
@@ -244,6 +248,112 @@ pub(crate) fn emit_match_node(
         .collect();
     c.line(&format!("  {} = phi {} {}", res, lty, pairs.join(", ")));
     res
+}
+
+/// A `match` on a loop's tail path: arm bodies go through the recur-aware
+/// `emit_loop_tail`, so an arm whose body branches back to the loop head
+/// contributes no phi input. Returns `None` when every arm recurs — the
+/// merge is unreachable and the loop continues.
+pub(crate) fn emit_match_in_loop(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+    loop_tail: &dyn Fn(&HExpr, Ty, &mut FnCtx, &mut Mdl, &HashMap<String, (Ty, Vec<Ty>)>) -> Option<String>,
+) -> Option<String> {
+    let HExpr::Match { scrut, arms, ty } = e else {
+        panic!("codegen: emit_match_in_loop on non-match")
+    };
+    let scrut_ptr = emit_adt(scrut, c, mdl, sigs);
+    let ai = adt_of(scrut, c, sigs);
+    let name = mdl.adt_name(ai);
+
+    let t_tg = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 0",
+        t_tg, name, scrut_ptr
+    ));
+    let t_tag = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", t_tag, t_tg));
+
+    let merged = c.block_name();
+    let fail = c.block_name();
+    let mut arm_labels: Vec<(Option<u32>, String)> = Vec::new();
+    let mut default_lbl = fail.clone();
+    for arm in arms {
+        let lbl = c.block_name();
+        if arm.variant.is_none() {
+            default_lbl = lbl.clone();
+        }
+        arm_labels.push((arm.variant, lbl));
+    }
+    c.line(&format!("  switch i64 {}, label %{} [", t_tag, default_lbl));
+    for (variant, lbl) in &arm_labels {
+        if let Some(vi) = variant {
+            c.line(&format!("    i64 {}, label %{}", vi, lbl));
+        }
+    }
+    c.line("]");
+
+    let lbl = c.open(&fail);
+    c.line(&format!("{}:", lbl));
+    c.line("  unreachable");
+
+    let mut vals: Vec<String> = Vec::new();
+    let mut preds: Vec<String> = Vec::new();
+    for (arm, (_, lbl)) in arms.iter().zip(arm_labels.iter()) {
+        let l = c.open(lbl);
+        c.line(&format!("{}:", l));
+        let scope = c.save_binds(&arm.binders);
+        if let Some(vi) = arm.variant {
+            let def = mdl.adts[ai as usize].clone();
+            let fields = def.variants[vi as usize].1.clone();
+            let offsets = &mdl.adt_field_offsets(ai)[vi as usize];
+            for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
+                emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
+            }
+        }
+        let v = loop_tail(&arm.body, *ty, c, mdl, sigs);
+        c.restore_binds(scope);
+        if let Some(v) = v {
+            let v = match ty {
+                Ty::Adt(_) => v,
+                t => pin_value(
+                    if *t == Ty::F64 {
+                        "double"
+                    } else if *t == Ty::Bool {
+                        "i1"
+                    } else {
+                        "i64"
+                    },
+                    &v,
+                    c,
+                ),
+            };
+            vals.push(v);
+            preds.push(c.cur.clone());
+            c.line(&format!("  br label %{}", merged));
+        }
+    }
+
+    if vals.is_empty() {
+        // Every arm branched back to the loop head; no value reaches here.
+        return None;
+    }
+    let l = c.open(&merged);
+    c.line(&format!("{}:", l));
+    let res = c.temp();
+    let lty = match ty {
+        Ty::Adt(_) | Ty::Str => "ptr".to_string(),
+        t => mdl.ll_ty(*t),
+    };
+    let pairs: Vec<String> = vals
+        .iter()
+        .zip(preds.iter())
+        .map(|(v, p)| format!("[ {}, %{} ]", v, p))
+        .collect();
+    c.line(&format!("  {} = phi {} {}", res, lty, pairs.join(", ")));
+    Some(res)
 }
 
 // ---------------------------------------------------------------------------

@@ -361,3 +361,55 @@ pub(crate) fn rewrite_body(
 // ---------------------------------------------------------------------------
 // Module buffer
 // ---------------------------------------------------------------------------
+
+/// A user fn's returned `str` is owned by the caller (the owning-temp
+/// convention: str results are caller-freed), but a borrowed-shape return —
+/// a literal, a vector element load, or a control composite whose leaves are
+/// borrowed — hands the caller a pointer it will free at scope exit while
+/// the vector (or the static literal pool) still owns it. Wrap every
+/// borrowed leaf in `clone` (the strdup materialization) at the return
+/// boundary. Fresh temps (subs/strcat/...) pass through, and plain Vars pass
+/// through: an owning temp transfers its drop duty via the tail-escape rule,
+/// and a non-owning alias's duty stays with the caller's own binding, which
+/// the ownership planner already accounted for.
+pub(crate) fn own_str_return(e: &HExpr) -> HExpr {
+    match e {
+        HExpr::StrLit(_) | HExpr::Get { ty: Ty::Str, res: None, .. } => {
+            HExpr::Clone(Box::new(e.clone()))
+        }
+        HExpr::Seq(vs) => HExpr::Seq(
+            vs.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    if i + 1 == vs.len() {
+                        own_str_return(v)
+                    } else {
+                        v.clone()
+                    }
+                })
+                .collect(),
+        ),
+        HExpr::If(cond, t, f, ty) => HExpr::If(
+            cond.clone(),
+            Box::new(own_str_return(t)),
+            Box::new(own_str_return(f)),
+            *ty,
+        ),
+        HExpr::Let(binds, body, frees) => {
+            HExpr::Let(binds.clone(), Box::new(own_str_return(body)), frees.clone())
+        }
+        HExpr::Match { scrut, arms, ty } => HExpr::Match {
+            scrut: scrut.clone(),
+            arms: arms
+                .iter()
+                .map(|arm| HArm {
+                    variant: arm.variant,
+                    binders: arm.binders.clone(),
+                    body: own_str_return(&arm.body),
+                })
+                .collect(),
+            ty: *ty,
+        },
+        _ => e.clone(),
+    }
+}

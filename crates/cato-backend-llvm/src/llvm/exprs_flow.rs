@@ -127,15 +127,20 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
 // S2: loop / recur — general while-loop codegen
 // ---------------------------------------------------------------------------
 
-/// The LLVM type of a loop variable slot (Copy types only).
-fn loop_slot_ty(ty: Ty) -> &'static str {
+/// The LLVM type of a loop variable slot. Beyond the Copy scalars/str, S8
+/// admits boxed ADTs (the slot is the owning pointer) and collection
+/// headers (a %VecI64 {ptr,len,cap} the loop's reads see live). Inline ADT
+/// and closure variables stay unsupported.
+fn loop_slot_ty(mdl: &Mdl, ty: Ty) -> &'static str {
     match ty {
         Ty::F64 => "double",
         Ty::F32 => "float",
         Ty::Bool => "i1",
         Ty::Str => "ptr",
         t if t.is_int() => Mdl::ll_scalar(t),
-        o => panic!("codegen: loop variable of non-Copy type {:?}", o),
+        Ty::Adt(i) if mdl.adt_boxed(i) => "ptr",
+        Ty::Vec(_) | Ty::Map | Ty::Set => "%VecI64",
+        o => panic!("codegen: loop variable of unsupported type {:?}", o),
     }
 }
 
@@ -156,7 +161,7 @@ pub(crate) fn emit_loop_node(
     // of times, and allocas in loops would stack up.
     let mut slots: Vec<(String, String, Ty)> = Vec::new();
     for (name, ty, init) in binds {
-        let llt = loop_slot_ty(*ty);
+        let llt = loop_slot_ty(mdl, *ty);
         let slot = c.temp();
         c.prelude
             .push(format!("  {} = alloca {}, align 8", slot, llt));
@@ -170,18 +175,30 @@ pub(crate) fn emit_loop_node(
     c.line(&format!("{}:", l));
     // Each iteration reads the variables into fresh registers. The
     // bindings end with the loop: an outer name a loop variable shadows
-    // must be visible again after the merge.
+    // must be visible again after the merge. Collection variables skip
+    // the load: they register their slot, so every read sees the live
+    // (possibly in-place grown) header.
     let names: Vec<String> = slots.iter().map(|(n, _, _)| n.clone()).collect();
     let scope = c.save_binds(&names);
     for (name, slot, ty) in &slots {
-        let r = c.temp();
-        c.line(&format!(
-            "  {} = load {}, ptr {}, align 8",
-            r,
-            loop_slot_ty(*ty),
-            slot
-        ));
-        c.scalar.insert(name.clone(), (r, *ty));
+        match ty {
+            Ty::Vec(elem) => {
+                c.grow.insert(name.clone(), (slot.clone(), *elem));
+            }
+            Ty::Map | Ty::Set => {
+                c.growm.insert(name.clone(), (slot.clone(), *ty));
+            }
+            _ => {
+                let r = c.temp();
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align 8",
+                    r,
+                    loop_slot_ty(mdl, *ty),
+                    slot
+                ));
+                c.scalar.insert(name.clone(), (r, *ty));
+            }
+        }
     }
     let saved = c.loop_frame.take();
     c.loop_frame = Some((slots, head));
@@ -226,7 +243,7 @@ fn emit_loop_tail(
                 let v = emit_typed(a, *vty, c, mdl, sigs);
                 c.line(&format!(
                     "  store {} {}, ptr {}, align 8",
-                    loop_slot_ty(*vty),
+                    loop_slot_ty(mdl, *vty),
                     v,
                     slot
                 ));
@@ -262,14 +279,9 @@ fn emit_loop_tail(
             c.line(&format!("{}:", l));
             match (tv, ev) {
                 (Some(tv), Some(ev)) => {
-                    let lty = match ity {
-                        Ty::F64 => "double",
-                        Ty::F32 => "float",
-                        Ty::Bool => "i1",
-                        Ty::Str => "ptr",
-                        t if t.is_int() => Mdl::ll_scalar(*t),
-                        o => panic!("codegen: loop if on {:?}", o),
-                    };
+                    // Boxed ADTs phi as ptrs, collections as %VecI64 —
+                    // the same slot mapping the loop variables use.
+                    let lty = loop_slot_ty(mdl, *ity);
                     let r = c.temp();
                     c.line(&format!(
                         "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
@@ -303,6 +315,10 @@ fn emit_loop_tail(
             }
             emit_loop_tail(vs.last().unwrap(), ty, c, mdl, sigs)
         }
+        // A match on the tail path (e.g. the reader's frame-pop dispatch):
+        // arms branch via emit_loop_tail, so recur-only arms contribute no
+        // phi input and the loop continues through them.
+        HExpr::Match { .. } => emit_match_in_loop(e, c, mdl, sigs, &emit_loop_tail),
         other => Some(emit_typed(other, ty, c, mdl, sigs)),
     }
 }
