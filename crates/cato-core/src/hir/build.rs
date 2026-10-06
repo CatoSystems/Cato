@@ -193,6 +193,10 @@ pub fn build_program_located(
         .iter()
         .map(|d| (d.name.clone(), d.borrows.clone()))
         .collect();
+    let rets: HashMap<String, Ty> = out
+        .iter()
+        .map(|d| (d.name.clone(), d.ret))
+        .collect();
     let span_by_name: HashMap<&str, crate::ast::Span> = raws
         .iter()
         .map(|(r, s)| (r.name.as_str(), *s))
@@ -201,7 +205,7 @@ pub fn build_program_located(
         if d.is_extern {
             continue;
         }
-        plan_drops(&d.name, &d.params, &d.borrows, &mut d.body, &sigs, &facts, &adts, false).map_err(|e| {
+        plan_drops(&d.name, &d.params, &d.borrows, &mut d.body, &sigs, &rets, &facts, &adts, false).map_err(|e| {
             let span = span_by_name
                 .get(d.name.as_str())
                 .copied()
@@ -217,6 +221,7 @@ pub fn build_program_located(
             &[],
             &mut lam.body,
             &sigs,
+            &rets,
             &facts,
             &adts,
             false,

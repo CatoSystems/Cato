@@ -2619,7 +2619,7 @@
                       (if (not (= (h-tag (clone e2)) 39))
                         (LErr "internal: call args shape")
                         (let [args (hargs-of (clone e2))
-                              argtys (call-argtys (clone args) (clone env) r2 s2 (TyNil))
+                              argtys (call-argtys (clone args) (clone env) (clone r2) (clone s2) (TyNil))
                               mi (instantiate head (clone argtys) t2 a2 i2 s2 l2 r2 n2 d2 (clone raws))]
                           (match mi
                             (MIRes [t3 a3 i3 s3 l3 r3 n3 d3 mangled mret msg]

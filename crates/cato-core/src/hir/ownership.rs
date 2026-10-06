@@ -20,6 +20,37 @@ pub(crate) fn binder_field_aliases(fty: Option<Ty>, boxed: &[bool]) -> bool {
     }
 }
 
+/// The ADT index of a match scrutinee, for the boxed-alias analysis: a
+/// named var from the binding map, anything else from its static type
+/// (the callee's return type, a nested match/if result, an Option `res`)
+/// — mirroring the backend's `adt_of`. `None` = not an ADT (or unknown),
+/// which leaves the binders at the I64 copy stand-in as before.
+fn scrutinee_adt(
+    e: &HExpr,
+    tys: &HashMap<String, Ty>,
+    rets: &HashMap<String, Ty>,
+) -> Option<u32> {
+    match e {
+        HExpr::Var(v) => match tys.get(v) {
+            Some(Ty::Adt(i)) => Some(*i),
+            _ => None,
+        },
+        HExpr::Ctor { adt, .. } => Some(*adt),
+        HExpr::Match { ty: Ty::Adt(i), .. } => Some(*i),
+        HExpr::If(_, _, _, Ty::Adt(i)) => Some(*i),
+        HExpr::Clone(inner) => scrutinee_adt(inner, tys, rets),
+        HExpr::Call(name, _) => match rets.get(name) {
+            Some(Ty::Adt(i)) => Some(*i),
+            _ => None,
+        },
+        HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
+        | HExpr::Get { res: Some(Ty::Adt(i)), .. }
+        | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => Some(*i),
+        HExpr::ParseNum { res: Ty::Adt(i), .. } => Some(*i),
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum VState {
     Owned,
@@ -65,6 +96,10 @@ pub(crate) struct BCheck<'a> {
     /// count hits 0 at the conj is a last use, so in-place update is
     /// unobservable.
     pub(crate) remaining: HashMap<String, i64>,
+    /// Callee name -> return type, for boxed-scrutinee detection when the
+    /// scrutinee is a fresh temp (a call, a nested match, a clone — anything
+    /// but a named var, whose type lives in the binding map).
+    pub(crate) rets: &'a HashMap<String, Ty>,
     /// Params whose buffers free at body exit (result, when requested).
     pub(crate) param_frees: Vec<String>,
     pub(crate) errs: Vec<String>,
@@ -80,6 +115,7 @@ pub(crate) fn plan_drops(
     borrows: &[Borrow],
     body: &mut HExpr,
     sigs: &HashMap<String, Vec<Borrow>>,
+    rets: &HashMap<String, Ty>,
     facts: &AdtFacts,
     adts: &[AdtDef],
     with_param_frees: bool,
@@ -116,6 +152,7 @@ pub(crate) fn plan_drops(
         shadowed,
         consumed: HashSet::new(),
         remaining: var_counts,
+        rets,
         param_frees: Vec::new(),
         errs: Vec::new(),
     };
@@ -567,16 +604,14 @@ impl<'a> BCheck<'a> {
                 // every boundary). Scalar and inline-ADT fields copy by
                 // value and may flow freely.
                 // The scrutinee's own type (the match's `ty` field is the
-                // result's). Only a named scrutinee has a planned free at
-                // scope exit; fresh temps are never freed, so their alias
-                // binders are sound.
-                let scrut_adt = match &**scrut {
-                    HExpr::Var(v) => match tys.get(v) {
-                        Some(Ty::Adt(i)) => Some(*i),
-                        _ => None,
-                    },
-                    _ => None,
-                };
+                // result's). Named scrutinees take the type from the
+                // binding map; everything else (a call temp, a nested
+                // match, a clone) from the static callee/result types —
+                // the alias analysis below must see boxedness for fresh
+                // temps too, or moves through their binders go untracked
+                // and a twice-consumed binder is a use-after-move the
+                // check never sees (S8 — the emit-program UAF).
+                let scrut_adt = scrutinee_adt(scrut, tys, self.rets);
                 let scrut_boxed = scrut_adt
                     .map(|i| self.boxed_full.get(i as usize).copied().unwrap_or(false))
                     .unwrap_or(false);

@@ -387,7 +387,7 @@
               ; a non-Copy Var init moves the buffer: the drop duty
               ; transfers to the new binding (read the source's ownership
               ; before the move clears it)
-              (let [src-owns (im-get owns1 vn 0)]
+              (let [src-owns (im-get (clone owns1) vn 0)]
                 (match (move-var vn st1 owns1 cons1)
                   (MoveRes [st2 owns2 cons2]
                     (b-let-binds (clone next) (im-put st2 name 0)
@@ -398,7 +398,7 @@
               ; owns; anything else owns iff it allocates
               (let [owns2 (if isv
                             (im-put owns1 name 0)
-                            (im-put owns1 name (if (b-allocates v2 (b-facts-of (clone bcx))) 1 0)))]
+                            (im-put owns1 name (if (b-allocates (clone v2) (b-facts-of (clone bcx))) 1 0)))]
                 (b-let-binds (clone next) (im-put st1 name 0) owns2 rem1
                              (im-remove cons1 name) (te-put tys name ty)
                              (clone bcx) (BCons name v2 ty acc))))))))))
@@ -458,7 +458,7 @@
       (match (bcheck (clone init) st owns rem cons (clone tys) (clone (clone bcx)))
         (BErr [msg] (BLoopErr msg))
         (BOk [st1 owns1 rem1 cons1 init2]
-          (b-loop-binds (clone next) (im-put st1 name 0) owns1 rem1 cons1
+          (b-loop-binds (clone next) (im-put (clone st1) name 0) owns1 rem1 cons1
                         (te-put tys name ty)
                         (clone bcx) (BCons name init2 ty acc)
                         (im-put saved name (im-get st1 name 0))))))))
@@ -493,7 +493,7 @@
       (match (b-arm-state (clone binders) (clone pst) (clone powns) (clone tys))
         (BLErr [msg] (BArmsErr msg))
         (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
-          (match (bcheck (clone body) st1 owns1 rem1 cons1 tys1 (clone bcx))
+          (match (bcheck (clone body) (clone st1) (clone owns1) rem1 cons1 tys1 (clone bcx))
             (BErr [msg] (BArmsErr msg))
             (BOk [st2 owns2 rem2 cons2 body2]
               ; a value moved in any arm counts as moved and
@@ -784,15 +784,15 @@
     (match (bcheck (clone v) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (let [vn (name-of (clone c1))
+          (let [vn (name-of (clone c1))
               isv (= (h-tag (clone c1)) 3)
               t (te-get (clone tys) vn)
               lastq (and isv
                          (not (ty-noneq (clone t)))
                          (is-non-copy-ty (clone t))
-                         (= (im-get st1 vn 0) 0)
-                         (= (im-get owns1 vn 0) 1)
-                         (= (im-get rem1 vn 0) 0))]
+                         (= (im-get (clone st1) vn 0) 0)
+                         (= (im-get (clone owns1) vn 0) 1)
+                         (= (im-get (clone rem1) vn 0) 0))]
           (if (not lastq)
             (match (bcheck (clone x) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
               (BErr [msg] (BErr msg))
@@ -809,10 +809,10 @@
     (match (bcheck (clone c) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (match (bcheck (clone t2) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+        (match (bcheck (clone t2) (clone st1) (clone owns1) rem1 cons1 (clone tys) (clone (clone bcx)))
           (BErr [msg] (BErr msg))
           (BOk [stT ownsT remT consT c2]
-            (match (bcheck (clone e2) st1 owns1 remT consT (clone tys) (clone (clone bcx)))
+            (match (bcheck (clone e2) (clone st1) (clone owns1) remT consT (clone tys) (clone (clone bcx)))
               (BErr [msg] (BErr msg))
               (BOk [stE ownsE remE consE c3]
                 (let [st4 (b-merge-st stT stE st1)
@@ -829,7 +829,7 @@
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
             (let [binds3 (binds-rev binds2 (BNil))
-                  frees2 (b-frees (clone binds3) st2 owns2 cons2 (clone bcx))]
+                  frees2 (b-frees (clone binds3) (clone st2) (clone owns2) (clone cons2) (clone bcx))]
               (BOk st2 owns2 rem2 cons2 (HLet binds3 body2 frees2))))))))
 
     (HLoop [binds ty body]
@@ -847,7 +847,7 @@
       (BKErr [msg] (BErr msg))
       (BKOk [st1 owns1 rem1 cons1 c1]
         (if (= (facts-owns-at (b-facts-of (clone bcx)) adt) 1)
-          (match (b-ctor-move c1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+          (match (b-ctor-move (clone c1) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
             (B4Err [msg] (BErr msg))
             (B4 [st2 owns2 rem2 cons2]
               (BOk st2 owns2 rem2 cons2 (HCtor adt variant c1))))
@@ -857,7 +857,7 @@
     (match (bcheck (clone scrut) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone bcx))
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (match (b-arms (clone arms) st1 owns1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)) (HANil))
+        (match (b-arms (clone arms) (clone st1) (clone owns1) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)) (HANil))
           (BArmsErr [msg] (BErr msg))
           (BArmsRes [st2 owns2 rem2 cons2 arms2]
             (BOk st2 owns2 rem2 cons2 (HMatch c1 arms2 ty)))))))
@@ -902,8 +902,8 @@
     (HCall [name args]
     (match (b-kids (clone args) (clone st) (clone owns) (clone rem) (clone cons) (clone tys) (clone (clone bcx)) (HENil))
       (BKErr [msg] (BErr msg))
-      (BKOk [st1 owns1 rem1 cons1 c1]
-        (match (b-call-move name c1 st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
+        (BKOk [st1 owns1 rem1 cons1 c1]
+          (match (b-call-move name (clone c1) st1 owns1 rem1 cons1 (clone tys) (clone (clone bcx)))
           (B4Err [msg] (BErr msg))
           (B4 [st2 owns2 rem2 cons2]
             (BOk st2 owns2 rem2 cons2 (HCall name c1)))))))

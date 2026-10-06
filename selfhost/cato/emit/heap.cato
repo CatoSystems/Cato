@@ -202,7 +202,7 @@
 (defn emit-strcat [args :- HExprs st :- Emit] :- ESRes
   (match (strcat-parts args st (SPNil))
     (ESPCol [st1 parts]
-      (match (strcat-total parts st1 "")
+      (match (strcat-total (clone parts) st1 "")
         (ETRes [st2 tot]
           (match (em-ins st2 (str "  ~ = add i64 " tot ", 1"))
             (ETRes [st3 nb]
@@ -323,10 +323,10 @@
       (match (clone st)
         (Emit [c mdl sigs]
           (cond
-            (fc-gr-has c s)
+            (fc-gr-has (clone c) s)
             (match (fc-gr-get c s)
               (GroVal [slot el] (gr-slot-len slot st)))
-            (fc-vc-has c s)
+            (fc-vc-has (clone c) s)
             (match (fc-vc-get c s)
               (VecVal [p l el] (ESRes st l)))
             (match (fc-sc-get c s)
@@ -502,12 +502,12 @@
                     st4 (em-open st3 bt)]
                 (match (emit-vec-pair (clone t) st4)
                   (EVRes [st5 tp tl t-el]
-                    (let [tbr (em-cur st5)
+                    (let [tbr (em-cur (clone st5))
                           st6 (em-line st5 (str "  br label %" bm))
                           st7 (em-open st6 be)]
                       (match (emit-vec-pair (clone e2) st7)
                         (EVRes [st8 ep el2 el3]
-                          (let [ebr (em-cur st8)
+                          (let [ebr (em-cur (clone st8))
                                 st9 (em-line st8 (str "  br label %" bm))
                                 st10 (em-open st9 bm)]
                             (match (em-ins2 st10
@@ -569,8 +569,8 @@
 (defn match-vec-pair [scrut :- HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
-      (let [ai (adt-of (clone scrut) st1)
-            name (md-adt-name (match st1 (Emit [c m s] m)) ai)]
+      (let [ai (adt-of (clone scrut) (clone st1))
+            name (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
                  (str "~ = load i64, ptr ^1, align 8"))
@@ -579,14 +579,14 @@
               (ET2Res [st3 merged fail]
                 (match (arm-labels-mint (arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
                   (ARes [st4 labels]
-                    (let [dflt (mls-default labels fail)
+                    (let [dflt (mls-default (clone labels) fail)
                           st5 (em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
-                          st6 (mls-switch labels st5)
+                          st6 (mls-switch (clone labels) st5)
                           st7 (em-line st6 "]")
                           st8 (em-open st7 fail)
                           st9 (em-line st8 "  unreachable")
                           st10 (em-open st9 merged)]
-                      (match (arm-vec-bodies (clone arms) labels st10 merged sptr ai name (MPSNil) (MPSNil))
+                      (match (arm-vec-bodies (clone arms) (clone labels) st10 merged sptr ai name (MPSNil) (MPSNil))
                         (EVPRes [st11 ps ls]
                           (match (em-ins2 st11
                                    (str "  ~ = phi ptr" (mps-items (mps-rev ps (MPSNil)) true))
@@ -620,7 +620,7 @@
               (arm-field-loads (clone binders) ai variant 0 st1 scrut name))]
     (match (emit-vec-pair (clone body) st2)
       (EVRes [st3 p l el]
-        (let [pred (em-cur st3)
+        (let [pred (em-cur (clone st3))
               st4 (em-line st3 (str "  br label %" merged))]
           (match (arm-vec-bodies (clone next) (clone lrest) st4 merged scrut ai name
                                   (MPSCons p pred acc-p) (MPSCons l pred acc-l))

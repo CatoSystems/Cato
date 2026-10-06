@@ -29,7 +29,7 @@
   (let [ai (adt-of (clone x) (clone st))]
     (match (clone st)
       (Emit [c mdl sigs]
-        (let [boxed (md-owns-at mdl ai)
+        (let [boxed (md-owns-at (clone mdl) ai)
               name (md-adt-name mdl ai)]
           (if (= boxed 1)
             (match (emit-adt (clone x) st)

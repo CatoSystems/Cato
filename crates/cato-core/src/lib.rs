@@ -112,6 +112,11 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
             .iter()
             .map(|d| (d.name.clone(), d.borrows.clone()))
             .collect();
+        let rets: std::collections::HashMap<String, hir::Ty> = program
+            .defns
+            .iter()
+            .map(|d| (d.name.clone(), d.ret))
+            .collect();
         for d in program.defns.iter_mut() {
             if d.is_extern {
                 continue;
@@ -122,6 +127,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &d.borrows,
                 &mut d.body,
                 &sigs,
+                &rets,
                 &facts,
                 &program.adts,
                 true,
@@ -137,6 +143,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &[],
                 &mut lam.body,
                 &sigs,
+                &rets,
                 &facts,
                 &program.adts,
                 false,

@@ -118,29 +118,81 @@ differentials staying byte-identical (232 tests).
 
 ## Remaining blocker: one UAF on the full concat
 
-With all of the above, the seed compiles the concat and the produced
-cato1 binary clangs and runs — but crashes while compiling its own
-source, in the build phase's ADT-table threading. Evidence gathered:
+*(Updated 2026-10-06 after the first root-cause pass.)*
 
-- `clone__Sids` dereferences a NULL/`0xbe…` pointer; under ASAN the
-  poison pattern shows the `Sids` box was freed before the read.
-- The chain is `emit_program` → `(facts-owns-of (clone adts))` →
-  `clone__AdtTab` → `clone__AdtInfo` → `clone__Sids(NULL)`: an
-  `AdtInfo` with a NULL/`0xbe` `tps` field inside a live `AdtTab`.
-- `build_lower_2` receives a valid `adts` at every entry (guarded), so
-  the free happens somewhere between the table's construction and
-  emit-program's clone.
-- Every static candidate checked sound: `adts-append-info`/`adts-set`
-  clone their inputs before dropping the originals; the match
-  scrutinee temps of `build-program`'s pipeline leak (never dropped),
-  so their field aliases are valid; `ps-adts`-style accessors return
-  clones; param frees suppress on moved/returned params.
+### Root cause found: the checker never saw moves through temp-scrutinee binders
 
-The next probe is a hardware watchpoint on a live `AdtInfo`'s payload
-or an ASAN build of the *seed* itself (the free likely happens inside a
-seed-emitted drop-glue sequence the source-level analysis mis-models).
-This is the only gap between here and `cato1 build selfhost/cato.cato`
-producing a working cato2.
+The ownership checker refined match binders to their real field types only
+when the scrutinee was a named `Var` (`ownership.rs`, the Match arm). A
+fresh-temp scrutinee — `(match (build-program forms tab) (POk [tab2 adts
+defs lams sigs]) ...)` — left every binder at the `Ty::I64` copy stand-in,
+so passing a binder to an owned parameter never registered as a move and a
+second use of the same binder went unchecked. `compile-build` (cli.cato)
+did exactly that: `adts` flows uncloned into `adts-templates` (whose owned
+`ts` param frees the whole list at its scope exit) and is then passed again
+to `emit-program`. `emit_ref.cato` and `hir_ref.cato` carry the identical
+pattern.
+
+The failure signature everyone was chasing — `clone__HExpr` /
+`clone__AdtTab` / `clone__Sids` dereferencing NULL or `0xbe…` from inside
+`lok` / `emit-program` — is downstream of this class: freed chain nodes get
+reused or read as pointers. The interp cannot see any of it (no memory
+model), and freed-but-unreused memory still reads correctly, which is why
+the pipeline mostly worked natively before crashing late.
+
+### Fixed
+
+- **Checker** (`cato-core/src/hir/ownership.rs`): a new `scrutinee_adt`
+  helper resolves the scrutinee's ADT for any shape (var → binding map;
+  call → return types, threaded through `plan_drops` as a `rets` map from
+  all six call sites; ctor/match/if/clone/Option-`res` per the backend's
+  `adt_of`). Binders of boxed temp scrutinees now carry real field types;
+  moves register; second uses error.
+- **Kernel source sweep** (checker-driven, ~30 sites): lower-call,
+  moveck's b-let-binds / b-loop-binds / b-arms / bcheck (HConj state
+  reads, HIf branch states, HMatch, HLet b-frees, HCtor/HCall `c1`
+  moves), emit's scalars/heap/adt/emit modules (the `em-cur`-then-
+  `em-line` idiom, `labels` triple-use in the two match emitters,
+  `emit-count`'s cond tests, `emit-lambda-pair` restructured so the ctor
+  arg order stops using a moved binder), and the three drivers (cli,
+  emit_ref, hir_ref — `(clone adts)` / `(clone tab2)` at the flagged
+  uses).
+- The S5/S6/S7 differentials stay byte-identical (full suite green with
+  fresh debug binaries).
+
+Note: `kernel_emit`/bootstrap tests using `target/debug/cato` ran against a
+stale binary earlier; `cargo test` (debug) refreshes it — release-mode
+`cargo test --release` does not, and its green was partly an artifact.
+
+### Next probe (the remaining native-only crash)
+
+cato1 now completes read → expand → lower → moveck and produces
+byte-identical IR to the interp for `lets`/`scalars`/`strings`/`macros`
+fixtures, and gets through clang for `atoms`. Fixtures with
+boxed-ADT/closure state (`adts`, `closures`, `control`, `kitchen`, `mono`,
+`threads`, `vectors`) still crash in the emit stage. Minimal repro
+(`cato1 build` on):
+
+```
+(deftype Shape (Circle [r :- i64]) (Rect [w :- i64 h :- i64]))
+(defn area [s :- Shape] :- i64
+  (match s (Circle [r] (* r 3)) (Rect [w h] (* w h))))
+(defn main [] :- i64 (let [c (Circle 7)] (area (clone c))))
+```
+
+ASAN on the minimal repro: `clone__Mdl` → `cato_str_vec_copy` reads an
+Emit's symbol-table buffer that a *prior* `drop__Emit` freed — two Emit
+states sharing one `mdl` (or a stale state register). Every state-thread
+site in the emit module deep-clones on inspection; the source-level model
+proves sound, which points at the seed emitter's handling of the emit
+module's pervasive shadowed binder names (`c`/`mdl`/`sigs` at every
+ nesting level) — the known "shadowed names share one env slot"
+limitation in `fnctx.rs` is the prime suspect. The `kernel_emit` test
+cannot catch this class: it drives the kernel's emitter through `cato run`
+(interp), so the emitted natively-executing kernel code is only ever
+exercised by cato1 itself. A native-driver differential (run the seed-
+compiled S7 concat on the fixture corpus and compare against the interp)
+would guard this layer.
 
 ## Non-goals
 

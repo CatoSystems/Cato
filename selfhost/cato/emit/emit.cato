@@ -447,7 +447,7 @@
                     (Emit [c2 m2 s2]
                       (let [ret-ll (if ismain
                                      "i32"
-                                     (defn-ret-ll (clone ret) m2))
+                                     (defn-ret-ll (clone ret) (clone m2)))
                             header (str "define " ret-ll " @" fname "(" ps2 ") {\n")
                             tail (if ismain "\n  ret i32 0\n}\n" "\n}\n")]
                         (EDRes (Emit (fn-new) m2 s2)
@@ -649,9 +649,10 @@
             (let [ret-ll (lambda-ret-ll ret)
                   header (str "define " ret-ll " @" mname
                               "(ptr noalias nocapture readonly %env"
-                              (lambda-params (clone params) m1) ") {\n")
-                  text (fn-text header c1 (str "\n  ret " ret-ll " %retv\n}\n"))]
-              (ELPR m1 text (lambda-drop-text mname (clone caps) m1))))) ))))
+                              (lambda-params (clone params) (clone m1)) ") {\n")
+                  text (fn-text header c1 (str "\n  ret " ret-ll " %retv\n}\n"))
+                  dt (lambda-drop-text mname (clone caps) (clone m1))]
+              (ELPR m1 text dt)))) ))))
 
 (defn emit-lams [ls :- Lams st :- Emit out :- EOut] :- EORes
   (match ls

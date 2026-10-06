@@ -260,7 +260,7 @@
 (defn print-f64-stmt [arg :- HExpr st :- Emit ret :- str] :- ESRes
   (match (emit-float (clone arg) st)
     (ESRes [st1 v]
-      (let [w (static-int-width (clone arg) st1)]
+      (let [w (static-int-width (clone arg) (clone st1))]
         (if (= (ty-tag (clone w)) 10)
           (match (em-ins st1 (str "  ~ = fpext float " v " to double"))
             (ETRes [st2 vd]
@@ -658,7 +658,7 @@
 (defn andor-node [a :- HExpr b :- HExpr is-and :- bool st :- Emit] :- ESRes
   (match (emit-bool (clone a) st)
     (ESRes [st1 la]
-      (let [parent (em-cur st1)]
+      (let [parent (em-cur (clone st1))]
         (match (em-blk2 st1)
           (ET2Res [st2 rhs merged]
             (let [st3 (em-line st2
@@ -668,7 +668,7 @@
                   st4 (em-open st3 rhs)]
               (match (emit-bool (clone b) st4)
                 (ESRes [st5 rb]
-                  (let [bp (em-cur st5)
+                  (let [bp (em-cur (clone st5))
                         st6 (em-line st5 (str "  br label %" merged))
                         st7 (em-open st6 merged)]
                     (match (em-ins st7 (str "  ~ = phi i1 [ " (if is-and "false" "true") ", %" parent " ], [ " rb ", %" bp " ]"))
@@ -705,12 +705,12 @@
                 st4 (em-open st3 bt)]
             (match (emit-typed (clone then) (clone ty) st4)
               (ESRes [st5 tv]
-                (let [tp (em-cur st5)
+                (let [tp (em-cur (clone st5))
                       st6 (em-line st5 (str "  br label %" bm))
                       st7 (em-open st6 be)]
                   (match (emit-typed (clone els) (clone ty) st7)
                     (ESRes [st8 ev]
-                      (let [ep (em-cur st8)
+                      (let [ep (em-cur (clone st8))
                             st9 (em-line st8 (str "  br label %" bm))
                             st10 (em-open st9 bm)
                             lty (cond
@@ -745,8 +745,8 @@
 (defn emit-match-node [scrut :- HExpr arms :- HArms ty :- Ty st :- Emit] :- ESRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
-      (let [ai (adt-of (clone scrut) st1)
-            name (md-adt-name (match st1 (Emit [c m s] m)) ai)]
+      (let [ai (adt-of (clone scrut) (clone st1))
+            name (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
                  (str "~ = load i64, ptr ^1, align 8"))
@@ -755,13 +755,13 @@
               (ET2Res [st3 merged fail]
                 (match (arm-labels-mint (arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
                   (ARes [st4 labels]
-                    (let [dflt (mls-default labels fail)
+                      (let [dflt (mls-default (clone labels) fail)
                           st5 (em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
-                          st6 (mls-switch labels st5)
+                          st6 (mls-switch (clone labels) st5)
                           st7 (em-line st6 "]")
                           st8 (em-open st7 fail)
                           st9 (em-line st8 "  unreachable")]
-                      (match (arm-bodies (clone arms) labels st9 merged sptr ai name (clone ty) (MPSNil))
+                      (match (arm-bodies (clone arms) (clone labels) st9 merged sptr ai name (clone ty) (MPSNil))
                         (BRRes [st10 vals]
                           (match-phi vals (em-open st10 merged) (clone ty))))))) )) ))))))
 
@@ -804,7 +804,7 @@
               (ESRes [st3 v]
                 (match (pin-arm v (clone ty) st3)
                   (EPinRes [st4 pv]
-                    (let [pred (em-cur st4)
+                    (let [pred (em-cur (clone st4))
                           st5 (em-line st4 (str "  br label %" merged))]
                       (arm-bodies (clone next) (clone lrest) st5 merged scrut ai name ty
                                   (MPSCons pv pred acc)))))))))
@@ -869,7 +869,7 @@
             (ETRes [st3 head]
               (let [st4 (em-line st3 (str "  br label %" head))
                     st5 (em-open st4 head)
-                    st6 (loop-load-slots slots st5)]
+                    st6 (loop-load-slots (clone slots) st5)]
                 (match st6
                   (Emit [c6 m6 s6]
                     (let [saved (fc-lfr (clone c6))
@@ -966,12 +966,12 @@
                     st4 (em-open st3 bt)]
                 (match (emit-loop-tail (clone then) (clone ity) st4)
                   (ETRRes [st5 tv tdone]
-                    (let [tp (if tdone (em-cur st5) "")
+                    (let [tp (if tdone (em-cur (clone st5)) "")
                           st6 (if tdone (em-line st5 (str "  br label %" bm)) st5)
                           st7 (em-open st6 be)]
                       (match (emit-loop-tail (clone els) (clone ity) st7)
                         (ETRRes [st8 ev edone]
-                          (let [ep (if edone (em-cur st8) "")
+                          (let [ep (if edone (em-cur (clone st8)) "")
                                 st9 (if edone (em-line st8 (str "  br label %" bm)) st8)
                                 st10 (em-open st9 bm)]
                             (cond
