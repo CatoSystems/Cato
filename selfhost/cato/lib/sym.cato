@@ -1,47 +1,63 @@
 ; sym.cato — S4: symbol interning.
 ;
-; str -> i64 sid over a (Vector str) table. Cato has no globals, so the
-; intern table is explicit state threaded through calls: `intern2` returns
-; the updated state alongside the sid, and callers keep threading one
-; value. Sids are table indices; the scan is linear from the top — kernel
-; tables are small, and first-match-wins matches the reader's needs.
+; str -> i64 sid over an append-only table behind an opaque i64 handle.
+; Cloning a compiler state is O(1) because the handle is an i64; the
+; table itself lives in the runtime (cato_stab_*) and is shared across
+; every snapshot. Sids are table indices; the runtime scan is linear
+; from the top — kernel tables are small, and first-match-wins matches
+; the reader's needs.
 
-(deftype Intern (I [tab :- (Vector str) next :- i64]))
+(extern cato-stab-new [] :- i64)
+(extern cato-stab-count [h :- i64] :- i64)
+(extern cato-stab-get [h :- i64 i :- i64] :- str)
+(extern cato-stab-find [h :- i64 v :- str] :- i64)
+(extern cato-stab-conj [h :- i64 v :- str] :- i64)
+(extern cato-stab-add [h :- i64 v :- str] :- i64)
+
+; Kernel-side wrappers over the runtime handle.
+(defn stab-new [] :- i64 (cato-stab-new))
+
+(defn stab-count [h :- i64] :- i64 (cato-stab-count h))
+
+(defn stab-get [h :- i64 i :- i64] :- str (cato-stab-get h i))
+
+(defn stab-find [h :- i64 v :- str] :- i64 (cato-stab-find h v))
+
+(defn stab-conj [h :- i64 v :- str] :- i64 (cato-stab-conj h v))
+
+(defn stab-add [h :- i64 v :- str] :- i64 (cato-stab-add h v))
+
+(deftype Intern (I [tab :- i64 next :- i64]))
 
 ; Two results in one value: the updated state to keep threading and the
 ; sid the string resolved to.
 (deftype IRes (IRes [st :- Intern sid :- i64]))
 
-(defn intern-new [] :- Intern (I [] 0))
+(defn intern-new [] :- Intern (I (stab-new) 0))
 
-(defn intern-tab [st :- Intern] :- (Vector str)
+(defn intern-tab [st :- Intern] :- i64
   (match st
-    (I [tab next] (clone tab))))
+    (I [tab next] tab)))
 
 (defn intern-count [st :- Intern] :- i64
   (match st
-    (I [tab next] (count tab))))
+    (I [tab next] (stab-count tab))))
 
-; Back-to-front scan; `i` is the next index to test. Misses report -1.
-(defn intern-find [tab :- (Vector str) s :- str i :- i64] :- i64
-  (if (< i 0)
-    -1
-    (if (= (get tab i "") s)
-      i
-      (intern-find tab s (- i 1)))))
+; Back-to-front scan; misses report -1.
+(defn intern-find [tab :- i64 s :- str] :- i64
+  (stab-find tab s))
 
 (defn intern2 [st :- Intern s :- str] :- IRes
   (let [tab (intern-tab (clone st))
-        n (count tab)
-        sid (intern-find (clone tab) s (- n 1))]
+        sid (intern-find tab s)]
     (if (< sid 0)
-      (IRes (I (conj tab s) (+ 1 n)) n)
+      (IRes st (stab-conj tab s))
       (IRes st sid))))
 
 ; Str results are caller-freed, so return an owned copy of the element.
 (defn sym-name [st :- Intern sid :- i64] :- str
   (match st
-    (I [tab next] (clone (get tab sid "")))))
+    (I [tab next] (stab-get tab sid))))
 
 ; IRes accessors: callers clone the result they still hold — a match
 ; consumes its scrutinee, so reading both fields means two clones.

@@ -54,7 +54,7 @@
 
 ; --- expressions --------------------------------------------------------------
 
-(defn d-e [e :- HExpr tab :- (Vector str)] :- str
+(defn d-e [e :- HExpr tab :- i64] :- str
   (match e
     (HConstI64 [v] (str "(const " (clone v) ")"))
     (HConstF64 [v] (str "(f64lit " (str (clone v)) ")"))
@@ -137,17 +137,17 @@
     (VVI64 [v next] (str " " v (d-vvals-rest (clone next))))
     (VVF64 [v next] (str " " (str v) (d-vvals-rest (clone next))))))
 
-(defn d-args [es :- HExprs tab :- (Vector str)] :- str
+(defn d-args [es :- HExprs tab :- i64] :- str
   ; a space-separated run of child expressions: " e1 e2"
   (match es
     (HENil [] "")
     (HECons [kid next] (str " " (d-e (clone kid) (clone tab)) (d-args (clone next) (clone tab))))))
 
-(defn d-binds [binds :- Binds tab :- (Vector str)] :- str
+(defn d-binds [binds :- Binds tab :- i64] :- str
   ; bracket list of flattened triples: [n e T n e T ...]
   (str "[" (d-binds-parts binds (clone tab)) "]"))
 
-(defn d-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+(defn d-binds-parts [binds :- Binds tab :- i64] :- str
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
@@ -161,11 +161,11 @@
     (BNil [] true)
     (BCons [name v ty next] false)))
 
-(defn d-loop-binds [binds :- Binds tab :- (Vector str)] :- str
+(defn d-loop-binds [binds :- Binds tab :- i64] :- str
   ; bracket list of flattened triples: [n T e n T e ...]
   (str "[" (d-loop-binds-parts binds (clone tab)) "]"))
 
-(defn d-loop-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+(defn d-loop-binds-parts [binds :- Binds tab :- i64] :- str
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
@@ -174,10 +174,10 @@
           piece
           (str piece " " (d-loop-binds-parts (clone next) (clone tab))))))))
 
-(defn d-sids-list [ks :- Sids tab :- (Vector str)] :- str
+(defn d-sids-list [ks :- Sids tab :- i64] :- str
   (str "[" (d-sids-parts ks (clone tab)) "]"))
 
-(defn d-sids-parts [ks :- Sids tab :- (Vector str)] :- str
+(defn d-sids-parts [ks :- Sids tab :- i64] :- str
   (match ks
     (SNil [] "")
     (SCons [h t]
@@ -185,7 +185,7 @@
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-sids-parts (clone t) (clone tab)))))))
 
-(defn d-arms [arms :- HArms tab :- (Vector str)] :- str
+(defn d-arms [arms :- HArms tab :- i64] :- str
   (match arms
     (HANil [] "")
     (HACons [variant binders body next]
@@ -193,11 +193,11 @@
             piece (str " (arm " vname " " (d-sids-list (clone binders) (clone tab)) " " (d-e (clone body) (clone tab)) ")")]
         (str piece (d-arms (clone next) (clone tab)))))))
 
-(defn d-params [ps :- PList tab :- (Vector str)] :- str
+(defn d-params [ps :- PList tab :- i64] :- str
   ; bracket list of named params: [p:T p:T]
   (str "[" (d-params-parts ps (clone tab)) "]"))
 
-(defn d-params-parts [ps :- PList tab :- (Vector str)] :- str
+(defn d-params-parts [ps :- PList tab :- i64] :- str
   (match ps
     (PNil [] "")
     (PCons [h t]
@@ -213,11 +213,11 @@
     (PNil [] true)
     (PCons [h t] false)))
 
-(defn d-caps [caps :- Caps tab :- (Vector str)] :- str
+(defn d-caps [caps :- Caps tab :- i64] :- str
   ; bracket list of captures with ownership bits: [c:T:OWN c:T:OWN]
   (str "[" (d-caps-parts caps (clone tab)) "]"))
 
-(defn d-caps-parts [caps :- Caps tab :- (Vector str)] :- str
+(defn d-caps-parts [caps :- Caps tab :- i64] :- str
   (match caps
     (CNil [] "")
     (CCons [name ty own next]
@@ -233,11 +233,11 @@
 
 ; --- records ------------------------------------------------------------------
 
-(defn d-adt-variants [variants :- VList tab :- (Vector str)] :- str
+(defn d-adt-variants [variants :- VList tab :- i64] :- str
   ; bracket list of (VName [T ...]) pairs
   (str "[" (d-variants-parts variants (clone tab)) "]"))
 
-(defn d-variants-parts [variants :- VList tab :- (Vector str)] :- str
+(defn d-variants-parts [variants :- VList tab :- i64] :- str
   (match variants
     (VNil [] "")
     (VCons [h t]
@@ -253,7 +253,7 @@
     (VNil [] true)
     (VCons [h t] false)))
 
-(defn d-adts [adts :- AdtTab tab :- (Vector str) i :- i64 sb :- StrBuf] :- StrBuf
+(defn d-adts [adts :- AdtTab tab :- i64 i :- i64 sb :- StrBuf] :- StrBuf
   (match adts
     (ATNil [] sb)
     (ATCons [h t]
@@ -268,11 +268,11 @@
                         (str "(adtinst " i " " tpl " " (sym-str (clone tab) name) ")")))]
             (d-adts (clone t) (clone tab) (+ i 1) sb2)))))))
 
-(defn d-typarams [typarams :- Sids tab :- (Vector str)] :- str
+(defn d-typarams [typarams :- Sids tab :- i64] :- str
   ; a bracket list of the header's type parameter NAMES: [a] or [a b]
   (str "[" (d-typarams-parts typarams (clone tab)) "]"))
 
-(defn d-typarams-parts [ks :- Sids tab :- (Vector str)] :- str
+(defn d-typarams-parts [ks :- Sids tab :- i64] :- str
   (match ks
     (SNil [] "")
     (SCons [h t]
@@ -280,7 +280,7 @@
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-typarams-parts (clone t) (clone tab)))))))
 
-(defn d-defn-line [d :- Defn tab :- (Vector str)] :- str
+(defn d-defn-line [d :- Defn tab :- i64] :- str
   (match d
     (Defn [name params ret isextern body]
       (str "(defn " (sym-str (clone tab) name)
@@ -289,12 +289,12 @@
            " " isextern
            " " (d-e (clone body) (clone tab)) ")"))))
 
-(defn d-defns [ds :- Defns tab :- (Vector str) sb :- StrBuf] :- StrBuf
+(defn d-defns [ds :- Defns tab :- i64 sb :- StrBuf] :- StrBuf
   (match ds
     (DNil [] sb)
     (DCons [h t] (d-defns (clone t) (clone tab) (sb-add-line sb (d-defn-line (clone h) (clone tab)))))))
 
-(defn d-lams [ls :- Lams tab :- (Vector str) sb :- StrBuf] :- StrBuf
+(defn d-lams [ls :- Lams tab :- i64 sb :- StrBuf] :- StrBuf
   (match ls
     (LMNil [] sb)
     (LMCons [h t]
@@ -319,7 +319,7 @@
 ; defns (plain in source order, then externs, then mono instances),
 ; lambdas, fn sigs
 (defn dump-program [adts :- AdtTab defs :- Defns lams :- Lams sigs :- Sigs
-                   tab :- (Vector str)] :- str
+                   tab :- i64] :- str
   (let [sb0 (d-adts (clone adts) (clone tab) 0 (sb-new))
         sb1 (d-defns (clone defs) (clone tab) sb0)
         sb2 (d-lams (clone lams) (clone tab) sb1)

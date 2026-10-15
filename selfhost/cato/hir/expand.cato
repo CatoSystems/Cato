@@ -119,10 +119,10 @@
 ; table-typed variable (never on the literal), so the chain appends
 ; through an annotated helper — the same bootstrap as the reader's `[]`
 ; seed tab.
-(defn mt-add [acc :- (Vector str) s :- str] :- (Vector str)
-  (conj acc s))
+(defn mt-add [acc :- i64 s :- str] :- i64
+  (stab-add acc s))
 
-(defn magic-table [] :- (Vector str)(mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
+(defn magic-table [] :- i64 (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
@@ -131,7 +131,7 @@
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add
-   (mt-add (mt-add (mt-add (mt-add (mt-add [] "->") "->>") "when") "when-not") "cond")
+   (mt-add (mt-add (mt-add (mt-add (mt-add (stab-new) "->") "->>") "when") "when-not") "cond")
    "if-let") "when-let") "if-not") "and") "or") "do") "let") "fn") "if") "not") "=") "/=")
    "<") ">") "<=") ">=") "+") "-") "*") "/") "abs") "min") "max") "match") "loop") "recur")
    "get") "conj") "count") "str") "subs") "split") "join") "nth") "char->str") "clone")

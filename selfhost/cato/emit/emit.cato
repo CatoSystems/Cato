@@ -43,11 +43,11 @@
 (defn md-globals [m :- &Mdl] :- StrBuf
   (match m (Mdl [tab g globals decls adts owns csigs] (clone globals))))
 
-(defn adt-name-at [adts :- AdtTab i :- i64 tab :- (Vector str)] :- str
+(defn adt-name-at [adts :- AdtTab i :- i64 tab :- i64] :- str
   (match (adts-at (clone adts) i)
     (AdtInfo [name tps variants tpl tplargs] (sym-str (clone tab) name))))
 
-(defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)
+(defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                       sb :- StrBuf] :- StrBuf
   (if (>= i (adts-depth (clone adts)))
     sb
@@ -56,7 +56,7 @@
       (adt-type-lines (clone adts) (clone owns) (+ i 1) tab
                       (sb-add-line sb (str "%" nm " = type { i64, [" n " x i64] }"))))))
 
-(defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)
+(defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                 sb :- StrBuf] :- StrBuf
   (if (>= i (adts-depth (clone adts)))
     sb
@@ -82,7 +82,7 @@
          "    i64 " vi ", label %v" vi "\n"
          (glue-switch (clone adts) i (+ vi 1) dflt))))
 
-(defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
+(defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
         slots (fs-total (clone adts) (clone owns) i)
         nv (vlist-depth (adts-variants-at (clone adts) i))]
@@ -99,7 +99,7 @@
          "merge:\n  ret ptr %box\n}\n")))
 
 (defn adt-clone-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
-                          tab :- (Vector str)] :- str
+                          tab :- i64] :- str
   (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
     ""
     (str "v" vi ":\n"
@@ -108,7 +108,7 @@
          (adt-clone-variants (clone adts) (clone owns) i (+ vi 1) (clone tab)))))
 
 (defn adt-clone-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
-                        serial :- i64 tab :- (Vector str) acc :- str] :- str
+                        serial :- i64 tab :- i64 acc :- str] :- str
   (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
     acc
     (let [fty (fs-field-ty (clone adts) i vi k)
@@ -119,7 +119,7 @@
                         (str acc (clone-field-text (clone fty) off nm (clone adts) (clone owns) vi serial tg (clone tab)))))))
 
 (defn clone-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                        owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- (Vector str)] :- str
+                        owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- i64] :- str
   (let [u (str "v" vi "f" serial)]
     (cond
       (= tg 12)
@@ -179,7 +179,7 @@
          "  store i64 %sl" u "k" (- cnt 1) ", ptr %dp" u "k" (- cnt 1) "\n"
          (adt-clone-words nm off (- cnt 1) u))))
 
-(defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
+(defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   ; S8 bootstrap: drop glue is a no-op. The kernel's self-compile hit a
   ; premature-free class the ownership model does not see yet (a drop of
   ; a still-referenced chain corrupts live state), and the pipeline
@@ -192,7 +192,7 @@
          "}\n")))
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
-                         tab :- (Vector str)] :- str
+                         tab :- i64] :- str
   (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
     ""
     (let [tail (if (> (vlist-depth (adts-variants-at (clone adts) i)) 0) "freebox" "done")]
@@ -202,7 +202,7 @@
            (adt-drop-variants (clone adts) (clone owns) i (+ vi 1) (clone tab))))))
 
 (defn adt-drop-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
-                       serial :- i64 tab :- (Vector str) acc :- str] :- str
+                       serial :- i64 tab :- i64 acc :- str] :- str
   (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
     acc
     (let [fty (fs-field-ty (clone adts) i vi k)
@@ -213,7 +213,7 @@
                        (str acc (drop-field-text (clone fty) off nm (clone adts) (clone owns) serial tg (clone tab)))))))
 
 (defn drop-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                       owns :- Sids serial :- i64 tg :- i64 tab :- (Vector str)] :- str
+                       owns :- Sids serial :- i64 tg :- i64 tab :- i64] :- str
   (let [u (str off "x" serial)]
     (cond
       (= tg 12)
@@ -249,7 +249,7 @@
 (deftype EORes (EORes [st :- Emit out :- EOut]))
 
 (defn emit-program [adts :- AdtTab defs :- Defns lams :- Lams csigs :- Sigs
-                    tab :- (Vector str)] :- str
+                    tab :- i64] :- str
   (do (print-string "PHASE emit-start\n")
   (let [owns (facts-owns-of (clone adts))
         sigs (sigs-build (clone defs) (ESTNil))

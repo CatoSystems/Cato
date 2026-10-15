@@ -94,20 +94,19 @@
     (StrsCons [h t] (if (= h s) true (strs-has (clone t) (clone s))))
     (StrsNil [] false)))
 
-(deftype Mdl (Mdl [tab :- (Vector str) gctr :- i64 globals :- StrBuf
+(deftype Mdl (Mdl [tab :- i64 gctr :- i64 globals :- StrBuf
                    decls :- Strs adts :- AdtTab owns :- Sids
                    csigs :- Sigs]))
 
-(defn md-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
+(defn md-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
   (Mdl (clone tab) 0 (sb-new) (StrsNil) (clone adts) (clone owns) (clone csigs)))
 
-(defn md-tab [m :- &Mdl] :- (Vector str)
-  (match m (Mdl [tab g globals decls adts owns csigs] (clone tab))))
+(defn md-tab [m :- &Mdl] :- i64
+  (match m (Mdl [tab g globals decls adts owns csigs] tab)))
 
-; The interned string for a sid, read straight off the borrowed module so
-; only the one string is copied (md-tab would deep-copy the whole table).
+; The interned string for a sid, read straight off the borrowed module.
 (defn md-sym [m :- &Mdl sid :- i64] :- str
-  (match m (Mdl [tab g globals decls adts owns csigs] (clone (get tab sid "")))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (stab-get tab sid))))
 
 (defn md-adts [m :- &Mdl] :- AdtTab
   (match m (Mdl [tab g globals decls adts owns csigs] (clone adts))))
@@ -645,7 +644,7 @@
 ; emitter call; results carry the bundle back out.
 (deftype Emit (Emit [c :- FnCtx mdl :- Mdl sigs :- ESigTab]))
 
-(defn em-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs
+(defn em-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs
               sigs :- ESigTab] :- Emit
   (Emit (fn-new) (md-new tab adts owns csigs) sigs))
 

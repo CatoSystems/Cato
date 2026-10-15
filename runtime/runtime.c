@@ -265,6 +265,61 @@ void cato_str_vec_free(char **arr, int64_t len) {
     free(arr);
 }
 
+/* Symbol table: an append-only intern table behind an opaque i64 handle.
+   The kernel threads the handle (cloning it is O(1)); the table itself is
+   shared across every snapshot and never copied or freed, so a compiler
+   state copy no longer deep-copies the whole table. Entries are owned by
+   the table and live until exit. */
+typedef struct { int64_t len; int64_t cap; char **items; } CatoStab;
+
+int64_t cato_stab_new(void) {
+    CatoStab *s = malloc(sizeof(CatoStab));
+    s->len = 0;
+    s->cap = 8;
+    s->items = malloc(sizeof(char *) * (size_t)s->cap);
+    return (int64_t)(intptr_t)s;
+}
+
+int64_t cato_stab_count(int64_t h) {
+    CatoStab *s = (CatoStab *)(intptr_t)h;
+    return s ? s->len : 0;
+}
+
+/* Owned copy of entry i (callers treat the result as owned); "" if the
+   index is out of range. */
+char *cato_stab_get(int64_t h, int64_t i) {
+    CatoStab *s = (CatoStab *)(intptr_t)h;
+    if (!s || i < 0 || i >= s->len) return strdup("");
+    return strdup(s->items[i]);
+}
+
+/* Back-to-front scan; misses report -1 (matches intern-find). */
+int64_t cato_stab_find(int64_t h, const char *v) {
+    CatoStab *s = (CatoStab *)(intptr_t)h;
+    if (!s) return -1;
+    for (int64_t i = s->len - 1; i >= 0; i--)
+        if (strcmp(s->items[i], v) == 0) return i;
+    return -1;
+}
+
+/* Append (unconditionally) and return the new sid. */
+int64_t cato_stab_conj(int64_t h, const char *v) {
+    CatoStab *s = (CatoStab *)(intptr_t)h;
+    if (s->len == s->cap) {
+        s->cap *= 2;
+        s->items = realloc(s->items, sizeof(char *) * (size_t)s->cap);
+    }
+    s->items[s->len] = strdup(v);
+    return s->len++;
+}
+
+/* Append and return the (unchanged) handle — for builder chains that
+   must keep threading the table rather than the sid. */
+int64_t cato_stab_add(int64_t h, const char *v) {
+    cato_stab_conj(h, v);
+    return h;
+}
+
 /* Release a map's heap: `cap` is the header's cap word (tag bit 1 = HAMT
    root, 0 = flat sorted array). Called by generated drop glue. */
 void cato_map_release_pair(void *root, int64_t cap) {

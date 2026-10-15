@@ -20,7 +20,7 @@
 ; --- read-only context ---------------------------------------------------------
 
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
-                    tab :- (Vector str) shared :- Sids loopcopy :- Sids]))
+                    tab :- i64 shared :- Sids loopcopy :- Sids]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -958,7 +958,7 @@
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
 (defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- (Vector str) shared :- Sids] :- BPlan
+             tab :- i64 shared :- Sids] :- BPlan
   ; `shared` (externs + borrowed-param callees + builtins) is computed
   ; once per program by check-program — computing it per defn walked the
   ; whole Defns chain 1000+ times.
@@ -1031,7 +1031,7 @@
 (deftype CkRes (CKOk [defs :- Defns lams :- Lams])
               (CKErr [msg :- str]))
 
-(defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- (Vector str)
+(defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- i64
                   shared :- Sids] :- CkRes
   ; the whole-program state threads by move — a per-step clone of facts/
   ; tab/alldefs made the self-compile quadratic (S8)
@@ -1054,7 +1054,7 @@
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
-(defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- (Vector str)
+(defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- i64
                  shared :- Sids] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
@@ -1071,7 +1071,7 @@
                           (clone facts) (clone tab) (clone shared)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
-                    tab :- (Vector str)] :- CkRes
+                    tab :- i64] :- CkRes
   (let [shared (b-add-builtins (b-shared-callees defs (SNil)))
         ; the second stage re-reads the small program state: clone it
         ; before the first call moves it

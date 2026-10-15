@@ -1,47 +1,63 @@
 ; sym.cato — S4: symbol interning.
 ;
-; str -> i64 sid over a (Vector str) table. Cato has no globals, so the
-; intern table is explicit state threaded through calls: `intern2` returns
-; the updated state alongside the sid, and callers keep threading one
-; value. Sids are table indices; the scan is linear from the top — kernel
-; tables are small, and first-match-wins matches the reader's needs.
+; str -> i64 sid over an append-only table behind an opaque i64 handle.
+; Cloning a compiler state is O(1) because the handle is an i64; the
+; table itself lives in the runtime (cato_stab_*) and is shared across
+; every snapshot. Sids are table indices; the runtime scan is linear
+; from the top — kernel tables are small, and first-match-wins matches
+; the reader's needs.
 
-(deftype Intern (I [tab :- (Vector str) next :- i64]))
+(extern cato-stab-new [] :- i64)
+(extern cato-stab-count [h :- i64] :- i64)
+(extern cato-stab-get [h :- i64 i :- i64] :- str)
+(extern cato-stab-find [h :- i64 v :- str] :- i64)
+(extern cato-stab-conj [h :- i64 v :- str] :- i64)
+(extern cato-stab-add [h :- i64 v :- str] :- i64)
+
+; Kernel-side wrappers over the runtime handle.
+(defn stab-new [] :- i64 (cato-stab-new))
+
+(defn stab-count [h :- i64] :- i64 (cato-stab-count h))
+
+(defn stab-get [h :- i64 i :- i64] :- str (cato-stab-get h i))
+
+(defn stab-find [h :- i64 v :- str] :- i64 (cato-stab-find h v))
+
+(defn stab-conj [h :- i64 v :- str] :- i64 (cato-stab-conj h v))
+
+(defn stab-add [h :- i64 v :- str] :- i64 (cato-stab-add h v))
+
+(deftype Intern (I [tab :- i64 next :- i64]))
 
 ; Two results in one value: the updated state to keep threading and the
 ; sid the string resolved to.
 (deftype IRes (IRes [st :- Intern sid :- i64]))
 
-(defn intern-new [] :- Intern (I [] 0))
+(defn intern-new [] :- Intern (I (stab-new) 0))
 
-(defn intern-tab [st :- Intern] :- (Vector str)
+(defn intern-tab [st :- Intern] :- i64
   (match st
-    (I [tab next] (clone tab))))
+    (I [tab next] tab)))
 
 (defn intern-count [st :- Intern] :- i64
   (match st
-    (I [tab next] (count tab))))
+    (I [tab next] (stab-count tab))))
 
-; Back-to-front scan; `i` is the next index to test. Misses report -1.
-(defn intern-find [tab :- (Vector str) s :- str i :- i64] :- i64
-  (if (< i 0)
-    -1
-    (if (= (get tab i "") s)
-      i
-      (intern-find tab s (- i 1)))))
+; Back-to-front scan; misses report -1.
+(defn intern-find [tab :- i64 s :- str] :- i64
+  (stab-find tab s))
 
 (defn intern2 [st :- Intern s :- str] :- IRes
   (let [tab (intern-tab (clone st))
-        n (count tab)
-        sid (intern-find (clone tab) s (- n 1))]
+        sid (intern-find tab s)]
     (if (< sid 0)
-      (IRes (I (conj tab s) (+ 1 n)) n)
+      (IRes st (stab-conj tab s))
       (IRes st sid))))
 
 ; Str results are caller-freed, so return an owned copy of the element.
 (defn sym-name [st :- Intern sid :- i64] :- str
   (match st
-    (I [tab next] (clone (get tab sid "")))))
+    (I [tab next] (stab-get tab sid))))
 
 ; IRes accessors: callers clone the result they still hold — a match
 ; consumes its scrutinee, so reading both fields means two clones.
@@ -348,11 +364,11 @@
 ; Reader outcome: the top-level forms in source order with the intern
 ; table (sids are table indices), or the first error with its span.
 (deftype RRes
-  (ROk [forms :- Asts tab :- (Vector str)])
+  (ROk [forms :- Asts tab :- i64])
   (RErr [msg :- str at :- Span]))
 
 (defn read-all [src :- str] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) []))
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
 ; ---------------------------------------------------------------------------
 ; byte predicates (ASCII byte values)
@@ -511,12 +527,8 @@
 ; Back-to-front scan over the table; misses report -1. Reads elements
 ; through `get` (shared borrow) and threads the table by move, so the
 ; lookup clones nothing on its own.
-(defn intern-sid [tab :- (Vector str) s :- str i :- i64] :- i64
-  (if (< i 0)
-    -1
-    (if (= (get tab i "") s)
-      i
-      (intern-sid tab s (- i 1)))))
+(defn intern-sid [tab :- i64 s :- str] :- i64
+  (stab-find tab s))
 
 ; ---------------------------------------------------------------------------
 ; the scan
@@ -531,12 +543,12 @@
 ; control path, so the loop is the only frame that persists across events.
 (defn scan [src :- str i0 :- i64 line0 :- i64 col0 :- i64 depth0 :- i64
             bline0 :- i64 bcol0 :- i64 stack0 :- RStack kids0 :- Asts
-            tab0 :- (Vector str)] :- RRes
+            tab0 :- i64] :- RRes
   ; The source length rides as a loop variable: `count` on a str is a
   ; strlen, and re-strlens per event would make the whole scan quadratic.
   (loop [i :- i64 i0 line :- i64 line0 col :- i64 col0 depth :- i64 depth0
          bline :- i64 bline0 bcol :- i64 bcol0 stack :- RStack stack0
-         kids :- Asts kids0 tab :- (Vector str) tab0 n :- i64 (count src)]
+         kids :- Asts kids0 tab :- i64 tab0 n :- i64 (count src)]
     (if (>= i n)
       ; EOF: forms are the children accumulated at depth 0, reversed into
       ; source order; anything still open is the seed's "unclosed
@@ -639,13 +651,11 @@
           (let [e (tok-end src i n)
                 tok (subs src i e)
                 lcv (advance src i e line col)
-                ntab (count tab)
-                sid (intern-sid tab tok (- ntab 1))
-                node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
-                tab2 (if (< sid 0) (conj tab tok) tab)]
+                sid (let [s0 (intern-sid tab tok)] (if (< s0 0) (stab-conj tab tok) s0))
+                node (atom-node tok sid line col (- e i))]
             (match lcv
               (LC [l2 c2]
-                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab2
+                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab
                        n)))))))))
 ; dump.cato — S5: the differential serialization.
 ;
@@ -715,7 +725,7 @@
         (let [j (next-esc s i n)]
           (esc-str s j n (str acc (subs s i j))))))))
 
-(defn dump-kids [tab :- (Vector str) ks :- Asts] :- str
+(defn dump-kids [tab :- i64 ks :- Asts] :- str
   (match ks
     (KCons [kid rest]
       (str " " (dump-node (clone tab) (clone kid)) (dump-kids tab (clone rest))))
@@ -724,10 +734,10 @@
 ; The node body — no position prefix. Inner nodes carry spans in the
 ; kernel AST, but the seed AST has none to compare against, so the wire
 ; pins positions at the top level only.
-(defn dump-node [tab :- (Vector str) a :- Ast] :- str
+(defn dump-node [tab :- i64 a :- Ast] :- str
   (match a
     (ANil [at] "(nil)")
-    (ASym [sid at] (str "(sym " (get tab sid "") ")"))
+    (ASym [sid at] (str "(sym " (stab-get tab sid) ")"))
     (AInt [v at] (str "(int " v ")"))
     (AF64 [v at] (str "(f64 " v ")"))
     (ABool [v at] (str "(bool " v ")"))
@@ -738,13 +748,13 @@
     (ASet [ks at] (str "(set" (dump-kids tab (clone ks)) ")"))))
 
 ; A top-level form: its span prefixes the node body.
-(defn dump-top [tab :- (Vector str) a :- Ast] :- str
+(defn dump-top [tab :- i64 a :- Ast] :- str
   (str (spat (ast-at (clone a))) (dump-node tab a)))
 
 ; One output line per form, accumulated in the string builder and joined
 ; once by the driver. The table and the form chain are consumed; the
 ; accumulator moves through.
-(defn dump-forms [tab :- (Vector str) forms :- Asts acc :- StrBuf] :- StrBuf
+(defn dump-forms [tab :- i64 forms :- Asts acc :- StrBuf] :- StrBuf
   (match forms
     (KCons [f rest]
       (dump-forms tab (clone rest)
@@ -1063,10 +1073,10 @@
 ; table-typed variable (never on the literal), so the chain appends
 ; through an annotated helper — the same bootstrap as the reader's `[]`
 ; seed tab.
-(defn mt-add [acc :- (Vector str) s :- str] :- (Vector str)
-  (conj acc s))
+(defn mt-add [acc :- i64 s :- str] :- i64
+  (stab-add acc s))
 
-(defn magic-table [] :- (Vector str)(mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
+(defn magic-table [] :- i64 (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
@@ -1075,7 +1085,7 @@
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add
-   (mt-add (mt-add (mt-add (mt-add (mt-add [] "->") "->>") "when") "when-not") "cond")
+   (mt-add (mt-add (mt-add (mt-add (mt-add (stab-new) "->") "->>") "when") "when-not") "cond")
    "if-let") "when-let") "if-not") "and") "or") "do") "let") "fn") "if") "not") "=") "/=")
    "<") ">") "<=") ">=") "+") "-") "*") "/") "abs") "min") "max") "match") "loop") "recur")
    "get") "conj") "count") "str") "subs") "split") "join") "nth") "char->str") "clone")
@@ -1729,7 +1739,7 @@
 
 ; --- parser state -----------------------------------------------------------
 
-(deftype PS (PS [tab :- (Vector str) decls :- Decls adts :- AdtTab
+(deftype PS (PS [tab :- i64 decls :- Decls adts :- AdtTab
                 sigs :- Sigs typarams :- Sids err :- str]))
 
 (defn ps-failed [ps :- PS] :- bool
@@ -1743,10 +1753,10 @@
         (clone ps)
         (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone msg))))))
 
-(defn ps-tab [ps :- PS] :- (Vector str)
-  (match ps (PS [tab decls adts sigs typarams err] (clone tab))))
+(defn ps-tab [ps :- PS] :- i64
+  (match ps (PS [tab decls adts sigs typarams err] tab)))
 
-(defn ps-with-tab [ps :- PS tab :- (Vector str)] :- PS
+(defn ps-with-tab [ps :- PS tab :- i64] :- PS
   (match ps
     (PS [t decls adts sigs typarams err]
       (PS tab (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err)))))
@@ -1772,19 +1782,18 @@
     (PS [tab decls adts sigs typarams e]
       (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) err))))
 
-(defn sym-str [tab :- (Vector str) sid :- i64] :- str
-  (clone (get tab sid "")))
+(defn sym-str [tab :- i64 sid :- i64] :- str
+  (stab-get tab sid))
 
 (defn ps-str-of [ps :- PS sid :- i64] :- str
   (sym-str (ps-tab (clone ps)) sid))
 
 ; One-shot intern over a bare table: the sid, plus the grown table.
-(deftype I1Res (I1Res [tab :- (Vector str) sid :- i64]))
+(deftype I1Res (I1Res [tab :- i64 sid :- i64]))
 
-(defn intern1 [tab :- (Vector str) s :- str] :- I1Res
-  (let [n (count tab)
-        sid (intern-find (clone tab) s (- n 1))]
-    (if (< sid 0) (I1Res (conj tab s) n) (I1Res tab sid))))
+(defn intern1 [tab :- i64 s :- str] :- I1Res
+  (let [sid (intern-find tab s)]
+    (if (< sid 0) (I1Res tab (stab-conj tab s)) (I1Res tab sid))))
 
 (defn sids-idx-of [ks :- Sids x :- i64 i :- i64] :- i64
   (match ks
@@ -1810,7 +1819,7 @@
 
 ; The prelude: `(deftype (Option a) (Some [v :- a]) (None))` as adt 0.
 ; "Option"/"Some"/"None"/"a" are magic sids 85..88.
-(defn ps-new [tab :- (Vector str)] :- PS
+(defn ps-new [tab :- i64] :- PS
   (let [vs (VCons (Varnt (s-some) (TyCons (t-param 0) (TyNil)))
             (VCons (Varnt (s-nonevar) (TyNil)) (VNil)))
         adts (ATCons (AdtInfo (s-option) (SCons (s-aparam) (SNil)) vs -1 (TyNil)) (ATNil))]
@@ -1915,7 +1924,7 @@
     (SGNil [] -1)))
 
 ; The string of an atom node (only symbol/string position is queried).
-(defn node-str [a :- Ast tab :- (Vector str)] :- str
+(defn node-str [a :- Ast tab :- i64] :- str
   (match a
     (ANil [at] "")
     (ASym [sid at] (sym-str (clone tab) sid))
@@ -2078,13 +2087,13 @@
                           (clone idx)))))))))))
 
 ; `Name__arg1_arg2` — the seed's adt_arg_suffix join.
-(defn adt-inst-name [adts :- AdtTab tab :- (Vector str) tpl :- i64 args :- TyList] :- I1Res
+(defn adt-inst-name [adts :- AdtTab tab :- i64 tpl :- i64 args :- TyList] :- I1Res
   (let [td (adts-at (clone adts) tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (inst-name-loop (clone adts) (clone tab) (sym-str (clone tab) name) (clone args) 1)))))
 
-(defn inst-name-loop [adts :- AdtTab tab :- (Vector str) acc :- str args :- TyList first :- i64] :- I1Res
+(defn inst-name-loop [adts :- AdtTab tab :- i64 acc :- str args :- TyList first :- i64] :- I1Res
   (match args
     (TyNil [] (intern1 tab acc))
     (TyCons [h t]
@@ -2092,7 +2101,7 @@
             acc2 (if (= first 1) (str acc "__" suf) (str acc "_" suf))]
         (inst-name-loop (clone adts) (clone tab) acc2 (clone t) 0)))))
 
-(defn ty-mangle-str [adts :- AdtTab tab :- (Vector str) x :- Ty] :- str
+(defn ty-mangle-str [adts :- AdtTab tab :- i64 x :- Ty] :- str
   (let [suf (ty-suffix (clone x))]
     (if (not (= suf "?"))
       suf
@@ -3378,12 +3387,12 @@
 ; (crates/cato-backend-interp/tests/kernel_hir.rs). Driver modes: `ast`
 ; (expander differential) and default (typed-IR dump).
 
-(deftype LRes (LOk [tab :- (Vector str) adts :- AdtTab insts :- IMap
+(deftype LRes (LOk [tab :- i64 adts :- AdtTab insts :- IMap
                    sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                    defs :- Defns e :- HExpr])
              (LErr [msg :- str]))
 
-(defn lok [tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+(defn lok [tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
           lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns
           e :- HExpr] :- LRes
   (LOk tab adts insts sigs lams rets ncached defs e))
@@ -3496,12 +3505,12 @@
 
 ; --- entry -------------------------------------------------------------------
 
-(defn lower-x [a :- Ast env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-x [a :- Ast env :- TyEnv tab :- i64 adts :- AdtTab
               insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
               ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (lower (clone a) (clone env) (t-none) tab adts insts sigs lams rets ncached defs raws))
 
-(defn lower [a :- Ast env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower [a :- Ast env :- TyEnv expected :- Ty tab :- i64
             adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
             rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [tag (ast-tag a)]
@@ -3532,7 +3541,7 @@
 
       (LErr "unsupported map/set literal"))))
 
-(defn lower-veclit [a :- Ast env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-veclit [a :- Ast env :- TyEnv tab :- i64 adts :- AdtTab
                    insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                    ncached :- i64 defs :- Defns] :- LRes
   (match a
@@ -3827,9 +3836,9 @@
 ; Substitute bound type parameters through a type. ADT instances whose
 ; arguments still mention parameters re-instantiate (grows adts/tab):
 ; reported via SRes.
-(deftype SRes (SRes [tab :- (Vector str) adts :- AdtTab ty :- Ty msg :- str]))
+(deftype SRes (SRes [tab :- i64 adts :- AdtTab ty :- Ty msg :- str]))
 
-(defn subst-ty [ty :- Ty subs :- TyEnv tab :- (Vector str) adts :- AdtTab] :- SRes
+(defn subst-ty [ty :- Ty subs :- TyEnv tab :- i64 adts :- AdtTab] :- SRes
   (let [t (ty-tag (clone ty))]
     (cond
       (= t 18)
@@ -3874,9 +3883,9 @@
       (SRes tab (clone adts) (clone ty) ""))))
 
 ; the list form of subst-ty: every element substituted, in order
-(deftype SResL (SResL [tab :- (Vector str) adts :- AdtTab tys :- TyList msg :- str]))
+(deftype SResL (SResL [tab :- i64 adts :- AdtTab tys :- TyList msg :- str]))
 
-(defn subst-ty-list [tys :- TyList subs :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn subst-ty-list [tys :- TyList subs :- TyEnv tab :- i64 adts :- AdtTab
                     acc :- TyList] :- SResL
   (match tys
     (TyNil [] (SResL tab (clone adts) (tys-rev (clone acc) (TyNil)) ""))
@@ -3893,15 +3902,15 @@
 ; Resolve a (possibly generic) callee for concrete argument types; mint
 ; and lower the instance on first encounter (cache-before-body, the
 ; seed's recursion rule).
-(deftype MIRes (MIRes [tab :- (Vector str) adts :- AdtTab insts :- IMap
+(deftype MIRes (MIRes [tab :- i64 adts :- AdtTab insts :- IMap
                       sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                       defs :- Defns mangled :- i64 ret :- Ty msg :- str]))
 
-(defn ty-mangle-str2 [adts :- AdtTab tab :- (Vector str) x :- Ty] :- str
+(defn ty-mangle-str2 [adts :- AdtTab tab :- i64 x :- Ty] :- str
   (ty-mangle-str (clone adts) tab (clone x)))
 
 (defn instantiate [name :- i64 argtys :- TyList
-                  tab :- (Vector str) adts :- AdtTab insts :- IMap
+                  tab :- i64 adts :- AdtTab insts :- IMap
                   sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                   defs :- Defns raws :- &Raws] :- MIRes
   (let [raw (raws-find raws name)]
@@ -4001,11 +4010,11 @@
         (SCons i (unbound-param-2 (clone t) (clone subs) (+ i 1)))
         (unbound-param-2 (clone t) (clone subs) (+ i 1))))))
 
-(defn mangle-suffix [typarams :- Sids subs :- TyEnv adts :- AdtTab tab :- (Vector str) acc :- Sids] :- str
+(defn mangle-suffix [typarams :- Sids subs :- TyEnv adts :- AdtTab tab :- i64 acc :- Sids] :- str
   ; suffix per type parameter, in declaration order, joined with _
   (mangle-suffix-2 (clone typarams) (clone subs) (clone adts) tab 0 "" 0))
 
-(defn mangle-suffix-2 [typarams :- Sids subs :- TyEnv adts :- AdtTab tab :- (Vector str) i :- i64 acc :- str first :- i64] :- str
+(defn mangle-suffix-2 [typarams :- Sids subs :- TyEnv adts :- AdtTab tab :- i64 i :- i64 acc :- str first :- i64] :- str
   (match typarams
     (SNil [] acc)
     (SCons [h t]
@@ -4014,9 +4023,9 @@
             acc2 (if (= first 0) (str acc suf) (str acc "_" suf))]
         (mangle-suffix-2 (clone t) (clone subs) (clone adts) (clone tab) (+ i 1) acc2 0)))))
 
-(deftype SPRes (SPRes [tab :- (Vector str) adts :- AdtTab params :- PList msg :- str]))
+(deftype SPRes (SPRes [tab :- i64 adts :- AdtTab params :- PList msg :- str]))
 
-(defn subst-params [params :- PList subs :- TyEnv tab :- (Vector str) adts :- AdtTab acc :- PList] :- SPRes
+(defn subst-params [params :- PList subs :- TyEnv tab :- i64 adts :- AdtTab acc :- PList] :- SPRes
   (match params
     (PCons [p prest]
       (match p
@@ -4039,7 +4048,7 @@
 ; lower a raw defn body (implicit do when multiple forms) — the instance
 ; body path of the seed's `instantiate`.
 (defn lower-body-raw [body :- Ast env :- TyEnv expected :- Ty
-                     tab :- (Vector str) adts :- AdtTab insts :- IMap
+                     tab :- i64 adts :- AdtTab insts :- IMap
                      sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                      defs :- Defns raws :- &Raws] :- LRes
   (let [bt (ast-tag body)]
@@ -4051,10 +4060,10 @@
 
 ; Scalars (five), concrete ADT names, or applied ADTs — instantiate.
 ; Note the seed's narrow scalar list here: i8 in a let ascription fails.
-(defn mk-ps [tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PS
+(defn mk-ps [tab :- i64 adts :- AdtTab sigs :- Sigs] :- PS
   (PS tab (DLNil) adts sigs (SNil) ""))
 
-(defn resolve-ann-args [els :- Asts tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PArgsRes
+(defn resolve-ann-args [els :- Asts tab :- i64 adts :- AdtTab sigs :- Sigs] :- PArgsRes
   (match els
     (KCons [e rest]
       (let [r (resolve-ann-ty (clone e) (clone tab) (clone adts) (clone sigs))]
@@ -4067,12 +4076,12 @@
                   (PArgsRes [ps3 args] (PArgsRes (clone ps3) (TyCons ty (clone args)))))))))))
     (KNil [] (PArgsRes (mk-ps (clone tab) (clone adts) (clone sigs)) (TyNil)))))
 
-(defn resolve-ann-applied [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PTyRes
+(defn resolve-ann-applied [a :- Ast tab :- i64 adts :- AdtTab sigs :- Sigs] :- PTyRes
   (match a
     (AList [kids at]
       (let [h (asts-head-sid (clone kids))]
         ; `(Vector el)` — the built-in generic (S8: loop-bind annotations
-        ; carry full type forms, e.g. the reader's `tab :- (Vector str)`)
+        ; carry full type forms, e.g. the reader's `tab :- i64`)
         (if (= h (s-vec))
           (match (asts-tail (clone kids))
             (KCons [eln rest]
@@ -4092,7 +4101,7 @@
     (_ (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) "type annotation must be a symbol or applied ADT") (t-none)))))
 
 ; the declared-ADT application path of resolve-ann-applied
-(defn resolve-ann-adt [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs h :- i64] :- PTyRes
+(defn resolve-ann-adt [a :- Ast tab :- i64 adts :- AdtTab sigs :- Sigs h :- i64] :- PTyRes
   (match a
     (AList [kids at]
       (let [hit (find-declared-adts (clone adts) h 0)]
@@ -4116,7 +4125,7 @@
     (AMap [ks at] (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) "type annotation must be a symbol or applied ADT") (t-none)))
     (ASet [ks at] (PTyRes (ps-err (mk-ps (clone tab) (clone adts) (clone sigs)) "type annotation must be a symbol or applied ADT") (t-none)))))
 
-(defn resolve-ann-ty [a :- Ast tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- PTyRes
+(defn resolve-ann-ty [a :- Ast tab :- i64 adts :- AdtTab sigs :- Sigs] :- PTyRes
   (let [tag (ast-tag a)]
     (cond
       (= tag 1)
@@ -4166,9 +4175,9 @@
   (info-idx (clone x)))
 
 ; the (Option T) instance for two-argument get / nth / parse-*
-(deftype OIRes (OIRes [tab :- (Vector str) adts :- AdtTab idx :- i64]))
+(deftype OIRes (OIRes [tab :- i64 adts :- AdtTab idx :- i64]))
 
-(defn option-instance [ty :- Ty tab :- (Vector str) adts :- AdtTab sigs :- Sigs] :- OIRes
+(defn option-instance [ty :- Ty tab :- i64 adts :- AdtTab sigs :- Sigs] :- OIRes
   ; the prelude's (Option a) is pinned at combined-table index 0
   (let [ps (PS tab (DLNil) (clone adts) (clone sigs) (SNil) "")
         r (instantiate-adt 0 (TyCons (clone ty) (TyNil)) (clone ps))]
@@ -4180,7 +4189,7 @@
 ; --- sequences, let, if --------------------------------------------------------
 
 ; (do form...) — one form collapses to the form itself.
-(defn lower-do [forms :- Asts env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-do [forms :- Asts env :- TyEnv expected :- Ty tab :- i64
                adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (asts-null (clone forms))
@@ -4188,7 +4197,7 @@
     (lower-do-2 (clone forms) (HENil) (clone env) (clone expected) tab adts insts sigs lams rets ncached defs raws)))
 
 (defn lower-do-2 [forms :- Asts acc :- HExprs env :- TyEnv expected :- Ty
-                 tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                 tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [kid (asts-idx (clone forms) 0)
         rest (asts-tail (clone forms))
@@ -4206,13 +4215,13 @@
           (lower-do-2 rest (HECons e2 (clone acc)) env expected tab2 adts2 insts2 sigs2 lams2 rets2 nc2 defs2 raws))))))
 
 ; lower a single child expression (no expected type)
-(defn lower-1 [a :- Ast env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-1 [a :- Ast env :- TyEnv tab :- i64 adts :- AdtTab
               insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
               ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (lower (clone a) (clone env) (t-none) tab adts insts sigs lams rets ncached defs raws))
 
 ; lower with an expected type
-(defn lower-e [a :- Ast env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-e [a :- Ast env :- TyEnv expected :- Ty tab :- i64
               adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
               rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (lower (clone a) (clone env) (clone expected) tab adts insts sigs lams rets ncached defs raws))
@@ -4247,7 +4256,7 @@
     (HACons [variant binders body next]
       (and (all-paths-recur (clone body)) (arms-all-recur (clone next))))))
 
-(defn lower-if [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-if [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 4))
@@ -4287,7 +4296,7 @@
 
 ; --- let (forms.rs lower_let) ---------------------------------------------------
 
-(defn lower-let [items :- Asts env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-let [items :- Asts env :- TyEnv expected :- Ty tab :- i64
                 adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                 rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (match items
@@ -4316,14 +4325,14 @@
 
 ; the body after the bindings vector: one form, or an implicit Seq
 (defn lower-body-1 [rest :- Asts body :- Ast env :- TyEnv expected :- Ty
-                   tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                   tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                    lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (asts-null (clone rest))
     (lower (clone body) (clone env) (clone expected) tab adts insts sigs lams rets ncached defs raws)
     (lower-body-seq (KCons (clone body) (clone rest)) (HENil) (clone env) tab adts insts sigs lams rets ncached defs raws)))
 
 (defn lower-body-seq [forms :- Asts acc :- HExprs env :- TyEnv
-                     tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                     tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                      lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [kid (asts-idx (clone forms) 0)
         restq (asts-null (asts-tail (clone forms)))
@@ -4337,20 +4346,20 @@
 
 ; returns env2 + accumulated binds (reversed); mirrors lower_let's three
 ; binding shapes: [a b] destructuring, [x :- ty value] ascription, plain.
-(deftype LBRes (LBRes [tab :- (Vector str) adts :- AdtTab insts :- IMap
+(deftype LBRes (LBRes [tab :- i64 adts :- AdtTab insts :- IMap
                       sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                       defs :- Defns env :- TyEnv binds :- Binds])
               (LBErr [msg :- str]))
 
 (defn lower-let-binds [binds :- Asts i :- i64 env0 :- TyEnv env :- TyEnv
-                      acc :- Binds tab :- (Vector str) adts :- AdtTab
+                      acc :- Binds tab :- i64 adts :- AdtTab
                       insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                       ncached :- i64 defs :- Defns raws :- &Raws] :- LBRes
   (lower-let-binds-impl (clone binds) i (asts-depth (clone binds)) (clone env0) (clone env) (clone acc)
                         tab adts insts sigs lams rets ncached defs raws))
 
 (defn lower-let-binds-impl [binds :- Asts i :- i64 n :- i64 env0 :- TyEnv env :- TyEnv
-                           acc :- Binds tab :- (Vector str) adts :- AdtTab
+                           acc :- Binds tab :- i64 adts :- AdtTab
                            insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                            ncached :- i64 defs :- Defns raws :- &Raws] :- LBRes
   (if (>= i n)
@@ -4427,7 +4436,7 @@
 ; [a b] destructuring: bind a = (get tmp 0 default), b = (get tmp 1
 ; default); `_` skips. Scalar i64/f64 elements only (the seed's rule).
 (defn destructure-binds [pat :- Asts k :- i64 tmp :- i64 elc :- i64
-                        env :- TyEnv tab :- (Vector str) adts :- AdtTab
+                        env :- TyEnv tab :- i64 adts :- AdtTab
                         insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                         ncached :- i64 defs :- Defns acc :- Binds] :- LBRes
   (if (>= k (asts-depth (clone pat)))
@@ -4449,7 +4458,7 @@
 
 ; --- comparisons, not, abs, min/max, and/or (forms.rs) ----------------------------
 
-(defn lower-cmp [op :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-cmp [op :- i64 items :- Asts env :- TyEnv tab :- i64
                 adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                 rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -4477,14 +4486,14 @@
                       (LErr (str "cannot compare " (ty-name (clone at)) " and " (ty-name (clone bt))
                                  " — operands must share a width (cast explicitly)")))))))))))))
 
-(defn lower-not [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-not [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
     (LErr "not expects 1 operand")
     (lower-1-bool (asts-idx (clone items) 1) (clone env) tab adts insts sigs lams rets ncached defs "not expects a boolean operand" 25 raws)))
 
-(defn lower-abs [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-abs [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -4498,7 +4507,7 @@
               (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HAbs (clone e2) (clone t)))
               (LErr "abs expects an i64, i32 or f64 operand"))))))))
 
-(defn lower-minmax [op :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-minmax [op :- i64 items :- Asts env :- TyEnv tab :- i64
                    adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                    rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -4523,7 +4532,7 @@
                           (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HMax f1 f2 (clone t))))
                         (LErr (str "min/max expects i64/i32/f64 operands"))))))))))))))
 
-(defn lower-1-bool [a :- Ast env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-1-bool [a :- Ast env :- TyEnv tab :- i64 adts :- AdtTab
                    insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                    ncached :- i64 defs :- Defns msg :- str kind :- i64 raws :- &Raws] :- LRes
   (let [r (lower-1 (clone a) (clone env) tab adts insts sigs lams rets ncached defs raws)]
@@ -4536,7 +4545,7 @@
                (if (= kind 25) (HNot (clone e2)) (clone e2))))))))
 
 ; post-expansion and/or is strictly binary (the expander folded variadics)
-(defn lower-andor [kind :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-andor [kind :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -5103,7 +5112,7 @@
 
 ; (fn [x :- ty ...] body) — params via the sym grammar with an EMPTY
 ; declared-ADT table (the seed's rule); captures by first reference.
-(defn lower-closure [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-closure [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                     insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                     ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -5180,7 +5189,7 @@
 ; scalars, the vec/map/set spellings, or a fresh uppercase type parameter
 (deftype CtyRes (CtyRes [tps :- Sids ty :- Ty msg :- str]))
 
-(defn closure-ty-sym [s :- str tps :- Sids tab :- (Vector str)] :- CtyRes
+(defn closure-ty-sym [s :- str tps :- Sids tab :- i64] :- CtyRes
   (cond
     (= s "i64")    (CtyRes tps (t-i64) "")
     (= s "i32")    (CtyRes tps (t-i32) "")
@@ -5227,7 +5236,7 @@
 
 ; loop binding values, sequential scoping
 (defn lower-loop-binds [binds :- Asts i :- i64 n :- i64 env :- TyEnv acc :- Binds
-                       tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                       tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                        lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LBRes
   (if (>= i n)
     (LBRes tab adts insts sigs lams rets ncached defs (clone env) (clone acc))
@@ -5272,7 +5281,7 @@
                                                       (BCons (ast-sid-of nm) init2 ty (clone acc))
                                                       (clone t3) (clone a3) (clone i3) (clone s3) (clone l3) (clone r3) n3 (clone d3) raws)))))))))))))))))))
 
-(defn lower-loop [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-loop [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (< (asts-depth (clone items)) 3)
@@ -5431,7 +5440,7 @@
 ; (V [b] (if g body (match scrut rest...))) plus a routing (_ (match scrut
 ; rest...)) — the rest chain is the ORIGINAL Ast tail, so the rewrite
 ; re-enters lower-match.
-(defn lower-match [items :- Asts env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-match [items :- Asts env :- TyEnv expected :- Ty tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (< (asts-depth (clone items)) 3)
@@ -5505,7 +5514,7 @@
 (defn mk-route-arm [match-ast :- Ast] :- Ast
   (AList (KCons (ASym (s-wild) (mk-sp)) (KCons (clone match-ast) (KNil))) (mk-sp)))
 
-(defn lower-match-g [items :- Asts env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-match-g [items :- Asts env :- TyEnv expected :- Ty tab :- i64
                     adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                     rets :- TyEnv ncached :- i64 defs :- Defns
                     gi :- i64 garm :- Ast raws :- &Raws] :- LRes
@@ -5616,7 +5625,7 @@
             false))))))
 
 ; the non-guard path: build the HMatch
-(defn lower-match-plain [items :- Asts env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-match-plain [items :- Asts env :- TyEnv expected :- Ty tab :- i64
                         adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                         rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [scrut (asts-idx (clone items) 1)
@@ -5643,7 +5652,7 @@
                                      (clone merged)))))))))))))))
 
 ; arms accumulate: (reversed arms chain, arm types in order, wildcard flag)
-(deftype MRes (MRes [tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+(deftype MRes (MRes [tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                     lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns
                     arms :- HArms tys :- TyList wildcard :- bool narms :- i64])
              (MArr [msg :- str]))
@@ -5654,7 +5663,7 @@
     (HACons [variant binders body next] (arms-rev (clone next) (HACons variant (clone binders) (clone body) (clone acc))))))
 
 (defn match-arms [arms :- Asts vdef :- AdtInfo adt :- i64 env :- TyEnv pt :- Ty
-                 tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                 tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns
                  acc :- HArms tys :- TyList wildcard :- bool narms :- i64 raws :- &Raws] :- MRes
   (match arms
@@ -5682,7 +5691,7 @@
               (let [fields (variant-fields (clone vdef) vi)]
                 (match-variant-arm (clone arm) (clone rest) (clone vdef) adt vi (clone fields) (clone env) (clone pt) tab adts insts sigs lams rets ncached defs (clone acc) (clone tys) wildcard narms raws)))))))))
 
-(defn adts-name [info :- AdtInfo tab :- (Vector str)] :- str
+(defn adts-name [info :- AdtInfo tab :- i64] :- str
   (match info
     (AdtInfo [name typarams variants tpl tplargs] (sym-str (clone tab) name))))
 
@@ -5702,7 +5711,7 @@
         (Varnt [vname fields] (clone fields))))))
 
 (defn match-variant-arm [arm :- Ast rest :- Asts vdef :- AdtInfo adt :- i64 vi :- i64
-                        fields :- TyList env :- TyEnv pt :- Ty tab :- (Vector str)
+                        fields :- TyList env :- TyEnv pt :- Ty tab :- i64
                         adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                         rets :- TyEnv ncached :- i64 defs :- Defns
                         acc :- HArms tys :- TyList wildcard :- bool narms :- i64 raws :- &Raws] :- MRes
@@ -5731,12 +5740,12 @@
                                         (HACons vi (clone binders3) (clone body2) (clone acc)) (TyCons (clone bt) (clone tys)) wildcard (+ 1 narms) raws))
 )))))))))))))
 
-(deftype MBRes (MBRes [tab :- (Vector str) adts :- AdtTab insts :- IMap ncached :- i64
+(deftype MBRes (MBRes [tab :- i64 adts :- AdtTab insts :- IMap ncached :- i64
                       env :- TyEnv binders :- Sids])
               (MBErr [msg :- str]))
 
 (defn match-binders [bs :- Asts fields :- TyList k :- i64 env :- TyEnv acc :- Sids
-                    seen :- Sids tab :- (Vector str) adts :- AdtTab insts :- IMap
+                    seen :- Sids tab :- i64 adts :- AdtTab insts :- IMap
                     ncached :- i64] :- MBRes
   (if (>= k (asts-depth (clone bs)))
     (MBRes tab (clone adts) (clone insts) ncached (clone env) (sids-rev (clone acc) (SNil)))
@@ -5758,7 +5767,7 @@
 ; at most once — the seed's duplicate check is message-only here) covers
 ; every variant. Missing-variant NAMES in the diagnostic are a nicety the
 ; byte contract does not pin.
-(defn finish-match [tys :- TyList wildcard :- bool narms :- i64 vdef :- AdtInfo tab :- (Vector str)] :- VRes
+(defn finish-match [tys :- TyList wildcard :- bool narms :- i64 vdef :- AdtInfo tab :- i64] :- VRes
   (if (not wildcard)
     (if (< narms (vlist-depth-of (clone vdef)))
       (VErr (str "match on " (adts-name (clone vdef) tab) " does not cover: (add arms or a _ wildcard)"))
@@ -5825,7 +5834,7 @@
 ; lower a ctor call: fields unify against the template; nullary ctors
 ; infer from the expected type's instance
 (defn lower-ctor [fv :- FVRes items :- Asts env :- TyEnv expected :- Ty
-                 tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                 tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (match fv
     (FVMiss [] (LErr "internal: ctor miss"))
@@ -5852,7 +5861,7 @@
   (if (>= i n) (TyNil) (TyCons (te-get subs i) (subs-collect (clone subs) (+ i 1) n))))
 
 (defn ctor-instantiate [adt :- i64 variant :- i64 args :- HExprs targs :- TyList
-                       tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                       tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                        lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [r (instantiate-adt adt (clone targs) (PS tab (DLNil) (clone adts) (clone sigs) (SNil) ""))]
     (match r
@@ -5865,7 +5874,7 @@
                    (HCtor idx variant (clone args))))))))))
 
 (defn ctor-finish [adt :- i64 variant :- i64 args :- HExprs nparams :- i64 subs :- TyEnv expected :- Ty
-                  tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                  tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                   lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (= nparams 0)
     (lok tab adts insts sigs lams rets ncached defs
@@ -5888,7 +5897,7 @@
 
 (defn lower-ctor-fields [items :- Asts adt :- i64 variant :- i64 fields :- TyList
                         env :- TyEnv nparams :- i64 subs :- TyEnv
-                        tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                        tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                         lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns
                         k :- i64 acc :- HExprs raws :- &Raws] :- LRes
   (if (not (= (tys-depth (clone fields)) (- (asts-depth (clone items)) 1)))
@@ -5940,7 +5949,7 @@
 ; constructor resolution, (3) generic defn instantiation, (4) even? and
 ; known callees, (5) the unknown-function error.
 
-(defn lower-call-args [items :- Asts i :- i64 env :- TyEnv tab :- (Vector str)
+(defn lower-call-args [items :- Asts i :- i64 env :- TyEnv tab :- i64
                       adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                       rets :- TyEnv ncached :- i64 defs :- Defns head :- i64
                       kind :- i64 sig :- i64 acc :- HExprs raws :- &Raws] :- LRes
@@ -5964,7 +5973,7 @@
       (call-argtys (clone next) (clone env) (clone rets) (clone sigs) (TyCons (ty-of kid env rets sigs) (clone acc))))))
 
 (defn lower-call [head :- i64 items :- Asts env :- TyEnv expected :- Ty
-                 tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                 tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [ht (te-get env head)]
     (if (= (ty-tag (clone ht)) 17)
@@ -6004,7 +6013,7 @@
                     (LErr (str "unknown function " (sym-str (clone tab) head))))
                   (lower-call-args (clone items) 1 (clone env) tab adts insts sigs lams rets ncached defs head 0 -1 (HENil) raws))))))))))
 
-(defn lower-list [a :- Ast env :- TyEnv expected :- Ty tab :- (Vector str)
+(defn lower-list [a :- Ast env :- TyEnv expected :- Ty tab :- i64
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [kids (ast-kids-of (clone a))
@@ -6123,7 +6132,7 @@
       (lower-call h (clone kids) (clone env) (clone expected) tab adts insts sigs lams rets ncached defs raws))))
 ; --- builtin arms -----------------------------------------------------------------
 
-(defn lower-arith [op :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-arith [op :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -6156,7 +6165,7 @@
     (= h (s-u64)) (t-u64)
     (t-usize)))
 
-(defn lower-cast [h :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-cast [h :- i64 items :- Asts env :- TyEnv tab :- i64
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6172,12 +6181,12 @@
               (is-numeric-ty (clone src)) (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HICast (clone e2) (clone src) (clone target)))
               (LErr (str "cast expects a numeric operand, got " (ty-name (clone src)))))))))))
 
-(defn lower-recur [args :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-recur [args :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (lower-recur-2 (clone args) (HENil) (clone env) tab adts insts sigs lams rets ncached defs raws))
 
-(defn lower-recur-2 [args :- Asts acc :- HExprs env :- TyEnv tab :- (Vector str)
+(defn lower-recur-2 [args :- Asts acc :- HExprs env :- TyEnv tab :- i64
                     adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                     rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (asts-null (clone args))
@@ -6188,7 +6197,7 @@
         (LOk [t2 a2 i2 s2 l2 r2 n2 d2 e2]
           (lower-recur-2 (asts-tail (clone args)) (HECons (clone e2) (clone acc)) (clone env) (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) raws))))))
 
-(defn lower-count [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-count [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6199,7 +6208,7 @@
         (LOk [t2 a2 i2 s2 l2 r2 n2 d2 e2]
           (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HCount (clone e2))))))))
 
-(defn lower-clone [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-clone [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6210,7 +6219,7 @@
         (LOk [t2 a2 i2 s2 l2 r2 n2 d2 e2]
           (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HClone (clone e2))))))))
 
-(defn lower-drop [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-drop [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6221,7 +6230,7 @@
         (LOk [t2 a2 i2 s2 l2 r2 n2 d2 e2]
           (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HDrop (clone e2))))))))
 
-(defn lower-charstr [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-charstr [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                     insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                     ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6234,7 +6243,7 @@
             (LErr "char->str expects an i64 byte value")
             (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HCharStr (clone e2)))))))))
 
-(defn lower-slurp [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-slurp [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6247,7 +6256,7 @@
             (LErr "slurp path must be a string")
             (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HSlurp (clone e2)))))))))
 
-(defn lower-spit [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-spit [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -6262,7 +6271,7 @@
               (LOk [t2 a2 i2 s2 l2 r2 n2 d2 d]
                 (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HSpit (clone p) (clone d)))))))))))
 
-(defn lower-exit [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-exit [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6275,7 +6284,7 @@
             (LErr "exit status must be i64")
             (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HExit (clone e2)))))))))
 
-(defn lower-parse [intf :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-parse [intf :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6292,7 +6301,7 @@
                 (OIRes [t3 a3 idx]
                   (lok (clone t3) (clone a3) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HParseNum (clone e2) intf (t-adt idx))))))))))))
 
-(defn lower-print [h :- i64 items :- Asts env :- TyEnv tab :- (Vector str)
+(defn lower-print [h :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 2))
@@ -6305,7 +6314,7 @@
             (LErr "print-str expects a string")
             (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HCall h (HECons (clone e2) (HENil))))))))))
 
-(defn lower-vec-builtin [h :- i64 items :- Asts tab :- (Vector str) adts :- AdtTab
+(defn lower-vec-builtin [h :- i64 items :- Asts tab :- i64 adts :- AdtTab
                         insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                         ncached :- i64 defs :- Defns] :- LRes
   (let [els (asts-tail (clone items))]
@@ -6317,14 +6326,14 @@
         (lok tab adts insts sigs lams rets ncached defs (HVecLit 1 (kids-f64s (clone els) (VVNil))))
         (LErr "vec-f64 elements must be numeric literals")))))
 
-(defn lower-str [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-str [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (< (asts-depth (clone items)) 2)
     (LErr "str expects at least one argument")
     (lower-str-args (asts-tail (clone items)) (HENil) (clone env) tab adts insts sigs lams rets ncached defs raws)))
 
-(defn lower-str-args [els :- Asts acc :- HExprs env :- TyEnv tab :- (Vector str)
+(defn lower-str-args [els :- Asts acc :- HExprs env :- TyEnv tab :- i64
                      adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                      rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (asts-null (clone els))
@@ -6340,28 +6349,28 @@
                 (lower-str-args (asts-tail (clone els)) (HECons e3 (clone acc)) (clone env) (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) raws))
               (LErr (str "str arguments must be strings, numbers or bools, got " (ty-name (clone t)))))))))))
 
-(defn lower-subs [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-subs [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 4))
     (LErr "subs expects (subs <s> <start> <end>)")
     (lower-3-to (clone items) 0 (clone env) tab adts insts sigs lams rets ncached defs raws)))
 
-(defn lower-split [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-split [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
     (LErr "split expects (split <s> <sep>)")
     (lower-2-to (clone items) 0 (clone env) tab adts insts sigs lams rets ncached defs "split" 16 raws)))
 
-(defn lower-join [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-join [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
     (LErr "join expects (join <sep> <strs>)")
     (lower-join-2 (clone items) (clone env) tab adts insts sigs lams rets ncached defs raws)))
 
-(defn lower-get [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-get [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [n (asts-depth (clone items))]
@@ -6416,7 +6425,7 @@
     (VVF64 [w next] (VVF64 w (vvals-promote (clone next))))))
 
 (defn lower-conj-plain [elc :- i64 v2 :- HExpr x2 :- HExpr env :- TyEnv
-                       tab :- (Vector str) adts :- AdtTab insts :- IMap
+                       tab :- i64 adts :- AdtTab insts :- IMap
                        sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                        defs :- Defns] :- LRes
   (let [xt (ty-of x2 env rets sigs)
@@ -6432,7 +6441,7 @@
              (HConj (clone v2) x3 elc 0))))))
 
 (defn lower-conj-fold [elc :- i64 v2 :- HExpr x2 :- HExpr env :- TyEnv
-                      tab :- (Vector str) adts :- AdtTab insts :- IMap
+                      tab :- i64 adts :- AdtTab insts :- IMap
                       sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64
                       defs :- Defns] :- LRes
   ; conj on a literal vector with a constant element folds to a new
@@ -6455,7 +6464,7 @@
       (lower-conj-plain elc (clone v2) (clone x2) (clone env) tab (clone adts) (clone insts)
                         (clone sigs) (clone lams) (clone rets) ncached (clone defs)))))
 
-(defn lower-conj [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-conj [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (not (= (asts-depth (clone items)) 3))
@@ -6476,7 +6485,7 @@
                   (LOk [t2 a2 i2 s2 l2 r2 n2 d2 x2]
                     (lower-conj-fold elc (clone v2) (clone x2) (clone env) (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2))))))))))))
 
-(defn lower-nth [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-nth [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   ; two-argument nth is (StrNth s idx (Option i64)); the explicit-default
@@ -6515,7 +6524,7 @@
                                                  (t-i64)))))))))))))))))))))
 
 ; shared child-lowering shapes
-(defn lower-3-to [items :- Asts mode :- i64 env :- TyEnv tab :- (Vector str)
+(defn lower-3-to [items :- Asts mode :- i64 env :- TyEnv tab :- i64
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [a (asts-idx (clone items) 1)
@@ -6535,7 +6544,7 @@
                   (LOk [t3 a3 i3 s3 l3 r3 n3 d3 e3]
                     (lok (clone t3) (clone a3) (clone i3) (clone s3) (clone l3) (clone r3) n3 (clone d3) (HSubs (clone e1) (clone e2) (clone e3)))))))))))))
 
-(defn lower-2-to [items :- Asts mode :- i64 env :- TyEnv tab :- (Vector str)
+(defn lower-2-to [items :- Asts mode :- i64 env :- TyEnv tab :- i64
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns name :- str kind :- i64 raws :- &Raws] :- LRes
   (let [a (asts-idx (clone items) 1)
@@ -6552,7 +6561,7 @@
                 (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HSplit (clone e1) (clone e2)))
                 (lok (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2 (clone d2) (HJoin (clone e1) (clone e2)))))))))))
 
-(defn lower-join-2 [items :- Asts env :- TyEnv tab :- (Vector str) adts :- AdtTab
+(defn lower-join-2 [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                    insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                    ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (lower-2-to (clone items) 0 (clone env) tab adts insts sigs lams rets ncached defs "join" 17 raws))
@@ -6574,7 +6583,7 @@
 ; instances gathered separately and appended after the externs, exactly
 ; like the seed's `out` list.
 
-(deftype POut (POk [tab :- (Vector str) adts :- AdtTab defs :- Defns
+(deftype POut (POk [tab :- i64 adts :- AdtTab defs :- Defns
                    lams :- Lams sigs :- Sigs])
              (PErr [msg :- str]))
 
@@ -6620,7 +6629,7 @@
 ; pass 0b: variants, in declaration order; each deftype's own type
 ; parameters are in scope while its fields parse
 (defn build-variants [forms :- Asts i :- i64 n :- i64 decls :- Decls adts :- AdtTab
-                     tab :- (Vector str) sigs :- Sigs] :- VarRes
+                     tab :- i64 sigs :- Sigs] :- VarRes
   ; match-walk, as collect-decls (S8)
   (match forms
     (KNil [] (VarRes adts ""))
@@ -6699,7 +6708,7 @@
 ; the plain-defn lowering loop (source order); instances accumulate in
 ; their own chain and move behind the externs at assembly time
 (deftype LLoopRes (LLoopRes [ps :- PS defs :- Defns instdefs :- Defns
-                            tab :- (Vector str) adts :- AdtTab insts :- IMap
+                            tab :- i64 adts :- AdtTab insts :- IMap
                             sigs :- Sigs lams :- Lams rets :- TyEnv ncached :- i64])
              (LLoopErr [msg :- str]))
 
@@ -6715,7 +6724,7 @@
 ; ADT instances, closure signatures and mono cache state must reach the
 ; next defn and the final dump — the seed's Ctx cells are program-global
 (defn build-lower-2 [rs :- &Raws i :- i64 n :- i64 ps :- PS defs :- Defns instdefs :- Defns
-                    tab :- (Vector str) adts :- AdtTab insts :- IMap sigs :- Sigs
+                    tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                     lams :- Lams rets :- TyEnv ncached :- i64] :- LLoopRes
   (if (>= i n)
     (match ps
@@ -6753,7 +6762,7 @@
                                  (clone instdefs)
                                  (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2))))))))))
 
-(defn build-program [forms :- Asts tab :- (Vector str)] :- POut
+(defn build-program [forms :- Asts tab :- i64] :- POut
   (let [n (asts-depth (clone forms))
         ; the prelude: the (Option a) template seeded as adt 0, with its
         ; declaration registered so annotations resolve
@@ -6846,7 +6855,7 @@
 ; --- read-only context ---------------------------------------------------------
 
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
-                    tab :- (Vector str) shared :- Sids loopcopy :- Sids]))
+                    tab :- i64 shared :- Sids loopcopy :- Sids]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -7784,7 +7793,7 @@
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
 (defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- (Vector str) shared :- Sids] :- BPlan
+             tab :- i64 shared :- Sids] :- BPlan
   ; `shared` (externs + borrowed-param callees + builtins) is computed
   ; once per program by check-program — computing it per defn walked the
   ; whole Defns chain 1000+ times.
@@ -7857,7 +7866,7 @@
 (deftype CkRes (CKOk [defs :- Defns lams :- Lams])
               (CKErr [msg :- str]))
 
-(defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- (Vector str)
+(defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- i64
                   shared :- Sids] :- CkRes
   ; the whole-program state threads by move — a per-step clone of facts/
   ; tab/alldefs made the self-compile quadratic (S8)
@@ -7880,7 +7889,7 @@
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
-(defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- (Vector str)
+(defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- i64
                  shared :- Sids] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
@@ -7897,7 +7906,7 @@
                           (clone facts) (clone tab) (clone shared)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
-                    tab :- (Vector str)] :- CkRes
+                    tab :- i64] :- CkRes
   (let [shared (b-add-builtins (b-shared-callees defs (SNil)))
         ; the second stage re-reads the small program state: clone it
         ; before the first call moves it
@@ -7967,7 +7976,7 @@
 
 ; --- expressions --------------------------------------------------------------
 
-(defn d-e [e :- HExpr tab :- (Vector str)] :- str
+(defn d-e [e :- HExpr tab :- i64] :- str
   (match e
     (HConstI64 [v] (str "(const " (clone v) ")"))
     (HConstF64 [v] (str "(f64lit " (str (clone v)) ")"))
@@ -8050,17 +8059,17 @@
     (VVI64 [v next] (str " " v (d-vvals-rest (clone next))))
     (VVF64 [v next] (str " " (str v) (d-vvals-rest (clone next))))))
 
-(defn d-args [es :- HExprs tab :- (Vector str)] :- str
+(defn d-args [es :- HExprs tab :- i64] :- str
   ; a space-separated run of child expressions: " e1 e2"
   (match es
     (HENil [] "")
     (HECons [kid next] (str " " (d-e (clone kid) (clone tab)) (d-args (clone next) (clone tab))))))
 
-(defn d-binds [binds :- Binds tab :- (Vector str)] :- str
+(defn d-binds [binds :- Binds tab :- i64] :- str
   ; bracket list of flattened triples: [n e T n e T ...]
   (str "[" (d-binds-parts binds (clone tab)) "]"))
 
-(defn d-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+(defn d-binds-parts [binds :- Binds tab :- i64] :- str
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
@@ -8074,11 +8083,11 @@
     (BNil [] true)
     (BCons [name v ty next] false)))
 
-(defn d-loop-binds [binds :- Binds tab :- (Vector str)] :- str
+(defn d-loop-binds [binds :- Binds tab :- i64] :- str
   ; bracket list of flattened triples: [n T e n T e ...]
   (str "[" (d-loop-binds-parts binds (clone tab)) "]"))
 
-(defn d-loop-binds-parts [binds :- Binds tab :- (Vector str)] :- str
+(defn d-loop-binds-parts [binds :- Binds tab :- i64] :- str
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
@@ -8087,10 +8096,10 @@
           piece
           (str piece " " (d-loop-binds-parts (clone next) (clone tab))))))))
 
-(defn d-sids-list [ks :- Sids tab :- (Vector str)] :- str
+(defn d-sids-list [ks :- Sids tab :- i64] :- str
   (str "[" (d-sids-parts ks (clone tab)) "]"))
 
-(defn d-sids-parts [ks :- Sids tab :- (Vector str)] :- str
+(defn d-sids-parts [ks :- Sids tab :- i64] :- str
   (match ks
     (SNil [] "")
     (SCons [h t]
@@ -8098,7 +8107,7 @@
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-sids-parts (clone t) (clone tab)))))))
 
-(defn d-arms [arms :- HArms tab :- (Vector str)] :- str
+(defn d-arms [arms :- HArms tab :- i64] :- str
   (match arms
     (HANil [] "")
     (HACons [variant binders body next]
@@ -8106,11 +8115,11 @@
             piece (str " (arm " vname " " (d-sids-list (clone binders) (clone tab)) " " (d-e (clone body) (clone tab)) ")")]
         (str piece (d-arms (clone next) (clone tab)))))))
 
-(defn d-params [ps :- PList tab :- (Vector str)] :- str
+(defn d-params [ps :- PList tab :- i64] :- str
   ; bracket list of named params: [p:T p:T]
   (str "[" (d-params-parts ps (clone tab)) "]"))
 
-(defn d-params-parts [ps :- PList tab :- (Vector str)] :- str
+(defn d-params-parts [ps :- PList tab :- i64] :- str
   (match ps
     (PNil [] "")
     (PCons [h t]
@@ -8126,11 +8135,11 @@
     (PNil [] true)
     (PCons [h t] false)))
 
-(defn d-caps [caps :- Caps tab :- (Vector str)] :- str
+(defn d-caps [caps :- Caps tab :- i64] :- str
   ; bracket list of captures with ownership bits: [c:T:OWN c:T:OWN]
   (str "[" (d-caps-parts caps (clone tab)) "]"))
 
-(defn d-caps-parts [caps :- Caps tab :- (Vector str)] :- str
+(defn d-caps-parts [caps :- Caps tab :- i64] :- str
   (match caps
     (CNil [] "")
     (CCons [name ty own next]
@@ -8146,11 +8155,11 @@
 
 ; --- records ------------------------------------------------------------------
 
-(defn d-adt-variants [variants :- VList tab :- (Vector str)] :- str
+(defn d-adt-variants [variants :- VList tab :- i64] :- str
   ; bracket list of (VName [T ...]) pairs
   (str "[" (d-variants-parts variants (clone tab)) "]"))
 
-(defn d-variants-parts [variants :- VList tab :- (Vector str)] :- str
+(defn d-variants-parts [variants :- VList tab :- i64] :- str
   (match variants
     (VNil [] "")
     (VCons [h t]
@@ -8166,7 +8175,7 @@
     (VNil [] true)
     (VCons [h t] false)))
 
-(defn d-adts [adts :- AdtTab tab :- (Vector str) i :- i64 sb :- StrBuf] :- StrBuf
+(defn d-adts [adts :- AdtTab tab :- i64 i :- i64 sb :- StrBuf] :- StrBuf
   (match adts
     (ATNil [] sb)
     (ATCons [h t]
@@ -8181,11 +8190,11 @@
                         (str "(adtinst " i " " tpl " " (sym-str (clone tab) name) ")")))]
             (d-adts (clone t) (clone tab) (+ i 1) sb2)))))))
 
-(defn d-typarams [typarams :- Sids tab :- (Vector str)] :- str
+(defn d-typarams [typarams :- Sids tab :- i64] :- str
   ; a bracket list of the header's type parameter NAMES: [a] or [a b]
   (str "[" (d-typarams-parts typarams (clone tab)) "]"))
 
-(defn d-typarams-parts [ks :- Sids tab :- (Vector str)] :- str
+(defn d-typarams-parts [ks :- Sids tab :- i64] :- str
   (match ks
     (SNil [] "")
     (SCons [h t]
@@ -8193,7 +8202,7 @@
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-typarams-parts (clone t) (clone tab)))))))
 
-(defn d-defn-line [d :- Defn tab :- (Vector str)] :- str
+(defn d-defn-line [d :- Defn tab :- i64] :- str
   (match d
     (Defn [name params ret isextern body]
       (str "(defn " (sym-str (clone tab) name)
@@ -8202,12 +8211,12 @@
            " " isextern
            " " (d-e (clone body) (clone tab)) ")"))))
 
-(defn d-defns [ds :- Defns tab :- (Vector str) sb :- StrBuf] :- StrBuf
+(defn d-defns [ds :- Defns tab :- i64 sb :- StrBuf] :- StrBuf
   (match ds
     (DNil [] sb)
     (DCons [h t] (d-defns (clone t) (clone tab) (sb-add-line sb (d-defn-line (clone h) (clone tab)))))))
 
-(defn d-lams [ls :- Lams tab :- (Vector str) sb :- StrBuf] :- StrBuf
+(defn d-lams [ls :- Lams tab :- i64 sb :- StrBuf] :- StrBuf
   (match ls
     (LMNil [] sb)
     (LMCons [h t]
@@ -8232,7 +8241,7 @@
 ; defns (plain in source order, then externs, then mono instances),
 ; lambdas, fn sigs
 (defn dump-program [adts :- AdtTab defs :- Defns lams :- Lams sigs :- Sigs
-                   tab :- (Vector str)] :- str
+                   tab :- i64] :- str
   (let [sb0 (d-adts (clone adts) (clone tab) 0 (sb-new))
         sb1 (d-defns (clone defs) (clone tab) sb0)
         sb2 (d-lams (clone lams) (clone tab) sb1)
@@ -8334,20 +8343,19 @@
     (StrsCons [h t] (if (= h s) true (strs-has (clone t) (clone s))))
     (StrsNil [] false)))
 
-(deftype Mdl (Mdl [tab :- (Vector str) gctr :- i64 globals :- StrBuf
+(deftype Mdl (Mdl [tab :- i64 gctr :- i64 globals :- StrBuf
                    decls :- Strs adts :- AdtTab owns :- Sids
                    csigs :- Sigs]))
 
-(defn md-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
+(defn md-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
   (Mdl (clone tab) 0 (sb-new) (StrsNil) (clone adts) (clone owns) (clone csigs)))
 
-(defn md-tab [m :- &Mdl] :- (Vector str)
-  (match m (Mdl [tab g globals decls adts owns csigs] (clone tab))))
+(defn md-tab [m :- &Mdl] :- i64
+  (match m (Mdl [tab g globals decls adts owns csigs] tab)))
 
-; The interned string for a sid, read straight off the borrowed module so
-; only the one string is copied (md-tab would deep-copy the whole table).
+; The interned string for a sid, read straight off the borrowed module.
 (defn md-sym [m :- &Mdl sid :- i64] :- str
-  (match m (Mdl [tab g globals decls adts owns csigs] (clone (get tab sid "")))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (stab-get tab sid))))
 
 (defn md-adts [m :- &Mdl] :- AdtTab
   (match m (Mdl [tab g globals decls adts owns csigs] (clone adts))))
@@ -8885,7 +8893,7 @@
 ; emitter call; results carry the bundle back out.
 (deftype Emit (Emit [c :- FnCtx mdl :- Mdl sigs :- ESigTab]))
 
-(defn em-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs
+(defn em-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs
               sigs :- ESigTab] :- Emit
   (Emit (fn-new) (md-new tab adts owns csigs) sigs))
 
@@ -11958,11 +11966,11 @@
 (defn md-globals [m :- &Mdl] :- StrBuf
   (match m (Mdl [tab g globals decls adts owns csigs] (clone globals))))
 
-(defn adt-name-at [adts :- AdtTab i :- i64 tab :- (Vector str)] :- str
+(defn adt-name-at [adts :- AdtTab i :- i64 tab :- i64] :- str
   (match (adts-at (clone adts) i)
     (AdtInfo [name tps variants tpl tplargs] (sym-str (clone tab) name))))
 
-(defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)
+(defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                       sb :- StrBuf] :- StrBuf
   (if (>= i (adts-depth (clone adts)))
     sb
@@ -11971,7 +11979,7 @@
       (adt-type-lines (clone adts) (clone owns) (+ i 1) tab
                       (sb-add-line sb (str "%" nm " = type { i64, [" n " x i64] }"))))))
 
-(defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)
+(defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                 sb :- StrBuf] :- StrBuf
   (if (>= i (adts-depth (clone adts)))
     sb
@@ -11997,7 +12005,7 @@
          "    i64 " vi ", label %v" vi "\n"
          (glue-switch (clone adts) i (+ vi 1) dflt))))
 
-(defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
+(defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
         slots (fs-total (clone adts) (clone owns) i)
         nv (vlist-depth (adts-variants-at (clone adts) i))]
@@ -12014,7 +12022,7 @@
          "merge:\n  ret ptr %box\n}\n")))
 
 (defn adt-clone-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
-                          tab :- (Vector str)] :- str
+                          tab :- i64] :- str
   (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
     ""
     (str "v" vi ":\n"
@@ -12023,7 +12031,7 @@
          (adt-clone-variants (clone adts) (clone owns) i (+ vi 1) (clone tab)))))
 
 (defn adt-clone-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
-                        serial :- i64 tab :- (Vector str) acc :- str] :- str
+                        serial :- i64 tab :- i64 acc :- str] :- str
   (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
     acc
     (let [fty (fs-field-ty (clone adts) i vi k)
@@ -12034,7 +12042,7 @@
                         (str acc (clone-field-text (clone fty) off nm (clone adts) (clone owns) vi serial tg (clone tab)))))))
 
 (defn clone-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                        owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- (Vector str)] :- str
+                        owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- i64] :- str
   (let [u (str "v" vi "f" serial)]
     (cond
       (= tg 12)
@@ -12094,7 +12102,7 @@
          "  store i64 %sl" u "k" (- cnt 1) ", ptr %dp" u "k" (- cnt 1) "\n"
          (adt-clone-words nm off (- cnt 1) u))))
 
-(defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)] :- str
+(defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   ; S8 bootstrap: drop glue is a no-op. The kernel's self-compile hit a
   ; premature-free class the ownership model does not see yet (a drop of
   ; a still-referenced chain corrupts live state), and the pipeline
@@ -12107,7 +12115,7 @@
          "}\n")))
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
-                         tab :- (Vector str)] :- str
+                         tab :- i64] :- str
   (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
     ""
     (let [tail (if (> (vlist-depth (adts-variants-at (clone adts) i)) 0) "freebox" "done")]
@@ -12117,7 +12125,7 @@
            (adt-drop-variants (clone adts) (clone owns) i (+ vi 1) (clone tab))))))
 
 (defn adt-drop-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
-                       serial :- i64 tab :- (Vector str) acc :- str] :- str
+                       serial :- i64 tab :- i64 acc :- str] :- str
   (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
     acc
     (let [fty (fs-field-ty (clone adts) i vi k)
@@ -12128,7 +12136,7 @@
                        (str acc (drop-field-text (clone fty) off nm (clone adts) (clone owns) serial tg (clone tab)))))))
 
 (defn drop-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                       owns :- Sids serial :- i64 tg :- i64 tab :- (Vector str)] :- str
+                       owns :- Sids serial :- i64 tg :- i64 tab :- i64] :- str
   (let [u (str off "x" serial)]
     (cond
       (= tg 12)
@@ -12164,7 +12172,7 @@
 (deftype EORes (EORes [st :- Emit out :- EOut]))
 
 (defn emit-program [adts :- AdtTab defs :- Defns lams :- Lams csigs :- Sigs
-                    tab :- (Vector str)] :- str
+                    tab :- i64] :- str
   (do (print-string "PHASE emit-start\n")
   (let [owns (facts-owns-of (clone adts))
         sigs (sigs-build (clone defs) (ESTNil))
@@ -12688,7 +12696,7 @@
 
 ; The reader entry shared with the S6/S7 drivers (the _ref files are not
 ; part of this concat): the scan is seeded with the pre-interned table.
-(defn read-all-with [src :- str tab :- (Vector str)] :- RRes
+(defn read-all-with [src :- str tab :- i64] :- RRes
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
 
 (defn usage [] :- i64
@@ -12717,7 +12725,7 @@
       (RErr [msg at]
         (do (print-string (str "err " (spat (clone at)) " " (clone msg))) "")))))
 
-(defn compile-build [tab :- (Vector str) forms :- Asts] :- str
+(defn compile-build [tab :- i64 forms :- Asts] :- str
   (match (build-program forms tab)
     (PErr [msg] (do (print-string (str "err " msg)) ""))
     (POk [tab2 adts defs lams sigs]

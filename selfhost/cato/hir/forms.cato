@@ -199,7 +199,7 @@
 
 ; --- parser state -----------------------------------------------------------
 
-(deftype PS (PS [tab :- (Vector str) decls :- Decls adts :- AdtTab
+(deftype PS (PS [tab :- i64 decls :- Decls adts :- AdtTab
                 sigs :- Sigs typarams :- Sids err :- str]))
 
 (defn ps-failed [ps :- PS] :- bool
@@ -213,10 +213,10 @@
         (clone ps)
         (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone msg))))))
 
-(defn ps-tab [ps :- PS] :- (Vector str)
-  (match ps (PS [tab decls adts sigs typarams err] (clone tab))))
+(defn ps-tab [ps :- PS] :- i64
+  (match ps (PS [tab decls adts sigs typarams err] tab)))
 
-(defn ps-with-tab [ps :- PS tab :- (Vector str)] :- PS
+(defn ps-with-tab [ps :- PS tab :- i64] :- PS
   (match ps
     (PS [t decls adts sigs typarams err]
       (PS tab (clone decls) (clone adts) (clone sigs) (clone typarams) (clone err)))))
@@ -242,19 +242,18 @@
     (PS [tab decls adts sigs typarams e]
       (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) err))))
 
-(defn sym-str [tab :- (Vector str) sid :- i64] :- str
-  (clone (get tab sid "")))
+(defn sym-str [tab :- i64 sid :- i64] :- str
+  (stab-get tab sid))
 
 (defn ps-str-of [ps :- PS sid :- i64] :- str
   (sym-str (ps-tab (clone ps)) sid))
 
 ; One-shot intern over a bare table: the sid, plus the grown table.
-(deftype I1Res (I1Res [tab :- (Vector str) sid :- i64]))
+(deftype I1Res (I1Res [tab :- i64 sid :- i64]))
 
-(defn intern1 [tab :- (Vector str) s :- str] :- I1Res
-  (let [n (count tab)
-        sid (intern-find (clone tab) s (- n 1))]
-    (if (< sid 0) (I1Res (conj tab s) n) (I1Res tab sid))))
+(defn intern1 [tab :- i64 s :- str] :- I1Res
+  (let [sid (intern-find tab s)]
+    (if (< sid 0) (I1Res tab (stab-conj tab s)) (I1Res tab sid))))
 
 (defn sids-idx-of [ks :- Sids x :- i64 i :- i64] :- i64
   (match ks
@@ -280,7 +279,7 @@
 
 ; The prelude: `(deftype (Option a) (Some [v :- a]) (None))` as adt 0.
 ; "Option"/"Some"/"None"/"a" are magic sids 85..88.
-(defn ps-new [tab :- (Vector str)] :- PS
+(defn ps-new [tab :- i64] :- PS
   (let [vs (VCons (Varnt (s-some) (TyCons (t-param 0) (TyNil)))
             (VCons (Varnt (s-nonevar) (TyNil)) (VNil)))
         adts (ATCons (AdtInfo (s-option) (SCons (s-aparam) (SNil)) vs -1 (TyNil)) (ATNil))]
@@ -385,7 +384,7 @@
     (SGNil [] -1)))
 
 ; The string of an atom node (only symbol/string position is queried).
-(defn node-str [a :- Ast tab :- (Vector str)] :- str
+(defn node-str [a :- Ast tab :- i64] :- str
   (match a
     (ANil [at] "")
     (ASym [sid at] (sym-str (clone tab) sid))
@@ -548,13 +547,13 @@
                           (clone idx)))))))))))
 
 ; `Name__arg1_arg2` — the seed's adt_arg_suffix join.
-(defn adt-inst-name [adts :- AdtTab tab :- (Vector str) tpl :- i64 args :- TyList] :- I1Res
+(defn adt-inst-name [adts :- AdtTab tab :- i64 tpl :- i64 args :- TyList] :- I1Res
   (let [td (adts-at (clone adts) tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (inst-name-loop (clone adts) (clone tab) (sym-str (clone tab) name) (clone args) 1)))))
 
-(defn inst-name-loop [adts :- AdtTab tab :- (Vector str) acc :- str args :- TyList first :- i64] :- I1Res
+(defn inst-name-loop [adts :- AdtTab tab :- i64 acc :- str args :- TyList first :- i64] :- I1Res
   (match args
     (TyNil [] (intern1 tab acc))
     (TyCons [h t]
@@ -562,7 +561,7 @@
             acc2 (if (= first 1) (str acc "__" suf) (str acc "_" suf))]
         (inst-name-loop (clone adts) (clone tab) acc2 (clone t) 0)))))
 
-(defn ty-mangle-str [adts :- AdtTab tab :- (Vector str) x :- Ty] :- str
+(defn ty-mangle-str [adts :- AdtTab tab :- i64 x :- Ty] :- str
   (let [suf (ty-suffix (clone x))]
     (if (not (= suf "?"))
       suf

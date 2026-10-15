@@ -66,7 +66,7 @@
         (let [j (next-esc s i n)]
           (esc-str s j n (str acc (subs s i j))))))))
 
-(defn dump-kids [tab :- (Vector str) ks :- Asts] :- str
+(defn dump-kids [tab :- i64 ks :- Asts] :- str
   (match ks
     (KCons [kid rest]
       (str " " (dump-node (clone tab) (clone kid)) (dump-kids tab (clone rest))))
@@ -75,10 +75,10 @@
 ; The node body — no position prefix. Inner nodes carry spans in the
 ; kernel AST, but the seed AST has none to compare against, so the wire
 ; pins positions at the top level only.
-(defn dump-node [tab :- (Vector str) a :- Ast] :- str
+(defn dump-node [tab :- i64 a :- Ast] :- str
   (match a
     (ANil [at] "(nil)")
-    (ASym [sid at] (str "(sym " (get tab sid "") ")"))
+    (ASym [sid at] (str "(sym " (stab-get tab sid) ")"))
     (AInt [v at] (str "(int " v ")"))
     (AF64 [v at] (str "(f64 " v ")"))
     (ABool [v at] (str "(bool " v ")"))
@@ -89,13 +89,13 @@
     (ASet [ks at] (str "(set" (dump-kids tab (clone ks)) ")"))))
 
 ; A top-level form: its span prefixes the node body.
-(defn dump-top [tab :- (Vector str) a :- Ast] :- str
+(defn dump-top [tab :- i64 a :- Ast] :- str
   (str (spat (ast-at (clone a))) (dump-node tab a)))
 
 ; One output line per form, accumulated in the string builder and joined
 ; once by the driver. The table and the form chain are consumed; the
 ; accumulator moves through.
-(defn dump-forms [tab :- (Vector str) forms :- Asts acc :- StrBuf] :- StrBuf
+(defn dump-forms [tab :- i64 forms :- Asts acc :- StrBuf] :- StrBuf
   (match forms
     (KCons [f rest]
       (dump-forms tab (clone rest)

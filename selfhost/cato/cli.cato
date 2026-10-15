@@ -25,7 +25,7 @@
 
 ; The reader entry shared with the S6/S7 drivers (the _ref files are not
 ; part of this concat): the scan is seeded with the pre-interned table.
-(defn read-all-with [src :- str tab :- (Vector str)] :- RRes
+(defn read-all-with [src :- str tab :- i64] :- RRes
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
 
 (defn usage [] :- i64
@@ -54,7 +54,7 @@
       (RErr [msg at]
         (do (print-string (str "err " (spat (clone at)) " " (clone msg))) "")))))
 
-(defn compile-build [tab :- (Vector str) forms :- Asts] :- str
+(defn compile-build [tab :- i64 forms :- Asts] :- str
   (match (build-program forms tab)
     (PErr [msg] (do (print-string (str "err " msg)) ""))
     (POk [tab2 adts defs lams sigs]

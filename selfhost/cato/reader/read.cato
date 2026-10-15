@@ -41,11 +41,11 @@
 ; Reader outcome: the top-level forms in source order with the intern
 ; table (sids are table indices), or the first error with its span.
 (deftype RRes
-  (ROk [forms :- Asts tab :- (Vector str)])
+  (ROk [forms :- Asts tab :- i64])
   (RErr [msg :- str at :- Span]))
 
 (defn read-all [src :- str] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) []))
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
 ; ---------------------------------------------------------------------------
 ; byte predicates (ASCII byte values)
@@ -204,12 +204,8 @@
 ; Back-to-front scan over the table; misses report -1. Reads elements
 ; through `get` (shared borrow) and threads the table by move, so the
 ; lookup clones nothing on its own.
-(defn intern-sid [tab :- (Vector str) s :- str i :- i64] :- i64
-  (if (< i 0)
-    -1
-    (if (= (get tab i "") s)
-      i
-      (intern-sid tab s (- i 1)))))
+(defn intern-sid [tab :- i64 s :- str] :- i64
+  (stab-find tab s))
 
 ; ---------------------------------------------------------------------------
 ; the scan
@@ -224,12 +220,12 @@
 ; control path, so the loop is the only frame that persists across events.
 (defn scan [src :- str i0 :- i64 line0 :- i64 col0 :- i64 depth0 :- i64
             bline0 :- i64 bcol0 :- i64 stack0 :- RStack kids0 :- Asts
-            tab0 :- (Vector str)] :- RRes
+            tab0 :- i64] :- RRes
   ; The source length rides as a loop variable: `count` on a str is a
   ; strlen, and re-strlens per event would make the whole scan quadratic.
   (loop [i :- i64 i0 line :- i64 line0 col :- i64 col0 depth :- i64 depth0
          bline :- i64 bline0 bcol :- i64 bcol0 stack :- RStack stack0
-         kids :- Asts kids0 tab :- (Vector str) tab0 n :- i64 (count src)]
+         kids :- Asts kids0 tab :- i64 tab0 n :- i64 (count src)]
     (if (>= i n)
       ; EOF: forms are the children accumulated at depth 0, reversed into
       ; source order; anything still open is the seed's "unclosed
@@ -332,11 +328,9 @@
           (let [e (tok-end src i n)
                 tok (subs src i e)
                 lcv (advance src i e line col)
-                ntab (count tab)
-                sid (intern-sid tab tok (- ntab 1))
-                node (atom-node tok (if (< sid 0) ntab sid) line col (- e i))
-                tab2 (if (< sid 0) (conj tab tok) tab)]
+                sid (let [s0 (intern-sid tab tok)] (if (< s0 0) (stab-conj tab tok) s0))
+                node (atom-node tok sid line col (- e i))]
             (match lcv
               (LC [l2 c2]
-                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab2
+                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab
                        n)))))))))
