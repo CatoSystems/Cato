@@ -2,30 +2,61 @@
 ;
 ; Emitter output and diagnostics accumulate pieces and join exactly once;
 ; string concatenation in a loop is quadratic and never appears in kernel
-; code. conj on a provable last use grows in place, so the tail-recursive
-; append chain is amortized O(1) per piece despite the persistent API.
+; code.
+;
+; The buffer is a persistent cons list: `sb-add` prepends in O(1) per
+; piece (the S9 self-compile emits tens of thousands of lines through a
+; threaded state, where the earlier copy-on-write vector re-strdup'd
+; every accumulated line per append and made compilation quadratic).
+; `sb-str` drains the list once through a loop whose accumulator is a
+; `(Vector str)` loop variable — growable bindings conj in place with a
+; doubling grow, so the drain is O(n) — and joins exactly once.
 
-(deftype StrBuf (SB [parts :- (Vector str)]))
+(deftype StrCell (SLNil) (SLCons [h :- str t :- StrCell]))
+(deftype StrBuf (SB [parts :- StrCell n :- i64]))
 
-(defn sb-new [] :- StrBuf (SB []))
+(defn sb-new [] :- StrBuf (SB (SLNil) 0))
 
 (defn sb-add [b :- StrBuf s :- str] :- StrBuf
   (match b
-    (SB [parts]
-      (let [ps (clone parts)]
-        (SB (conj ps s))))))
+    (SB [parts n] (SB (SLCons s parts) (+ n 1)))))
 
 (defn sb-add-line [b :- StrBuf s :- str] :- StrBuf
   (sb-add (sb-add b s) "\n"))
 
+(defn sb-null [l :- &StrCell] :- bool
+  (match l
+    (SLNil [] true)
+    (_ false)))
+
+; `sb-add` prepends, so `parts` is newest-first; reverse it into add-order
+; (O(n), one fresh cons per piece) before draining.
+(defn sb-rev [l :- StrCell] :- StrCell
+  (loop [a :- StrCell (SLNil) l2 :- StrCell l]
+    (if (sb-null l2)
+      a
+      (match l2
+        (SLCons [h t] (recur (SLCons h a) t))
+        (_ a)))))
+
+; Drain the list head-first into a growable vector. The accumulator is a
+; loop variable of vector type, so every conj rides the loop's growable
+; slot: in-place append under a doubling grow, O(n) over the walk.
 (defn sb-str [b :- StrBuf] :- str
   (match b
-    (SB [parts] (join "" parts))))
+    (SB [parts n]
+      (let [v (loop [acc :- (Vector str) [] l :- StrCell (sb-rev parts) i :- i64 0]
+                (if (or (>= i n) (sb-null l))
+                  acc
+                  (match l
+                    (SLCons [h t] (recur (conj acc h) t (+ i 1)))
+                    (_ acc))))]
+        (join "" v)))))
 
 (defn sb-count [b :- StrBuf] :- i64
   (match b
-    (SB [parts] (count parts))))
+    (SB [parts n] n)))
 
 (defn sb-len [b :- StrBuf] :- i64
   (match b
-    (SB [parts] (count (join "" parts)))))
+    (SB [parts n] (count (sb-str b)))))

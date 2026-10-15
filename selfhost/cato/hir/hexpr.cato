@@ -74,50 +74,50 @@
 
 ; --- chains -----------------------------------------------------------------
 
-(defn hes-null [ks :- HExprs] :- bool
+(defn hes-null [ks :- &HExprs] :- bool
   (match ks
     (HENil [] true)
     (HECons [kid next] false)))
 
-(defn hes-depth [ks :- HExprs] :- i64
+(defn hes-depth [ks :- &HExprs] :- i64
   (match ks
-    (HECons [kid next] (+ 1 (hes-depth (clone next))))
+    (HECons [kid next] (+ 1 (hes-depth next)))
     (HENil [] 0)))
 
 (defn hes-rev [ks :- HExprs acc :- HExprs] :- HExprs
   (match ks
-    (HECons [kid next] (hes-rev (clone next) (HECons (clone kid) acc)))
+    (HECons [kid next] (hes-rev next (HECons kid acc)))
     (HENil [] acc)))
 
-(defn binds-depth [ks :- Binds] :- i64
+(defn binds-depth [ks :- &Binds] :- i64
   (match ks
-    (BCons [name v ty next] (+ 1 (binds-depth (clone next))))
+    (BCons [name v ty next] (+ 1 (binds-depth next)))
     (BNil [] 0)))
 
 (defn binds-rev [ks :- Binds acc :- Binds] :- Binds
   (match ks
-    (BCons [name v ty next] (binds-rev (clone next) (BCons name (clone v) ty acc)))
+    (BCons [name v ty next] (binds-rev next (BCons name v ty acc)))
     (BNil [] acc)))
 
-(defn arms-depth [ks :- HArms] :- i64
+(defn arms-depth [ks :- &HArms] :- i64
   (match ks
-    (HACons [variant binders body next] (+ 1 (arms-depth (clone next))))
+    (HACons [variant binders body next] (+ 1 (arms-depth next)))
     (HANil [] 0)))
 
-(defn caps-depth [ks :- Caps] :- i64
+(defn caps-depth [ks :- &Caps] :- i64
   (match ks
-    (CCons [name ty own next] (+ 1 (caps-depth (clone next))))
+    (CCons [name ty own next] (+ 1 (caps-depth next)))
     (CNil [] 0)))
 
-(defn vvals-depth [ks :- VVals] :- i64
+(defn vvals-depth [ks :- &VVals] :- i64
   (match ks
-    (VVI64 [v next] (+ 1 (vvals-depth (clone next))))
-    (VVF64 [v next] (+ 1 (vvals-depth (clone next))))
+    (VVI64 [v next] (+ 1 (vvals-depth next)))
+    (VVF64 [v next] (+ 1 (vvals-depth next)))
     (VVNil [] 0)))
 
 (defn arms-rev [ks :- HArms acc :- HArms] :- HArms
   (match ks
-    (HACons [variant binders body next] (arms-rev (clone next) (HACons variant (clone binders) (clone body) acc)))
+    (HACons [variant binders body next] (arms-rev next (HACons variant binders body acc)))
     (HANil [] acc)))
 
 ; Get's optional default (absent = HENil)
@@ -608,7 +608,7 @@
     (HExit [_] (BNil))
     (HParseNum [_ _ _] (BNil))))
 
-(defn hctor-adt [e :- HExpr] :- i64
+(defn hctor-adt [e :- &HExpr] :- i64
   (match e
     (HCtor [adt variant args] adt)
     (HConstI64 [_] -1)
@@ -656,7 +656,7 @@
     (HExit [_] -1)
     (HParseNum [_ _ _] -1)))
 
-(defn hparse-res [e :- HExpr] :- Ty
+(defn hparse-res [e :- &HExpr] :- Ty
   (match e
     (HParseNum [s intf res] (clone res))
     (HConstI64 [_] (t-none))

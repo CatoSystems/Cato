@@ -59,7 +59,7 @@
     (HConstI64 [v] (str "(const " (clone v) ")"))
     (HConstF64 [v] (str "(f64lit " (str (clone v)) ")"))
     (HConstB [v] (str "(bool " (clone v) ")"))
-    (HVar [name] (str "(var " (sym-str (clone (clone tab)) name) ")"))
+    (HVar [name] (str "(var " (sym-str (clone tab) name) ")"))
     (HStrLit [v] (str "(str " (esc-str (clone v) 0 (count (clone v)) "") ")"))
     (HVecLit [el vals] (str "(veclit " el " " (d-vvals (clone vals)) ")"))
     (HBinW [op a b ty] (str "(binw " op " " (d-e (clone a) (clone tab)) " " (d-e (clone b) (clone tab)) " " (d-ty ty) ")"))
@@ -99,13 +99,13 @@
     (HClone [x] (str "(clone " (d-e (clone x) (clone tab)) ")"))
     (HDrop [x] (str "(drop " (d-e (clone x) (clone tab)) ")"))
     (HClosure [sig mangled params caps body]
-      (str "(closure " sig " " (sym-str (clone (clone tab)) mangled)
+      (str "(closure " sig " " (sym-str (clone tab) mangled)
            " " (d-params (clone params) (clone tab))
            " " (d-caps (clone caps) (clone tab))
            " " (d-e (clone body) (clone tab)) ")"))
     (HClosureCall [f args sig]
       (str "(closurecall " (d-e (clone f) (clone tab)) " " sig (d-args (clone args) (clone tab)) ")"))
-    (HCall [name args] (str "(call " (sym-str (clone (clone tab)) name) (d-args (clone args) (clone tab)) ")"))
+    (HCall [name args] (str "(call " (sym-str (clone tab) name) (d-args (clone args) (clone tab)) ")"))
     (HSlurp [p] (str "(slurp " (d-e (clone p) (clone tab)) ")"))
     (HSpit [path data] (str "(spit " (d-e (clone path) (clone tab)) " " (d-e (clone data) (clone tab)) ")"))
     (HArgs [] "(args)")
@@ -151,7 +151,7 @@
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
-      (let [piece (str (sym-str (clone (clone tab)) name) " " (d-e (clone v) (clone tab)) " " (d-ty ty))]
+      (let [piece (str (sym-str (clone tab) name) " " (d-e (clone v) (clone tab)) " " (d-ty ty))]
         (if (binds-null (clone next))
           piece
           (str piece " " (d-binds-parts (clone next) (clone tab))))))))
@@ -169,7 +169,7 @@
   (match binds
     (BNil [] "")
     (BCons [name v ty next]
-      (let [piece (str (sym-str (clone (clone tab)) name) " " (d-ty ty) " " (d-e (clone v) (clone tab)))]
+      (let [piece (str (sym-str (clone tab) name) " " (d-ty ty) " " (d-e (clone v) (clone tab)))]
         (if (binds-null (clone next))
           piece
           (str piece " " (d-loop-binds-parts (clone next) (clone tab))))))))
@@ -182,8 +182,8 @@
     (SNil [] "")
     (SCons [h t]
       (if (sids-null (clone t))
-        (sym-str (clone (clone tab)) h)
-        (str (sym-str (clone (clone tab)) h) " " (d-sids-parts (clone t) (clone tab)))))))
+        (sym-str (clone tab) h)
+        (str (sym-str (clone tab) h) " " (d-sids-parts (clone t) (clone tab)))))))
 
 (defn d-arms [arms :- HArms tab :- (Vector str)] :- str
   (match arms
@@ -203,7 +203,7 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb]
-          (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty))]
+          (let [piece (str (sym-str (clone tab) name) ":" (d-ty ty))]
             (if (plist-null (clone t))
               piece
               (str piece " " (d-params-parts (clone t) (clone tab))))))))))
@@ -221,7 +221,7 @@
   (match caps
     (CNil [] "")
     (CCons [name ty own next]
-      (let [piece (str (sym-str (clone (clone tab)) name) ":" (d-ty ty) ":" own)]
+      (let [piece (str (sym-str (clone tab) name) ":" (d-ty ty) ":" own)]
         (if (caps-null (clone next))
           piece
           (str piece " " (d-caps-parts (clone next) (clone tab))))))))
@@ -243,7 +243,7 @@
     (VCons [h t]
       (match h
         (Varnt [vname fields]
-          (let [piece (str "(" (sym-str (clone (clone tab)) vname) " " (d-tys (clone fields)) ")")]
+          (let [piece (str "(" (sym-str (clone tab) vname) " " (d-tys (clone fields)) ")")]
             (if (vlist-null (clone t))
               piece
               (str piece " " (d-variants-parts (clone t) (clone tab))))))))))
@@ -261,11 +261,11 @@
         (AdtInfo [name typarams variants tpl tplargs]
           (let [sb2 (if (= tpl -1)
                       (sb-add-line sb
-                        (str "(adt " i " " (sym-str (clone (clone tab)) name)
+                        (str "(adt " i " " (sym-str (clone tab) name)
                              " " (d-typarams (clone typarams) (clone tab))
                              " " (d-adt-variants (clone variants) (clone tab)) ")"))
                       (sb-add-line sb
-                        (str "(adtinst " i " " tpl " " (sym-str (clone (clone tab)) name) ")")))]
+                        (str "(adtinst " i " " tpl " " (sym-str (clone tab) name) ")")))]
             (d-adts (clone t) (clone tab) (+ i 1) sb2)))))))
 
 (defn d-typarams [typarams :- Sids tab :- (Vector str)] :- str
@@ -277,13 +277,13 @@
     (SNil [] "")
     (SCons [h t]
       (if (sids-null (clone t))
-        (sym-str (clone (clone tab)) h)
-        (str (sym-str (clone (clone tab)) h) " " (d-typarams-parts (clone t) (clone tab)))))))
+        (sym-str (clone tab) h)
+        (str (sym-str (clone tab) h) " " (d-typarams-parts (clone t) (clone tab)))))))
 
 (defn d-defn-line [d :- Defn tab :- (Vector str)] :- str
   (match d
     (Defn [name params ret isextern body]
-      (str "(defn " (sym-str (clone (clone tab)) name)
+      (str "(defn " (sym-str (clone tab) name)
            " " (d-params (clone params) (clone tab))
            " :- " (d-ty ret)
            " " isextern
@@ -300,7 +300,7 @@
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (let [line (str "(lambda " (sym-str (clone (clone tab)) mangled)
+          (let [line (str "(lambda " (sym-str (clone tab) mangled)
                           " " (d-caps (clone caps) (clone tab))
                           " " (d-params (clone params) (clone tab))
                           " :- " (d-ty ret) " " (d-e (clone body) (clone tab)) ")")]

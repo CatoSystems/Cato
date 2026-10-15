@@ -90,6 +90,12 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
     let mut covered = vec![false; adt_def.variants.len()];
     let mut wildcard = false;
     let mut arm_tys: Vec<Ty> = Vec::new();
+    // A match arm whose every path ends in a `recur` never completes with a
+    // value: it takes the result type of the other arms (mirrors the `if`
+    // rule in forms.rs). Without this the arm would be typed I64 and a match
+    // driving a non-numeric loop accumulator (e.g. a (Vector str) drain)
+    // would report "match arm result types differ".
+    let mut arm_recur: Vec<bool> = Vec::new();
     let mut arm_exprs: Vec<(Option<u32>, Vec<String>, HExpr)> = Vec::new();
 
     for arm in &items[2..] {
@@ -108,6 +114,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
             }
             wildcard = true;
             let body = lower_expect(&arm_items[1], env, ctx, Some(Ty::Adt(adt)))?;
+            arm_recur.push(all_paths_recur(&body));
             arm_tys.push(ty_of(&body, env, ctx));
             arm_exprs.push((None, Vec::new(), body));
             continue;
@@ -164,6 +171,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
         }
             let body = lower_expect(&arm_items[2], &child, ctx, Some(Ty::Adt(adt)))?;
             let bty = ty_of(&body, &child, ctx);
+            arm_recur.push(all_paths_recur(&body));
             arm_tys.push(bty);
             arm_exprs.push((Some(vi as u32), bindernames, body));
     }
@@ -187,24 +195,35 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
     }
 
     // All arm bodies must agree on the result type (with the if-rule f64
-    // promotion). Coerce int arms up when any arm is f64.
-    let mut merged = arm_tys[0];
-    for t in &arm_tys[1..] {
-        if *t == Ty::F64 || merged == Ty::F64 {
-            if *t != merged && *t != Ty::I64 && merged != Ty::I64 {
-                return Err(format!(
-                    "match arm result types differ: {:?} vs {:?}",
-                    merged, t
-                ));
+    // promotion). Coerce int arms up when any arm is f64. Arms that never
+    // complete (every path ends in recur) carry no type: they adopt the
+    // merged type of the completing arms.
+    let mut merged: Option<Ty> = None;
+    for (t, is_recur) in arm_tys.iter().zip(arm_recur.iter()) {
+        if *is_recur {
+            continue;
+        }
+        match merged {
+            None => merged = Some(*t),
+            Some(m) => {
+                if *t == Ty::F64 || m == Ty::F64 {
+                    if *t != m && *t != Ty::I64 && m != Ty::I64 {
+                        return Err(format!(
+                            "match arm result types differ: {:?} vs {:?}",
+                            m, t
+                        ));
+                    }
+                    merged = Some(Ty::F64);
+                } else if *t != m {
+                    return Err(format!(
+                        "match arm result types differ: {:?} vs {:?}",
+                        m, t
+                    ));
+                }
             }
-            merged = Ty::F64;
-        } else if *t != merged {
-            return Err(format!(
-                "match arm result types differ: {:?} vs {:?}",
-                merged, t
-            ));
         }
     }
+    let merged = merged.unwrap_or(Ty::I64);
 
     let mut h_arms = Vec::new();
     for ((variant, binders, body), at) in arm_exprs.into_iter().zip(arm_tys.iter()) {

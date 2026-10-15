@@ -159,7 +159,7 @@
   (match st
     (Emit [c mdl sigs]
       (let [n (+ 1 (caps-slot-sum (clone caps)))
-            mname (sym-str (md-tab (clone mdl)) mangled)]
+            mname (md-sym mdl mangled)]
         (match (em-ins2 st
                  (str "~ = add i64 " n ", 0")
                  (str "~ = mul i64 ^1, 8"))
@@ -188,7 +188,7 @@
 (defn emit-closure-call [f :- HExpr args :- HExprs sig :- i64 st :- Emit] :- ESRes
   (match st
     (Emit [c mdl sigs]
-      (let [sg (esigs-at (clone mdl) (md-csigs (clone mdl)) sig)]
+      (let [sg (esigs-at mdl (md-csigs mdl) sig)]
         (match sg
           (ESig [ptys ret]
             (match f
@@ -216,7 +216,7 @@
                                       (ETRes [st3 r] (ESRes st3 r))))))))))))))
               (_ (sf st "closure callee must be a var")))))))))
 
-(defn esigs-at [mdl :- Mdl ss :- Sigs i :- i64] :- ESig
+(defn esigs-at [mdl :- &Mdl ss :- Sigs i :- i64] :- ESig
   (match ss
     (SGCons [h t]
       (match h

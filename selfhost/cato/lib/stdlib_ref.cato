@@ -65,7 +65,7 @@
           (print (count (clone ws)))                ; 2
           (print-string (join "-" ws))))           ; kernel-words
       (print (ast-count (clone tree)))              ; 4 (list + 3 kids)
-      (print (ast-tag (clone tree)))                ; 5
+      (print (ast-tag tree))                ; 5
       (print (ast-child-count (clone tree)))        ; 3
       (print (ast-tag (asts-first kids)))   ; 2 (int)
       (print (unwrap-or (clone okr) -1))                    ; 41

@@ -317,7 +317,7 @@ pub(crate) fn emit_match_in_loop(
         c.restore_binds(scope);
         if let Some(v) = v {
             let v = match ty {
-                Ty::Adt(_) => v,
+                Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set => v,
                 t => pin_value(
                     if *t == Ty::F64 {
                         "double"
@@ -345,6 +345,7 @@ pub(crate) fn emit_match_in_loop(
     let res = c.temp();
     let lty = match ty {
         Ty::Adt(_) | Ty::Str => "ptr".to_string(),
+        Ty::Vec(_) | Ty::Map | Ty::Set => "%VecI64".to_string(),
         t => mdl.ll_ty(*t),
     };
     let pairs: Vec<String> = vals

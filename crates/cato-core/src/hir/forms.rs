@@ -323,7 +323,8 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                 let t = resolve_ann_ty(ann, ctx)?;
                 let value = lower_expect(value_form, &mut child, ctx, Some(t))?;
                 let vt = ty_of(&value, &child, ctx);
-                if vt != t && !(t == Ty::F64 && vt == Ty::I64) {
+                let empty_vec = matches!((&t, &value), (Ty::Vec(_), HExpr::VecLit(crate::hir::VLit::I64(vs))) if vs.is_empty());
+                if vt != t && !(t == Ty::F64 && vt == Ty::I64) && !empty_vec {
                     return Err(format!(
                         "let binding {} ascribed {:?} but the value is {:?}",
                         name, t, vt
@@ -359,7 +360,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
 /// Does every path through `e` end in a `recur`? Such an expression never
 /// completes with a value, so an `if` with it on one side takes the other
 /// side's type. Reads the same tail positions `validate_recurs` accepts.
-fn all_paths_recur(e: &HExpr) -> bool {
+pub(crate) fn all_paths_recur(e: &HExpr) -> bool {
     match e {
         HExpr::Recur(_) => true,
         HExpr::If(_, t, f, _) => all_paths_recur(t) && all_paths_recur(f),

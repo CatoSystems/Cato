@@ -40,12 +40,12 @@
       "declare ptr @cato_slurp(ptr)")
     "declare void @cato_spit(ptr, ptr)"))
 
-(defn md-globals [m :- Mdl] :- StrBuf
+(defn md-globals [m :- &Mdl] :- StrBuf
   (match m (Mdl [tab g globals decls adts owns csigs] (clone globals))))
 
 (defn adt-name-at [adts :- AdtTab i :- i64 tab :- (Vector str)] :- str
   (match (adts-at (clone adts) i)
-    (AdtInfo [name tps variants tpl tplargs] (sym-str tab name))))
+    (AdtInfo [name tps variants tpl tplargs] (sym-str (clone tab) name))))
 
 (defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- (Vector str)
                       sb :- StrBuf] :- StrBuf
@@ -116,11 +116,11 @@
           nm (adt-name-at (clone adts) i (clone tab))
           tg (ty-tag (clone fty))]
       (adt-clone-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
-                        (str acc (clone-field-text (clone fty) off nm (clone adts) (clone owns) serial tg (clone tab)))))))
+                        (str acc (clone-field-text (clone fty) off nm (clone adts) (clone owns) vi serial tg (clone tab)))))))
 
 (defn clone-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                        owns :- Sids serial :- i64 tg :- i64 tab :- (Vector str)] :- str
-  (let [u (str off "x" serial)]
+                        owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- (Vector str)] :- str
+  (let [u (str "v" vi "f" serial)]
     (cond
       (= tg 12)
       (str "  %sp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
@@ -250,23 +250,27 @@
 
 (defn emit-program [adts :- AdtTab defs :- Defns lams :- Lams csigs :- Sigs
                     tab :- (Vector str)] :- str
+  (do (print-string "PHASE emit-start\n")
   (let [owns (facts-owns-of (clone adts))
         sigs (sigs-build (clone defs) (ESTNil))
         st0 (match (em-new (clone tab) (clone adts) (clone owns) (clone csigs) sigs)
               (Emit [c m s] (Emit c (md-seed-decls m) s)))]
     (match (emit-defns (clone defs) st0 (EOut (sb-new)))
       (EORes [st1 out1]
+        (do (print-string "PHASE emit-defns-done\n")
         (match (emit-lams lams st1 out1)
           (EORes [st2 out2]
+            (do (print-string "PHASE emit-lams-done\n")
             (let [mdl (match st2 (Emit [c m s] m))
                   sb1 (sb-add-line (sb-new) "; cato: kernel LLVM IR (S7)")
                   sb2 (sb-add-line sb1 "%VecI64 = type { ptr, i64, i64 }")
                   sb3 (sb-add-line sb2 "%Closure = type { ptr, ptr, ptr }")
                   sb4 (adt-type-lines (clone adts) (clone owns) 0 (clone tab) sb3)
-                  sb5 (md-decls-lines (clone mdl) sb4)
-                  sb6 (sb-add-line sb5 (sb-str (md-globals (clone mdl))))
+                  sb5 (md-decls-lines mdl sb4)
+                  sb6 (sb-add-line sb5 (sb-str (md-globals mdl)))
                   sb7 (adt-glue (clone adts) (clone owns) 0 (clone tab) sb6)]
-              (sb-str (sb-add-line sb7 (sb-str (out2-sb out2)))))))))))
+              (do (print-string "PHASE emit-assembled\n")
+              (sb-str (sb-add-line sb7 (sb-str (out2-sb out2)))))))))))))))
 
 (defn out2-sb [o :- EOut] :- StrBuf
   (match o (EOut [sb] (clone sb))))
@@ -333,7 +337,7 @@
                 ; externs join the deduplicated up-front declares block
                 ; (the seed's Vec::contains chain), not the function text.
                 (let [line (str "declare " (extern-ret-ll ret) " @"
-                                (mangle (sym-str (md-tab (clone mdl)) name))
+                                (mangle (md-sym mdl name))
                                 "(" (extern-params (clone params)) ")")]
                   (emit-defns t (em-decl st line) out))
                 (match (emit-plain name (clone params) (clone ret) (clone body)
@@ -360,7 +364,7 @@
         (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
-              (let [nstr (sym-str (md-tab (clone mdl)) pname)
+              (let [nstr (md-sym mdl pname)
                     r (str "%" (mangle nstr))
                     tg (ty-tag (clone pty))]
                 (cond
@@ -387,14 +391,14 @@
                                 (ET2Res [st4 acc2 _] (ET2Res st4 acc2 "")))))))))
 
                   (= tg 16)
-                  (let [boxed (md-owns-at (clone mdl) (ty-arg (clone pty)))]
+                  (let [boxed (md-owns-at mdl (ty-arg (clone pty)))]
                     (if (= boxed 1)
                       (let [p2 (if (> (count acc) 0)
                                  (str acc ", ptr " r)
                                  (str acc "ptr " r))]
                         (match (defn-params (clone t) (em-sc-put st pname r pty) p2)
                           (ET2Res [st2 acc2 _] (ET2Res st2 acc2 ""))))
-                      (let [nm (md-adt-name (clone mdl) (ty-arg (clone pty)))
+                      (let [nm (md-adt-name mdl (ty-arg (clone pty)))
                             p2 (if (> (count acc) 0)
                                  (str acc ", %" nm " " r)
                                  (str acc "%" nm " " r))]
@@ -421,9 +425,9 @@
       (= tg 12) "ptr"
       (= tg 15) "%VecI64"
       (= tg 16)
-      (if (= (md-owns-at (clone mdl) (ty-arg (clone ret))) 1)
+      (if (= (md-owns-at mdl (ty-arg (clone ret))) 1)
         "ptr"
-        (str "%" (md-adt-name (clone mdl) (ty-arg (clone ret)))))
+        (str "%" (md-adt-name mdl (ty-arg (clone ret)))))
       (< tg 12) (ll-scalar ret)
       "i64")))
 
@@ -431,7 +435,7 @@
                   st :- Emit] :- EDRes
   (match st
     (Emit [c mdl sigs]
-      (let [nm-str (sym-str (md-tab (clone mdl)) name)
+      (let [nm-str (md-sym mdl name)
             fname (mangle nm-str)
             ismain (= nm-str "main")]
         (match (defn-params params st "")
@@ -516,14 +520,14 @@
       (< tg 12) (ll-scalar ret)
       (do (cg-fail-i "lambda ret type not supported") "i64"))))
 
-(defn lambda-params [ps :- PList mdl :- Mdl] :- str
+(defn lambda-params [ps :- PList mdl :- &Mdl] :- str
   (match ps
     (PNil [] "")
     (PCons [h t]
       (match h
         (Param [pname pty _pb]
-          (str ", " (lambda-ll pty) " %" (mangle (sym-str (md-tab (clone mdl)) pname))
-               (lambda-params (clone t) (clone mdl))))))))
+          (str ", " (lambda-ll pty) " %" (mangle (md-sym mdl pname))
+               (lambda-params (clone t) mdl)))))))
 
 (defn lambda-bind-params [ps :- PList st :- Emit] :- EURes
   (match ps
@@ -533,7 +537,7 @@
         (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
-              (let [r (str "%" (mangle (sym-str (md-tab (clone mdl)) pname)))]
+              (let [r (str "%" (mangle (md-sym mdl pname)))]
                 (match (lambda-bind-params (clone t) (em-sc-put st pname r pty))
                   (EURes [st2] (EURes st2)))))))))))
 
@@ -639,8 +643,8 @@
 
 (defn emit-lambda-pair [mangled :- i64 caps :- Caps params :- PList ret :- Ty
                         body :- HExpr mdl :- Mdl sigs :- ESigTab] :- ELPR
-  (let [mname (sym-str (md-tab (clone mdl)) mangled)
-        st0 (Emit (fn-new) (clone mdl) sigs)]
+  (let [mname (md-sym mdl mangled)
+        st0 (Emit (fn-new) mdl sigs)]
     (match (lambda-body mname (clone caps) (clone params) (clone ret)
                         (clone body) st0)
       (ET2Res [st1 btext _]
@@ -663,9 +667,9 @@
           (match st
             (Emit [c mdl sigs]
               (match (emit-lambda-pair (clone mangled) (clone caps) (clone params)
-                                       (clone ret) (clone body) (clone mdl) (clone sigs))
+                                       (clone ret) (clone body) mdl (clone sigs))
                 (ELPR [mdl2 text drop-text]
-                  (emit-lams (clone t) (Emit (fn-new) mdl2 (clone sigs))
+                  (emit-lams (clone t) (Emit (fn-new) mdl2 sigs)
                              (EOut (sb-add-line
                                     (sb-add-line
                                       (sb-add-line (out2-sb out) text)
@@ -682,7 +686,7 @@
       (CSxCons (ECapSlot ty own at bit)
                (caps-with-slots (clone next) (+ at (capture-slots ty)) (+ bit 1))))))
 
-(defn lambda-drop-one [ty :- Ty off :- i64 mdl :- Mdl] :- str
+(defn lambda-drop-one [ty :- Ty off :- i64 mdl :- &Mdl] :- str
   (let [tg (ty-tag (clone ty))]
     (cond
       (= tg 12)
@@ -701,8 +705,8 @@
 
       (= tg 16)
       (let [j (ty-arg (clone ty))]
-        (if (= (md-owns-at (clone mdl) j) 1)
-          (let [nm (md-adt-name (clone mdl) j)]
+        (if (= (md-owns-at mdl j) 1)
+          (let [nm (md-adt-name mdl j)]
             (str "  %cp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
                  "  %cv" off " = load ptr, ptr %cp" off ", align 8\n"
                  "  call void @drop__" nm "(ptr %cv" off ")\n"))
@@ -717,7 +721,7 @@
 
       "")))
 
-(defn lambda-drop-caps [slots :- ECapSlots label :- i64 mdl :- Mdl] :- str
+(defn lambda-drop-caps [slots :- ECapSlots label :- i64 mdl :- &Mdl] :- str
   (match slots
     (CSxNil [] "")
     (CSxCons [h t]
@@ -727,7 +731,7 @@
                 cond (str "%c" label)
                 free-l (str "own" label)
                 done-l (str "done" label)
-                own-blk (lambda-drop-one ty off (clone mdl))]
+                own-blk (lambda-drop-one ty off mdl)]
             (str "  " mask " = and i64 %bm, " (shl1 bit) "\n"
                  "  " cond " = icmp ne i64 " mask ", 0\n"
                  "  br i1 " cond ", label %" free-l ", label %" done-l "\n"
@@ -735,7 +739,7 @@
                  own-blk
                  "  br label %" done-l "\n"
                  done-l ":\n"
-                 (lambda-drop-caps (clone t) (+ label 1) (clone mdl)))))))))
+                 (lambda-drop-caps (clone t) (+ label 1) mdl))))))))
 
 (defn lambda-drop-text [mname :- str caps :- Caps mdl :- Mdl] :- str
   (let [head (str "define void @drop__" mname "(ptr %env) {\nentry:\n  %bm = load i64, ptr %env\n")]

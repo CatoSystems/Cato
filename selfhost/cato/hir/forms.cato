@@ -54,40 +54,40 @@
 (defn dl-put [e :- Decls k :- i64 v :- Decl] :- Decls
   (DLCons k (clone v) (clone e)))
 
-(defn dl-get [e :- Decls k :- i64] :- Decl
+(defn dl-get [e :- &Decls k :- i64] :- Decl
   (match e
-    (DLCons [ek ev next] (if (= ek k) (clone ev) (dl-get (clone next) k)))
+    (DLCons [ek ev next] (if (= ek k) (clone ev) (dl-get next k)))
     (DLNil [] (Decl -1 (SNil)))))
 
-(defn dl-has [e :- Decls k :- i64] :- bool
+(defn dl-has [e :- &Decls k :- i64] :- bool
   (match e
-    (DLCons [ek ev next] (if (= ek k) true (dl-has (clone next) k)))
+    (DLCons [ek ev next] (if (= ek k) true (dl-has next k)))
     (DLNil [] false)))
 
 (defn te-put [e :- TyEnv k :- i64 v :- Ty] :- TyEnv
-  (TECons k (clone v) (clone e)))
+  (TECons k v e))
 
-(defn te-get [e :- TyEnv k :- i64] :- Ty
+(defn te-get [e :- &TyEnv k :- i64] :- Ty
   (match e
-    (TECons [ek ev next] (if (= ek k) (clone ev) (te-get (clone next) k)))
+    (TECons [ek ev next] (if (= ek k) (clone ev) (te-get next k)))
     (TENil [] (t-none))))
 
-(defn te-has [e :- TyEnv k :- i64] :- bool
+(defn te-has [e :- &TyEnv k :- i64] :- bool
   (match e
-    (TECons [ek ev next] (if (= ek k) true (te-has (clone next) k)))
+    (TECons [ek ev next] (if (= ek k) true (te-has next k)))
     (TENil [] false)))
 
 (defn im-put [e :- IMap k :- i64 v :- i64] :- IMap
-  (MCons k v (clone e)))
+  (MCons k v e))
 
-(defn im-get [e :- IMap k :- i64 d :- i64] :- i64
+(defn im-get [e :- &IMap k :- i64 d :- i64] :- i64
   (match e
-    (MCons [ek ev next] (if (= ek k) ev (im-get (clone next) k d)))
+    (MCons [ek ev next] (if (= ek k) ev (im-get next k d)))
     (MNil [] d)))
 
-(defn im-has [e :- IMap k :- i64] :- bool
+(defn im-has [e :- &IMap k :- i64] :- bool
   (match e
-    (MCons [ek ev next] (if (= ek k) true (im-has (clone next) k)))
+    (MCons [ek ev next] (if (= ek k) true (im-has next k)))
     (MNil [] false)))
 
 ; representation facts per combined-table index. Post-revision the model
@@ -95,23 +95,23 @@
 ; both (the seed's two converge to equality).
 (deftype Facts (Facts [owns :- Sids]))
 
-(defn facts-owns-at [f :- Facts i :- i64] :- i64
+(defn facts-owns-at [f :- &Facts i :- i64] :- i64
   (match f
-    (Facts [owns] (sids-idx (clone owns) i))))
+    (Facts [owns] (sids-idx owns i))))
 
-(defn facts-boxed-at [f :- Facts i :- i64] :- i64
-  (facts-owns-at (clone f) i))
+(defn facts-boxed-at [f :- &Facts i :- i64] :- i64
+  (facts-owns-at f i))
 
 ; --- table helpers ----------------------------------------------------------
 
-(defn raws-depth [rs :- Raws] :- i64
+(defn raws-depth [rs :- &Raws] :- i64
   (match rs
-    (RCons [h t] (+ 1 (raws-depth (clone t))))
+    (RCons [h t] (+ 1 (raws-depth t)))
     (RNil [] 0)))
 
-(defn raws-at [rs :- Raws i :- i64] :- RawDefn
+(defn raws-at [rs :- &Raws i :- i64] :- RawDefn
   (match rs
-    (RCons [h t] (if (= i 0) (clone h) (raws-at (clone t) (- i 1))))
+    (RCons [h t] (if (= i 0) (clone h) (raws-at t (- i 1))))
     (RNil [] (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))))
 
 (defn raws-append [rs :- Raws r :- RawDefn] :- Raws
@@ -119,14 +119,14 @@
     (RNil [] (RCons (clone r) (RNil)))
     (RCons [h t] (RCons (clone h) (raws-append (clone t) (clone r))))))
 
-(defn adts-depth [ts :- AdtTab] :- i64
+(defn adts-depth [ts :- &AdtTab] :- i64
   (match ts
-    (ATCons [h t] (+ 1 (adts-depth (clone t))))
+    (ATCons [h t] (+ 1 (adts-depth t)))
     (ATNil [] 0)))
 
-(defn adts-at [ts :- AdtTab i :- i64] :- AdtInfo
+(defn adts-at [ts :- &AdtTab i :- i64] :- AdtInfo
   (match ts
-    (ATCons [h t] (if (= i 0) (clone h) (adts-at (clone t) (- i 1))))
+    (ATCons [h t] (if (= i 0) (clone h) (adts-at t (- i 1))))
     (ATNil [] (AdtInfo -1 (SNil) (VNil) -1 (TyNil)))))
 
 (defn adts-set [ts :- AdtTab i :- i64 info :- AdtInfo] :- AdtTab
@@ -142,19 +142,19 @@
     (ATNil [] (ATCons (clone info) (ATNil)))
     (ATCons [h t] (ATCons (clone h) (adts-append-info (clone t) (clone info))))))
 
-(defn sigs-depth [ss :- Sigs] :- i64
+(defn sigs-depth [ss :- &Sigs] :- i64
   (match ss
-    (SGCons [h t] (+ 1 (sigs-depth (clone t))))
+    (SGCons [h t] (+ 1 (sigs-depth t)))
     (SGNil [] 0)))
 
-(defn sigs-at [ss :- Sigs i :- i64] :- Sig
+(defn sigs-at [ss :- &Sigs i :- i64] :- Sig
   (match ss
-    (SGCons [h t] (if (= i 0) (clone h) (sigs-at (clone t) (- i 1))))
+    (SGCons [h t] (if (= i 0) (clone h) (sigs-at t (- i 1))))
     (SGNil [] (Sig (TyNil) (t-none)))))
 
-(defn lams-depth [ls :- Lams] :- i64
+(defn lams-depth [ls :- &Lams] :- i64
   (match ls
-    (LMCons [h t] (+ 1 (lams-depth (clone t))))
+    (LMCons [h t] (+ 1 (lams-depth t)))
     (LMNil [] 0)))
 
 (defn lams-append [ls :- Lams l :- Lam] :- Lams
@@ -162,9 +162,9 @@
     (LMNil [] (LMCons (clone l) (LMNil)))
     (LMCons [h t] (LMCons (clone h) (lams-append (clone t) (clone l))))))
 
-(defn plist-depth [ps :- PList] :- i64
+(defn plist-depth [ps :- &PList] :- i64
   (match ps
-    (PCons [h t] (+ 1 (plist-depth (clone t))))
+    (PCons [h t] (+ 1 (plist-depth t)))
     (PNil [] 0)))
 
 (defn plist-rev [ps :- PList acc :- PList] :- PList
@@ -172,14 +172,14 @@
     (PCons [h t] (plist-rev (clone t) (PCons (clone h) (clone acc))))
     (PNil [] (clone acc))))
 
-(defn vlist-depth [vs :- VList] :- i64
+(defn vlist-depth [vs :- &VList] :- i64
   (match vs
-    (VCons [h t] (+ 1 (vlist-depth (clone t))))
+    (VCons [h t] (+ 1 (vlist-depth t)))
     (VNil [] 0)))
 
-(defn vlist-at [vs :- VList i :- i64] :- Varnt
+(defn vlist-at [vs :- &VList i :- i64] :- Varnt
   (match vs
-    (VCons [h t] (if (= i 0) (clone h) (vlist-at (clone t) (- i 1))))
+    (VCons [h t] (if (= i 0) (clone h) (vlist-at t (- i 1))))
     (VNil [] (Varnt -1 (TyNil)))))
 
 (defn vlist-rev [vs :- VList acc :- VList] :- VList
@@ -187,15 +187,15 @@
     (VCons [h t] (vlist-rev (clone t) (VCons (clone h) (clone acc))))
     (VNil [] (clone acc))))
 
-(defn defns-depth [ds :- Defns] :- i64
+(defn defns-depth [ds :- &Defns] :- i64
   (match ds
-    (DCons [h t] (+ 1 (defns-depth (clone t))))
+    (DCons [h t] (+ 1 (defns-depth t)))
     (DNil [] 0)))
 
 (defn defns-append [ds :- Defns d :- Defn] :- Defns
   (match ds
-    (DNil [] (DCons (clone d) (DNil)))
-    (DCons [h t] (DCons (clone h) (defns-append (clone t) (clone d))))))
+    (DNil [] (DCons d (DNil)))
+    (DCons [h t] (DCons h (defns-append t d)))))
 
 ; --- parser state -----------------------------------------------------------
 
@@ -243,7 +243,7 @@
       (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) err))))
 
 (defn sym-str [tab :- (Vector str) sid :- i64] :- str
-  (get tab sid ""))
+  (clone (get tab sid "")))
 
 (defn ps-str-of [ps :- PS sid :- i64] :- str
   (sym-str (ps-tab (clone ps)) sid))
@@ -356,9 +356,9 @@
 ; Fn-annotation element types: scalars/ADT names via the sym grammar, or
 ; a full (Vector ty) (parse_scalar_or_vec).
 (defn parse-fn-elem [a :- Ast ps :- PS] :- PTyRes
-  (let [tag (ast-tag (clone a))]
+  (let [tag (ast-tag a)]
     (if (= tag 1)
-      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of (clone (clone a)))))
+      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of (clone a))))
       (if (= tag 5)
         (parse-ty (clone a) (clone ps))
         (PTyRes (ps-err (clone ps) "Fn param/ret types must be scalars, str, or (Vector ty)") (t-none))))))
@@ -388,7 +388,7 @@
 (defn node-str [a :- Ast tab :- (Vector str)] :- str
   (match a
     (ANil [at] "")
-    (ASym [sid at] (sym-str tab sid))
+    (ASym [sid at] (sym-str (clone tab) sid))
     (AInt [v at] (str v))
     (AF64 [v at] (str v))
     (ABool [v at] (str v))
@@ -400,9 +400,9 @@
 
 ; A type annotation expression (parse_ty).
 (defn parse-ty [a :- Ast ps :- PS] :- PTyRes
-  (let [tag (ast-tag (clone a))]
+  (let [tag (ast-tag a)]
     (cond
-      (= tag 1) (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of (clone (clone a)))))
+      (= tag 1) (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of (clone a))))
       (= tag 5) (parse-ty-list (clone (clone a)) (clone (clone ps)))
       (PTyRes (ps-err (clone ps) "type annotation must be a symbol or (Vector ty)") (t-none)))))
 
@@ -439,7 +439,7 @@
   (match rest
     (KNil [] (PTyRes (ps-err (clone ps) "Fn params must be a vector") (t-none)))
     (KCons [pvec pret]
-      (let [t1 (ast-tag (clone pvec))]
+      (let [t1 (ast-tag pvec)]
         (if (not (= t1 6))
           (PTyRes (ps-err (clone ps) "Fn params must be a vector") (t-none))
           (if (asts-null (clone pret))
@@ -641,10 +641,10 @@
         (if (< n 2)
           (HDRRes (ps-err (clone ps) "deftype expects a name and at least one variant") -1 (SNil))
           (let [h (asts-idx (clone kids) 1)
-                ht (ast-tag (clone h))]
+                ht (ast-tag h)]
             (cond
               (= ht 1)
-              (HDRRes (clone ps) (ast-sid-of (clone h)) (SNil))
+              (HDRRes (clone ps) (ast-sid-of h) (SNil))
 
               (= ht 5)
               (match (asts-idx (ast-kids-of (clone h)) 0)
@@ -729,7 +729,7 @@
           (PVOne (ps-err (clone ps) "deftype variant name must be a symbol") (Varnt -1 (TyNil)))
           (if (> n 1)
             (let [fvec (asts-idx (clone vitems) 1)
-                  ft (ast-tag (clone fvec))]
+                  ft (ast-tag fvec)]
               (if (not (= ft 6))
                 (PVOne (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " fields must be a vector")) (Varnt -1 (TyNil)))
                 (if (> n 2)
@@ -754,14 +754,14 @@
     (if (>= i n)
       (PFRes (clone ps) (tys-rev (clone acc) (TyNil)))
       (let [fn-node (asts-idx (clone fs) i)
-            fnt (ast-tag (clone fn-node))]
+            fnt (ast-tag fn-node)]
         (if (not (= fnt 1))
           (PFRes (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " field name must be a symbol")) (TyNil))
           (let [sep-node (asts-idx (clone fs) (+ i 1))
-                sept (ast-tag (clone sep-node))]
+                sept (ast-tag sep-node)]
             (if (not (= sept 1))
               (PFRes (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " field " (node-str (clone fn-node) (ps-tab (clone ps))) " expects (name :- ty)")) (TyNil))
-              (if (not (= (ast-sid-of (clone sep-node)) (s-sep)))
+              (if (not (= (ast-sid-of sep-node) (s-sep)))
                 (PFRes (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " field " (node-str (clone fn-node) (ps-tab (clone ps))) " expects (name :- ty)")) (TyNil))
                 (let [ty-node (asts-idx (clone fs) (+ i 2))
                       rt (parse-field-ty (clone ty-node) (clone ps))]
@@ -775,7 +775,7 @@
 ; parameters, concrete ADT names, (Vector el), or an applied template
 ; whose arguments are this deftype's parameters in order.
 (defn parse-field-ty [e :- Ast ps :- PS] :- PTyRes
-  (let [tag (ast-tag (clone e))]
+  (let [tag (ast-tag e)]
     (cond
       (= tag 1)
       (let [s (node-str (clone e) (ps-tab (clone ps)))]
@@ -785,7 +785,7 @@
           (= (clone s) "f64")  (PTyRes (clone ps) (t-f64))
           (= (clone s) "bool") (PTyRes (clone ps) (t-bool))
           (= (clone s) "str")  (PTyRes (clone ps) (t-str))
-          (let [sid (ast-sid-of (clone e))
+          (let [sid (ast-sid-of e)
                 k (typaram-index (clone ps) sid)]
             (if (>= (clone k) 0)
               (PTyRes (clone ps) (t-param (clone k)))
@@ -825,7 +825,7 @@
               (= (clone el-str) "i64") (PTyRes (clone ps) (t-vec 0))
               (= (clone el-str) "f64") (PTyRes (clone ps) (t-vec 1))
               (= (clone el-str) "str") (PTyRes (clone ps) (t-vec 2))
-              (let [k (typaram-index (clone ps) (ast-sid-of (clone el-node)))]
+              (let [k (typaram-index (clone ps) (ast-sid-of el-node))]
                 (if (>= (clone k) 0)
                   (PTyRes (clone ps) (t-vec (+ 100 (clone k))))
                   (PTyRes (ps-err (clone ps) "(Vector ...) element must be i64, f64, str or a type parameter of this deftype") (t-none))))))
@@ -853,10 +853,10 @@
   (if (>= i (asts-depth (clone (clone args))))
     (PTyRes (clone ps) (t-adt idx))
     (let [a (asts-idx (clone args) i)
-          at (ast-tag (clone a))]
+          at (ast-tag a)]
       (if (not (= at 1))
         (PTyRes (ps-err (clone ps) (str (ps-str-of (clone ps) h) " type argument must be a parameter name of this deftype")) (t-none))
-        (let [asid (ast-sid-of (clone a))
+        (let [asid (ast-sid-of a)
             p (sids-idx (clone tps) i)]
           (if (not (= asid p))
             (let [msg (str "field type (" (ps-str-of (clone ps) h) " ...) must apply " (ps-str-of (clone ps) h) " to this deftype's parameters in order (expected " (ps-str-of (clone ps) p) ")")]
@@ -885,22 +885,22 @@
           ; symbol; borrows are written on the annotation (`ks :- &Asts`).
           (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
 
-          (not (= (ast-tag (clone nm-node)) 1))
+          (not (= (ast-tag nm-node) 1))
           (PParRes (ps-err (clone ps) "param must be a symbol") (PNil))
 
           (let [sep-node (asts-idx (clone ks) (+ i 1))]
-            (not (and (= (ast-tag (clone sep-node)) 1) (= (ast-sid-of (clone sep-node)) (s-sep)))))
+            (not (and (= (ast-tag sep-node) 1) (= (ast-sid-of sep-node) (s-sep)))))
           (PParRes (ps-err (clone ps) (str "function parameter '" (clone nm-str) "' must have a type annotation (param :- ty)")) (PNil))
 
           (let [ty-node (asts-idx (clone ks) (+ i 2))
-                ty-tag2 (ast-tag (clone ty-node))]
+                ty-tag2 (ast-tag ty-node)]
             (if (not (= ty-tag2 1))
               (let [rt (parse-ty (clone ty-node) (clone ps))]
                 (match rt
                   (PTyRes [ps2 ty]
                     (if (ps-failed (clone ps2))
                       (PParRes (clone ps2) (PNil))
-                      (let [p (Param (ast-sid-of (clone nm-node)) ty 0)]
+                      (let [p (Param (ast-sid-of nm-node) ty 0)]
                         (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2)))))))
               (let [ty-str (node-str (clone ty-node) (ps-tab (clone ps)))
                     ; `ks :- &Asts` — a borrowed parameter: the caller keeps
@@ -914,7 +914,7 @@
                   (PTyRes [ps2 ty]
                     (if (ps-failed (clone ps2))
                       (PParRes (clone ps2) (PNil))
-                      (let [p (Param (ast-sid-of (clone nm-node)) ty (if borrowed 1 0))]
+                      (let [p (Param (ast-sid-of nm-node) ty (if borrowed 1 0))]
                         (parse-params (clone ks) (+ i 3) (PCons (clone p) (clone acc)) (clone ps2))))))))))))))
 
 ; (defn name [params] [:- ret] body...) / (extern name [params] [:- ret])
@@ -926,11 +926,11 @@
           (RawRes (ps-err (clone ps) "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
           (let [name-node (asts-idx (clone items) 1)
                 pvec (asts-idx (clone items) 2)]
-            (if (not (= (ast-tag (clone name-node)) 1))
+            (if (not (= (ast-tag name-node) 1))
               (RawRes (ps-err (clone ps) "defn name must be a symbol") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-              (if (not (= (ast-tag (clone pvec)) 6))
+              (if (not (= (ast-tag pvec) 6))
                 (RawRes (ps-err (clone ps) "defn params must be a vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-                (let [name-sid (ast-sid-of (clone name-node))
+                (let [name-sid (ast-sid-of name-node)
                       ; each form starts with its own type-parameter scope
                       ps0 (ps-reset-typarams (clone ps))
                       rp (parse-params (ast-kids-of (clone pvec)) 0 (PNil) (clone ps0))]
@@ -1003,14 +1003,34 @@
 
 (defn sids-set [ks :- Sids i :- i64 v :- i64] :- Sids
   (match ks
-    (SCons [h t] (if (= i 0) (SCons v (clone t)) (SCons h (sids-set (clone t) (- i 1) v))))
+    (SCons [h t] (if (= i 0) (SCons v t) (SCons h (sids-set t (- i 1) v))))
     (SNil [] (SNil))))
 
-(defn mat-set [ks :- Sids i :- i64 j :- i64 n :- i64 v :- i64] :- Sids
-  (sids-set (clone ks) (+ (* i n) j) v))
+; --- boolean matrix as a row-major list of Sids rows ------------------------
+; Rows are Sids chains of 0/1. Indexed access is O(n); the flat n*n chain
+; made the Warshall closure O(n^5) and dominated the whole self-compile.
+(deftype Mat (MatNil) (MatCons [row :- Sids next :- Mat]))
 
-(defn mat-get [ks :- Sids i :- i64 j :- i64 n :- i64] :- i64
-  (sids-idx (clone ks) (+ (* i n) j)))
+(defn mat-zeros [n :- i64 m :- i64] :- Mat
+  (if (= m 0) (MatNil) (MatCons (mk-zeros n) (mat-zeros n (- m 1)))))
+
+(defn sids-idx-ref [ks :- &Sids i :- i64] :- i64
+  (match ks
+    (SCons [h t] (if (= i 0) h (sids-idx-ref t (- i 1))))
+    (SNil [] -1)))
+
+(defn mat-get [m :- &Mat i :- i64 j :- i64] :- i64
+  (match m
+    (MatCons [row next] (if (= i 0) (sids-idx-ref row j) (mat-get next (- i 1) j)))
+    (MatNil [] 0)))
+
+(defn mat-set [m :- Mat i :- i64 j :- i64 v :- i64] :- Mat
+  (match m
+    (MatCons [row next]
+      (if (= i 0)
+        (MatCons (sids-set row j v) next)
+        (MatCons row (mat-set next (- i 1) j v))))
+    (MatNil [] (MatNil))))
 
 ; --- representation facts ---------------------------------------------------
 
@@ -1019,10 +1039,10 @@
 ; so the two converge and one array serves both.
 
 (defn facts-compute [adts :- AdtTab] :- Facts
-  (let [n (adts-depth (clone adts))
-        edge0 (facts-edges (clone adts) n 0 (mk-zeros (* n n)))
-        boxed0 (facts-diag (clone edge0) n 0 (SNil))]
-    (Facts (facts-owns-rounds (clone adts) n (+ n 2) (sids-rev (clone boxed0) (SNil))))))
+  (let [n (adts-depth adts)
+        edge0 (facts-edges adts n 0 (mat-zeros n n))
+        boxed0 (facts-diag edge0 n 0 (SNil))]
+    (Facts (facts-owns-rounds adts n (+ n 2) (sids-rev boxed0 (SNil))))))
 
 ; The declared-template prefix of the combined table. The seed's
 ; build-stage plan_drops runs on facts computed BEFORE ADT instances
@@ -1038,78 +1058,78 @@
             (ATNil)))))
     (ATNil [] (ATNil))))
 
-(defn facts-edges [adts :- AdtTab n :- i64 t :- i64 edge :- Sids] :- Sids
+(defn facts-edges [adts :- &AdtTab n :- i64 t :- i64 edge :- Mat] :- Mat
   (if (>= t n)
-    (facts-closure (clone edge) n 0 0 0)
-    (facts-edges-vi (clone adts) n t 0 (clone edge))))
+    (facts-closure edge n 0 0 0)
+    (facts-edges-vi adts n t 0 edge)))
 
-(defn facts-edges-vi [adts :- AdtTab n :- i64 t :- i64 vi :- i64 edge :- Sids] :- Sids
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) t)))
-    (facts-edges (clone adts) n (+ t 1) (clone edge))
-    (facts-edges-fs (varnt-fields-at (clone adts) t vi) (clone adts) n t vi (clone edge))))
+(defn facts-edges-vi [adts :- &AdtTab n :- i64 t :- i64 vi :- i64 edge :- Mat] :- Mat
+  (if (>= vi (vlist-depth (adts-variants-at adts t)))
+    (facts-edges adts n (+ t 1) edge)
+    (facts-edges-fs (varnt-fields-at adts t vi) adts n t vi edge)))
 
-(defn facts-edges-fs [fs :- TyList adts :- AdtTab n :- i64 t :- i64 vi :- i64 edge :- Sids] :- Sids
+(defn facts-edges-fs [fs :- TyList adts :- &AdtTab n :- i64 t :- i64 vi :- i64 edge :- Mat] :- Mat
   (match fs
     (TyCons [h rest]
       (let [u (ty-arg h)]
         (if (and (= (ty-tag h) 16) (< u n))
-          (facts-edges-fs (clone rest) (clone adts) n t vi (mat-set (clone edge) t u n 1))
-          (facts-edges-fs (clone rest) (clone adts) n t vi (clone edge)))))
-    (TyNil [] (facts-edges-vi (clone adts) n t (+ vi 1) (clone edge)))))
+          (facts-edges-fs rest adts n t vi (mat-set edge t u 1))
+          (facts-edges-fs rest adts n t vi edge))))
+    (TyNil [] (facts-edges-vi adts n t (+ vi 1) edge))))
 
-(defn facts-closure [edge :- Sids n :- i64 k :- i64 i :- i64 j :- i64] :- Sids
+(defn facts-closure [edge :- Mat n :- i64 k :- i64 i :- i64 j :- i64] :- Mat
   (cond
-    (>= k n) (clone edge)
-    (>= i n) (facts-closure (clone edge) n (+ k 1) 0 0)
-    (>= j n) (facts-closure (clone edge) n k (+ i 1) 0)
-    (let [ij (mat-get (clone edge) i j n)
-          ik (mat-get (clone edge) i k n)
-          kj (mat-get (clone edge) k j n)]
-      (if (or (= (clone ij) 1) (and (= (clone ik) 1) (= (clone kj) 1)))
-        (facts-closure (mat-set (clone edge) i j n 1) n k i (+ j 1))
-        (facts-closure (clone edge) n k i (+ j 1))))))
+    (>= k n) edge
+    (>= i n) (facts-closure edge n (+ k 1) 0 0)
+    (>= j n) (facts-closure edge n k (+ i 1) 0)
+    (let [ij (mat-get edge i j)
+          ik (mat-get edge i k)
+          kj (mat-get edge k j)]
+      (if (or (= ij 1) (and (= ik 1) (= kj 1)))
+        (facts-closure (mat-set edge i j 1) n k i (+ j 1))
+        (facts-closure edge n k i (+ j 1))))))
 
-(defn facts-edges-wrap [edge :- Sids n :- i64 t :- i64] :- Sids
-  (if (>= t n) (facts-closure (clone edge) n 0 0 0) (clone edge)))
+(defn facts-edges-wrap [edge :- Mat n :- i64 t :- i64] :- Mat
+  (if (>= t n) (facts-closure edge n 0 0 0) edge))
 
-(defn facts-diag [edge :- Sids n :- i64 i :- i64 acc :- Sids] :- Sids
+(defn facts-diag [m :- &Mat n :- i64 i :- i64 acc :- Sids] :- Sids
   (if (>= i n)
-    (clone acc)
-    (facts-diag (clone edge) n (+ i 1) (SCons (mat-get (clone edge) i i n) (clone acc)))))
+    acc
+    (facts-diag m n (+ i 1) (SCons (mat-get m i i) acc))))
 
-(defn facts-owns-rounds [adts :- AdtTab n :- i64 rounds :- i64 owns :- Sids] :- Sids
+(defn facts-owns-rounds [adts :- &AdtTab n :- i64 rounds :- i64 owns :- Sids] :- Sids
   (if (= rounds 0)
-    (clone owns)
-    (facts-owns-rounds (clone adts) n (- rounds 1) (owns-prop (clone adts) n 0 (clone owns)))))
+    owns
+    (facts-owns-rounds adts n (- rounds 1) (owns-prop adts n 0 owns))))
 
-(defn owns-prop [adts :- AdtTab n :- i64 t :- i64 owns :- Sids] :- Sids
+(defn owns-prop [adts :- &AdtTab n :- i64 t :- i64 owns :- Sids] :- Sids
   (if (>= t n)
-    (clone owns)
-    (let [owns2 (if (= (sids-idx (clone owns) t) 1)
-                  (clone owns)
-                  (if (own-via (clone adts) t 0 (clone owns)) (sids-set (clone owns) t 1) (clone owns)))]
-      (owns-prop (clone adts) n (+ t 1) owns2))))
+    owns
+    (let [owns2 (if (= (sids-idx-ref owns t) 1)
+                  owns
+                  (if (own-via adts t 0 owns) (sids-set owns t 1) owns))]
+      (owns-prop adts n (+ t 1) owns2))))
 
-(defn own-via [adts :- AdtTab t :- i64 vi :- i64 owns :- Sids] :- bool
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) t)))
+(defn own-via [adts :- &AdtTab t :- i64 vi :- i64 owns :- &Sids] :- bool
+  (if (>= vi (vlist-depth (adts-variants-at adts t)))
     false
-    (own-via-fs (varnt-fields-at (clone adts) t vi) (clone owns))))
+    (own-via-fs (varnt-fields-at adts t vi) owns)))
 
-(defn own-via-fs [fs :- TyList owns :- Sids] :- bool
+(defn own-via-fs [fs :- TyList owns :- &Sids] :- bool
   (match fs
     (TyCons [h rest]
       (let [tg (ty-tag h)]
         (if (or (= tg 12) (= tg 15) (= tg 13) (= tg 14))
           true
-          (if (and (= tg 16) (= (sids-idx (clone owns) (ty-arg h)) 1))
+          (if (and (= tg 16) (= (sids-idx-ref owns (ty-arg h)) 1))
             true
-            (own-via-fs (clone rest) (clone owns))))))
+            (own-via-fs rest owns)))))
     (TyNil [] false)))
 
-(defn adts-variants-at [ts :- AdtTab i :- i64] :- VList
-  (match (adts-at (clone ts) i)
+(defn adts-variants-at [ts :- &AdtTab i :- i64] :- VList
+  (match (adts-at ts i)
     (AdtInfo [name tps variants tpl tplargs] (clone variants))))
 
-(defn varnt-fields-at [adts :- AdtTab t :- i64 vi :- i64] :- TyList
-  (match (vlist-at (adts-variants-at (clone adts) t) vi)
+(defn varnt-fields-at [adts :- &AdtTab t :- i64 vi :- i64] :- TyList
+  (match (vlist-at (adts-variants-at adts t) vi)
     (Varnt [vn fields] (clone fields))))

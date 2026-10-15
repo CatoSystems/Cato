@@ -42,10 +42,10 @@
       (match y
         (Ty [yt ya] (and (= xt yt) (= xa ya)))))))
 
-(defn ty-tag [x :- Ty] :- i64
+(defn ty-tag [x :- &Ty] :- i64
   (match x (Ty [tag a] tag)))
 
-(defn ty-arg [x :- Ty] :- i64
+(defn ty-arg [x :- &Ty] :- i64
   (match x (Ty [tag a] a)))
 
 (defn is-int-ty [x :- Ty] :- bool
@@ -71,7 +71,7 @@
 
 ; Non-Copy in the move checker's sense (adt/vec/map/set/fn — param never
 ; survives to checking).
-(defn is-non-copy-ty [x :- Ty] :- bool
+(defn is-non-copy-ty [x :- &Ty] :- bool
   (let [t (ty-tag x)]
     (or (= t 15) (= t 16) (= t 13) (= t 14) (= t 17))))
 
@@ -152,34 +152,34 @@
 
 (deftype Sids (SNil) (SCons [h :- i64 t :- Sids]))
 
-(defn sids-null [ks :- Sids] :- bool
+(defn sids-null [ks :- &Sids] :- bool
   (match ks
     (SNil [] true)
     (SCons [h t] false)))
 
-(defn sids-depth [ks :- Sids] :- i64
+(defn sids-depth [ks :- &Sids] :- i64
   (match ks
-    (SCons [h t] (+ 1 (sids-depth (clone t))))
+    (SCons [h t] (+ 1 (sids-depth t)))
     (SNil [] 0)))
 
 (defn sids-rev [ks :- Sids acc :- Sids] :- Sids
   (match ks
-    (SCons [h t] (sids-rev (clone t) (SCons h acc)))
+    (SCons [h t] (sids-rev t (SCons h acc)))
     (SNil [] acc)))
 
-(defn sids-idx [ks :- Sids i :- i64] :- i64
+(defn sids-idx [ks :- &Sids i :- i64] :- i64
   (match ks
-    (SCons [h t] (if (= i 0) h (sids-idx (clone t) (- i 1))))
+    (SCons [h t] (if (= i 0) h (sids-idx t (- i 1))))
     (SNil [] -1)))
 
 (defn sids-append [ks :- Sids x :- i64] :- Sids
   (match ks
     (SNil [] (SCons x (SNil)))
-    (SCons [h t] (SCons h (sids-append (clone t) x)))))
+    (SCons [h t] (SCons h (sids-append t x)))))
 
-(defn sids-has [ks :- Sids x :- i64] :- bool
+(defn sids-has [ks :- &Sids x :- i64] :- bool
   (match ks
-    (SCons [h t] (or (= h x) (sids-has (clone t) x)))
+    (SCons [h t] (or (= h x) (sids-has t x)))
     (SNil [] false)))
 
 (defn sids-drop [ks :- Sids n :- i64] :- Sids

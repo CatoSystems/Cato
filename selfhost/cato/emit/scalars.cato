@@ -24,14 +24,14 @@
 (defn em-temp [st :- Emit] :- ETRes
   (match st
     (Emit [c mdl sigs]
-      (match (fc-temp (clone c))
-        (EFcT [c2 v] (ETRes (Emit c2 (clone mdl) (clone sigs)) v))))))
+      (match (fc-temp c)
+        (EFcT [c2 v] (ETRes (Emit c2 mdl sigs) v))))))
 
 (defn em-blk [st :- Emit] :- ETRes
   (match st
     (Emit [c mdl sigs]
-      (match (fc-block (clone c))
-        (EFcB [c2 v] (ETRes (Emit c2 (clone mdl) (clone sigs)) v))))))
+      (match (fc-block c)
+        (EFcB [c2 v] (ETRes (Emit c2 mdl sigs) v))))))
 
 (defn em-blk2 [st :- Emit] :- ET2Res
   (match (em-blk st)
@@ -49,44 +49,44 @@
 
 (defn em-line [st :- Emit s :- str] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-line (clone c) s) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-line c s) mdl sigs))))
 
 (defn em-open [st :- Emit label :- str] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-open (clone c) label) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-open c label) mdl sigs))))
 
 (defn em-decl [st :- Emit line :- str] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (clone c) (md-ensure (clone mdl) line) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit c (md-ensure mdl line) sigs))))
 
 (defn em-decl-line [st :- Emit line :- str decl :- str] :- Emit
   (em-decl (em-line st line) decl))
 
-(defn em-cur [st :- Emit] :- str
+(defn em-cur [st :- &Emit] :- str
   (match st
-    (Emit [c mdl sigs] (fc-cur-of (clone c)))))
+    (Emit [c mdl sigs] (fc-cur-of c))))
 
 (defn em-sc-put [st :- Emit k :- i64 r :- str ty :- Ty] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-sc-put (clone c) k r ty) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-sc-put c k r ty) mdl sigs))))
 
 (defn em-gr-put [st :- Emit k :- i64 slot :- str el :- i64] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-gr-put (clone c) k slot el) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-gr-put c k slot el) mdl sigs))))
 
 (defn em-vc-put [st :- Emit k :- i64 p :- str l :- str el :- i64] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-vc-put (clone c) k p l el) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-vc-put c k p l el) mdl sigs))))
 
 (defn em-pre [st :- Emit s :- str] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-pre-line (clone c) s) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-pre-line c s) mdl sigs))))
 
 (defn em-with-lfr [st :- Emit lfr :- LoopFr] :- Emit
   (match st
-    (Emit [c mdl sigs] (Emit (fc-with-lfr (clone c) lfr) (clone mdl) (clone sigs)))))
+    (Emit [c mdl sigs] (Emit (fc-with-lfr c lfr) mdl sigs))))
 
-(defn fc-cur-of [c :- FnCtx] :- str
+(defn fc-cur-of [c :- &FnCtx] :- str
   (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone cur))))
 
 (defn str-rep [s :- str t :- str] :- str
@@ -129,7 +129,14 @@
       (= tag 11) (emit-bool e st)
       (= tag 12) (emit-str-val e st)
       (= tag 16) (emit-adt e st)
-      (= tag 15) (sf st "control flow cannot produce an aggregate")
+      (= tag 15)
+      (match (emit-vec-pair e st)
+        (EVRes [st1 p l el]
+          (match (em-ins3 st1
+                   (str "~ = insertvalue %VecI64 undef, ptr " p ", 0")
+                   (str "~ = insertvalue %VecI64 ^1, i64 " l ", 1")
+                   (str "~ = insertvalue %VecI64 ^1, i64 " l ", 2"))
+            (ET3Res [st2 s0 s1 s2] (ESRes st2 s2)))))
       (= tag 17) (sf st "control flow cannot produce an aggregate")
       (= tag 13) (sf st "control flow cannot produce an aggregate")
       (= tag 14) (sf st "control flow cannot produce an aggregate")
@@ -203,7 +210,7 @@
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup (clone sigs) name)]
+          (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
                 (if (= (ty-tag (clone ret)) 19) (t-i64) (clone ret))))))))
@@ -658,7 +665,7 @@
 (defn andor-node [a :- HExpr b :- HExpr is-and :- bool st :- Emit] :- ESRes
   (match (emit-bool (clone a) st)
     (ESRes [st1 la]
-      (let [parent (em-cur (clone st1))]
+      (let [parent (em-cur st1)]
         (match (em-blk2 st1)
           (ET2Res [st2 rhs merged]
             (let [st3 (em-line st2
@@ -668,7 +675,7 @@
                   st4 (em-open st3 rhs)]
               (match (emit-bool (clone b) st4)
                 (ESRes [st5 rb]
-                  (let [bp (em-cur (clone st5))
+                  (let [bp (em-cur st5)
                         st6 (em-line st5 (str "  br label %" merged))
                         st7 (em-open st6 merged)]
                     (match (em-ins st7 (str "  ~ = phi i1 [ " (if is-and "false" "true") ", %" parent " ], [ " rb ", %" bp " ]"))
@@ -697,6 +704,7 @@
 ; --- if node -------------------------------------------------------------------------
 
 (defn emit-if-node [cond :- HExpr then :- HExpr els :- HExpr ty :- Ty st :- Emit] :- ESRes
+  (let [env0 (em-env-get st)]
   (match (emit-bool (clone cond) st)
     (ESRes [st1 lc]
       (match (em-blk3 st1)
@@ -705,12 +713,12 @@
                 st4 (em-open st3 bt)]
             (match (emit-typed (clone then) (clone ty) st4)
               (ESRes [st5 tv]
-                (let [tp (em-cur (clone st5))
+                (let [tp (em-cur st5)
                       st6 (em-line st5 (str "  br label %" bm))
-                      st7 (em-open st6 be)]
+                      st7 (em-open (em-env-put st6 env0) be)]
                   (match (emit-typed (clone els) (clone ty) st7)
                     (ESRes [st8 ev]
-                      (let [ep (em-cur (clone st8))
+                      (let [ep (em-cur st8)
                             st9 (em-line st8 (str "  br label %" bm))
                             st10 (em-open st9 bm)
                             lty (cond
@@ -721,7 +729,7 @@
                                       (= (ty-tag (clone ty)) 16)) "ptr"
                                   "i64")]
                         (match (em-ins st10 (str "  ~ = phi " lty " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
-                          (ETRes [st11 res] (ESRes st11 res)))))))))))))))
+                          (ETRes [st11 res] (ESRes st11 res))))))))))))))))
 
 ; --- match node ------------------------------------------------------------------------
 
@@ -733,7 +741,7 @@
 
 (defn pin-arm [v :- str ty :- Ty st :- Emit] :- EPinRes
   (let [tag (ty-tag (clone ty))]
-    (if (= tag 16)
+    (if (or (= tag 16) (= tag 15))
       (EPinRes st v)
       (let [llty (cond
                    (= tag 9) "double"
@@ -761,7 +769,7 @@
                           st7 (em-line st6 "]")
                           st8 (em-open st7 fail)
                           st9 (em-line st8 "  unreachable")]
-                      (match (arm-bodies (clone arms) (clone labels) st9 merged sptr ai name (clone ty) (MPSNil))
+                      (match (arm-bodies (clone arms) (clone labels) st9 merged sptr ai name (clone ty) (em-env-get st9) (MPSNil))
                         (BRRes [st10 vals]
                           (match-phi vals (em-open st10 merged) (clone ty))))))) )) ))))))
 
@@ -790,13 +798,14 @@
         (mls-switch (clone next) (em-line st (str "    i64 " variant ", label %" lbl)))))))
 
 (defn arm-bodies [arms :- HArms labels :- EMLS st :- Emit merged :- str
-                  scrut :- str ai :- i64 name :- str ty :- Ty acc :- EMPS] :- EBodiesRes
+                  scrut :- str ai :- i64 name :- str ty :- Ty env :- EEnv acc :- EMPS] :- EBodiesRes
   (match arms
     (HANil [] (BRRes st acc))
     (HACons [variant binders body next]
       (match labels
         (EMLSCons [lvar lbl lrest]
-          (let [st1 (em-open st lbl)
+          (let [st0 (em-env-put st (clone env))
+                st1 (em-open st0 lbl)
                 st2 (if (= variant -1)
                       st1
                       (arm-field-loads (clone binders) ai variant 0 st1 scrut name))]
@@ -804,9 +813,9 @@
               (ESRes [st3 v]
                 (match (pin-arm v (clone ty) st3)
                   (EPinRes [st4 pv]
-                    (let [pred (em-cur (clone st4))
+                    (let [pred (em-cur st4)
                           st5 (em-line st4 (str "  br label %" merged))]
-                      (arm-bodies (clone next) (clone lrest) st5 merged scrut ai name ty
+                      (arm-bodies (clone next) (clone lrest) st5 merged scrut ai name ty env
                                   (MPSCons pv pred acc)))))))))
         (_ (BRRes st acc)))))); Binder k of variant vi: load per its field type (adt.cato).
 
@@ -819,10 +828,43 @@
         (EURes [st2]
           (arm-field-loads (sids-drop (clone binders) 1) ai vi (+ k 1) st2 scrut name))))))
 
+; Loop-tail arm bodies: each arm body is emitted with emit-loop-tail, so a
+; `recur` in an arm branches to the loop head instead of erroring. Arms that
+; recur (done=false) have already terminated their block; only arms that fall
+; through with a value contribute a phi incoming and a `br merged`.
+(deftype LMBRes (LMBRes [st :- Emit vals :- EMPS anydone :- bool]))
+
+(defn loop-arm-bodies [arms :- HArms labels :- EMLS st :- Emit merged :- str
+                       scrut :- str ai :- i64 name :- str ty :- Ty env :- EEnv acc :- EMPS
+                       anydone :- bool] :- LMBRes
+  (match arms
+    (HANil [] (LMBRes st acc anydone))
+    (HACons [variant binders body next]
+      (match labels
+        (EMLSCons [lvar lbl lrest]
+          (let [st0 (em-env-put st (clone env))
+                st1 (em-open st0 lbl)
+                st2 (if (= variant -1)
+                      st1
+                      (arm-field-loads (clone binders) ai variant 0 st1 scrut name))]
+            (match (emit-loop-tail (clone body) (clone ty) st2)
+              (ETRRes [st3 v done]
+                (if done
+                  (match (pin-arm v (clone ty) st3)
+                    (EPinRes [st4 pv]
+                      (let [pred (em-cur st4)
+                            st5 (em-line st4 (str "  br label %" merged))]
+                        (loop-arm-bodies (clone next) (clone lrest) st5 merged scrut ai name ty env
+                                         (MPSCons pv pred acc) true))))
+                  (loop-arm-bodies (clone next) (clone lrest) st3 merged scrut ai name ty env
+                                   acc anydone))))))
+        (_ (LMBRes st acc anydone))))))
+
 (defn match-phi [vals :- EMPS st :- Emit ty :- Ty] :- ESRes
-  (let [lty (let [tag (ty-tag (clone ty))]
+    (let [lty (let [tag (ty-tag (clone ty))]
               (cond
                 (= tag 16) "ptr"
+                (= tag 15) "%VecI64"
                 (= tag 12) "ptr"
                 (= tag 9) "double"
                 (= tag 10) "float"
@@ -918,12 +960,12 @@
               (ETRes [st1 slot]
                 (match st1
                   (Emit [c mdl sigs]
-                    (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty (clone mdl)) ", align 8"))]
+                    (let [st2 (em-pre st1 (str slot " = alloca " (ll-loop-slot-ty ty mdl) ", align 8"))]
                       (match (emit-typed (clone v) (clone ty) st2)
                         (ESRes [st3 init]
                           (match st3
                             (Emit [c3 m3 s3]
-                              (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty (clone m3)) " " init ", ptr " slot ", align 8"))]
+                              (let [st4 (em-line st3 (str "  store " (ll-loop-slot-ty ty m3) " " init ", ptr " slot ", align 8"))]
                                 (loop-slots (clone next) st4 (ESlots2 name slot (clone ty) acc))))))))))))))))))
 
 ; Fresh registers for every variable at the loop head.
@@ -942,7 +984,7 @@
           (ETRes [st1 r]
             (match st1
               (Emit [c mdl sigs]
-                (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty (clone mdl)) ", ptr " slot ", align 8"))]
+                (let [st2 (em-line st1 (str r " = load " (ll-loop-slot-ty ty mdl) ", ptr " slot ", align 8"))]
                   (loop-load-slots (clone next) (em-sc-put st2 name r ty)))))))))))
 
 (defn emit-loop-tail [e :- HExpr ty :- Ty st :- Emit] :- TailRes
@@ -966,19 +1008,19 @@
                     st4 (em-open st3 bt)]
                 (match (emit-loop-tail (clone then) (clone ity) st4)
                   (ETRRes [st5 tv tdone]
-                    (let [tp (if tdone (em-cur (clone st5)) "")
+                    (let [tp (if tdone (em-cur st5) "")
                           st6 (if tdone (em-line st5 (str "  br label %" bm)) st5)
                           st7 (em-open st6 be)]
                       (match (emit-loop-tail (clone els) (clone ity) st7)
                         (ETRRes [st8 ev edone]
-                          (let [ep (if edone (em-cur (clone st8)) "")
+                          (let [ep (if edone (em-cur st8) "")
                                 st9 (if edone (em-line st8 (str "  br label %" bm)) st8)
                                 st10 (em-open st9 bm)]
                             (cond
                               (and tdone edone)
                               (match st10
                                 (Emit [c10 m10 s10]
-                                  (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity) (clone m10)) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
+                                  (match (em-ins st10 (str "  ~ = phi " (ll-loop-slot-ty (clone ity) m10) " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
                                     (ETRes [st11 r] (ETRRes st11 r true)))))
                               tdone (ETRRes st10 tv true)
                               edone (ETRRes st10 ev true)
@@ -998,6 +1040,32 @@
     (HSeq [es]
       (match (emit-stmts-ex-last (clone es) st)
         (ELRes [st2 last] (emit-loop-tail (clone last) (clone ty) st2))))
+
+    (HMatch [scrut arms mty]
+      (match (emit-adt (clone scrut) st)
+        (ESRes [st1 sptr]
+          (let [ai (adt-of (clone scrut) (clone st1))
+                name (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
+            (match (em-ins2 st1
+                     (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
+                     (str "~ = load i64, ptr ^1, align 8"))
+              (ET2Res [st2 tg ttag]
+                (match (em-blk2 st2)
+                  (ET2Res [st3 merged fail]
+                    (match (arm-labels-mint (arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
+                      (ARes [st4 labels]
+                        (let [dflt (mls-default (clone labels) fail)
+                              st5 (em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
+                              st6 (mls-switch (clone labels) st5)
+                              st7 (em-line st6 "]")
+                              st8 (em-open st7 fail)
+                              st9 (em-line st8 "  unreachable")]
+                          (match (loop-arm-bodies (clone arms) (clone labels) st9 merged sptr ai name mty (em-env-get st9) (MPSNil) false)
+                            (LMBRes [st10 vals anydone]
+                              (if anydone
+                                (match (match-phi (clone vals) (em-open st10 merged) (clone mty))
+                                  (ESRes [st11 r] (ETRRes st11 r true)))
+                                (ETRRes st10 "" false)))))))))))))))
 
     (_
       (match (emit-typed (clone e) (clone ty) st)

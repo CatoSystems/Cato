@@ -1370,7 +1370,8 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
         };
         let init = lower_expect(init_form, &mut child, ctx, Some(ty))?;
         let it = ty_of(&init, &child, ctx);
-        if it != ty && !(ty == Ty::F64 && it == Ty::I64) {
+        let empty_vec = matches!((&ty, &init), (Ty::Vec(_), HExpr::VecLit(VLit::I64(vs))) if vs.is_empty());
+        if it != ty && !(ty == Ty::F64 && it == Ty::I64) && !empty_vec {
             return Err(format!(
                 "loop binding {} ascribed {:?} but the initial value is {:?}",
                 name, ty, it

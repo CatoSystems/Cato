@@ -613,6 +613,20 @@ pub(crate) fn emit_vec_pair(
             }
             emit_vec_pair(vs.last().unwrap(), c, mdl, sigs)
         }
+        // A loop whose result is a vector: emit_loop_node returns the
+        // completing path's value in its slot type — a %VecI64 {ptr,len,cap}
+        // header for collections (emit_loop_tail phis aggregates and
+        // emit_typed loads a growable var's live header). Split it back into
+        // the (ptr, len) pair this context returns.
+        HExpr::Loop { ty, .. } => {
+            let elem = vec_elem_of(*ty);
+            let agg = emit_loop_node(e, c, mdl, sigs);
+            let p = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 0", p, agg));
+            let l = c.temp();
+            c.line(&format!("  {} = extractvalue %VecI64 {}, 1", l, agg));
+            (p, l, elem)
+        }
         other => panic!("codegen: unsupported vector value {:?}", other),
     }
 }

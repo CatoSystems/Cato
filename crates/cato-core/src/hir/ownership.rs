@@ -57,6 +57,18 @@ pub(crate) enum VState {
     Moved,
 }
 
+/// One boxed-scrutinee match arm under checking: its scrutinee var and the
+/// binders that alias the scrutinee's heap box. The backend materializes
+/// str/vec/ADT binders as pointers into (or owned by) that box, so when the
+/// arm moves the scrutinee itself — handing the box to a callee that frees
+/// it — every later use of an aliasing binder reads freed memory. Moving
+/// the scrutinee retires the binders (marks them `Moved` in the state map,
+/// where branch isolation and the use-of-moved error come for free).
+struct Watch {
+    scrutinee: String,
+    binders: HashSet<String>,
+}
+
 /// One traversal does three jobs: move checking, per-`Let` drop-list
 /// planning, and (optionally) the param-free wrapper. The two maps carried
 /// beside the state machine:
@@ -102,6 +114,8 @@ pub(crate) struct BCheck<'a> {
     pub(crate) rets: &'a HashMap<String, Ty>,
     /// Params whose buffers free at body exit (result, when requested).
     pub(crate) param_frees: Vec<String>,
+    /// Boxed-scrutinee arms on the check path (innermost last); see `Watch`.
+    watches: Vec<Watch>,
     pub(crate) errs: Vec<String>,
 }
 
@@ -154,6 +168,7 @@ pub(crate) fn plan_drops(
         remaining: var_counts,
         rets,
         param_frees: Vec::new(),
+        watches: Vec::new(),
         errs: Vec::new(),
     };
     let mut tys: HashMap<String, Ty> = HashMap::new();
@@ -328,6 +343,21 @@ impl<'a> BCheck<'a> {
                 v
             ));
             return;
+        }
+        // Moving a watched scrutinee retires its arm's aliasing binders:
+        // their values live in (or own through) the box that just left.
+        // The state map carries the retirement — a later use is the
+        // standard use-of-moved error, and per-branch maps keep the mark
+        // out of sibling branches.
+        let retired: Vec<String> = self
+            .watches
+            .iter()
+            .filter(|w| w.scrutinee == v)
+            .flat_map(|w| w.binders.iter().cloned())
+            .collect();
+        for b in retired {
+            st.insert(b.clone(), VState::Moved);
+            owns.insert(b, false);
         }
         st.insert(v.to_string(), VState::Moved);
         owns.insert(v.to_string(), false);
@@ -669,10 +699,43 @@ impl<'a> BCheck<'a> {
                         arm_st.insert(b.clone(), VState::Owned);
                         arm_owns.insert(b.clone(), false);
                     }
+                    // S9: while the arm body runs, watch for a move of the
+                    // scrutinee var itself. The backend loads aliasing
+                    // binders (str/vec/ADT fields) as pointers into or
+                    // owned-by the scrutinee's one heap box, and the move
+                    // hands that box to a callee that frees it — every
+                    // aliasing-binder use after the move is a UAF
+                    // (call-user's `mdl` reads after `call-marshal`).
+                    let mut watched = false;
+                    if scrut_boxed {
+                        if let HExpr::Var(sv) = &**scrut {
+                            if let Some(fields) = arm_fields {
+                                let mut binders = HashSet::new();
+                                for (k, b) in arm.binders.iter().enumerate() {
+                                    let fty = fields.1.get(k).copied();
+                                    let aliases = binder_field_aliases(fty, &self.boxed_full)
+                                        || matches!(fty, Some(Ty::Adt(_)));
+                                    if aliases {
+                                        binders.insert(b.clone());
+                                    }
+                                }
+                                if !binders.is_empty() {
+                                    self.watches.push(Watch {
+                                        scrutinee: sv.clone(),
+                                        binders,
+                                    });
+                                    watched = true;
+                                }
+                            }
+                        }
+                    }
                     // arm binder types: recover field types are not carried;
                     // binders alias the scrutinee's fields, so they never
                     // own (I64 is the historical state-tracking stand-in).
                     self.check(&mut arm.body, &mut arm_tys, &mut arm_st, &mut arm_owns);
+                    if watched {
+                        self.watches.pop();
+                    }
                     if scrut_boxed {
                         let mut any_alias_escape = false;
                         if let Some(ai) = scrut_adt {

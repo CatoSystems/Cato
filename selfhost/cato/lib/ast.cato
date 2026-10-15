@@ -33,7 +33,7 @@
   (ASet [kids :- Asts at :- Span]))
 
 ; A small discriminant for tests and generic pass logic.
-(defn ast-tag [a :- Ast] :- i64
+(defn ast-tag [a :- &Ast] :- i64
   (match a
     (ANil [at] 0)
     (ASym [sid at] 1)

@@ -16,7 +16,7 @@
               (RegVal [r ty]
                 (if (= (ty-tag (clone ty)) 16)
                   (ty-arg (clone ty))
-                  (do (cg-fail-i "not an ADT binding") -1))))))))
+                  (do (cg-fail-i (str "not an ADT binding name=" (md-sym mdl v) " sctag=" (ty-tag (clone ty)))) -1))))))))
     (HCtor [adt variant args] adt)
     (HMatch [scrut arms ty]
       (if (= (ty-tag (clone ty)) 16) (ty-arg (clone ty))
@@ -28,7 +28,7 @@
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup (clone sigs) name)]
+          (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
                 (if (= (ty-tag (clone ret)) 16)
@@ -76,16 +76,18 @@
     (HSpit [path data] (do (cg-fail-i "expected an ADT value") -1))
     (HArgs [] (do (cg-fail-i "expected an ADT value") -1))
     (HExit [e] (do (cg-fail-i "expected an ADT value") -1))
-    (HParseNum [s int res] (do (cg-fail-i "expected an ADT value") -1))))
+    (HParseNum [s int res]
+      (if (= (ty-tag (clone res)) 16) (ty-arg (clone res))
+        (do (cg-fail-i "parse-num without Option result") -1)))))
 
 (defn emit-str-val [e :- HExpr st :- Emit] :- ESRes
   (match e
     (HStrLit [s]
       (match st
         (Emit [c mdl sigs]
-          (match (md-mint-str (clone mdl) s)
+          (match (md-mint-str mdl s)
             (EMRes [m2 label]
-              (match (em-ins (Emit (clone c) m2 (clone sigs))
+              (match (em-ins (Emit (clone c) m2 sigs)
                        (str "  ~ = getelementptr inbounds [" (+ (count s) 1) " x i8], ptr " label ", i32 0, i32 0"))
                 (ETRes [st2 t] (ESRes st2 t))))))))
     (HVar [v]
@@ -221,7 +223,8 @@
         (ESRes [st1 p]
           (match kid
             (HStrLit [s]
-              (strcat-parts (hes-rest args) st1 (SPCons (ESPart p (str (count s))) acc)))
+              (let [sl (str (count s))]
+                (strcat-parts (hes-rest args) st1 (SPCons (ESPart p sl) acc))))
             (_
               (match (em-ins st1 (str "  ~ = call i64 @strlen(ptr " p ")"))
                 (ETRes [st2 l]
@@ -340,9 +343,6 @@
     (HVecLit [el vals]
       (match (vec-arg x st)
         (EVRes [st1 p l el2] (ESRes st1 l))))
-    (HClone [inner]
-      (match (vec-arg (clone inner) st)
-        (EVRes [st1 p l el] (ESRes st1 l))))
     (_
       (if (count-expr-is-vec (clone x) (clone st))
         (match (vec-arg (clone x) (clone st))
@@ -359,7 +359,7 @@
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup (clone sigs) name)]
+          (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret] (= (ty-tag (clone ret)) 15)))))))
     (HIf [c t e2 ty] (= (ty-tag (clone ty)) 15))
@@ -372,6 +372,7 @@
         (HVar [v] (let-has-vec (clone binds) v))
         (_ (count-expr-is-vec (clone body) st))))
     (HSeq [es] (count-expr-is-vec (hes-last (clone es)) st))
+    (HClone [inner] (count-expr-is-vec (clone inner) st))
     (HVar [v]
       (match st
         (Emit [c mdl sigs] (or (fc-vc-has (clone c) v) (fc-gr-has (clone c) v)))))
@@ -416,9 +417,9 @@
     (HVecLit [el vals]
       (match st
         (Emit [c mdl sigs]
-          (match (md-mint-vec (clone mdl) el (clone vals))
+          (match (md-mint-vec mdl el (clone vals))
             (MVRes [m2 label len]
-              (match (em-temp (Emit (clone c) m2 (clone sigs)))
+              (match (em-temp (Emit (clone c) m2 sigs))
                 (ETRes [st1 slot]
                   (let [st1a (em-pre st1 (str slot " = alloca %VecI64, align 8"))
                         st2 (em-line st1a (str "  store %VecI64 { ptr " label ", i64 " len ", i64 " len " }, ptr " slot ", align 8"))]
@@ -464,7 +465,7 @@
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup (clone sigs) name)]
+          (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
                 (if (= (ty-tag (clone ret)) 15)
@@ -494,6 +495,7 @@
                         st9 (vec-slot-store slot l 2 st8)]
                     (EVRes st9 npm l el)))))))))
     (HIf [c t e2 ty]
+      (let [env0 (em-env-get st)]
       (match (emit-bool (clone c) st)
         (ESRes [st1 lc]
           (match (em-blk3 st1)
@@ -502,18 +504,18 @@
                     st4 (em-open st3 bt)]
                 (match (emit-vec-pair (clone t) st4)
                   (EVRes [st5 tp tl t-el]
-                    (let [tbr (em-cur (clone st5))
+                    (let [tbr (em-cur st5)
                           st6 (em-line st5 (str "  br label %" bm))
-                          st7 (em-open st6 be)]
+                          st7 (em-open (em-env-put st6 env0) be)]
                       (match (emit-vec-pair (clone e2) st7)
                         (EVRes [st8 ep el2 el3]
-                          (let [ebr (em-cur (clone st8))
+                          (let [ebr (em-cur st8)
                                 st9 (em-line st8 (str "  br label %" bm))
                                 st10 (em-open st9 bm)]
                             (match (em-ins2 st10
                                      (str "  ~ = phi ptr [ " tp ", %" tbr " ], [ " ep ", %" ebr " ]")
                                      (str "  ~ = phi i64 [ " tl ", %" tbr " ], [ " el2 ", %" ebr " ]"))
-                              (ET2Res [st11 mp ml] (EVRes st11 mp ml (vec-elem-of ty)) ))))))))))))))
+                              (ET2Res [st11 mp ml] (EVRes st11 mp ml (vec-elem-of ty)) )))))))))))))))
     (HMatch [scrut arms ty]
       (match-vec-pair (clone scrut) (clone arms) (vec-elem-of ty) st))
     (HLet [binds body frees]
@@ -552,7 +554,13 @@
     (HAbs [x ty] (vf st (str "unsupported vector value site22 tag " (h-tag e))))
     (HMin [a b ty] (vf st (str "unsupported vector value site23 tag " (h-tag e))))
     (HMax [a b ty] (vf st (str "unsupported vector value site24 tag " (h-tag e))))
-    (HLoop [binds ty body] (vf st (str "unsupported vector value site25 tag " (h-tag e))))
+    (HLoop [binds lty body]
+      (match (emit-loop-node (clone binds) (clone lty) (clone body) st)
+        (ESRes [st1 v]
+          (match (em-ins2 st1
+                   (str "  ~ = extractvalue %VecI64 " v ", 0")
+                   (str "  ~ = extractvalue %VecI64 " v ", 1"))
+            (ET2Res [st2 p l] (EVRes st2 p l (vec-elem-of lty)))))))
     (HRecur [args] (vf st (str "unsupported vector value site26 tag " (h-tag e))))
     (HCtor [adt variant args] (vf st (str "unsupported vector value site27 tag " (h-tag e))))
     (HDrop [x] (vf st (str "unsupported vector value site28 tag " (h-tag e))))
@@ -583,29 +591,29 @@
                           st5 (em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
                           st6 (mls-switch (clone labels) st5)
                           st7 (em-line st6 "]")
-                          st8 (em-open st7 fail)
-                          st9 (em-line st8 "  unreachable")
-                          st10 (em-open st9 merged)]
-                      (match (arm-vec-bodies (clone arms) (clone labels) st10 merged sptr ai name (MPSNil) (MPSNil))
-                        (EVPRes [st11 ps ls]
-                          (match (em-ins2 st11
-                                   (str "  ~ = phi ptr" (mps-items (mps-rev ps (MPSNil)) true))
-                                   (str "  ~ = phi i64" (mps-items (mps-rev ls (MPSNil)) true)))
-                            (ET2Res [st12 mp ml] (EVRes st12 mp ml el) ))))))) )) ))))))
+                            st8 (em-open st7 fail)
+                            st9 (em-line st8 "  unreachable")]
+                        (match (arm-vec-bodies (clone arms) (clone labels) st9 merged sptr ai name (em-env-get st9) (MPSNil) (MPSNil))
+                          (EVPRes [st11 ps ls]
+                            (let [st12 (em-open st11 merged)]
+                            (match (em-ins2 st12
+                                     (str "  ~ = phi ptr" (mps-items (mps-rev ps (MPSNil)) true))
+                                     (str "  ~ = phi i64" (mps-items (mps-rev ls (MPSNil)) true)))
+                              (ET2Res [st13 mp ml] (EVRes st13 mp ml el) )))))))) )) ))))))
 
 ; Vector-typed match arms: open the arm block, load fields, emit the
 ; vec pair, branch to merge, accumulate both phi chains.
 ; Vector-typed match arms: walk arms + labels together; each step
 ; opens the arm's block via arm-vec-one.
 (defn arm-vec-bodies [arms :- HArms labels :- EMLS st :- Emit merged :- str
-                      scrut :- str ai :- i64 name :- str acc-p :- EMPS acc-l :- EMPS] :- EVPRes
+                      scrut :- str ai :- i64 name :- str env :- EEnv acc-p :- EMPS acc-l :- EMPS] :- EVPRes
   (match arms
     (HANil [] (EVPRes st acc-p acc-l))
     (HACons [variant binders body next]
       (match labels
         (EMLSCons [lvar lbl lrest]
           (match (arm-vec-one (clone variant) (clone binders) (clone body) (clone next)
-                              (clone lrest) lbl st merged scrut ai name acc-p acc-l)
+                              (clone lrest) lbl st merged scrut ai name env acc-p acc-l)
             (EVPRes [st2 ps ls] (EVPRes st2 ps ls))))
         (_ (EVPRes st acc-p acc-l))))))
 
@@ -613,16 +621,17 @@
 ; pair, branches, recurses.
 (defn arm-vec-one [variant :- i64 binders :- Sids body :- HExpr next :- HArms
                    lrest :- EMLS lbl :- str st :- Emit merged :- str scrut :- str
-                   ai :- i64 name :- str acc-p :- EMPS acc-l :- EMPS] :- EVPRes
-  (let [st1 (em-open st lbl)
+                   ai :- i64 name :- str env :- EEnv acc-p :- EMPS acc-l :- EMPS] :- EVPRes
+  (let [st0 (em-env-put st (clone env))
+        st1 (em-open st0 lbl)
         st2 (if (= variant -1)
               st1
               (arm-field-loads (clone binders) ai variant 0 st1 scrut name))]
     (match (emit-vec-pair (clone body) st2)
       (EVRes [st3 p l el]
-        (let [pred (em-cur (clone st3))
+        (let [pred (em-cur st3)
               st4 (em-line st3 (str "  br label %" merged))]
-          (match (arm-vec-bodies (clone next) (clone lrest) st4 merged scrut ai name
+          (match (arm-vec-bodies (clone next) (clone lrest) st4 merged scrut ai name env
                                   (MPSCons p pred acc-p) (MPSCons l pred acc-l))
             (EVPRes [st5 ps ls] (EVPRes st5 ps ls))))))))
 (defn emit-get [src :- HExpr idx :- HExpr dflt :- HExprs ty :- Ty st :- Emit] :- ESRes
@@ -681,7 +690,7 @@
 (defn materialize-option [found :- str payload :- str adt :- i64 st :- Emit] :- ESRes
   (match st
     (Emit [c mdl sigs]
-      (let [name (md-adt-name (clone mdl) adt)]
+      (let [name (md-adt-name mdl adt)]
         (match (em-temp st)
           (ETRes [st1 slot]
             (let [st2 (em-pre st1 (str slot " = alloca %" name ", align 8"))]

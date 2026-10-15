@@ -101,25 +101,30 @@
 (defn md-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
   (Mdl (clone tab) 0 (sb-new) (StrsNil) (clone adts) (clone owns) (clone csigs)))
 
-(defn md-tab [m :- Mdl] :- (Vector str)
+(defn md-tab [m :- &Mdl] :- (Vector str)
   (match m (Mdl [tab g globals decls adts owns csigs] (clone tab))))
 
-(defn md-adts [m :- Mdl] :- AdtTab
+; The interned string for a sid, read straight off the borrowed module so
+; only the one string is copied (md-tab would deep-copy the whole table).
+(defn md-sym [m :- &Mdl sid :- i64] :- str
+  (match m (Mdl [tab g globals decls adts owns csigs] (clone (get tab sid "")))))
+
+(defn md-adts [m :- &Mdl] :- AdtTab
   (match m (Mdl [tab g globals decls adts owns csigs] (clone adts))))
 
-(defn md-owns [m :- Mdl] :- Sids
+(defn md-owns [m :- &Mdl] :- Sids
   (match m (Mdl [tab g globals decls adts owns csigs] (clone owns))))
 
-(defn md-owns-at [m :- Mdl i :- i64] :- i64
-  (sids-idx (md-owns (clone m)) i))
+(defn md-owns-at [m :- &Mdl i :- i64] :- i64
+  (sids-idx (md-owns m) i))
 
-(defn md-csigs [m :- Mdl] :- Sigs
+(defn md-csigs [m :- &Mdl] :- Sigs
   (match m (Mdl [tab g globals decls adts owns csigs] (clone csigs))))
 
-(defn md-adt-name [m :- Mdl i :- i64] :- str
-  (match (adts-at (md-adts (clone m)) i)
+(defn md-adt-name [m :- &Mdl i :- i64] :- str
+  (match (adts-at (md-adts m) i)
     (AdtInfo [name tps variants tpl tplargs]
-      (sym-str (md-tab (clone m)) name))))
+      (md-sym m name))))
 
 ; --- declarations & globals -----------------------------------------------------
 
@@ -133,7 +138,7 @@
              (StrsCons (clone line) (clone decls))
              (clone adts) (clone owns) (clone csigs))))))
 
-(defn md-decls-lines [m :- Mdl b :- StrBuf] :- StrBuf
+(defn md-decls-lines [m :- &Mdl b :- StrBuf] :- StrBuf
   (match m
     (Mdl [tab g globals decls adts owns csigs] (md-decls-lines-1 (clone decls) b))))
 
@@ -212,7 +217,7 @@
 (defn fc-temp [c :- FnCtx] :- EFcT
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcT (FnCtx (+ tmpc 1) blkc cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr))
+      (EFcT (FnCtx (+ tmpc 1) blkc cur body pre sc ve gr lfr)
             (str "%t" tmpc)))))
 
 (deftype EFcB (EFcB [c :- FnCtx v :- str]))
@@ -220,86 +225,141 @@
 (defn fc-block [c :- FnCtx] :- EFcB
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcB (FnCtx tmpc (+ blkc 1) cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr))
+      (EFcB (FnCtx tmpc (+ blkc 1) cur body pre sc ve gr lfr)
             (str "b" blkc)))))
 
 (defn fc-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (sb-add-line (clone body) s) (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr)))))
+      (FnCtx tmpc blkc cur (sb-add-line body s) pre sc ve gr lfr))))
 
 (defn fc-pre-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (clone body) (sb-add-line (clone pre) s) (clone sc) (clone ve) (clone gr) (clone lfr)))))
+      (FnCtx tmpc blkc cur body (sb-add-line pre s) sc ve gr lfr))))
 
 (defn fc-open [c :- FnCtx label :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc label
-             (sb-add-line (clone body) (str (clone label) ":"))
-             (clone pre) (clone sc) (clone ve) (clone gr) (clone lfr)))))
+             (sb-add-line body (str label ":"))
+             pre sc ve gr lfr))))
 
 (defn fc-sc-put [c :- FnCtx k :- i64 r :- str ty :- Ty] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (clone body) (clone pre) (EScCons k (RegVal r ty) (clone sc)) (clone ve) (clone gr) (clone lfr)))))
+      (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr))))
 
 (defn fc-sc-get [c :- FnCtx k :- i64] :- RegVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (esc-get (clone sc) k))))
+      (esc-get sc k))))
 
 (defn fc-sc-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has (clone sc) k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
 
 (defn fc-vc-put [c :- FnCtx k :- i64 p :- str l :- str el :- i64] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (EVcCons k (VecVal p l el) (clone ve)) (clone gr) (clone lfr)))))
+      (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr))))
 
 (defn fc-vc-get [c :- FnCtx k :- i64] :- VecVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (evc-get (clone ve) k))))
+      (evc-get ve k))))
 
 (defn fc-vc-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has (clone ve) k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
 
 (defn fc-gr-put [c :- FnCtx k :- i64 slot :- str el :- i64] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (clone ve) (EGrCons k (GroVal slot el) (clone gr)) (clone lfr)))))
+      (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr))))
 
 (defn fc-gr-get [c :- FnCtx k :- i64] :- GroVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (egr-get (clone gr) k))))
+      (egr-get gr k))))
 
 (defn fc-gr-has [c :- FnCtx k :- i64] :- bool
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has (clone gr) k))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
 
 (defn fc-lfr [c :- FnCtx] :- LoopFr
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone lfr))))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] lfr)))
 
 (defn fc-with-lfr [c :- FnCtx lfr :- LoopFr] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr l]
-      (FnCtx tmpc blkc cur (clone body) (clone pre) (clone sc) (clone ve) (clone gr) lfr))))
+      (FnCtx tmpc blkc cur body pre sc ve gr lfr))))
+
+; A snapshot of the three binding chains only (not the output state):
+; `let` bodies, match arms and loop bodies must not leak their bindings
+; past their extent, or a shadowed name's register is handed to code
+; outside the scope (a dominance failure across sibling match arms, or a
+; silently wrong read after a shadowing let).
+(deftype EEnv (EEnv [sc :- EScTab ve :- EVcTab gr :- EGrTab]))
+
+(defn fc-env-get [c :- &FnCtx] :- EEnv
+  (match c
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (EEnv (clone sc) (clone ve) (clone gr)))))
+
+(defn fc-env-put [c :- FnCtx e :- EEnv] :- FnCtx
+  (match c
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
+      (match e
+        (EEnv [sc2 ve2 gr2] (FnCtx tmpc blkc cur body pre sc2 ve2 gr2 lfr))))))
 
 ; --- LLVM text helpers -----------------------------------------------------------
 
-(defn mangle [name :- str] :- str
+(defn mangle-raw [name :- str] :- str
   (if (= (count name) 0)
     ""
     (let [c (nth name 0 0)]
       (if (= c 45)
-        (str "_" (mangle (subs name 1 (count name))))
-        (str (char->str c) (mangle (subs name 1 (count name))))))))
+        (str "_" (mangle-raw (subs name 1 (count name))))
+        (str (char->str c) (mangle-raw (subs name 1 (count name))))))))
+
+; Number of leading ascii digits of s.
+(defn digit-prefix-len [s :- str] :- i64
+  (if (= (count s) 0)
+    0
+    (let [c (nth s 0 0)]
+      (if (and (>= c 48) (<= c 57))
+        (+ 1 (digit-prefix-len (subs s 1 (count s))))
+        0))))
+
+; True when tail is zero or more "_u" pairs then empty.
+(defn reserved-u-tail [tail :- str] :- bool
+  (if (= (count tail) 0)
+    true
+    (if (and (>= (count tail) 2) (= (nth tail 0 0) 95) (= (nth tail 1 0) 117))
+      (reserved-u-tail (subs tail 2 (count tail)))
+      false)))
+
+; Does the - -> _ folded name collide with an emitter-minted local?
+; Temps are t<n>, block labels are b<n>, the entry label is entry.
+(defn reserved-local-shape [s :- str] :- bool
+  (if (= s "entry")
+    true
+    (if (= (count s) 0)
+      false
+      (let [c (nth s 0 0)]
+        (if (or (= c 116) (= c 98))
+          (let [d (digit-prefix-len (subs s 1 (count s)))]
+            (if (= d 0)
+              false
+              (reserved-u-tail (subs s (+ d 1) (count s)))))
+          false)))))
+
+(defn mangle [name :- str] :- str
+  (let [m (mangle-raw (clone name))]
+    (if (reserved-local-shape (clone m))
+      (str (clone m) "_u")
+      (clone m))))
 
 (defn ll-scalar [t :- Ty] :- str
   (let [tag (ty-tag (clone t))]
@@ -334,7 +394,7 @@
 (defn elem-ll [el :- i64] :- str
   (if (= el 1) "double" "i64"))
 
-(defn ll-loop-slot-ty [t :- Ty mdl :- Mdl] :- str
+(defn ll-loop-slot-ty [t :- Ty mdl :- &Mdl] :- str
   (let [tag (ty-tag (clone t))]
     (cond
       (= tag 9) "double"
@@ -574,9 +634,9 @@
         (Param [name ty _pb] (pl-tylist (clone t) (TyCons ty (clone acc))))))
     (PNil [] (tys-rev (clone acc) (TyNil)))))
 
-(defn sigs-lookup [ss :- ESigTab k :- i64] :- ESig
+(defn sigs-lookup [ss :- &ESigTab k :- i64] :- ESig
   (match ss
-    (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup (clone next) k)))
+    (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup next k)))
     (ESTNil [] (ESig (TyNil) (t-none)))))
 
 ; --- the emission bundle ---------------------------------------------------------
@@ -587,7 +647,14 @@
 
 (defn em-new [tab :- (Vector str) adts :- AdtTab owns :- Sids csigs :- Sigs
               sigs :- ESigTab] :- Emit
-  (Emit (fn-new) (md-new tab adts owns csigs) (clone sigs)))
+  (Emit (fn-new) (md-new tab adts owns csigs) sigs))
+
+(defn em-env-get [st :- &Emit] :- EEnv
+  (match st (Emit [c mdl sigs] (fc-env-get c))))
+
+(defn em-env-put [st :- Emit e :- EEnv] :- Emit
+  (match st (Emit [c mdl sigs] (Emit (fc-env-put c e) mdl sigs))))
+
 
 
 ; --- multi-instruction minting ----------------------------------------------------
