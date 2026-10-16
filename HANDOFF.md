@@ -13,6 +13,22 @@
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
 
+## Round 10 results (no gain; how to test a narrow-read conversion)
+Tried the `adts-at` narrow-read conversion on the hottest caller
+(`subst-ty`'s ADT arm): added `adts-tpl-at` / `adts-tplargs-at` and split the
+arm into a helper so it stops materialising the whole `AdtInfo`. Measured:
+2,877,450,668 -> 2,881,993,910 B (**worse** by 4.5 MB, +110k calls), because
+the original `(let [info (adts-at ...)] (match info (AdtInfo [...] ...)))`
+consumes the copy immediately — the optimizer elides it — while the narrow
+version walks the table twice (once per field) and still copies the field
+list. Reverted; the tree stays at 2.877 GB.
+
+**Rule of thumb for the remaining `*at` sites:** a whole-row clone is only
+worth replacing when the row survives in the caller (is bound and then used
+through several branches, or stored). If it is destructured and dropped right
+away, the copy is already free and a narrow read adds a second walk. Check
+with the inclusive attribution before and after, not by inspection.
+
 ## Round 9 results (3.27 → 2.88 GB): the context threading landed
 The `check-defns` opening from round 8 is closed. `b-plan` now builds the
 `BCtx` once from the program-wide tables, uses it, and returns it inside a
