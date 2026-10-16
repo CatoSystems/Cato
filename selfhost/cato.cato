@@ -7444,7 +7444,7 @@
                             (im-put owns1 name 0)
                             (im-put owns1 name (if (b-borrowed-call v2 (b-retb-of bcx))
                                                  0
-                                                 (if (b-allocates v2 (b-facts-of bcx)) 1 0))))]
+                                                 (if (b-allocates-of v2 bcx) 1 0))))]
                 (b-let-binds next (im-put st1 name 0) owns2 rem1
                              (im-remove cons1 name) (te-put tys name ty)
                              bcx (BCons name v2 ty acc))))))))))
@@ -7456,6 +7456,36 @@
 (defn b-retb-of [bcx :- &BCtx] :- RBTable
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts _dp retb] (clone retb))))
+
+; The accessors above hand back an owned field, so every read copied the
+; ownership list (one cons per ADT in the program). The consumers of these
+; only borrow, so the read happens inside the match instead.
+(defn b-facts-owns-at [bcx :- &BCtx i :- i64] :- i64
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
+      (facts-owns-at facts i))))
+
+(defn b-facts-boxed-at [bcx :- &BCtx i :- i64] :- i64
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
+      (facts-boxed-at facts i))))
+
+(defn b-allocates-of [v :- &HExpr bcx :- &BCtx] :- bool
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
+      (b-allocates v facts))))
+
+(defn b-arm-state-of [binders :- Sids fields :- TyList pst :- IMap powns :- IMap
+                      tys :- TyEnv bcx :- &BCtx] :- BLRes
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
+      (b-arm-state binders fields pst powns tys facts))))
+
+(defn b-arm-esc-of [binders :- Sids fields :- TyList st :- IMap escaped :- Sids
+                    bcx :- &BCtx acc :- i64] :- i64
+  (match bcx
+    (BCtx [escaped0 shadowed facts tab shared _lc _adts _dp _retb]
+      (b-arm-esc binders fields st escaped facts acc))))
 
 ; Is this an expression whose value is a borrow (a call to a `&T` callee)?
 (defn b-borrowed-call [v :- &HExpr retb :- &RBTable] :- bool
@@ -7612,7 +7642,7 @@
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
     (HACons [variant binders body next]
       (let [fields (if (= boxed 1) (b-varnt-fields-at bcx adtidx variant) (TyNil))]
-        (match (b-arm-state (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) (b-facts-of bcx))
+        (match (b-arm-state-of (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) bcx)
           (BLErr [msg] (BArmsErr msg))
           (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
             (match (bcheck body (clone st1) (clone owns1) rem1 cons1 tys1 bcx)
@@ -7621,7 +7651,7 @@
                 ; a value moved in any arm counts as moved and
                 ; unconsumed-eligible afterwards
                 (let [escaped (b-tail-escape body2 (SNil))
-                      esc2 (b-arm-esc (clone binders) fields (clone st2) escaped (b-facts-of bcx) esc)
+                      esc2 (b-arm-esc-of (clone binders) fields (clone st2) escaped bcx esc)
                       st3 (b-merge-st st1 st2 st)
                       owns3 (b-merge-owns owns1 owns2 owns)]
                   (b-arms next pst powns st3 owns3 rem2 cons2
@@ -7971,7 +8001,7 @@
     (match (b-kids args st owns rem cons tys bcx (HENil))
       (BKErr [msg] (BErr msg))
       (BKOk [st1 owns1 rem1 cons1 c1]
-        (if (= (facts-owns-at (b-facts-of bcx) adt) 1)
+        (if (= (b-facts-owns-at bcx adt) 1)
           (match (b-ctor-move (clone c1) st1 owns1 rem1 cons1 tys bcx)
             (B4Err [msg] (BErr msg))
             (B4 [st2 owns2 rem2 cons2]
@@ -7980,7 +8010,7 @@
 
     (HMatch [scrut arms ty]
     (let [adtidx (fp-scrut-adt scrut tys)
-          boxed (if (and (>= adtidx 0) (= (facts-boxed-at (b-facts-of bcx) adtidx) 1)) 1 0)]
+          boxed (if (and (>= adtidx 0) (= (b-facts-boxed-at bcx adtidx) 1)) 1 0)]
     (match (bcheck (clone scrut) st owns rem cons (clone tys) bcx)
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
