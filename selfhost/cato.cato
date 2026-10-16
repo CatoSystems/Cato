@@ -2733,6 +2733,16 @@
 ; returned the whole `AdtInfo` (every variant and field list) and then the
 ; whole `Varnt` only to hand back `fields`; here the borrowed walk is fused
 ; and just the small field list is copied out.
+; The variant's name only: taking the whole `Varnt` through `vlist-at`
+; copies its field list, which callers that compare names never read.
+(defn varnt-name-at [vs :- &VList i :- i64] :- i64
+  (match vs
+    (VCons [h t]
+      (if (= i 0)
+        (match h (Varnt [vn fields] vn))
+        (varnt-name-at t (- i 1))))
+    (VNil [] -1)))
+
 (defn vlist-fields-at [vs :- &VList i :- i64] :- TyList
   (match vs
     (VCons [h t]
@@ -5694,8 +5704,7 @@
     (AdtInfo [name typarams variants tpl tplargs]
       (if (>= i (vlist-depth variants))
         true
-        (let [vn (match (vlist-at variants i)
-                   (Varnt [vname fields] vname))]
+        (let [vn (varnt-name-at variants i)]
           (if (sids-has heads vn)
             (all-covered heads info (+ i 1))
             false))))))
@@ -5753,18 +5762,20 @@
             (if (not (= (asts-depth (ast-kids-of (clone arm))) 2))
               (MArr "wildcard arm expects (_ body)")
               (let [bodyn (asts-idx (ast-kids-of arm) 1)
-                    rb (lower-e bodyn (clone env) (clone pt) (clone tab) (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) raws)]
+                    rb (lower-e bodyn (clone env) (clone pt) (clone tab) (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached defs raws)]
                 (match rb
                   (LErr [msg] (MArr msg))
                   (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
                     (let [bt (ty-of body2 env r2 s2)]
-                      (match-arms rest vdef adt (clone env) pt (clone tab) adts insts sigs lams rets ncached defs
+                      ; same as the variant arm: the body's lowering hands the
+                      ; definition list back, so it is threaded, not copied
+                      (match-arms rest vdef adt (clone env) pt (clone tab) adts insts sigs lams rets ncached d2
                                   (HACons -1 (SNil) (clone body2) acc) (TyCons bt tys) true (+ 1 narms) raws)))))))
           ; variant arm: (V [b1 b2] body)
           (let [vi (variant-index (clone vdef) head 0)]
             (if (< vi 0)
               (MArr (str (sym-str (clone tab) head) " is not a variant of " (adts-name vdef (clone tab))))
-              (let [fields (variant-fields (clone vdef) vi)]
+              (let [fields (variant-fields vdef vi)]
                 (match-variant-arm arm rest vdef adt vi fields (clone env) pt tab adts insts sigs lams rets ncached defs acc tys wildcard narms raws)))))))))
 
 (defn adts-name [info :- AdtInfo tab :- i64] :- str
@@ -5776,15 +5787,15 @@
     (AdtInfo [name2 typarams variants tpl tplargs]
       (if (>= i (vlist-depth variants))
         -1
-        (let [vn (match (vlist-at variants i)
-                   (Varnt [vname fields] vname))]
+        (let [vn (varnt-name-at variants i)]
           (if (= vn name) i (variant-index info name (+ i 1))))))))
 
-(defn variant-fields [info :- AdtInfo vi :- i64] :- TyList
+; Borrowed: the caller keeps its AdtInfo (it used to clone the whole thing,
+; which also meant a deep drop afterwards) and only the field list is copied.
+(defn variant-fields [info :- &AdtInfo vi :- i64] :- TyList
   (match info
     (AdtInfo [name typarams variants tpl tplargs]
-      (match (vlist-at variants vi)
-        (Varnt [vname fields] fields)))))
+      (vlist-fields-at variants vi))))
 
 (defn match-variant-arm [arm :- Ast rest :- Asts vdef :- AdtInfo adt :- i64 vi :- i64
                         fields :- TyList env :- TyEnv pt :- Ty tab :- i64
@@ -12768,7 +12779,7 @@
                   (< tg 12) (param-scalar t pname pty r (ll-scalar pty) acc st)
                   (ET2Res (do (cg-fail-i "unresolved type parameter in params") st) "" ""))))))))))
 
-(defn defn-ret-ll [ret :- Ty mdl :- Mdl] :- str
+(defn defn-ret-ll [ret :- Ty mdl :- &Mdl] :- str
   (let [tg (ty-tag ret)]
     (cond
       (= tg 9) "double"
@@ -12803,7 +12814,7 @@
                     (Emit [c2 m2 s2]
                       (let [ret-ll (if ismain
                                      "i32"
-                                     (defn-ret-ll ret (clone m2)))
+                                     (defn-ret-ll ret m2))
                             header (str "define " ret-ll " @" fname "(" ps2 ") {\n")
                             tail (if ismain "\n  ret i32 0\n}\n" "\n}\n")]
                         (EDRes (Emit (fn-new) m2 s2)

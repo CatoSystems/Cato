@@ -2239,8 +2239,7 @@
     (AdtInfo [name typarams variants tpl tplargs]
       (if (>= i (vlist-depth variants))
         true
-        (let [vn (match (vlist-at variants i)
-                   (Varnt [vname fields] vname))]
+        (let [vn (varnt-name-at variants i)]
           (if (sids-has heads vn)
             (all-covered heads info (+ i 1))
             false))))))
@@ -2298,18 +2297,20 @@
             (if (not (= (asts-depth (ast-kids-of (clone arm))) 2))
               (MArr "wildcard arm expects (_ body)")
               (let [bodyn (asts-idx (ast-kids-of arm) 1)
-                    rb (lower-e bodyn (clone env) (clone pt) (clone tab) (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached (clone defs) raws)]
+                    rb (lower-e bodyn (clone env) (clone pt) (clone tab) (clone adts) (clone insts) (clone sigs) (clone lams) (clone rets) ncached defs raws)]
                 (match rb
                   (LErr [msg] (MArr msg))
                   (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
                     (let [bt (ty-of body2 env r2 s2)]
-                      (match-arms rest vdef adt (clone env) pt (clone tab) adts insts sigs lams rets ncached defs
+                      ; same as the variant arm: the body's lowering hands the
+                      ; definition list back, so it is threaded, not copied
+                      (match-arms rest vdef adt (clone env) pt (clone tab) adts insts sigs lams rets ncached d2
                                   (HACons -1 (SNil) (clone body2) acc) (TyCons bt tys) true (+ 1 narms) raws)))))))
           ; variant arm: (V [b1 b2] body)
           (let [vi (variant-index (clone vdef) head 0)]
             (if (< vi 0)
               (MArr (str (sym-str (clone tab) head) " is not a variant of " (adts-name vdef (clone tab))))
-              (let [fields (variant-fields (clone vdef) vi)]
+              (let [fields (variant-fields vdef vi)]
                 (match-variant-arm arm rest vdef adt vi fields (clone env) pt tab adts insts sigs lams rets ncached defs acc tys wildcard narms raws)))))))))
 
 (defn adts-name [info :- AdtInfo tab :- i64] :- str
@@ -2321,15 +2322,15 @@
     (AdtInfo [name2 typarams variants tpl tplargs]
       (if (>= i (vlist-depth variants))
         -1
-        (let [vn (match (vlist-at variants i)
-                   (Varnt [vname fields] vname))]
+        (let [vn (varnt-name-at variants i)]
           (if (= vn name) i (variant-index info name (+ i 1))))))))
 
-(defn variant-fields [info :- AdtInfo vi :- i64] :- TyList
+; Borrowed: the caller keeps its AdtInfo (it used to clone the whole thing,
+; which also meant a deep drop afterwards) and only the field list is copied.
+(defn variant-fields [info :- &AdtInfo vi :- i64] :- TyList
   (match info
     (AdtInfo [name typarams variants tpl tplargs]
-      (match (vlist-at variants vi)
-        (Varnt [vname fields] fields)))))
+      (vlist-fields-at variants vi))))
 
 (defn match-variant-arm [arm :- Ast rest :- Asts vdef :- AdtInfo adt :- i64 vi :- i64
                         fields :- TyList env :- TyEnv pt :- Ty tab :- i64

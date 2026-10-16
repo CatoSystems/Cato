@@ -416,7 +416,7 @@
                   (< tg 12) (param-scalar t pname pty r (ll-scalar pty) acc st)
                   (ET2Res (do (cg-fail-i "unresolved type parameter in params") st) "" ""))))))))))
 
-(defn defn-ret-ll [ret :- Ty mdl :- Mdl] :- str
+(defn defn-ret-ll [ret :- Ty mdl :- &Mdl] :- str
   (let [tg (ty-tag ret)]
     (cond
       (= tg 9) "double"
@@ -451,7 +451,7 @@
                     (Emit [c2 m2 s2]
                       (let [ret-ll (if ismain
                                      "i32"
-                                     (defn-ret-ll ret (clone m2)))
+                                     (defn-ret-ll ret m2))
                             header (str "define " ret-ll " @" fname "(" ps2 ") {\n")
                             tail (if ismain "\n  ret i32 0\n}\n" "\n}\n")]
                         (EDRes (Emit (fn-new) m2 s2)

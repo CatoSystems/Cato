@@ -1175,6 +1175,16 @@
 ; returned the whole `AdtInfo` (every variant and field list) and then the
 ; whole `Varnt` only to hand back `fields`; here the borrowed walk is fused
 ; and just the small field list is copied out.
+; The variant's name only: taking the whole `Varnt` through `vlist-at`
+; copies its field list, which callers that compare names never read.
+(defn varnt-name-at [vs :- &VList i :- i64] :- i64
+  (match vs
+    (VCons [h t]
+      (if (= i 0)
+        (match h (Varnt [vn fields] vn))
+        (varnt-name-at t (- i 1))))
+    (VNil [] -1)))
+
 (defn vlist-fields-at [vs :- &VList i :- i64] :- TyList
   (match vs
     (VCons [h t]
