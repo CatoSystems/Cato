@@ -1168,6 +1168,22 @@
   (match (adts-at ts i)
     (AdtInfo [name tps variants tpl tplargs] variants)))
 
+; Walk to the variant's fields through borrowed chains. The old shape
+; returned the whole `AdtInfo` (every variant and field list) and then the
+; whole `Varnt` only to hand back `fields`; here the borrowed walk is fused
+; and just the small field list is copied out.
+(defn vlist-fields-at [vs :- &VList i :- i64] :- TyList
+  (match vs
+    (VCons [h t]
+      (if (= i 0)
+        (match h (Varnt [vn fields] (clone fields)))
+        (vlist-fields-at t (- i 1))))
+    (VNil [] (TyNil))))
+
 (defn varnt-fields-at [adts :- &AdtTab t :- i64 vi :- i64] :- TyList
-  (match (vlist-at (adts-variants-at adts t) vi)
-    (Varnt [vn fields] fields)))
+  (match adts
+    (ATCons [h rest]
+      (if (= t 0)
+        (match h (AdtInfo [name tps variants tpl tplargs] (vlist-fields-at variants vi)))
+        (varnt-fields-at rest (- t 1) vi)))
+    (ATNil [] (TyNil))))

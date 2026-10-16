@@ -2726,9 +2726,25 @@
   (match (adts-at ts i)
     (AdtInfo [name tps variants tpl tplargs] variants)))
 
+; Walk to the variant's fields through borrowed chains. The old shape
+; returned the whole `AdtInfo` (every variant and field list) and then the
+; whole `Varnt` only to hand back `fields`; here the borrowed walk is fused
+; and just the small field list is copied out.
+(defn vlist-fields-at [vs :- &VList i :- i64] :- TyList
+  (match vs
+    (VCons [h t]
+      (if (= i 0)
+        (match h (Varnt [vn fields] (clone fields)))
+        (vlist-fields-at t (- i 1))))
+    (VNil [] (TyNil))))
+
 (defn varnt-fields-at [adts :- &AdtTab t :- i64 vi :- i64] :- TyList
-  (match (vlist-at (adts-variants-at adts t) vi)
-    (Varnt [vn fields] fields)))
+  (match adts
+    (ATCons [h rest]
+      (if (= t 0)
+        (match h (AdtInfo [name tps variants tpl tplargs] (vlist-fields-at variants vi)))
+        (varnt-fields-at rest (- t 1) vi)))
+    (ATNil [] (TyNil))))
 ; hexpr.cato — S6: the kernel's typed IR.
 ;
 ; One recursive HExpr ADT mirroring the seed's `HExpr` arms for the subset.
@@ -5901,10 +5917,10 @@
   (match fv
     (FVMiss [] (LErr "internal: ctor miss"))
     (FVFound [adt variant fields]
-      (let [tpl-params (adts-tparams (clone adts) adt)
+      (let [tpl-params (adts-tparams adts adt)
             ; expected pinning: an instance of this template takes its fields
             inst-exp (if (and (> tpl-params 0) (= (ty-tag expected) 16))
-                       (instance-of-template (clone adts) (ty-arg expected) adt)
+                       (instance-of-template adts (ty-arg expected) adt)
                        -1)]
         (if (>= inst-exp 0)
           ; the expected instance pins the ctor (the seed's inst_expected
@@ -5990,12 +6006,12 @@
                   (lower-ctor-fields items adt variant fields (clone env) nparams subs2
                                      t2 a2 i2 (clone s2) l2 (clone r2) n2 d2 (+ k 1) (HECons e3 acc) raws))))))))))
 
-(defn adts-tparams [ts :- AdtTab i :- i64] :- i64
+(defn adts-tparams [ts :- &AdtTab i :- i64] :- i64
   (match (adts-at ts i)
     (AdtInfo [name typarams variants tpl tplargs] (sids-depth typarams))))
 
 ; is instance j an instance of template tpl? -> j else -1
-(defn instance-of-template [ts :- AdtTab j :- i64 tpl :- i64] :- i64
+(defn instance-of-template [ts :- &AdtTab j :- i64 tpl :- i64] :- i64
   (match (adts-at ts j)
     (AdtInfo [name typarams variants vtpl tplargs]
       (if (= vtpl tpl) j -1))))
