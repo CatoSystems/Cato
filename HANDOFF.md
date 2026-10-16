@@ -13,6 +13,37 @@
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
 
+## Round 7 results (no measured gain; where the floor is)
+Two automation attempts were built, run and removed. Both findings matter:
+
+1. **A callee-directed borrow conversion cannot be driven by the checker's
+   error text alone.** `tools/borrow_params.py` (written, run, removed) read
+   each "cannot move v in F" error, found the calls in F passing `v` to an
+   owned `T` parameter, and flipped those callees; when a function *stores*
+   its parameter (`lok` into an `LRes`, the `BCtx` builder) it was put back
+   and pinned. It still cycled to the 400-round cap: the pinned set stops
+   *one* loop, but the checker's per-message view has no fixpoint, so A
+   flips B, B flips C, C flips A back with a tidier message. Doing this
+   properly needs the call graph and a fixpoint over the *set* of borrowed
+   parameters, not one error at a time. The half-built tool is deleted
+   rather than left as a trap.
+2. **Most of what is left is inherent to the data model, not over-cloning.**
+   Sampling the remaining sites one by one:
+   - `raws-find-2` clones a `RawDefn` (the whole body AST) because it keeps
+     the last-declared match while walking a *borrowed* `Raws` chain — a
+     borrowed struct cannot hand out an owned field.
+   - `adts-at` / `vlist-at` hand back a whole `AdtInfo` / `Varnt` for callers
+     that then use two or three of its fields (tpl + tplargs, name +
+     fields); a narrow reader saves nothing when the fields are themselves
+     owned lists that must be copied out.
+   - `subst-ty`'s `(clone adts)` guards a table that a later alternative
+     path still needs.
+   So the next real step is a *representation* change, not more borrows:
+   either a per-program shared context (see the `BCtx` note in round 6) or a
+   way to return a borrowed field (lifetimes), which the language lacks.
+   The cheap churn is gone; what remains is ~3.3 GB of field copies and
+   per-definition context construction.
+
 ## Round 6 results (3.39 → 3.31 GB) and the structural blocker
 - `build-raws` copied the parser state into `parse-defn` in both raw-form
   branches to keep a copy the branch never reads again; the callee threads
