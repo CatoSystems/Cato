@@ -3,7 +3,7 @@
 ## Status
 - Kernel self-build alloc churn: **50.56 GB → 19.34 GB (−61.7%)**;
   ALLOC_CALLS **1.19B → 474M (−60%)**; kernel self-build wall time
-  **47.5 s → ~21 s (−56%)**.
+  **47.5 s → 16.7 s (−65%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -14,6 +14,7 @@
   (clone/drop glue), strlen is down from ~90% to ~4%.
 
 ## Round 2 results (borrowed tables + destructuring, 21.73 → 19.34 GB)
+Self-build wall time 21.4 s → 16.7 s (−22%); cumulative runtime −65%.
 Worked:
 - **Narrow `Mdl` accessors.** `md-adts`/`md-owns`/`md-csigs` return an owned
   table (a deep copy of the ADT table / ownership list / signature table)
