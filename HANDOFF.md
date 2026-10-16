@@ -128,29 +128,29 @@ Deterministic, byte-stable, no MAXRSS noise:
    35.18 GB → 21.73 GB.
 
 ## Remaining work (measured, in order)
-Fresh profile at 19.34 GB (`tools/alloc_profile.c`): `clone__TyList` 5.06 GB,
-`clone__HExpr` 4.84 GB, libc-internal 1.20, `clone__Sids` 1.12,
-`clone__HExprs` 1.10, `clone__VList` 1.67 (0 entry sites — wholly nested
-inside other clones), `clone__TyEnv` 0.93, `clone__PList` 0.71,
-`clone__AdtTab` 1.04, `clone__HArms` 0.35, `clone__StrCell` 0.34.
-- `clone__TyList` has only **11 entry callers** (`call-marshal` 18.7k,
-  `match-binders` 8.6k, `lower-ctor-fields` 4.4k, `b-arms` 3.8k,
-  `lower-match-plain` 2.9k) but 17.8M total calls, i.e. most of the work is
-  nested inside `clone__AdtInfo`/`clone__AdtTab`/`clone__Sig` — so the
-  remaining ADT-table and signature-table copies are still the root.
-- `clone__HExpr` has **50 entry callers** and 79M total calls — genuinely
-  diffuse (a small sub-tree copy per node boundary). Only targeted,
-  measured edits will move it; the blanket borrow conversion does not (see
-  Round 2 negative results).
-- `clone__HExprs`: 7 callers (`ctor-store-args` 10.0k, `bcheck` 7.8k).
-- `clone__Sids`: `md-owns` was the top caller and is fixed; `b-arms` 6.7k
-  remains.
-- `clone__PList` 0.71 GB (`dparams-get` 19.7k — fuse the lookup with its two
-  consumers the way `md-fs-off` fuses an Mdl read).
-- `strdup <- clone__StrCell`: cloning a `FnCtx`/`Mdl` deep-copies its
-  `StrBuf` (every emitted line). `fc-*`/`md-*` are borrowed; the remaining
-  sites pass whole `Emit`/`Mdl` values (`(match st (Emit [c m s] (clone m)))`)
-  and could read through `&Emit` accessors.
+Inclusive attribution at 5.67 GB (top call sites, bytes started):
+- `clone__Varnt <- vlist_at` 0.27 GB: the remaining `vlist-at` callers take
+  a whole `Varnt` (fields included) to read one field. `varnt-fields-at` is
+  fused now; the others need the same narrow accessors (`varnt-name-at`,
+  `varnt-bind-count-at`, ...).
+- `clone__DParams <- check_defns` 0.27 GB: `b-plan`/`b-plan-body` take an
+  owned `DParams` and only read it (every `dparams-get` / `b-tail-*` already
+  borrows). Flipping those signatures and letting the checker reject the
+  rest (the flip-then-revert loop used for `TyEnv`) should remove it.
+- `clone__PS <- parse_params` 0.75 GB (3 sites) and `<- parse_ty` 0.32 GB:
+  the parser rebuilds its state per step. The measured bytes are *inside*
+  `ps-err`-style rebuilds, so check with inclusive attribution whether the
+  remaining copies are real before rewriting the parser's state threading.
+- `clone__Mdl <- emit_plain` 0.21 GB: another whole-module copy for one read.
+- `clone__TyEnv <- lower_ctor_fields` 0.20, `match_variant_arm` 0.17,
+  `lower_str_args` 0.13 GB: the remaining owned `TyEnv` walkers.
+- `clone__Defns <- match_arms` 0.15 GB, `<- lower_cmp` 0.08 GB: the same
+  "thread what the callee returned" shape as `match-variant-arm`'s fix.
+- `clone__AdtInfo <- adts_at` 0.14 GB: `adts-at` returns a whole `AdtInfo`;
+  callers that read one field want a narrow accessor.
+- `clone__HExpr` is now small but diffuse (small sub-tree copies at node
+  boundaries); only targeted, measured edits move it — the blanket borrow
+  conversion does not (see Round 2 negative results).
 - Cato-level leak guards remain unexplored (see the original note below).
 - Goal: approach seed behaviour/resource profile.
 
