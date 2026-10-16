@@ -123,17 +123,21 @@
               (ETRes [st2 p] (ESRes (em-decl st2 decl) p)))))))
     ))
 
+; Destructure the argument chain directly: taking the head through
+; `hes-first` retires the chain box, so reading the tail afterwards needed a
+; copy of the whole remaining list per field.
 (defn ctor-store-args [args :- HExprs adt :- i64 variant :- i64 k :- i64
                        slot :- str st :- Emit] :- EURes
-  (if (hes-null args)
-    (EURes st)
-    (match st
-      (Emit [c mdl sigs]
-        (let [fty (md-fs-field-ty mdl adt variant k)
-              off (md-fs-off mdl adt variant k)]
-          (match (emit-field-store (hes-first (clone args)) fty off adt slot st)
-            (EURes [st2]
-              (ctor-store-args (hes-rest args) adt variant (+ k 1) slot st2))))))))
+  (match args
+    (HENil [] (EURes st))
+    (HECons [head tail]
+      (match st
+        (Emit [c mdl sigs]
+          (let [fty (md-fs-field-ty mdl adt variant k)
+                off (md-fs-off mdl adt variant k)]
+            (match (emit-field-store head fty off adt slot st)
+              (EURes [st2]
+                (ctor-store-args tail adt variant (+ k 1) slot st2)))))))))
 
 (defn emit-field-store [arg :- HExpr fty :- Ty off :- i64 ai :- i64
                         slot :- str st :- Emit] :- EURes
@@ -573,10 +577,13 @@
   (match e
     (HCall [name args]
       (if (= name (s-printstr))
-        (match (emit-str-val (hes-first (clone args)) st)
-          (ESRes [st1 v]
-            (EURes (em-decl-line st1 (str "  call void @cato_print_str_raw(ptr " v ")")
-                  "declare void @cato_print_str_raw(ptr)"))))
+        (match args
+          (HECons [harg hrest]
+            (match (emit-str-val harg st)
+              (ESRes [st1 v]
+                (EURes (em-decl-line st1 (str "  call void @cato_print_str_raw(ptr " v ")")
+                      "declare void @cato_print_str_raw(ptr)")))))
+          (HENil [] (EURes st)))
         (match (emit-int e st)
           (ESRes [st1 v] (EURes st1)))))
     (HSpit [path data]
@@ -652,24 +659,24 @@
               (= tg 15)
               (match (emit-vec-pair (clone kid) st)
                 (EVRes [st1 p l el]
-                  (call-marshal (hes-rest args) (clone prest) st1
+                  (call-marshal (hes-rest args) prest st1
                                 (CSCons (str "i64 " l) (CSCons (str "ptr " p) acc)))))
 
               (= tg 9)
               (match (emit-float (clone kid) st)
-                (ESRes [st1 v] (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "double " v) acc))))
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "double " v) acc))))
 
               (= tg 10)
               (match (emit-float (clone kid) st)
-                (ESRes [st1 v] (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "float " v) acc))))
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "float " v) acc))))
 
               (= tg 11)
               (match (emit-bool (clone kid) st)
-                (ESRes [st1 v] (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "i1 " v) acc))))
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "i1 " v) acc))))
 
               (= tg 12)
               (match (emit-str-val (clone kid) st)
-                (ESRes [st1 v] (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "ptr " v) acc))))
+                (ESRes [st1 v] (call-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))))
 
               (= tg 17)
               (match kid
@@ -681,7 +688,7 @@
                           (RegVal [r rty]
                             (match (em-ins st (str "  ~ = load %Closure, ptr " r ", align 8"))
                               (ETRes [st1 lv]
-                                (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "%Closure " lv) acc))))))))))
+                                (call-marshal (hes-rest args) prest st1 (CSCons (str "%Closure " lv) acc))))))))))
                 (_ (ECARes (do (cg-fail-i "closure arg must be a var") st) acc)))
               (= tg 16)
               (match st
@@ -695,10 +702,10 @@
                     (match (emit-adt (clone kid) st)
                       (ESRes [st1 v]
                         (if (= jboxed 1)
-                          (call-marshal (hes-rest args) (clone prest) st1 (CSCons (str "ptr " v) acc))
+                          (call-marshal (hes-rest args) prest st1 (CSCons (str "ptr " v) acc))
                           (match (em-ins st1 (str "  ~ = load %" nm ", ptr " v ", align 8"))
                             (ETRes [st2 lv]
-                              (call-marshal (hes-rest args) (clone prest) st2 (CSCons (str "%" nm " " lv) acc))))))))))
+                              (call-marshal (hes-rest args) prest st2 (CSCons (str "%" nm " " lv) acc))))))))))
 
               (< tg 12)
               (match (emit-int (clone kid) st)

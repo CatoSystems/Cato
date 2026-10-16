@@ -107,7 +107,7 @@
 ; borrowed list has to hand back a copy.
 (defn hes-first [ks :- HExprs] :- HExpr
   (match ks
-    (HECons [kid next] (clone kid))
+    (HECons [kid next] kid)
     (HENil [] (HConstI64 0))))
 
 (defn hes-rest [ks :- HExprs] :- HExprs
