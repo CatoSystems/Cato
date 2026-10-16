@@ -1,9 +1,9 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 3.27 GB (−93.5%)**;
-  ALLOC_CALLS **1.19B → 88M (−92.6%)**; kernel self-build wall time
-  **47.5 s → ~4.7 s (−90%)**.
+- Kernel self-build alloc churn: **50.56 GB → 2.88 GB (−94.3%)**;
+  ALLOC_CALLS **1.19B → 80M (−93.3%)**; kernel self-build wall time
+  **47.5 s → 4.4 s (−91%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -12,6 +12,28 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 9 results (3.27 → 2.88 GB): the context threading landed
+The `check-defns` opening from round 8 is closed. `b-plan` now builds the
+`BCtx` once from the program-wide tables, uses it, and returns it inside a
+new `BPlanRes`; `check-defns` / `check-lams` thread that context into the
+next definition instead of copying it for every call. Measured: 0.28 GB of
+`DParams` (one entry per definition, cloned twice per definition) plus the
+`AdtTab`/`Facts`/`Sids`/`RBTable` copies that travelled with it.
+
+Details that mattered:
+- Only the *per-definition* fields (`escaped`, `shadowed`, `loopcopy`) are
+  rebuilt per definition; the program-wide ones move through untouched.
+- `fp-frees` reads the maps and facts but took them by value, so it now
+  borrows (`st :- &IMap owns :- &IMap facts :- &Facts esc :- &Sids`), and
+  `fp-frees-of` reads both facts and `escaped` out of the context.
+- Watch the evaluation order when a value is *moved into a result* and
+  *borrowed in the same expression*: `(BPlanRes bcx2 (BPlan ... (fp-frees-of
+  ... bcx2)))` moves `bcx2` first and fails. Read through the context into a
+  `let` before handing it back.
+- The same trap in reverse in `b-plan`: the precondition helpers borrow
+  `facts`/`dparams`/`retb`, so their branches may then move those values into
+  the context they return — one `BCtx` per branch, alternatives included.
 
 ## Round 8 results (3.31 → 3.27 GB) and the `check-defns` opening
 - `b-facts-of` / `b-retb-of` hand back an *owned* field, so every read copied
