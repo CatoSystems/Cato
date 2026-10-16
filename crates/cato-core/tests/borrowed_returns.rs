@@ -28,3 +28,64 @@ fn borrowed_return_list_form_rejected() {
     let e = compile_to_program(src).unwrap_err().to_string();
     assert!(e.contains("borrowed return"), "got: {e}");
 }
+
+#[test]
+fn borrowed_return_body_accepts_borrowed_field() {
+    // The positive case: an aliasing match binder (a field of a borrowed
+    // scrutinee) is exactly what a `&T` return hands back. Must compile.
+    let src = r#"
+(deftype N (Leaf) (Node [l :- N r :- N]))
+(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
+(defn main [] :- i64 0)
+"#;
+    compile_to_program(src).expect("borrowed field return must be accepted");
+}
+
+#[test]
+fn borrowed_return_body_rejects_owned_tail() {
+    let src = r#"
+(deftype N (Leaf) (Node [l :- N r :- N]))
+(defn bad [n :- &N] :- &N (Node n n))
+(defn main [] :- i64 0)
+"#;
+    let e = compile_to_program(src).unwrap_err().to_string();
+    assert!(e.contains("E304"), "got: {e}");
+}
+
+#[test]
+fn borrowed_return_non_boxed_rejected() {
+    let i64_case = "(defn f [x :- &i64] :- &i64 x)\n(defn main [] :- i64 0)\n";
+    let adt_case =
+        "(deftype Box (B [v :- i64]))\n(defn f [x :- &Box] :- &Box x)\n(defn main [] :- i64 0)\n";
+    for src in [i64_case, adt_case] {
+        let e = compile_to_program(src).unwrap_err().to_string();
+        assert!(e.contains("borrowed return"), "got: {e}");
+    }
+}
+
+#[test]
+fn borrowed_return_must_derive_from_borrow_param() {
+    // A `&T` call handed an *owned* parameter returns a borrow into a value
+    // this function frees at exit — it must not escape (E304). The borrow's
+    // origin has to be one of the function's own `&` parameters.
+    let src = r#"
+(deftype N (Leaf) (Node [l :- N r :- N]))
+(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
+(defn g [n :- N] :- &N (get-l n))
+(defn main [] :- i64 0)
+"#;
+    let e = compile_to_program(src).unwrap_err().to_string();
+    assert!(e.contains("E304"), "got: {e}");
+}
+
+#[test]
+fn borrowed_result_to_owned_param_is_e303() {
+    let src = r#"
+(deftype N (Leaf) (Node [l :- N r :- N]))
+(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
+(defn take [n :- N] :- i64 0)
+(defn main [] :- i64 (take (get-l (Node (Leaf) (Leaf)))))
+"#;
+    let e = compile_to_program(src).unwrap_err().to_string();
+    assert!(e.contains("E303"), "got: {e}");
+}

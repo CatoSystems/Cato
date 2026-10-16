@@ -117,6 +117,12 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
             .iter()
             .map(|d| (d.name.clone(), d.ret))
             .collect();
+        let ret_borrowed_names: std::collections::HashSet<String> = program
+            .defns
+            .iter()
+            .filter(|d| d.ret_borrowed)
+            .map(|d| d.name.clone())
+            .collect();
         for d in program.defns.iter_mut() {
             if d.is_extern {
                 continue;
@@ -125,8 +131,11 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &d.name,
                 &d.params,
                 &d.borrows,
+                d.ret,
+                d.ret_borrowed,
                 &mut d.body,
                 &sigs,
+                &ret_borrowed_names,
                 &rets,
                 &facts,
                 &program.adts,
@@ -141,8 +150,11 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &sig,
                 &lam.params,
                 &[],
+                lam.ret,
+                false,
                 &mut lam.body,
                 &sigs,
+                &ret_borrowed_names,
                 &rets,
                 &facts,
                 &program.adts,

@@ -62,6 +62,12 @@ fn recompute_frees(program: &mut Program) {
         .iter()
         .map(|d| (d.name.clone(), d.ret))
         .collect();
+    let ret_borrowed_names: HashSet<String> = program
+        .defns
+        .iter()
+        .filter(|d| d.ret_borrowed)
+        .map(|d| d.name.clone())
+        .collect();
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
@@ -71,8 +77,11 @@ fn recompute_frees(program: &mut Program) {
             &d.name,
             &d.params,
             &d.borrows,
+            d.ret,
+            d.ret_borrowed,
             &mut d.body,
             &sigs,
+            &ret_borrowed_names,
             &rets,
             &facts,
             &program.adts,
@@ -86,8 +95,11 @@ fn recompute_frees(program: &mut Program) {
             &name,
             &lam.params,
             &[],
+            lam.ret,
+            false,
             &mut lam.body,
             &sigs,
+            &ret_borrowed_names,
             &rets,
             &facts,
             &program.adts,
@@ -127,6 +139,12 @@ fn verify_ownership(program: &Program) -> Result<(), String> {
         .iter()
         .map(|d| (d.name.clone(), d.ret))
         .collect();
+    let ret_borrowed_names: HashSet<String> = program
+        .defns
+        .iter()
+        .filter(|d| d.ret_borrowed)
+        .map(|d| d.name.clone())
+        .collect();
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
@@ -135,8 +153,11 @@ fn verify_ownership(program: &Program) -> Result<(), String> {
             &d.name,
             &d.params,
             &d.borrows,
+            d.ret,
+            d.ret_borrowed,
             &mut d.body,
             &sigs,
+            &ret_borrowed_names,
             &rets,
             &facts,
             &program.adts,

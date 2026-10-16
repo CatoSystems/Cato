@@ -352,3 +352,56 @@ fn vector_returning_functions_pass_the_struct_by_value() {
     assert!(ir.contains("define %VecI64 @grow("), "{}", ir);
     assert!(ir.contains("call %VecI64 @grow("), "{}", ir);
 }
+
+// --- Borrowed returns (`&T`) ---
+
+/// Extract one function's IR text (definition line through its closing brace).
+/// The emitter attaches the closing `}` to the final instruction's line.
+fn fn_body(ir: &str, name: &str) -> String {
+    let marker = format!("@{name}(");
+    let mut out = String::new();
+    let mut inside = false;
+    for line in ir.lines() {
+        if !inside {
+            if line.starts_with("define") && line.contains(&marker) {
+                inside = true;
+            } else {
+                continue;
+            }
+        }
+        out.push_str(line);
+        out.push('\n');
+        if line.trim_end().ends_with('}') && !line.starts_with("define") {
+            break;
+        }
+    }
+    assert!(inside, "function {name} not found in IR");
+    out
+}
+
+#[test]
+fn borrowed_result_not_freed() {
+    // A borrowed (`&T`) call result is non-owning: binding it must not plan a
+    // scope-exit free. `own-l` binds a fresh boxed value and is the control —
+    // its binding *is* freed, proving the extractor sees real drop calls.
+    let src = r#"
+(deftype N (Leaf) (Node [l :- N r :- N]))
+(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
+(defn use-l [n :- &N] :- i64 (let [x (get-l n)] 7))
+(defn own-l [n :- &N] :- i64 (let [x (Node (Leaf) (Leaf))] 7))
+(defn main [] :- i64 0)
+"#;
+    let exprs = read_all(src).unwrap();
+    let (adts, fns) = cato_core::hir::build_program(&exprs).unwrap();
+    let ir = emit_module(&adts, &fns);
+    let use_l = fn_body(&ir, "use_l");
+    assert!(
+        !use_l.contains("drop__N"),
+        "borrowed binding must not be freed:\n{use_l}"
+    );
+    let own_l = fn_body(&ir, "own_l");
+    assert!(
+        own_l.contains("call void @drop__N"),
+        "control: an owned binding must be freed:\n{own_l}"
+    );
+}

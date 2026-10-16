@@ -83,6 +83,14 @@ struct Watch {
 pub(crate) struct BCheck<'a> {
     /// callee name -> per-param borrow kinds (owned by default)
     pub(crate) sigs: &'a HashMap<String, Vec<Borrow>>,
+    /// Callees whose return value is a borrow (`&T`): a call to one of
+    /// these binds a non-owning value, and passing that value to an owned
+    /// parameter is a move of a borrow (E303).
+    pub(crate) ret_borrowed_names: &'a HashSet<String>,
+    /// Is this defn itself a borrowed-returning (`&T`) function? Its tail
+    /// is a borrow, so a match binder over a `&` scrutinee legitimately
+    /// escapes (no "clone it first" error).
+    pub(crate) ret_borrowed: bool,
     /// Parameters the function does not own (`&`): they still belong
     /// to the caller, so moving them anywhere in the body is an error.
     pub(crate) no_move: HashSet<String>,
@@ -127,8 +135,11 @@ pub(crate) fn plan_drops(
     name: &str,
     params: &[(String, Ty)],
     borrows: &[Borrow],
+    ret: Ty,
+    ret_borrowed: bool,
     body: &mut HExpr,
     sigs: &HashMap<String, Vec<Borrow>>,
+    ret_borrowed_names: &HashSet<String>,
     rets: &HashMap<String, Ty>,
     facts: &AdtFacts,
     adts: &[AdtDef],
@@ -150,8 +161,43 @@ pub(crate) fn plan_drops(
     let mut var_counts: HashMap<String, i64> = HashMap::new();
     count_vars(body, &mut var_counts);
     let boxed_full = compute_adt_facts(adts).boxed;
+
+    // Borrowed-return preconditions. Both fire before the body check so the
+    // reported error is the return-shape problem, not a downstream symptom
+    // (e.g. a borrowed param moved into a fresh constructor).
+    if ret_borrowed {
+        // `&T` is only a sound borrow for pointer-like values: boxed
+        // (recursive/owning) ADTs. Scalars and inline ADTs copy by value,
+        // so a borrow of them is meaningless (and a `&` on the return
+        // annotation cannot mark an Inline slot).
+        let boxed_ret = matches!(ret, Ty::Adt(i) if boxed_full.get(i as usize).copied().unwrap_or(false));
+        if !boxed_ret {
+            return Err(
+                "borrowed return: `&T` requires a boxed (recursive or owning) ADT return type"
+                    .to_string(),
+            );
+        }
+        // No lifetimes: the returned borrow must be derived from the `&`
+        // parameters, transitively. An owned tail (a fresh constructor, an
+        // owned local, a clone) would dangle once the caller frees it.
+        let borrowed_params: HashSet<String> = params
+            .iter()
+            .zip(borrows.iter())
+            .filter(|(_, b)| !b.is_owned())
+            .map(|((n, _), _)| n.clone())
+            .collect();
+        if !tail_borrow_ok(body, &borrowed_params, sigs, ret_borrowed_names) {
+            return Err(
+                "Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value."
+                    .to_string(),
+            );
+        }
+    }
+
     let mut bc = BCheck {
         sigs,
+        ret_borrowed_names,
+        ret_borrowed,
         no_move: params
             .iter()
             .zip(borrows.iter())
@@ -291,6 +337,69 @@ fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
             escaped.insert(v.clone());
         }
         _ => {}
+    }
+}
+
+/// Static, pre-check test for a borrowed-return tail (no lifetimes): can
+/// evaluating `e` yield a borrow derived from the `&` parameters? `borrows`
+/// starts as the borrowed parameter names; match binders over a borrowed
+/// scrutinee and `let` bindings of a borrow are added as we descend. A call
+/// to another `&T` function yields a borrow only when every value handed to
+/// that callee's own `&` parameters is itself a borrow — otherwise the
+/// returned borrow would derive from a temporary. Anything that mints a
+/// fresh value (constructor, clone, literal, collection) is owned and
+/// rejects. The test is conservative: an unmodelled form returns `false`
+/// (reject), never a false accept.
+fn tail_borrow_ok(
+    e: &HExpr,
+    borrows: &HashSet<String>,
+    sigs: &HashMap<String, Vec<Borrow>>,
+    ret_borrowed_names: &HashSet<String>,
+) -> bool {
+    match e {
+        HExpr::Var(v) => borrows.contains(v),
+        HExpr::Call(name, args) => {
+            if !ret_borrowed_names.contains(name) {
+                return false;
+            }
+            let kinds = sigs.get(name).cloned().unwrap_or_default();
+            args.iter().zip(kinds.iter()).all(|(a, k)| {
+                k.is_owned() || tail_borrow_ok(a, borrows, sigs, ret_borrowed_names)
+            })
+        }
+        HExpr::Clone(_) => false,
+        HExpr::If(_, then, els, _) => {
+            tail_borrow_ok(then, borrows, sigs, ret_borrowed_names)
+                && tail_borrow_ok(els, borrows, sigs, ret_borrowed_names)
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            // Binders alias a borrow only when the scrutinee is itself a
+            // borrow (`&` param or a binder introduced above); a `match` on
+            // an owned scrutinee hands back owned (or copy) values.
+            let scrut_borrow = matches!(&**scrut, HExpr::Var(v) if borrows.contains(v))
+                || tail_borrow_ok(scrut, borrows, sigs, ret_borrowed_names);
+            arms.iter().all(|arm| {
+                let mut arm_borrows = borrows.clone();
+                if scrut_borrow {
+                    arm_borrows.extend(arm.binders.iter().cloned());
+                }
+                tail_borrow_ok(&arm.body, &arm_borrows, sigs, ret_borrowed_names)
+            })
+        }
+        HExpr::Let(binds, body, _) => {
+            let mut inner = borrows.clone();
+            for (n, value, _) in binds {
+                if tail_borrow_ok(value, &inner, sigs, ret_borrowed_names) {
+                    inner.insert(n.clone());
+                }
+            }
+            tail_borrow_ok(body, &inner, sigs, ret_borrowed_names)
+        }
+        HExpr::Seq(vs) => vs
+            .last()
+            .map(|last| tail_borrow_ok(last, borrows, sigs, ret_borrowed_names))
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -601,6 +710,16 @@ impl<'a> BCheck<'a> {
                             self.use_var(&v, tys, st);
                             self.move_var(&v, st, owns);
                         }
+                    } else if let HExpr::Call(callee, _) = arg {
+                        // A borrowed (`&T`) call result handed to an owned
+                        // parameter would let the callee free a value that
+                        // still belongs to the borrow's origin.
+                        if *kind == Borrow::Owned && self.ret_borrowed_names.contains(callee) {
+                            self.errs.push(format!(
+                                "cannot move the borrowed result of {} into an owned parameter of {}: it belongs to the caller",
+                                callee, name
+                            ));
+                        }
                     }
                 }
             }
@@ -770,7 +889,11 @@ impl<'a> BCheck<'a> {
                                         {
                                             any_alias_escape = true;
                                             if scrut_borrowed_param {
-                                                if arm_escaped.contains(b) {
+                                                // A borrowed-returning (`&T`)
+                                                // defn legitimately hands the
+                                                // aliasing binder back to the
+                                                // caller: that is the borrow.
+                                                if arm_escaped.contains(b) && !self.ret_borrowed {
                                                     self.errs.push(format!(
                                                         "cannot return {}: it aliases a field of the matched value — clone it first",
                                                         b
@@ -871,6 +994,13 @@ impl<'a> BCheck<'a> {
                             Some(o) => o,
                             // Copy alias (str from a Var): never owns.
                             None if matches!(value, HExpr::Var(_)) => false,
+                            // A borrowed (`&T`) call result is a borrow the
+                            // caller still owns: never free it here.
+                            None if matches!(value, HExpr::Call(callee, _)
+                                if self.ret_borrowed_names.contains(callee)) =>
+                            {
+                                false
+                            }
                             None => allocates(value, self.facts),
                         },
                     );

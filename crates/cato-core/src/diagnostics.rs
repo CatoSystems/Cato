@@ -83,7 +83,11 @@ pub fn classify(msg: &str) -> &'static str {
     let m = msg;
     if m.contains("use of moved value") {
         "E301"
-    } else if m.contains("borrowed parameter and still belongs to the caller") {
+    } else if m.contains("Borrowed return requires a borrowed value") || m.contains("borrowed return:") {
+        "E304"
+    } else if m.contains("borrowed parameter and still belongs to the caller")
+        || m.contains("borrowed result of")
+    {
         "E303"
     } else if m.contains("non-exhaustive") || m.contains("does not cover") {
         "E401"
@@ -142,6 +146,7 @@ const EXPLAIN: &[(&str, &str)] = &[
     ("E207", "Unknown function.\n\nThe called name is not a `defn`, `extern`, builtin, generic,\nconstructor, or a closure binding. Check the spelling, or add\nthe `defn`."),
     ("E208", "Unknown type name.\n\nAn annotation named a type that is not a builtin, a declared\n`deftype`, or a type parameter. Type parameters are introduced\nby uppercase spelling (e.g. `T`) in a `defn` annotation; a\nlowercase unknown name is treated as a typo."),
     ("E303", "Move of a borrowed value.\n\n`&` / `&!` parameters do not own their value — the caller does.\nPassing one to an owned parameter (or `conj`-ing, capturing, or\ndropping it) would let the callee free a buffer the caller still\nreads. Clone it first, or take the parameter by value."),
+    ("E304", "Borrowed return requires a borrowed value.\n\nA `&T` function may only return a value derived from its `&`\nparameters, never an owned or freshly-cloned value."),
 ];
 
 /// Long-form documentation for a diagnostic code.
