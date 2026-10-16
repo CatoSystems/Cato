@@ -21,10 +21,18 @@ kb() { # src out   (kernel build; true iff artifact exists)
   [ -x "$2" ]
 }
 
-# The k2 self-build is where peak RSS is measured.
-/usr/bin/time -l /tmp/k1 build selfhost/cato.cato /tmp/k2 >/tmp/k2build.log 2>&1
+# Deterministic allocation-churn metric. Peak RSS via `/usr/bin/time -l` is
+# unusable here: it folds in the clang child and swings ~50% run to run. We
+# instead interpose malloc/realloc in the kernel process only. The seed-built
+# k1 is not hardened, so DYLD_INSERT_LIBRARIES loads; clang is hardened, so its
+# child allocations are stripped. ALLOC_BYTES is byte-stable across runs.
+clang -dynamiclib -O2 -o /tmp/alloc_count.dylib tools/alloc_count.c \
+  || { echo "ALLOC COUNTER BUILD FAIL"; exit 2; }
+
+# The k2 self-build is where churn is measured.
+DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 build selfhost/cato.cato /tmp/k2 >/tmp/k2build.log 2>&1
 [ -x /tmp/k2 ] || { echo "KERNEL BUILD k2 FAIL"; tail -2 /tmp/k2build.log; exit 2; }
-RSS=$(awk '/maximum resident set size/{print $1}' /tmp/k2build.log)
+read -r ALLOC CALLS <<<"$(awk '/ALLOC_BYTES/{b=$2;c=$4} END{print b, c}' /tmp/k2build.log)"
 
 # k3 is built by the kernel-generated k2 — the self-hosting fixpoint.
 /tmp/k2 build selfhost/cato.cato /tmp/k3 >/tmp/k3build.log 2>&1
@@ -47,6 +55,7 @@ check_ok()  { kb "$FX/$1.cato" "/tmp/run_$1" && echo "OK $1" || { echo "ACCEPT F
 check_bad() { kb "$FX/$1.cato" "/tmp/run_$1" && { echo "REJECT FAIL $1"; fail=1; } || echo "OK $1(rejected)"; }
 check_ok bk1; check_bad bk2; check_ok bk3; check_bad bk4
 
-echo "MAXRSS_BYTES: $RSS"
+echo "ALLOC_BYTES: $ALLOC"
+echo "ALLOC_CALLS: $CALLS"
 echo "GATE: $([ $fail -eq 0 ] && echo PASS || echo FAIL)"
 exit $fail
