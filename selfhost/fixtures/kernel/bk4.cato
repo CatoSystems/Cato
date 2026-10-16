@@ -1,0 +1,3 @@
+(deftype Box (B [v :- i64]))
+(defn f [x :- &Box] :- &Box x)
+(defn main [] :- i64 0)
