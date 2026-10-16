@@ -1778,7 +1778,7 @@
         (PS tab decls adts sigs typarams err)
         (PS tab decls adts sigs typarams msg)))))
 
-(defn ps-tab [ps :- PS] :- i64
+(defn ps-tab [ps :- &PS] :- i64
   (match ps (PS [tab decls adts sigs typarams err] tab)))
 
 (defn ps-with-tab [ps :- PS tab :- i64] :- PS
@@ -1797,6 +1797,21 @@
 (defn ps-sigs [ps :- PS] :- Sigs
   (match ps (PS [tab decls adts sigs typarams err] sigs)))
 
+; Fused borrows: `(ps-adts (clone ps))` copies the whole parser state (ADT
+; table included) to read one entry, and the read itself only borrows.
+(defn ps-adt-at [ps :- &PS i :- i64] :- AdtInfo
+  (match ps (PS [tab decls adts sigs typarams err] (adts-at adts i))))
+
+(defn ps-adts-depth [ps :- &PS] :- i64
+  (match ps (PS [tab decls adts sigs typarams err] (adts-depth adts))))
+
+(defn ps-adts-find-inst [ps :- &PS tpl :- i64 args :- &TyList i :- i64] :- i64
+  (match ps (PS [tab decls adts sigs typarams err] (adts-find-inst adts tpl args i))))
+
+
+(defn ps-adt-inst-name [ps :- &PS tpl :- i64 args :- TyList] :- I1Res
+  (match ps (PS [tab decls adts sigs typarams err] (adt-inst-name adts tab tpl args))))
+
 (defn ps-with-sigs [ps :- PS sigs :- Sigs] :- PS
   (match ps
     (PS [tab decls adts s typarams err]
@@ -1810,7 +1825,7 @@
 (defn sym-str [tab :- i64 sid :- i64] :- str
   (stab-get tab sid))
 
-(defn ps-str-of [ps :- PS sid :- i64] :- str
+(defn ps-str-of [ps :- &PS sid :- i64] :- str
   (sym-str (ps-tab ps) sid))
 
 ; One-shot intern over a bare table: the sid, plus the grown table.
@@ -1908,7 +1923,7 @@
     (= s "f64") (PTyRes (clone ps) (t-vec 1))
     (= s "str") (PTyRes (clone ps) (t-vec 2))
     (if (is-upper s)
-      (let [r (intern1 (ps-tab (clone ps)) s)]
+      (let [r (intern1 (ps-tab ps) s)]
         (match r
           (I1Res [tab2 sid]
             (let [ps2 (register-ty-param (ps-with-tab ps tab2) sid)]
@@ -1922,7 +1937,7 @@
 (defn parse-fn-elem [a :- Ast ps :- PS] :- PTyRes
   (let [tag (ast-tag a)]
     (if (= tag 1)
-      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone ps)) (ast-sid-of a)))
+      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab ps) (ast-sid-of a)))
       (if (= tag 5)
         (parse-ty (clone a) ps)
         (PTyRes (ps-err ps "Fn param/ret types must be scalars, str, or (Vector ty)") (t-none))))))
@@ -1983,7 +1998,7 @@
           (if (not (= n 2))
             (PTyRes (ps-err (clone ps) (str "unsupported type annotation (expected (Vector ty), got " (- n 1) " elements)")) (t-none))
             (let [el-node (asts-idx (clone kids) 1)
-                  el-str (node-str el-node (ps-tab (clone ps)))]
+                  el-str (node-str el-node (ps-tab ps))]
               (parse-vec-elem-str (clone ps) (clone el-str))))
 
           (= h (s-fnty))
@@ -2073,15 +2088,15 @@
 (deftype PIARes (PIARes [ps :- PS idx :- i64]))
 
 (defn instantiate-adt [tpl :- i64 args :- TyList ps :- PS] :- PIARes
-  (let [td (adts-at (ps-adts (clone ps)) tpl)]
+  (let [td (ps-adt-at ps tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (if (not (= (sids-depth tps) (tys-depth (clone (clone args)))))
-          (let [msg (str (ps-str-of (clone ps) name)
+          (let [msg (str (ps-str-of ps name)
                          " expects " (sids-depth tps)
                          " type argument(s), got " (tys-depth args))]
             (PIARes (ps-err ps msg) -1))
-          (let [hit (adts-find-inst (ps-adts (clone ps)) tpl args 0)]
+          (let [hit (ps-adts-find-inst ps tpl args 0)]
             (if (>= (clone hit) 0)
               (PIARes ps (clone hit))
               (instantiate-adt-new tpl args ps))))))))
@@ -2099,14 +2114,14 @@
 ; The instance registers (empty) before its fields resolve, so recursive
 ; templates hit the cache — the seed's termination rule.
 (defn instantiate-adt-new [tpl :- i64 args :- TyList ps :- PS] :- PIARes
-  (let [td (adts-at (ps-adts (clone ps)) tpl)
-        nm (adt-inst-name (ps-adts (clone ps)) (ps-tab (clone ps)) tpl (clone args))]
+  (let [td (ps-adt-at ps tpl)
+        nm (ps-adt-inst-name ps tpl (clone args))]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (match nm
           (I1Res [tab2 nsid]
             (let [ps1 (ps-with-tab ps tab2)
-                  idx (adts-depth (ps-adts (clone ps1)))
+                  idx (ps-adts-depth ps1)
                   ps2 (ps-with-adts (clone ps1) (adts-append-info (ps-adts ps1) (AdtInfo nsid (SNil) (VNil) tpl (clone args))))
                   rv (fill-variants tpl (clone args) 0 (VNil) ps2)]
               (match rv
@@ -2115,21 +2130,21 @@
                           (clone idx)))))))))))
 
 ; `Name__arg1_arg2` — the seed's adt_arg_suffix join.
-(defn adt-inst-name [adts :- AdtTab tab :- i64 tpl :- i64 args :- TyList] :- I1Res
+(defn adt-inst-name [adts :- &AdtTab tab :- i64 tpl :- i64 args :- TyList] :- I1Res
   (let [td (adts-at adts tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (inst-name-loop adts (clone tab) (sym-str (clone tab) name) args 1)))))
 
-(defn inst-name-loop [adts :- AdtTab tab :- i64 acc :- str args :- TyList first :- i64] :- I1Res
+(defn inst-name-loop [adts :- &AdtTab tab :- i64 acc :- str args :- TyList first :- i64] :- I1Res
   (match args
     (TyNil [] (intern1 tab acc))
     (TyCons [h t]
-      (let [suf (ty-mangle-str (clone adts) (clone tab) h)
+      (let [suf (ty-mangle-str adts (clone tab) h)
             acc2 (if (= first 1) (str acc "__" suf) (str acc "_" suf))]
         (inst-name-loop adts (clone tab) acc2 t 0)))))
 
-(defn ty-mangle-str [adts :- AdtTab tab :- i64 x :- Ty] :- str
+(defn ty-mangle-str [adts :- &AdtTab tab :- i64 x :- Ty] :- str
   (let [suf (ty-suffix (clone x))]
     (if (not (= suf "?"))
       suf
@@ -2151,7 +2166,7 @@
 (deftype PFRes (PFRes [ps :- PS fs :- TyList]))
 
 (defn fill-variants [tpl :- i64 args :- TyList vi :- i64 acc :- VList ps :- PS] :- PVRes
-  (let [td (adts-at (ps-adts (clone ps)) tpl)]
+  (let [td (ps-adt-at ps tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (if (>= vi (vlist-depth variants))
@@ -2186,7 +2201,7 @@
         (PTyRes (clone ps) (tys-idx (clone args) (ty-arg f))))
       (= t 16)
       (let [j (ty-arg f)
-            td (adts-at (ps-adts (clone ps)) j)]
+            td (ps-adt-at ps j)]
         (match td
           (AdtInfo [name tps variants vtpl vargs]
             (if (> (sids-depth tps) 0)
@@ -2245,7 +2260,7 @@
       (match p
         (ASym [pn pat]
           (if (sids-has (clone (clone acc)) pn)
-            (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of (clone ps) name) " repeats type parameter " (ps-str-of ps pn)))
+            (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " repeats type parameter " (ps-str-of ps pn)))
                     -1 (SNil))
             (parse-typarams rest (SCons pn acc) name ps)))
         (ANil [at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
@@ -2327,9 +2342,9 @@
           (let [sep-node (asts-idx (clone fs) (+ i 1))
                 sept (ast-tag sep-node)]
             (if (not (= sept 1))
-              (PFRes (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
+              (PFRes (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
               (if (not (= (ast-sid-of sep-node) (s-sep)))
-                (PFRes (ps-err (clone ps) (str "variant " (ps-str-of (clone ps) vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
+                (PFRes (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
                 (let [ty-node (asts-idx (clone fs) (+ i 2))
                       rt (parse-field-ty ty-node ps)]
                   (match rt
@@ -2345,7 +2360,7 @@
   (let [tag (ast-tag e)]
     (cond
       (= tag 1)
-      (let [s (node-str (clone e) (ps-tab (clone ps)))]
+      (let [s (node-str (clone e) (ps-tab ps))]
         (cond
           (= (clone s) "i64")  (PTyRes (clone ps) (t-i64))
           (= (clone s) "i32")  (PTyRes (clone ps) (t-i32))
@@ -2387,7 +2402,7 @@
             n (asts-depth items)]
         (if (and (= h (s-vec)) (= n 2))
           (let [el-node (asts-idx items 1)
-                el-str (node-str (clone el-node) (ps-tab (clone ps)))]
+                el-str (node-str (clone el-node) (ps-tab ps))]
             (cond
               (= (clone el-str) "i64") (PTyRes (clone ps) (t-vec 0))
               (= (clone el-str) "f64") (PTyRes (clone ps) (t-vec 1))
@@ -2402,7 +2417,7 @@
                 (Decl [idx tps]
                   (let [args (asts-drop items 1)]
                     (if (not (= (asts-depth args) (sids-depth tps)))
-                      (let [msg (str (ps-str-of (clone ps) h) " expects " (sids-depth tps) " type argument(s) in a field type, got " (asts-depth args))]
+                      (let [msg (str (ps-str-of ps h) " expects " (sids-depth tps) " type argument(s) in a field type, got " (asts-depth args))]
                         (PTyRes (ps-err ps msg) (t-none)))
                       (check-positional args tps 0 ps h idx))))))
             (PTyRes (ps-err (clone ps) (str "unknown ADT name " (ps-str-of ps h) " in field type")) (t-none))))))
@@ -2426,7 +2441,7 @@
         (let [asid (ast-sid-of a)
             p (sids-idx tps i)]
           (if (not (= asid p))
-            (let [msg (str "field type (" (ps-str-of (clone ps) h) " ...) must apply " (ps-str-of (clone ps) h) " to this deftype's parameters in order (expected " (ps-str-of (clone ps) p) ")")]
+            (let [msg (str "field type (" (ps-str-of ps h) " ...) must apply " (ps-str-of ps h) " to this deftype's parameters in order (expected " (ps-str-of ps p) ")")]
               (PTyRes (ps-err ps msg) (t-none)))
             (check-positional args tps (+ i 1) ps h idx)))))))
 
@@ -2445,7 +2460,7 @@
     (if (>= i n)
       (PParRes ps (plist-rev acc (PNil)))
       (let [nm-node (asts-idx (clone ks) i)
-            nm-str (node-str (clone nm-node) (ps-tab (clone ps)))]
+            nm-str (node-str (clone nm-node) (ps-tab ps))]
         (cond
           (borrow-sigil (clone nm-str))
           ; the sigil on the NAME would need re-interning of the stripped
@@ -2469,7 +2484,7 @@
                       (PParRes ps2 (PNil))
                       (let [p (Param (ast-sid-of nm-node) ty 0)]
                         (parse-params ks (+ i 3) (PCons p acc) ps2))))))
-              (let [ty-str (node-str (clone ty-node) (ps-tab (clone ps)))
+              (let [ty-str (node-str (clone ty-node) (ps-tab ps))
                     ; `ks :- &Asts` — a borrowed parameter: the caller keeps
                     ; ownership, the callee only reads (S8: the query
                     ; helpers over boxed chains take & so traversals cost
@@ -2530,7 +2545,7 @@
       (let [ret-node (asts-idx (clone items) (+ i 1))
             ; `:- &T` — a borrowed return (symbol form only). The sigil is
             ; stripped and parsed like a param annotation.
-            ret-str (if (= (ast-tag ret-node) 1) (node-str (clone ret-node) (ps-tab (clone ps))) "")]
+            ret-str (if (= (ast-tag ret-node) 1) (node-str (clone ret-node) (ps-tab ps)) "")]
         (if (borrow-sigil (clone ret-str))
           (let [bare (subs (clone ret-str) 1 (count ret-str))
                 rt (parse-ty-sym-str ps bare)]
@@ -3965,8 +3980,10 @@
                         (match ri
                           (PIARes [ps2 idx]
                             (if (ps-failed ps2)
-                              (SRes tab2 (ps-adts (clone ps2)) (clone ty) (ps-err-msg ps2))
-                              (SRes (ps-tab (clone ps2)) (ps-adts ps2) (t-adt idx) "")))))))))
+                              ; read the message before the state moves
+                              (let [m (ps-err-msg ps2)]
+                                (SRes tab2 (ps-adts ps2) (clone ty) m))
+                              (SRes (ps-tab ps2) (ps-adts ps2) (t-adt idx) "")))))))))
               (SRes tab (clone adts) (clone ty) "")))))
 
       (SRes tab adts ty ""))))
@@ -4519,8 +4536,8 @@
                                       (BCons name-sid (clone value) vt acc) t2 a2 i2 (clone s2) l2 (clone r2) n2 d2 raws)))))
         (LBErr "let binding name must be a symbol or a [a b] pattern")))))
 
-(defn ps-err-msg [ps :- PS] :- str
-  (match ps (PS [tab decls adts sigs typarams err] err)))
+(defn ps-err-msg [ps :- &PS] :- str
+  (match ps (PS [tab decls adts sigs typarams err] (clone err))))
 
 ; [a b] destructuring: bind a = (get tmp 0 default), b = (get tmp 1
 ; default); `_` skips. Scalar i64/f64 elements only (the seed's rule).
@@ -5312,9 +5329,9 @@
       (if (not (= (ast-tag nm) 1))
         (PParRes (ps-err (clone ps) "fn param must be a symbol") (PNil))
         (if (not (and (= (ast-tag sep) 1) (= (ast-sid-of sep) (s-sep))))
-          (PParRes (ps-err (clone ps) (str "fn param " (node-str (clone nm) (ps-tab (clone ps))) " needs a type annotation in this slice (x :- i64)")) (PNil))
+          (PParRes (ps-err (clone ps) (str "fn param " (node-str (clone nm) (ps-tab ps)) " needs a type annotation in this slice (x :- i64)")) (PNil))
           (let [tyn (asts-idx (clone els) (+ i 2))
-                rt (closure-ty-sym (node-str tyn (ps-tab (clone ps))) tps (ps-tab (clone ps)))]
+                rt (closure-ty-sym (node-str tyn (ps-tab ps)) tps (ps-tab ps))]
             (match rt
               (CtyRes [tps2 ty msg]
                 (if (> (count msg) 0)
@@ -6744,7 +6761,7 @@
               (if (< name 0)
                 (DeclRes (DLNil) 0 (ps-err-msg ps2))
                 (if (dl-has decls name)
-                  (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab (clone ps)) name)))
+                  (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab ps) name)))
                   (match (collect-decls rest (+ i 1) n decls ps2)
                     (DeclRes [d nd msg]
                       (if (> (count msg) 0)
@@ -6819,7 +6836,7 @@
                         (RawsRes ps3 (RNil) msg)
                         (RawsRes ps3 (RCons raw rs) ""))))))))
 
-          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h))))))))
+          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab ps) h))))))))
 
 ; static (non-generic) callee rets, for ty_of's Call arm
 (defn seed-rets [rs :- &Raws rets :- TyEnv] :- TyEnv
@@ -6841,7 +6858,7 @@
 
 (defn build-lower [rs :- &Raws i :- i64 n :- i64 ps :- PS env-of :- i64] :- LLoopRes
   (build-lower-2 rs i n ps (DNil) (DNil)
-                 (ps-tab (clone ps)) (ps-adts (clone ps)) (MNil)
+                 (ps-tab ps) (ps-adts (clone ps)) (MNil)
                  (ps-sigs (clone ps)) (LMNil)
                  ; static non-generic callee rets, for ty_of's Call arm
                  (seed-rets rs (TENil)) 0))

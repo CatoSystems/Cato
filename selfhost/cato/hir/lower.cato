@@ -497,8 +497,10 @@
                         (match ri
                           (PIARes [ps2 idx]
                             (if (ps-failed ps2)
-                              (SRes tab2 (ps-adts (clone ps2)) (clone ty) (ps-err-msg ps2))
-                              (SRes (ps-tab (clone ps2)) (ps-adts ps2) (t-adt idx) "")))))))))
+                              ; read the message before the state moves
+                              (let [m (ps-err-msg ps2)]
+                                (SRes tab2 (ps-adts ps2) (clone ty) m))
+                              (SRes (ps-tab ps2) (ps-adts ps2) (t-adt idx) "")))))))))
               (SRes tab (clone adts) (clone ty) "")))))
 
       (SRes tab adts ty ""))))
@@ -1051,8 +1053,8 @@
                                       (BCons name-sid (clone value) vt acc) t2 a2 i2 (clone s2) l2 (clone r2) n2 d2 raws)))))
         (LBErr "let binding name must be a symbol or a [a b] pattern")))))
 
-(defn ps-err-msg [ps :- PS] :- str
-  (match ps (PS [tab decls adts sigs typarams err] err)))
+(defn ps-err-msg [ps :- &PS] :- str
+  (match ps (PS [tab decls adts sigs typarams err] (clone err))))
 
 ; [a b] destructuring: bind a = (get tmp 0 default), b = (get tmp 1
 ; default); `_` skips. Scalar i64/f64 elements only (the seed's rule).
@@ -1844,9 +1846,9 @@
       (if (not (= (ast-tag nm) 1))
         (PParRes (ps-err (clone ps) "fn param must be a symbol") (PNil))
         (if (not (and (= (ast-tag sep) 1) (= (ast-sid-of sep) (s-sep))))
-          (PParRes (ps-err (clone ps) (str "fn param " (node-str (clone nm) (ps-tab (clone ps))) " needs a type annotation in this slice (x :- i64)")) (PNil))
+          (PParRes (ps-err (clone ps) (str "fn param " (node-str (clone nm) (ps-tab ps)) " needs a type annotation in this slice (x :- i64)")) (PNil))
           (let [tyn (asts-idx (clone els) (+ i 2))
-                rt (closure-ty-sym (node-str tyn (ps-tab (clone ps))) tps (ps-tab (clone ps)))]
+                rt (closure-ty-sym (node-str tyn (ps-tab ps)) tps (ps-tab ps))]
             (match rt
               (CtyRes [tps2 ty msg]
                 (if (> (count msg) 0)
@@ -3276,7 +3278,7 @@
               (if (< name 0)
                 (DeclRes (DLNil) 0 (ps-err-msg ps2))
                 (if (dl-has decls name)
-                  (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab (clone ps)) name)))
+                  (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab ps) name)))
                   (match (collect-decls rest (+ i 1) n decls ps2)
                     (DeclRes [d nd msg]
                       (if (> (count msg) 0)
@@ -3351,7 +3353,7 @@
                         (RawsRes ps3 (RNil) msg)
                         (RawsRes ps3 (RCons raw rs) ""))))))))
 
-          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab (clone ps)) h))))))))
+          (RawsRes (clone ps) (RNil) (str "cato1: unsupported form " (sym-str (ps-tab ps) h))))))))
 
 ; static (non-generic) callee rets, for ty_of's Call arm
 (defn seed-rets [rs :- &Raws rets :- TyEnv] :- TyEnv
@@ -3373,7 +3375,7 @@
 
 (defn build-lower [rs :- &Raws i :- i64 n :- i64 ps :- PS env-of :- i64] :- LLoopRes
   (build-lower-2 rs i n ps (DNil) (DNil)
-                 (ps-tab (clone ps)) (ps-adts (clone ps)) (MNil)
+                 (ps-tab ps) (ps-adts (clone ps)) (MNil)
                  (ps-sigs (clone ps)) (LMNil)
                  ; static non-generic callee rets, for ty_of's Call arm
                  (seed-rets rs (TENil)) 0))
