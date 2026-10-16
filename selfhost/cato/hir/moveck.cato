@@ -24,9 +24,13 @@
 ; parameters are recorded all-borrowed (externs never consume).
 (deftype DParams (DPNil) (DPCons [name :- i64 ps :- PList next :- DParams]))
 
+; callee name -> return-borrowed flag (1 when the defn's return is `&T`).
+; A call to such a callee yields a borrow: the binding does not own it.
+(deftype RBTable (RBNil) (RBCons [name :- i64 rb :- i64 next :- RBTable]))
+
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
                     tab :- i64 shared :- Sids loopcopy :- Sids adts :- AdtTab
-                    dparams :- DParams]))
+                    dparams :- DParams retb :- RBTable]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -48,7 +52,7 @@
              (is-non-copy-ty (clone t))
              (= (im-get st v 0) 1))
       (match bcx
-        (BCtx [escaped shadowed facts tab shared _lc _adts _dp]
+        (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
           (UseRes rem2 (str "use of moved value " (sym-str (clone tab) v)))))
       (UseRes rem2 ""))))
 
@@ -74,7 +78,7 @@
             (match bcx
               ; a non-Copy loop variable rides as Copy: calls and
               ; constructors borrow it, nothing moves (S8)
-              (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp]
+              (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp _retb]
                 (if (sids-has (clone loopcopy) v)
                   (MncRes st owns rem2 cons)
                   (match (move-var v st owns cons)
@@ -364,6 +368,13 @@
         (DFound (clone ps))
         (dparams-get next name)))))
 
+; return-borrowed lookup: 1 when the callee's return is a `&T` borrow
+(defn rb-get [rb :- &RBTable name :- i64] :- i64
+  (match rb
+    (RBNil [] 0)
+    (RBCons [n v next]
+      (if (= n name) v (rb-get next name)))))
+
 (defn b-mark-borrowed [ps :- PList] :- PList
   (match ps
     (PNil [] (PNil))
@@ -383,10 +394,19 @@
               (if (= isextern 1) (b-mark-borrowed (clone params)) (clone params))
               acc)))))))
 
+; callee name -> return-borrowed flag, collected once per program
+(defn b-retb [defs :- &Defns acc :- RBTable] :- RBTable
+  (match defs
+    (DNil [] acc)
+    (DCons [h t]
+      (match (clone h)
+        (Defn [name params ret isextern body rb]
+          (b-retb t (RBCons name rb acc)))))))
+
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
                   cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts dp]
+    (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb]
       (if (sids-has (clone shared) name)
         (B4 st owns rem cons)
         (match (dparams-get dp name)
@@ -451,23 +471,37 @@
                                  (im-remove cons2 name) (te-put tys name ty)
                                  bcx (BCons name v2 ty acc)))))
               ; a fresh binding starts unconsumed; a Copy Var alias never
-              ; owns; anything else owns iff it allocates
+              ; owns; a borrowed (`&T`) call result is a borrow the caller
+              ; still owns, so it never owns; anything else owns iff it
+              ; allocates
               (let [owns2 (if isv
                             (im-put owns1 name 0)
-                            (im-put owns1 name (if (b-allocates v2 (b-facts-of bcx)) 1 0)))]
+                            (im-put owns1 name (if (b-borrowed-call v2 (b-retb-of bcx))
+                                                 0
+                                                 (if (b-allocates v2 (b-facts-of bcx)) 1 0))))]
                 (b-let-binds (clone next) (im-put st1 name 0) owns2 rem1
                              (im-remove cons1 name) (te-put tys name ty)
                              bcx (BCons name v2 ty acc))))))))))
 
 (defn b-facts-of [bcx :- &BCtx] :- Facts
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp] (clone facts))))
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb] (clone facts))))
+
+(defn b-retb-of [bcx :- &BCtx] :- RBTable
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp retb] (clone retb))))
+
+; Is this an expression whose value is a borrow (a call to a `&T` callee)?
+(defn b-borrowed-call [v :- &HExpr retb :- &RBTable] :- bool
+  (match v
+    (HCall [name args] (= (rb-get retb name) 1))
+    (_ false)))
 
 ; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
 ; consumed ∧ not shadowed, in binding order — the whole destruction rule
 (defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb]
       (b-frees-walk binds st owns cons escaped shadowed facts))))
 
 (defn b-frees-walk [binds :- &Binds st :- &IMap owns :- &IMap cons :- &IMap
@@ -496,8 +530,8 @@
 ; the body walk consults through the context.
 (defn bcx-with-loopcopy [bcx :- &BCtx names :- Sids] :- BCtx
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp]
-      (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared) names (clone adts) (clone dp)))))
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb]
+      (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared) names (clone adts) (clone dp) (clone retb)))))
 
 (defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
   (match binds
@@ -561,7 +595,7 @@
 
 (defn b-adts-of [bcx :- &BCtx] :- AdtTab
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts _dp] (clone adts))))
+    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb] (clone adts))))
 
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
 ; so the box's drop duty transfers and the scrutinee's scope free is
@@ -1084,6 +1118,87 @@
 (deftype BPlan (BPlan [st :- IMap owns :- IMap e :- HExpr frees :- Sids])
               (BPlanErr [msg :- str]))
 
+; --- borrowed-return preconditions ------------------------------------------
+
+; the borrowed (pb != 0) parameter names of a defn
+(defn b-borrowed-names [ps :- PList acc :- Sids] :- Sids
+  (match ps
+    (PNil [] acc)
+    (PCons [h t]
+      (match h
+        (Param [pname pty pb]
+          (b-borrowed-names (clone t)
+            (if (= pb 1) (SCons pname acc) acc)))))))
+
+; union src into dst
+(defn sids-into [src :- &Sids dst :- Sids] :- Sids
+  (match src
+    (SNil [] dst)
+    (SCons [h t] (sids-into t (SCons h dst)))))
+
+; is the callee's return a borrow? Mirrors the seed's tail_borrow_ok. The
+; test is conservative: an unmodelled form returns false (reject).
+(defn b-tail-borrow-ok [e :- &HExpr borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- bool
+  (match e
+    (HVar [v] (sids-has borrows v))
+    (HCall [name args]
+      (if (= (rb-get retb name) 1)
+        (match (dparams-get dparams name)
+          (DFound [ps] (b-tail-args-ok args ps borrows dparams retb))
+          (DMissing [] false))
+        false))
+    (HClone [x] false)
+    (HIf [c t f ty]
+      (and (b-tail-borrow-ok t borrows dparams retb)
+           (b-tail-borrow-ok f borrows dparams retb)))
+    (HMatch [scrut arms ty]
+      (let [sc (if (match scrut (HVar [v] (sids-has borrows v)) (_ false))
+                 1
+                 (if (b-tail-borrow-ok scrut borrows dparams retb) 1 0))]
+        (b-tail-arms-ok arms borrows sc dparams retb)))
+    (HLet [binds body frees]
+      (b-tail-borrow-ok body (b-tail-let-fold binds (clone borrows) dparams retb) dparams retb))
+    (HSeq [es] (b-tail-seq-ok es borrows dparams retb))
+    (_ false)))
+
+(defn b-tail-args-ok [args :- &HExprs ps :- &PList borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- bool
+  (match args
+    (HENil [] true)
+    (HECons [kid next]
+      (match ps
+        (PNil [] true)
+        (PCons [h pt]
+          (match h
+            (Param [pname pty pb]
+              (if (and (= pb 1) (not (b-tail-borrow-ok kid borrows dparams retb)))
+                false
+                (b-tail-args-ok next pt borrows dparams retb)))))))))
+
+(defn b-tail-arms-ok [arms :- &HArms borrows :- &Sids sc :- i64 dparams :- &DParams retb :- &RBTable] :- bool
+  (match arms
+    (HANil [] true)
+    (HACons [variant binders body next]
+      (let [arb (if (= sc 1) (sids-into binders (clone borrows)) (clone borrows))]
+        (if (b-tail-borrow-ok body arb dparams retb)
+          (b-tail-arms-ok next borrows sc dparams retb)
+          false)))))
+
+(defn b-tail-let-fold [binds :- &Binds borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- Sids
+  (match binds
+    (BNil [] (clone borrows))
+    (BCons [name v ty next]
+      (b-tail-let-fold next
+        (if (b-tail-borrow-ok v borrows dparams retb) (SCons name (clone borrows)) borrows)
+        dparams retb))))
+
+(defn b-tail-seq-ok [es :- &HExprs borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [kid next]
+      (match next
+        (HENil [] (b-tail-borrow-ok kid borrows dparams retb))
+        (HECons [k2 n2] (b-tail-seq-ok next borrows dparams retb))))))
+
 ; Owned move-type parameters whose buffer is still held at body exit get a
 ; scope-exit free (mirrors the seed's param_frees wrapper). A moved or
 ; returned param has already transferred its drop duty (owns=0, or escaped).
@@ -1101,9 +1216,30 @@
             (SCons pname (fp-frees (clone rest) (clone st) (clone owns) (clone facts) (clone esc)))
             (fp-frees (clone rest) (clone st) (clone owns) (clone facts) (clone esc))))))))
 
+; A `&T` return is only a sound borrow for pointer-like values: a boxed
+; (recursive/owning) ADT. The return index reads the template facts (the
+; annotation names a template).
+(defn b-borrowed-ret-boxed [ret :- &Ty facts :- &Facts] :- bool
+  (if (= (ty-tag ret) 16)
+    (= (facts-boxed-at facts (ty-arg ret)) 1)
+    false))
+
 ; plan_drops over one body: the pre-passes, the param states, the walk
-(defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams] :- BPlan
+(defn b-plan [name :- i64 params :- PList body :- HExpr ret :- Ty rb :- i64 facts :- Facts
+             tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- BPlan
+  ; Borrowed-return preconditions fire first so the reported error is the
+  ; return-shape problem, not a downstream symptom.
+  (let [bn (b-borrowed-names (clone params) (SNil))]
+    (if (= rb 1)
+      (if (not (b-borrowed-ret-boxed ret facts))
+        (BPlanErr "borrowed return: `&T` requires a boxed (recursive or owning) ADT return type")
+        (if (not (b-tail-borrow-ok body bn dparams retb))
+          (BPlanErr "Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value.")
+          (b-plan-body name params body facts tab shared adts dparams retb)))
+      (b-plan-body name params body facts tab shared adts dparams retb))))
+
+(defn b-plan-body [name :- i64 params :- PList body :- HExpr facts :- Facts
+                  tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- BPlan
   ; `shared` (builtins, which never consume) and `dparams` (per-callee
   ; parameter borrows) are computed once per program by check-program —
   ; computing them per defn walked the whole Defns chain 1000+ times.
@@ -1114,7 +1250,7 @@
     (match r
       (BLErr [msg] (BPlanErr msg))
       (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil) (clone adts) (clone dparams))]
+        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil) (clone adts) (clone dparams) (clone retb))]
           (match (bcheck (clone body) (clone st0) (clone owns0) (clone rem0) (clone cons0) (clone tys0) bcx)
             (BErr [msg]
               (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
@@ -1178,7 +1314,7 @@
               (CKErr [msg :- str]))
 
 (defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- i64
-                  shared :- Sids adts :- AdtTab dparams :- DParams] :- CkRes
+                  shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- CkRes
   ; the whole-program state threads by move — a per-step clone of facts/
   ; tab/alldefs made the self-compile quadratic (S8)
   (match ds
@@ -1187,8 +1323,8 @@
       (match h
         (Defn [name params ret ie body rb]
           (if (= ie 1)
-            (check-defns t (defns-append acc h) facts tab shared adts dparams)
-            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
+            (check-defns t (defns-append acc h) facts tab shared adts dparams retb)
+            (match (b-plan name (clone params) (clone body) (clone ret) rb (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb))
               (BPlanErr [msg] (CKErr msg))
               (BPlan [st owns body2 frees]
                 (let [body3 (if (sids-null (clone frees))
@@ -1200,41 +1336,43 @@
                                                        (own-str-return (clone body3))
                                                        (clone body3))
                                                      rb))
-                             facts tab shared adts dparams))))))))))
+                             facts tab shared adts dparams retb))))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
 (defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- i64
-                 shared :- Sids adts :- AdtTab dparams :- DParams] :- LkRes
+                 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
+          (match (b-plan mangled (clone params) (clone body) (clone ret) 0 (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb))
             (BPlanErr [msg] (LErrL msg))
             (BPlan [st owns body2 _frees]
               (check-lams (clone t) (lams-append acc (Lam mangled (clone caps) (clone params) (clone ret)
                                                           (if (ty-eq (clone ret) (t-str))
                                                             (own-str-return (clone body2))
                                                             (clone body2))))
-                          (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams)))))))))
+                          (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
                     tab :- i64 adts :- AdtTab] :- CkRes
   (let [shared (b-add-builtins (SNil))
         dparams (b-dparams defs (DPNil))
+        retb (b-retb defs (RBNil))
         ; the second stage re-reads the small program state: clone it
         ; before the first call moves it
         facts2 (clone facts)
         tab2 (clone tab)
         shared2 (clone shared)
         adts2 (clone adts)
-        dparams2 (clone dparams)]
-    (match (check-defns defs (DNil) facts tab shared adts dparams)
+        dparams2 (clone dparams)
+        retb2 (clone retb)]
+    (match (check-defns defs (DNil) facts tab shared adts dparams retb)
       (CKErr [msg] (CKErr msg))
       (CKOk [defs2 lams0]
-        (match (check-lams lams (LMNil) facts2 tab2 shared2 adts2 dparams2)
+        (match (check-lams lams (LMNil) facts2 tab2 shared2 adts2 dparams2 retb2)
           (LErrL [msg] (CKErr msg))
           (LOkL [lams2] (CKOk defs2 lams2)))))))
 
