@@ -18,7 +18,7 @@
       ; Mdl, so each read takes a fresh copy (per-ctor cost, not per-line)
       (let [name (md-adt-name mdl adt)
             boxed (md-owns-at mdl adt)
-            slots (fs-total (md-adts mdl) (md-owns mdl) adt)]
+            slots (md-fs-total mdl adt)]
         (if (= boxed 1)
           (match (em-malloc st (str (* 8 (+ slots 1))))
             (ETRes [st1 slot] (ctor-tag-store args adt variant name slot st1)))
@@ -28,7 +28,7 @@
                 (ctor-tag-store args adt variant name slot st2)))))))))
 
 (defn emit-clone-adt [x :- HExpr st :- Emit] :- ESRes
-  (let [ai (adt-of (clone x) (clone st))]
+  (let [ai (adt-of x (clone st))]
     (match (clone st)
       (Emit [c mdl sigs]
         (let [boxed (md-owns-at mdl ai)
@@ -129,8 +129,8 @@
     (EURes st)
     (match st
       (Emit [c mdl sigs]
-        (let [fty (fs-field-ty (md-adts mdl) adt variant k)
-              off (fs-off (md-adts mdl) (md-owns mdl) adt variant k)]
+        (let [fty (md-fs-field-ty mdl adt variant k)
+              off (md-fs-off mdl adt variant k)]
           (match (emit-field-store (hes-first (clone args)) fty off adt slot st)
             (EURes [st2]
               (ctor-store-args (hes-rest args) adt variant (+ k 1) slot st2))))))))
@@ -253,8 +253,8 @@
                        scrut :- str name :- str] :- EURes
   (match st
     (Emit [c mdl sigs]
-      (let [fty (fs-field-ty (md-adts mdl) ai vi k)
-            off (fs-off (md-adts mdl) (md-owns mdl) ai vi k)
+      (let [fty (md-fs-field-ty mdl ai vi k)
+            off (md-fs-off mdl ai vi k)
             tg (ty-tag fty)]
         (cond
           (= tg 0)

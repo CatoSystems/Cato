@@ -185,10 +185,10 @@
            (str "  ~ = load ptr, ptr ^1, align 8"))
     (ET4Res [st1 cf code ef env] (ET4Res st1 code env "" ""))))
 
-(defn emit-closure-call [f :- HExpr args :- HExprs sig :- i64 st :- Emit] :- ESRes
+(defn emit-closure-call [f :- &HExpr args :- HExprs sig :- i64 st :- Emit] :- ESRes
   (match st
     (Emit [c mdl sigs]
-      (let [sg (esigs-at mdl (md-csigs mdl) sig)]
+      (let [sg (md-esigs-at mdl sig)]
         (match sg
           (ESig [ptys ret]
             (match f
@@ -216,11 +216,16 @@
                                       (ETRes [st3 r] (ESRes st3 r))))))))))))))
               (_ (sf st "closure callee must be a var")))))))))
 
-(defn esigs-at [mdl :- &Mdl ss :- Sigs i :- i64] :- ESig
+; The Mdl parameter was never read; dropping it lets a borrowed Mdl be
+; searched without copying the whole signature table first.
+(defn esigs-at [ss :- &Sigs i :- i64] :- ESig
   (match ss
     (SGCons [h t]
       (match h
-        (Sig [params ret] (if (= i 0) (ESig params ret) (esigs-at mdl t (- i 1))))))
+        (Sig [params ret]
+          (if (= i 0)
+            (ESig (clone params) (clone ret))
+            (esigs-at t (- i 1))))))
     (SGNil [] (ESig (TyNil) (t-none)))))
 
 (defn cc-marshal [args :- HExprs ptys :- TyList st :- Emit acc :- ECalls] :- ECARes

@@ -6,7 +6,7 @@
   (match (em-ins st (str "  ~ = call ptr @malloc(i64 " nbytes ")"))
     (ETRes [st2 t] (ETRes (em-decl st2 "declare ptr @malloc(i64)") t))))
 
-(defn adt-of [e :- HExpr st :- Emit] :- i64
+(defn adt-of [e :- &HExpr st :- Emit] :- i64
   (match e
     (HVar [v]
       (match st
@@ -517,7 +517,7 @@
                                      (str "  ~ = phi i64 [ " tl ", %" tbr " ], [ " el2 ", %" ebr " ]"))
                               (ET2Res [st11 mp ml] (EVRes st11 mp ml (vec-elem-of ty)) )))))))))))))))
     (HMatch [scrut arms ty]
-      (match-vec-pair (clone scrut) (clone arms) (vec-elem-of ty) st))
+      (match-vec-pair scrut (clone arms) (vec-elem-of ty) st))
     (HLet [binds body frees]
       (match (emit-let (clone binds) st)
         (EURes [st2]
@@ -574,7 +574,7 @@
 
 (deftype EVPRes (EVPRes [st :- Emit ps :- EMPS ls :- EMPS]))
 
-(defn match-vec-pair [scrut :- HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
+(defn match-vec-pair [scrut :- &HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
       (let [ai (adt-of scrut (clone st1))

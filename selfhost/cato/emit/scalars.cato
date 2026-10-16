@@ -103,9 +103,11 @@
 
 ; --- chains -----------------------------------------------------------------------
 
+; Cold path: the caller wants the element as an owned expression, so a
+; borrowed list has to hand back a copy.
 (defn hes-first [ks :- HExprs] :- HExpr
   (match ks
-    (HECons [kid next] kid)
+    (HECons [kid next] (clone kid))
     (HENil [] (HConstI64 0))))
 
 (defn hes-rest [ks :- HExprs] :- HExprs
@@ -189,17 +191,18 @@
 
 ; --- static width (the seed's static_int_width) ---------------------------------
 
-(defn static-int-width [e :- HExpr st :- Emit] :- Ty
+(defn static-int-width [e :- &HExpr st :- Emit] :- Ty
   (match e
     (HConstI64 [v] (t-i64))
     (HConstF64 [v] (t-f64))
     (HConstB [v] (t-bool))
-    (HICast [x from to] to)
-    (HBinW [op a b ty] ty)
+    ; Ty is a flat two-word value: cloning a borrowed field costs nothing.
+    (HICast [x from to] (clone to))
+    (HBinW [op a b ty] (clone ty))
     (HBinF [op a b] (t-f32))
-    (HAbs [x ty] ty)
-    (HMin [a b ty] ty)
-    (HMax [a b ty] ty)
+    (HAbs [x ty] (clone ty))
+    (HMin [a b ty] (clone ty))
+    (HMax [a b ty] (clone ty))
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
@@ -264,7 +267,7 @@
                    (str "  ~ = select i1 ^1, double " av ", double " bv))
             (ET2Res [st3 lt sel] (ESRes st3 sel) )))))))
 
-(defn print-f64-stmt [arg :- HExpr st :- Emit ret :- str] :- ESRes
+(defn print-f64-stmt [arg :- &HExpr st :- Emit ret :- str] :- ESRes
   (match (emit-float (clone arg) st)
     (ESRes [st1 v]
       (let [w (static-int-width arg (clone st1))]
@@ -277,7 +280,7 @@
 ; The seed widens print-i64's arg from its static width; same-width and
 ; bool cases reuse the register as-is (the bool read already widened).
 (defn emit-int-widened [e :- HExpr st :- Emit] :- ESRes
-  (let [w (static-int-width (clone e) (clone st))
+  (let [w (static-int-width e (clone st))
         tag (ty-tag w)]
     (if (or (= tag 9) (= tag 10))
       (match (emit-float e st)
@@ -400,7 +403,7 @@
 
     (HLoop [binds ty body] (emit-loop-node (clone binds) (clone ty) (clone body) st))
 
-    (HMatch [scrut arms ty] (emit-match-node (clone scrut) (clone arms) (clone ty) st))
+    (HMatch [scrut arms ty] (emit-match-node scrut (clone arms) (clone ty) st))
 
     (HCtor [adt variant args]
       (match (emit-adt e st)
@@ -461,7 +464,7 @@
                           (ETRes [st3 t] (ESRes st3 t)))
                         (ESRes st2 v)))))))))))
 
-    (HClosureCall [f args sig] (emit-closure-call (clone f) (clone args) sig st))
+    (HClosureCall [f args sig] (emit-closure-call f (clone args) sig st))
 
     (HRecur [_] (sf st "recur outside loop (validation bug)"))
     (HVecLit [el vals] (sf st "vec literal in i64 context"))
@@ -551,7 +554,7 @@
     (HMin [a b ty] (minmax-f64 (clone a) (clone b) "olt" st))
     (HMax [a b ty] (minmax-f64 (clone a) (clone b) "ogt" st))
 
-    (HMatch [scrut arms ty] (emit-match-node (clone scrut) (clone arms) (clone ty) st))
+    (HMatch [scrut arms ty] (emit-match-node scrut (clone arms) (clone ty) st))
 
     (HCtor [adt variant args]
       (match (emit-adt e st)
@@ -750,7 +753,7 @@
         (match (em-pin v llty st)
           (ESRes [st2 v2] (EPinRes st2 v2)))))))
 
-(defn emit-match-node [scrut :- HExpr arms :- HArms ty :- Ty st :- Emit] :- ESRes
+(defn emit-match-node [scrut :- &HExpr arms :- HArms ty :- Ty st :- Emit] :- ESRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
       (let [ai (adt-of scrut (clone st1))

@@ -68,7 +68,7 @@
                (MncErr [msg :- str]))
 
 (defn move-if-nc [v :- i64 st :- IMap owns :- IMap rem :- IMap cons :- IMap
-                 tys :- TyEnv bcx :- &BCtx] :- MncRes
+                 tys :- &TyEnv bcx :- &BCtx] :- MncRes
   (let [t (te-get tys v)]
     (if (and (not (ty-noneq t)) (is-non-copy-ty t))
       (match (use-var v rem tys st bcx)
@@ -313,7 +313,7 @@
 
 ; sequential children
 (defn b-kids [es :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
-             tys :- TyEnv bcx :- &BCtx acc :- HExprs] :- BKRes
+             tys :- &TyEnv bcx :- &BCtx acc :- HExprs] :- BKRes
   (match es
     (HENil [] (BKOk st owns rem cons (hes-rev acc (HENil))))
     (HECons [kid next]
@@ -324,7 +324,7 @@
 
 ; a Get's optional default (absent = the empty chain)
 (defn b-default [dflt :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
-                tys :- TyEnv bcx :- &BCtx] :- BKRes
+                tys :- &TyEnv bcx :- &BCtx] :- BKRes
   (match dflt
     (HENil [] (BKOk st owns rem cons (HENil)))
     (HECons [kid next]
@@ -383,7 +383,7 @@
           (b-retb t (RBCons name rb acc)))))))
 
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
-                  cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
+                  cons :- IMap tys :- &TyEnv bcx :- &BCtx] :- B4
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb]
       (if (sids-has shared name)
@@ -393,7 +393,7 @@
           (DMissing [] (b-call-move-walk args st owns rem cons tys bcx)))))))
 
 (defn b-call-move-ps [args :- HExprs ps :- PList st :- IMap owns :- IMap rem :- IMap
-                     cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
+                     cons :- IMap tys :- &TyEnv bcx :- &BCtx] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
@@ -403,20 +403,20 @@
           (match h
             (Param [pname pty pb]
               (if (and (= pb 0) (= (h-tag kid) 3))
-                (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
+                (match (move-if-nc (name-of kid) st owns rem cons tys bcx)
                   (MncErr [msg] (B4Err msg))
                   (MncRes [st2 owns2 rem2 cons2]
                     (b-call-move-ps next pt st2 owns2 rem2 cons2 tys bcx)))
                 (b-call-move-ps next pt st owns rem cons tys bcx)))))))))
 
 (defn b-call-move-walk [args :- HExprs st :- IMap owns :- IMap rem :- IMap
-                       cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
+                       cons :- IMap tys :- &TyEnv bcx :- &BCtx] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
       (if (= (h-tag kid) 3)
         ; the seed's kinds loop: use + move only NON-COPY Var args
-        (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
+        (match (move-if-nc (name-of kid) st owns rem cons tys bcx)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2]
             (b-call-move-walk next st2 owns2 rem2 cons2 tys bcx)))
@@ -616,7 +616,7 @@
                    (te-put tys1 b (fp-binder-type fty facts)) (BNil))))))))
 
 (defn b-arms [arms :- HArms pst :- IMap powns :- IMap st :- IMap owns :- IMap
-             rem :- IMap cons :- IMap tys :- TyEnv bcx :- &BCtx acc :- HArms
+             rem :- IMap cons :- IMap tys :- &TyEnv bcx :- &BCtx acc :- HArms
              adtidx :- i64 boxed :- i64 esc :- i64] :- BArmsRes
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
@@ -651,7 +651,7 @@
                 (BCapErr [msg :- str]))
 
 (defn b-caps [caps :- Caps st :- IMap owns :- IMap rem :- IMap cons :- IMap
-             tys :- TyEnv bcx :- &BCtx] :- BCapRes
+             tys :- &TyEnv bcx :- &BCtx] :- BCapRes
   (match caps
     (CNil [] (BCapRes st owns rem cons (CNil)))
     (CCons [name ty own next]
@@ -978,7 +978,7 @@
             (BOk (b-restore-st saved st2) owns2 rem2 cons2 (HLoop (binds-rev binds2 (BNil)) ty body2)))))))
 
     (HCtor [adt variant args]
-    (match (b-kids args st owns rem cons (clone tys) bcx (HENil))
+    (match (b-kids args st owns rem cons tys bcx (HENil))
       (BKErr [msg] (BErr msg))
       (BKOk [st1 owns1 rem1 cons1 c1]
         (if (= (facts-owns-at (b-facts-of bcx) adt) 1)
@@ -1042,7 +1042,7 @@
             (BOk st2 owns2 rem2 cons2 (HSpit c1 c2)))))))
 
     (HCall [name args]
-    (match (b-kids args st owns rem cons (clone tys) bcx (HENil))
+    (match (b-kids args st owns rem cons tys bcx (HENil))
       (BKErr [msg] (BErr msg))
         (BKOk [st1 owns1 rem1 cons1 c1]
           (match (b-call-move name (clone c1) st1 owns1 rem1 cons1 tys bcx)
@@ -1050,12 +1050,12 @@
           (B4 [st2 owns2 rem2 cons2]
             (BOk st2 owns2 rem2 cons2 (HCall name c1)))))))
 ))(defn b-ctor-move [args :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
-                  tys :- TyEnv bcx :- &BCtx] :- B4
+                  tys :- &TyEnv bcx :- &BCtx] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
       (if (= (h-tag kid) 3)
-        (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
+        (match (move-if-nc (name-of kid) st owns rem cons tys bcx)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2]
             (b-ctor-move next st2 owns2 rem2 cons2 tys bcx)))
