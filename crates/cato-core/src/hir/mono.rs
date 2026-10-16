@@ -250,8 +250,7 @@ pub(crate) fn instantiate(
             body,
             borrows: raw.borrows.clone(),
             is_extern: false,
-            // Task 3 propagates raw.ret_borrowed here.
-            ret_borrowed: false,
+            ret_borrowed: raw.ret_borrowed,
         });
     }
     Ok((mangled, ret))

@@ -89,3 +89,18 @@ fn borrowed_result_to_owned_param_is_e303() {
     let e = compile_to_program(src).unwrap_err().to_string();
     assert!(e.contains("E303"), "got: {e}");
 }
+
+#[test]
+fn borrowed_return_survives_specialization() {
+    // `f` is generic (type param `A`) but returns a concrete boxed-ADT
+    // borrow. Instantiating `f` for `i64` must keep the borrowed-return
+    // marking: otherwise `g`'s tail `(f x 3)` reads as an owned call and
+    // `g` is wrongly rejected with E304.
+    let src = r#"
+(deftype H (H1 [v :- i64 next :- H]) (H2))
+(defn f [x :- &H y :- A] :- &H x)
+(defn g [x :- &H] :- &H (f x 3))
+(defn main [] :- i64 0)
+"#;
+    compile_to_program(src).expect("borrowed return must survive monomorphization");
+}

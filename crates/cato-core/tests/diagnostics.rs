@@ -124,5 +124,17 @@ fn classify_maps_pipeline_messages_to_codes() {
         f("cannot move b: it is a borrowed parameter and still belongs to the caller"),
         "E303"
     );
+    assert_eq!(
+        f("cannot move the borrowed result of get-l into an owned parameter of take: it belongs to the caller"),
+        "E303"
+    );
+    assert_eq!(
+        f("Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value."),
+        "E304"
+    );
+    assert_eq!(
+        f("borrowed return: `&T` requires a boxed (recursive or owning) ADT return type"),
+        "E304"
+    );
     assert_eq!(f("mystery failure"), "E000");
 }
