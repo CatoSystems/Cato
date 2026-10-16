@@ -3330,7 +3330,7 @@
           (build-raws rest (+ i 1) n ps acc)
 
           (= h (s-extern))
-          (let [r (parse-defn f (clone ps) 1)]
+          (let [r (parse-defn f ps 1)]
             (match r
               (RawRes [ps2 raw]
                 (if (ps-failed ps2)
@@ -3342,7 +3342,7 @@
                         (RawsRes ps3 (RCons raw rs) ""))))))))
 
           (= h (s-defn))
-          (let [r (parse-defn f (clone ps) 0)]
+          (let [r (parse-defn f ps 0)]
             (match r
               (RawRes [ps2 raw]
                 (if (ps-failed ps2)
