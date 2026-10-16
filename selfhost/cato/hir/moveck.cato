@@ -572,9 +572,12 @@
       fty
       (t-i64))))
 
-(defn b-adts-of [bcx :- &BCtx] :- AdtTab
+; The variant's field list, read through the borrowed context: returning the
+; table itself copied every ADT in the program.
+(defn b-varnt-fields-at [bcx :- &BCtx t :- i64 vi :- i64] :- TyList
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb] (clone adts))))
+    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb]
+      (varnt-fields-at adts t vi))))
 
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
 ; so the box's drop duty transfers and the scrutinee's scope free is
@@ -621,7 +624,7 @@
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
     (HACons [variant binders body next]
-      (let [fields (if (= boxed 1) (varnt-fields-at (b-adts-of bcx) adtidx variant) (TyNil))]
+      (let [fields (if (= boxed 1) (b-varnt-fields-at bcx adtidx variant) (TyNil))]
         (match (b-arm-state (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) (b-facts-of bcx))
           (BLErr [msg] (BArmsErr msg))
           (BLRes [st1 owns1 rem1 cons1 tys1 binds1]

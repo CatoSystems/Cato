@@ -5799,12 +5799,12 @@
             (if (not (= (asts-depth (ast-kids-of (clone bs))) (tys-depth fields)))
               (MArr (str "variant " (adts-name vdef (clone tab)) " has " (tys-depth fields) " field(s) but the arm binds " (asts-depth (ast-kids-of (clone bs)))))
               ; binders: wildcard `_` gets a gensym
-              (let [rb (match-binders (ast-kids-of (clone bs)) fields 0 (clone env) (SNil) (SNil) (clone tab) (clone adts) (clone insts) ncached)]
+              (let [rb (match-binders (ast-kids-of (clone bs)) fields 0 (clone env) (SNil) (SNil) (clone tab) ncached)]
                 (match rb
                   (MBErr [msg] (MArr msg))
-                  (MBRes [t3 a3 i3 n3 env3 binders3]
+                  (MBRes [t3 n3 env3 binders3]
                     (let [bodyn (asts-idx vitems 2)
-                          rb2 (lower-e bodyn (clone env3) (clone pt) t3 a3 i3 (clone sigs) (clone lams) (clone rets) n3 defs raws)]
+                          rb2 (lower-e bodyn (clone env3) (clone pt) t3 adts insts (clone sigs) (clone lams) (clone rets) n3 defs raws)]
                       (match rb2
                         (LErr [msg] (MArr msg))
                         (LOk [t4 a4 i4 s4 l4 r4 n4 d4 body2]
@@ -5814,19 +5814,20 @@
                             ; d4 *is* defs — and cloning defs here (the whole
                             ; program's definition list, bodies included)
                             ; accounted for a third of the kernel's churn.
-                            (match-arms rest vdef adt env pt (clone tab) adts insts sigs lams rets ncached d4
+                            (match-arms rest vdef adt env pt (clone tab) a4 i4 sigs lams rets ncached d4
                                         (HACons vi binders3 (clone body2) acc) (TyCons bt tys) wildcard (+ 1 narms) raws))
 )))))))))))))
 
-(deftype MBRes (MBRes [tab :- i64 adts :- AdtTab insts :- IMap ncached :- i64
-                      env :- TyEnv binders :- Sids])
+; The table and instance map were threaded through this walk and returned
+; untouched — callers cloned a whole AdtTab (and an IMap) per arm to satisfy
+; the shape. Nothing here reads them, so they are gone.
+(deftype MBRes (MBRes [tab :- i64 ncached :- i64 env :- TyEnv binders :- Sids])
               (MBErr [msg :- str]))
 
 (defn match-binders [bs :- Asts fields :- TyList k :- i64 env :- TyEnv acc :- Sids
-                    seen :- Sids tab :- i64 adts :- AdtTab insts :- IMap
-                    ncached :- i64] :- MBRes
+                    seen :- Sids tab :- i64 ncached :- i64] :- MBRes
   (if (>= k (asts-depth bs))
-    (MBRes tab adts insts ncached env (sids-rev acc (SNil)))
+    (MBRes tab ncached env (sids-rev acc (SNil)))
     (let [b (asts-idx (clone bs) k)
           fty (tys-idx (clone fields) k)]
       (if (not (= (ast-tag b) 1))
@@ -5837,8 +5838,8 @@
             (let [g (intern1 tab (str "_wild" (+ k ncached)))]
               (match g
                 (I1Res [tab2 gsid]
-                  (match-binders bs fields (+ k 1) env (SCons gsid acc) (SCons gsid seen) tab2 adts insts ncached))))
-            (match-binders bs fields (+ k 1) (te-put env bn fty) (SCons bn acc) (SCons bn seen) tab adts insts ncached)))))))
+                  (match-binders bs fields (+ k 1) env (SCons gsid acc) (SCons gsid seen) tab2 ncached))))
+            (match-binders bs fields (+ k 1) (te-put env bn fty) (SCons bn acc) (SCons bn seen) tab ncached)))))))
 
 ; exhaustiveness + the f64-promoting arm merge (finish_match)
 ; exhaustiveness: a wildcard arm present, or the arm count (each variant
@@ -7516,9 +7517,12 @@
       fty
       (t-i64))))
 
-(defn b-adts-of [bcx :- &BCtx] :- AdtTab
+; The variant's field list, read through the borrowed context: returning the
+; table itself copied every ADT in the program.
+(defn b-varnt-fields-at [bcx :- &BCtx t :- i64 vi :- i64] :- TyList
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb] (clone adts))))
+    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb]
+      (varnt-fields-at adts t vi))))
 
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
 ; so the box's drop duty transfers and the scrutinee's scope free is
@@ -7565,7 +7569,7 @@
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
     (HACons [variant binders body next]
-      (let [fields (if (= boxed 1) (varnt-fields-at (b-adts-of bcx) adtidx variant) (TyNil))]
+      (let [fields (if (= boxed 1) (b-varnt-fields-at bcx adtidx variant) (TyNil))]
         (match (b-arm-state (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) (b-facts-of bcx))
           (BLErr [msg] (BArmsErr msg))
           (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
@@ -10121,7 +10125,7 @@
 (defn emit-match-node [scrut :- &HExpr arms :- HArms ty :- Ty st :- Emit] :- ESRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
-      (let [ai (adt-of scrut (clone st1))
+      (let [ai (adt-of scrut st1)
             name (em-adt-name st1 ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
@@ -10412,7 +10416,7 @@
     (HMatch [scrut arms mty]
       (match (emit-adt (clone scrut) st)
         (ESRes [st1 sptr]
-          (let [ai (adt-of scrut (clone st1))
+          (let [ai (adt-of scrut st1)
                 name (em-adt-name st1 ai)]
             (match (em-ins2 st1
                      (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
