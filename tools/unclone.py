@@ -252,18 +252,36 @@ def walk(node, scope, after, edits, mark=True):
         sel_no_move = sel_var is not None and scope.is_no_move(sel_var)
         sb = scope.lookup(sel_var) if sel_var is not None else None
         sel_used_after = sb is not None and sb in after
-        protect = sel_no_move or sel_used_after
+        # First pass: gather what the arms reference (outer binders), before
+        # we decide eligibility. Track whether any arm's *own* binder is used.
         arm_uses = set()
+        arm_binders_used = False
         for arm in arms:
             ns = Scope(scope)
             bind_arm(arm, ns)
-            if protect:
-                for b in ns.binders.values():
-                    b.eligible = False
-                    if sel_no_move:
-                        ns.no_move.add(b.name)
+            own = set(ns.binders.values())
             for body in arm[2][2:]:
-                arm_uses |= uses_of(body, ns)
+                u = uses_of(body, ns)
+                arm_uses |= u
+                if own & u:
+                    arm_binders_used = True
+        # Moving an arm binder of a bare-Var scrutinee retires the scrutinee
+        # (the checker's box watch). If the scrutinee is *also* referenced in
+        # an arm — e.g. `match ps2 (PS [ … y3 … ] (PTyRes ps2 (f y3)))` moves
+        # both the binder and the owner — that's a double move: keep the
+        # binder clones. `sel_used_after` covers the scrutinee living past the
+        # match; this covers it being moved inside an arm.
+        sel_used_in_arms = sb is not None and sb in arm_uses
+        protect = sel_no_move or sel_used_after or sel_used_in_arms
+        # Never move the owner of a destructured box when one of its field
+        # binders is live. `(PTyRes ps2 (f (clone y3)))` — if `ps2` is moved at
+        # arg0 its box is retired before `y3` (a field alias) is read at arg1 →
+        # "use of moved value". Keeping the scrutinee's clone is always legal;
+        # the arm-binder clones (the real win) are still elided below. When no
+        # field binder is used the scrutinee may still move (see
+        # test_same_binder_moves_in_each_arm).
+        if clone_arg(sel) is None and sb is not None and arm_binders_used:
+            sb.eligible = False
         # Keep the scrutinee's own clone. `(match (clone r) …)` gives the
         # checker a temp scrutinee; a bare Var scrutinee plus a moved arm
         # binder trips its box watch/retirement model ("use of moved

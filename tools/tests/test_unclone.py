@@ -84,6 +84,26 @@ class TestUnclone(unittest.TestCase):
         self.assertIn("(clone h1)", out)              # scrutinee reused below
         self.assertIn("(TyCons [h2 t2] t2)", out)     # last use moves
 
+    def test_arm_binder_of_scrutinee_moved_in_arm_is_kept(self):
+        # The bare-Var scrutinee is moved inside the arm alongside an
+        # aliasing binder (`Res r (idx b)`): moving both retires the owner
+        # twice, so the binder clone must stay.
+        src = ("(defn f [r :- Rec] :- Res\n"
+               "  (match r\n"
+               "    (Rec [a b] (Res r (idx (clone b))))))")
+        out = run(src)
+        self.assertIn("(clone b)", out)
+
+    def test_owner_clone_kept_when_field_read_in_arm(self):
+        # The owner is cloned at arg0 and its field read at arg1: moving the
+        # owner would retire the box before the field read, so keep both.
+        src = ("(defn f [r :- Rec] :- Res\n"
+               "  (match r\n"
+               "    (Rec [a b] (Res (clone r) (idx (clone b))))))")
+        out = run(src)
+        self.assertIn("(clone r)", out)
+        self.assertIn("(clone b)", out)
+
     def test_idempotent(self):
         src = "(defn f [x :- Box] :- i64 (get (clone x)))"
         self.assertEqual(run(run(src)), run(src))
