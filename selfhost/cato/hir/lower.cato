@@ -2352,12 +2352,17 @@
                   (MBErr [msg] (MArr msg))
                   (MBRes [t3 a3 i3 n3 env3 binders3]
                     (let [bodyn (asts-idx vitems 2)
-                          rb2 (lower-e bodyn (clone env3) (clone pt) t3 a3 i3 (clone sigs) (clone lams) (clone rets) n3 (clone defs) raws)]
+                          rb2 (lower-e bodyn (clone env3) (clone pt) t3 a3 i3 (clone sigs) (clone lams) (clone rets) n3 defs raws)]
                       (match rb2
                         (LErr [msg] (MArr msg))
                         (LOk [t4 a4 i4 s4 l4 r4 n4 d4 body2]
                           (let [bt (ty-of body2 env3 r4 s4)]
-                            (match-arms rest vdef adt env pt (clone tab) adts insts sigs lams rets ncached defs
+                            ; Thread the defs the body lowering handed back.
+                            ; Expression lowering never adds a definition, so
+                            ; d4 *is* defs — and cloning defs here (the whole
+                            ; program's definition list, bodies included)
+                            ; accounted for a third of the kernel's churn.
+                            (match-arms rest vdef adt env pt (clone tab) adts insts sigs lams rets ncached d4
                                         (HACons vi binders3 (clone body2) acc) (TyCons bt tys) wildcard (+ 1 narms) raws))
 )))))))))))))
 

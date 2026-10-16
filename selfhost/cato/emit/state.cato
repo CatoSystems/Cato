@@ -137,10 +137,14 @@
 (defn md-csigs [m :- &Mdl] :- Sigs
   (match m (Mdl [tab g globals decls adts owns csigs] (clone csigs))))
 
+; Walk the borrowed table: `(md-adts m)` copied every ADT in the module
+; (their variants and field lists included) just to index one of them.
 (defn md-adt-name [m :- &Mdl i :- i64] :- str
-  (match (adts-at (md-adts m) i)
-    (AdtInfo [name tps variants tpl tplargs]
-      (md-sym m name))))
+  (match m
+    (Mdl [tab g globals decls adts owns csigs]
+      (match (adts-at adts i)
+        (AdtInfo [name tps variants tpl tplargs]
+          (stab-get tab name))))))
 
 ; --- declarations & globals -----------------------------------------------------
 
