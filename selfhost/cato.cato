@@ -8201,7 +8201,7 @@
 ; Owned move-type parameters whose buffer is still held at body exit get a
 ; scope-exit free (mirrors the seed's param_frees wrapper). A moved or
 ; returned param has already transferred its drop duty (owns=0, or escaped).
-(defn fp-frees [params :- PList st :- IMap owns :- IMap facts :- Facts esc :- Sids] :- Sids
+(defn fp-frees [params :- PList st :- &IMap owns :- &IMap facts :- &Facts esc :- &Sids] :- Sids
   (match params
     (PNil [] (SNil))
     (PCons [p rest]
@@ -8224,38 +8224,58 @@
     false))
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
+(deftype BPlanRes (BPlanRes [bcx :- BCtx plan :- BPlan]))
+
+; The plan plus the context it ran in. The program-wide tables (facts, the
+; symbol table, shared names, the ADT table, per-callee parameter borrows,
+; return-borrows) are computed once per program and never change during the
+; pass, so they are threaded *through* the planner and handed back rather
+; than copied per definition — the `dparams` map alone has one entry per
+; definition, and every definition copied it twice.
+(defn fp-frees-of [params :- PList st :- &IMap owns :- &IMap bcx :- &BCtx] :- Sids
+  (match bcx
+    (BCtx [esc _sh facts _tab _shared _lc _adts _dp _retb]
+      (fp-frees params st owns facts esc))))
+
 (defn b-plan [name :- i64 params :- PList body :- HExpr ret :- Ty rb :- i64 facts :- Facts
-             tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- BPlan
+             tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- BPlanRes
   ; Borrowed-return preconditions fire first so the reported error is the
   ; return-shape problem, not a downstream symptom.
   (let [bn (b-borrowed-names (clone params) (SNil))]
     (if (= rb 1)
       (if (not (b-borrowed-ret-boxed ret facts))
-        (BPlanErr "borrowed return: `&T` requires a boxed (recursive or owning) ADT return type")
+        (BPlanRes (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb)
+                  (BPlanErr "borrowed return: `&T` requires a boxed (recursive or owning) ADT return type"))
         (if (not (b-tail-borrow-ok body bn dparams retb))
-          (BPlanErr "Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value.")
-          (b-plan-body name params body facts tab shared adts dparams retb)))
-      (b-plan-body name params body facts tab shared adts dparams retb))))
+          (BPlanRes (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb)
+                    (BPlanErr "Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value."))
+          (b-plan-body name params body (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb))))
+      (b-plan-body name params body (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb)))))
 
-(defn b-plan-body [name :- i64 params :- PList body :- HExpr facts :- Facts
-                  tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams retb :- RBTable] :- BPlan
+(defn b-plan-body [name :- i64 params :- PList body :- HExpr bcx :- BCtx] :- BPlanRes
   ; `shared` (builtins, which never consume) and `dparams` (per-callee
   ; parameter borrows) are computed once per program by check-program —
   ; computing them per defn walked the whole Defns chain 1000+ times.
-  (let [escaped (b-tail-escape body (SNil))
-        shadowed (b-shadowed-of (b-count-binds body (MNil)) (SNil))
-        rem0 (b-count-vars body (MNil))
-        r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
-    (match r
-      (BLErr [msg] (BPlanErr msg))
-      (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-        (let [bcx (BCtx (clone escaped) shadowed (clone facts) (clone tab) shared (SNil) adts dparams retb)]
-          (match (bcheck body st0 owns0 rem0 cons0 tys0 bcx)
-            (BErr [msg]
-              (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
-            (BOk [st1 owns1 rem1 cons1 body2]
-              (BPlan (clone st1) (clone owns1) body2
-                     (fp-frees params st1 owns1 facts escaped)))))))))
+  (match bcx
+    (BCtx [_esc0 _sh0 facts tab shared _lc0 adts dparams retb]
+      (let [escaped (b-tail-escape body (SNil))
+            shadowed (b-shadowed-of (b-count-binds body (MNil)) (SNil))
+            rem0 (b-count-vars body (MNil))
+            r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
+        (match r
+          (BLErr [msg]
+            (BPlanRes (BCtx escaped shadowed facts tab shared (SNil) adts dparams retb) (BPlanErr msg)))
+          (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
+            (let [bcx2 (BCtx escaped shadowed facts tab shared (SNil) adts dparams retb)]
+              (match (bcheck body st0 owns0 rem0 cons0 tys0 bcx2)
+                (BErr [msg]
+                  (BPlanRes bcx2
+                            (BPlanErr (str "ownership check failed in " (sym-str tab name) ": " msg))))
+                (BOk [st1 owns1 rem1 cons1 body2]
+                  ; read through the context before it is handed back
+                  (let [frees (fp-frees-of params st1 owns1 bcx2)]
+                    (BPlanRes bcx2
+                              (BPlan (clone st1) (clone owns1) body2 frees))))))))))))
 
 (defn b-init-params [params :- PList facts :- Facts st :- IMap owns :- IMap
                     rem :- IMap cons :- IMap tys :- TyEnv] :- BLRes
@@ -8323,19 +8343,23 @@
         (Defn [name params ret ie body rb]
           (if (= ie 1)
             (check-defns t (defns-append acc h) facts tab shared adts dparams retb)
-            (match (b-plan name (clone params) body (clone ret) rb (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb))
-              (BPlanErr [msg] (CKErr msg))
-              (BPlan [st owns body2 frees]
-                (let [body3 (if (sids-null frees)
-                              body2
-                              (HLet (BNil) body2 frees))]
-                (check-defns t
-                             (defns-append acc (Defn name params (clone ret) ie
-                                                     (if (ty-eq ret (t-str))
-                                                       (own-str-return body3)
-                                                       body3)
-                                                     rb))
-                             facts tab shared adts dparams retb))))))))))
+            (match (b-plan name (clone params) body (clone ret) rb facts tab shared adts dparams retb)
+              (BPlanRes [bcx plan]
+                (match bcx
+                  (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2]
+                    (match plan
+                      (BPlanErr [msg] (CKErr msg))
+                      (BPlan [st owns body2 frees]
+                        (let [body3 (if (sids-null frees)
+                                      body2
+                                      (HLet (BNil) body2 frees))]
+                          (check-defns t
+                                       (defns-append acc (Defn name params (clone ret) ie
+                                                               (if (ty-eq ret (t-str))
+                                                                 (own-str-return body3)
+                                                                 body3)
+                                                               rb))
+                                       facts2 tab2 shared2 adts2 dp2 retb2))))))))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
@@ -8346,14 +8370,18 @@
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (match (b-plan mangled (clone params) body (clone ret) 0 (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb))
-            (BPlanErr [msg] (LErrL msg))
-            (BPlan [st owns body2 _frees]
-              (check-lams t (lams-append acc (Lam mangled caps params (clone ret)
+          (match (b-plan mangled (clone params) body (clone ret) 0 facts tab shared adts dparams retb)
+            (BPlanRes [bcx plan]
+              (match bcx
+                (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2]
+                  (match plan
+                    (BPlanErr [msg] (LErrL msg))
+                    (BPlan [st owns body2 _frees]
+                      (check-lams t (lams-append acc (Lam mangled caps params (clone ret)
                                                           (if (ty-eq ret (t-str))
                                                             (own-str-return body2)
                                                             body2)))
-                          facts (clone tab) shared adts dparams retb))))))))
+                                  facts2 tab2 shared2 adts2 dp2 retb2))))))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
                     tab :- i64 adts :- AdtTab] :- CkRes
