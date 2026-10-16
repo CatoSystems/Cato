@@ -89,6 +89,9 @@ pub struct Interpreter<'p> {
     recur_sink: Option<Vec<Value>>,
     /// The interpreted program's arguments (`(args)`), S3.
     program_args: Vec<String>,
+    /// Shared append-only symbol tables (`cato-stab-*` externs). A handle is
+    /// an index here; entries are never removed, mirroring the runtime.
+    stabs: Vec<Vec<String>>,
 }
 
 type R<T> = Result<T, String>;
@@ -104,6 +107,7 @@ impl<'p> Interpreter<'p> {
             out: String::new(),
             recur_sink: None,
             program_args: Vec::new(),
+            stabs: Vec::new(),
         }
     }
 
@@ -195,6 +199,49 @@ impl<'p> Interpreter<'p> {
                     };
                     return Ok(Value::Int((code as i64) << 8));
                 }
+            }
+            // Shared append-only symbol table (`lib/sym.cato`). A handle is
+            // an index into `self.stabs`; entries are never removed.
+            "cato-stab-new" => {
+                self.stabs.push(Vec::new());
+                return Ok(Value::Int((self.stabs.len() - 1) as i64));
+            }
+            "cato-stab-count" => {
+                let h = int_of(&args[0]) as usize;
+                return Ok(Value::Int(self.stabs[h].len() as i64));
+            }
+            "cato-stab-get" => {
+                let h = int_of(&args[0]) as usize;
+                let sid = int_of(&args[1]) as usize;
+                let s = self.stabs[h][sid].clone();
+                return Ok(Value::Str(Rc::new(s)));
+            }
+            "cato-stab-find" => {
+                let h = int_of(&args[0]) as usize;
+                if let Value::Str(s) = &args[1] {
+                    for i in (0..self.stabs[h].len()).rev() {
+                        if self.stabs[h][i] == **s {
+                            return Ok(Value::Int(i as i64));
+                        }
+                    }
+                }
+                return Ok(Value::Int(-1));
+            }
+            "cato-stab-conj" => {
+                let h = int_of(&args[0]) as usize;
+                if let Value::Str(s) = &args[1] {
+                    let sid = self.stabs[h].len() as i64;
+                    self.stabs[h].push((**s).clone());
+                    return Ok(Value::Int(sid));
+                }
+                return Ok(Value::Int(-1));
+            }
+            "cato-stab-add" => {
+                let h = int_of(&args[0]) as usize;
+                if let Value::Str(s) = &args[1] {
+                    self.stabs[h].push((**s).clone());
+                }
+                return Ok(Value::Int(h as i64));
             }
             _ => {}
         }

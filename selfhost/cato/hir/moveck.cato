@@ -19,8 +19,14 @@
 
 ; --- read-only context ---------------------------------------------------------
 
+; callee name -> its parameter list, so a call can move only the args bound
+; to owned (non-`&`) parameters (the seed's per-param borrow kinds). Extern
+; parameters are recorded all-borrowed (externs never consume).
+(deftype DParams (DPNil) (DPCons [name :- i64 ps :- PList next :- DParams]))
+
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
-                    tab :- i64 shared :- Sids loopcopy :- Sids]))
+                    tab :- i64 shared :- Sids loopcopy :- Sids adts :- AdtTab
+                    dparams :- DParams]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -42,7 +48,7 @@
              (is-non-copy-ty (clone t))
              (= (im-get st v 0) 1))
       (match bcx
-        (BCtx [escaped shadowed facts tab shared _lc]
+        (BCtx [escaped shadowed facts tab shared _lc _adts _dp]
           (UseRes rem2 (str "use of moved value " (sym-str (clone tab) v)))))
       (UseRes rem2 ""))))
 
@@ -68,7 +74,7 @@
             (match bcx
               ; a non-Copy loop variable rides as Copy: calls and
               ; constructors borrow it, nothing moves (S8)
-              (BCtx [escaped shadowed facts tab shared loopcopy]
+              (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp]
                 (if (sids-has (clone loopcopy) v)
                   (MncRes st owns rem2 cons)
                   (match (move-var v st owns cons)
@@ -344,15 +350,65 @@
         (BKOk [st2 owns2 rem2 cons2 c2]
           (BKOk st2 owns2 rem2 cons2 c2))))))
 
-; HCall's Owned-kind Var arguments: use + move after the plain child walk
-; (builtins and externs never consume)
+; HCall's Owned-kind Var arguments: use + move after the plain child walk.
+; Builtins never consume; for every other callee we consult the callee's
+; parameter borrows (the seed's per-param kinds): an arg bound to an owned
+; param moves, one bound to a borrowed (&) param stays with the caller.
+(deftype DLook (DFound [ps :- PList]) (DMissing))
+
+(defn dparams-get [dp :- &DParams name :- i64] :- DLook
+  (match dp
+    (DPNil [] (DMissing))
+    (DPCons [n ps next]
+      (if (= n name)
+        (DFound (clone ps))
+        (dparams-get next name)))))
+
+(defn b-mark-borrowed [ps :- PList] :- PList
+  (match ps
+    (PNil [] (PNil))
+    (PCons [h t]
+      (match h
+        (Param [pname pty pb]
+          (PCons (Param (clone pname) (clone pty) 1) (b-mark-borrowed (clone t))))))))
+
+(defn b-dparams [defs :- &Defns acc :- DParams] :- DParams
+  (match defs
+    (DNil [] acc)
+    (DCons [h t]
+      (match (clone h)
+        (Defn [name params ret isextern body]
+          (b-dparams t
+            (DPCons name
+              (if (= isextern 1) (b-mark-borrowed (clone params)) (clone params))
+              acc)))))))
+
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
                   cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc]
+    (BCtx [escaped shadowed facts tab shared _lc _adts dp]
       (if (sids-has (clone shared) name)
         (B4 st owns rem cons)
-        (b-call-move-walk args st owns rem cons (clone tys) bcx)))))
+        (match (dparams-get dp name)
+          (DFound [ps] (b-call-move-ps (clone args) (clone ps) st owns rem cons (clone tys) bcx))
+          (DMissing [] (b-call-move-walk (clone args) st owns rem cons (clone tys) bcx)))))))
+
+(defn b-call-move-ps [args :- HExprs ps :- PList st :- IMap owns :- IMap rem :- IMap
+                     cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
+  (match args
+    (HENil [] (B4 st owns rem cons))
+    (HECons [kid next]
+      (match ps
+        (PNil [] (b-call-move-walk (clone args) st owns rem cons (clone tys) bcx))
+        (PCons [h pt]
+          (match h
+            (Param [pname pty pb]
+              (if (and (= pb 0) (= (h-tag (clone kid)) 3))
+                (match (move-if-nc (name-of (clone kid)) st owns rem cons (clone tys) bcx)
+                  (MncErr [msg] (B4Err msg))
+                  (MncRes [st2 owns2 rem2 cons2]
+                    (b-call-move-ps (clone next) (clone pt) st2 owns2 rem2 cons2 (clone tys) bcx)))
+                (b-call-move-ps (clone next) (clone pt) st owns rem cons (clone tys) bcx)))))))))
 
 (defn b-call-move-walk [args :- HExprs st :- IMap owns :- IMap rem :- IMap
                        cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
@@ -405,13 +461,13 @@
 
 (defn b-facts-of [bcx :- &BCtx] :- Facts
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc] (clone facts))))
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp] (clone facts))))
 
 ; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
 ; consumed ∧ not shadowed, in binding order — the whole destruction rule
 (defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp]
       (b-frees-walk binds st owns cons escaped shadowed facts))))
 
 (defn b-frees-walk [binds :- &Binds st :- &IMap owns :- &IMap cons :- &IMap
@@ -440,8 +496,8 @@
 ; the body walk consults through the context.
 (defn bcx-with-loopcopy [bcx :- &BCtx names :- Sids] :- BCtx
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc]
-      (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared) names))))
+    (BCtx [escaped shadowed facts tab shared _lc adts dp]
+      (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared) names (clone adts) (clone dp)))))
 
 (defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
   (match binds
@@ -469,41 +525,106 @@
     (MNil [] st)
     (MCons [k prev next] (b-restore-st next (im-put st k prev)))))
 
+; The ADT index of a named match scrutinee for the boxed-alias analysis
+; (the seed's scrutinee_adt); -1 when there is no binding to retire.
+(defn fp-scrut-adt [s :- &HExpr tys :- &TyEnv] :- i64
+  (match s
+    (HVar [v]
+      (let [t (te-get tys v)]
+        (if (= (ty-tag (clone t)) 16) (ty-arg (clone t)) -1)))
+    (HCtor [adt variant args] adt)
+    (_ -1)))
+
+; Does a match binder over field type fty alias the scrutinee's one heap
+; box? str/vec/map/set/fn fields and boxed-ADT children do; scalars and
+; inline-ADT children copy by value.
+(defn fp-binder-alias [fty :- &Ty facts :- &Facts] :- i64
+  (let [t (ty-tag fty)]
+    (cond
+      (= t 12) 1
+      (= t 13) 1
+      (= t 14) 1
+      (= t 15) 1
+      (= t 17) 1
+      (= t 16) (facts-boxed-at facts (ty-arg fty))
+      0)))
+
+; Real field type for a binder whose field aliases the scrutinee's heap
+; (vec/map/set or a boxed ADT child) so a move through it registers; other
+; fields keep the I64 copy stand-in.
+(defn fp-binder-type [fty :- Ty facts :- &Facts] :- Ty
+  (let [t (ty-tag (clone fty))]
+    (if (and (or (= t 13) (= t 14) (= t 15) (= t 16))
+             (= (fp-binder-alias (clone fty) facts) 1))
+      (clone fty)
+      (t-i64))))
+
+(defn b-adts-of [bcx :- &BCtx] :- AdtTab
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc adts _dp] (clone adts))))
+
+; Did any aliasing binder escape the arm (tail position) or get moved? If
+; so the box's drop duty transfers and the scrutinee's scope free is
+; suppressed (the seed's any_alias_escape).
+(defn b-arm-esc [binders :- Sids fields :- TyList st :- IMap escaped :- Sids
+                 facts :- &Facts acc :- i64] :- i64
+  (match binders
+    (SNil [] acc)
+    (SCons [b rest]
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+            frest (match fields (TyCons [h t2] (clone t2)) (TyNil [] (TyNil)))
+            ; an inline ADT binder is materialized as the field's address
+            ; inside the box, so it aliases too (the seed's `|| Adt`)
+            hit (if (and (or (= (fp-binder-alias (clone fty) facts) 1)
+                             (= (ty-tag (clone fty)) 16))
+                         (or (sids-has (clone escaped) b)
+                             (= (im-get (clone st) b 0) 1)))
+                  1 acc)]
+        (b-arm-esc (clone rest) frest st escaped facts hit)))))
+
 ; match arms: every arm starts from the same post-scrutinee state; a move
 ; in one arm must not poison the others — only one arm runs. Binders alias
 ; the scrutinee's fields, so they never own (I64 is the historical
 ; state-tracking stand-in).
-(deftype BArmsRes (BArmsRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap arms :- HArms])
+(deftype BArmsRes (BArmsRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap arms :- HArms esc :- i64])
                 (BArmsErr [msg :- str]))
 
-(defn b-arm-state [binders :- Sids pst :- IMap powns :- IMap tys :- TyEnv] :- BLRes
+(defn b-arm-state [binders :- Sids fields :- TyList pst :- IMap powns :- IMap
+                   tys :- TyEnv facts :- &Facts] :- BLRes
   (match binders
     (SNil [] (BLRes pst powns (MNil) (MNil) tys (BNil)))
     (SCons [b rest]
-      (match (b-arm-state (clone rest) pst powns tys)
-        (BLErr [msg] (BLErr msg))
-        (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
-          (BLRes (im-put st1 b 0) (im-put owns1 b 0) rem1 cons1
-                 (te-put tys1 b (t-i64)) (BNil)))))))
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+            frest (match fields (TyCons [h t2] (clone t2)) (TyNil [] (TyNil)))]
+        (match (b-arm-state (clone rest) frest pst powns tys facts)
+          (BLErr [msg] (BLErr msg))
+          (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
+            (BLRes (im-put st1 b 0) (im-put owns1 b 0) rem1 cons1
+                   (te-put tys1 b (fp-binder-type (clone fty) facts)) (BNil))))))))
 
 (defn b-arms [arms :- HArms pst :- IMap powns :- IMap st :- IMap owns :- IMap
-             rem :- IMap cons :- IMap tys :- TyEnv bcx :- &BCtx acc :- HArms] :- BArmsRes
+             rem :- IMap cons :- IMap tys :- TyEnv bcx :- &BCtx acc :- HArms
+             adtidx :- i64 boxed :- i64 esc :- i64] :- BArmsRes
   (match arms
-    (HANil [] (BArmsRes st owns rem cons (hes-rev-arms (clone acc) (HANil))))
+    (HANil [] (BArmsRes st owns rem cons (hes-rev-arms (clone acc) (HANil)) esc))
     (HACons [variant binders body next]
-      (match (b-arm-state (clone binders) (clone pst) (clone powns) (clone tys))
-        (BLErr [msg] (BArmsErr msg))
-        (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
-          (match (bcheck (clone body) (clone st1) (clone owns1) rem1 cons1 tys1 bcx)
-            (BErr [msg] (BArmsErr msg))
-            (BOk [st2 owns2 rem2 cons2 body2]
-              ; a value moved in any arm counts as moved and
-              ; unconsumed-eligible afterwards
-              (let [st3 (b-merge-st (clone st1) (clone st2) (clone st))
-                    owns3 (b-merge-owns (clone owns1) (clone owns2) (clone owns))]
-                (b-arms (clone next) (clone pst) (clone powns) st3 owns3 rem2 cons2
-                        (clone tys) bcx
-                        (HACons variant (clone binders) body2 acc))))))))))
+      (let [fields (if (= boxed 1) (varnt-fields-at (b-adts-of bcx) adtidx variant) (TyNil))]
+        (match (b-arm-state (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) (b-facts-of bcx))
+          (BLErr [msg] (BArmsErr msg))
+          (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
+            (match (bcheck (clone body) (clone st1) (clone owns1) rem1 cons1 tys1 bcx)
+              (BErr [msg] (BArmsErr msg))
+              (BOk [st2 owns2 rem2 cons2 body2]
+                ; a value moved in any arm counts as moved and
+                ; unconsumed-eligible afterwards
+                (let [escaped (b-tail-escape (clone body2) (SNil))
+                      esc2 (b-arm-esc (clone binders) (clone fields) (clone st2) escaped (b-facts-of bcx) esc)
+                      st3 (b-merge-st (clone st1) (clone st2) (clone st))
+                      owns3 (b-merge-owns (clone owns1) (clone owns2) (clone owns))]
+                  (b-arms (clone next) (clone pst) (clone powns) st3 owns3 rem2 cons2
+                          (clone tys) bcx
+                          (HACons variant (clone binders) body2 acc)
+                          adtidx boxed esc2))))))))))
 
 (defn hes-rev-arms [arms :- HArms acc :- HArms] :- HArms
   (match arms
@@ -855,13 +976,20 @@
           (BOk st1 owns1 rem1 cons1 (HCtor adt variant c1))))))
 
     (HMatch [scrut arms ty]
+    (let [adtidx (fp-scrut-adt (clone scrut) tys)
+          boxed (if (and (>= adtidx 0) (= (facts-boxed-at (b-facts-of bcx) adtidx) 1)) 1 0)]
     (match (bcheck (clone scrut) st owns rem cons (clone tys) bcx)
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (match (b-arms (clone arms) (clone st1) (clone owns1) st1 owns1 rem1 cons1 (clone tys) bcx (HANil))
+        (match (b-arms (clone arms) (clone st1) (clone owns1) st1 owns1 rem1 cons1 (clone tys) bcx (HANil) adtidx boxed 0)
           (BArmsErr [msg] (BErr msg))
-          (BArmsRes [st2 owns2 rem2 cons2 arms2]
-            (BOk st2 owns2 rem2 cons2 (HMatch c1 arms2 ty)))))))
+          (BArmsRes [st2 owns2 rem2 cons2 arms2 esc2]
+            ; An aliasing binder left the arm: the box's drop duty
+            ; transfers, so the scrutinee's own scope free is suppressed.
+            (if (and (= esc2 1) (= (h-tag (clone scrut)) 3))
+              (match (move-var (name-of (clone scrut)) st2 owns2 cons2)
+                (MoveRes [st3 owns3 cons3] (BOk st3 owns3 rem2 cons3 (HMatch c1 arms2 ty))))
+              (BOk st2 owns2 rem2 cons2 (HMatch c1 arms2 ty)))))))))
 
     (HDrop [x]
     (match (bcheck (clone x) st owns rem cons (clone tys) bcx)
@@ -953,15 +1081,32 @@
     (sids-append acc (s-count)) (s-evenq)) (s-printi64)) (s-printf64))
     (s-getform)) (s-clone)) (s-dropform)))
 
-(deftype BPlan (BPlan [st :- IMap owns :- IMap e :- HExpr])
+(deftype BPlan (BPlan [st :- IMap owns :- IMap e :- HExpr frees :- Sids])
               (BPlanErr [msg :- str]))
+
+; Owned move-type parameters whose buffer is still held at body exit get a
+; scope-exit free (mirrors the seed's param_frees wrapper). A moved or
+; returned param has already transferred its drop duty (owns=0, or escaped).
+(defn fp-frees [params :- PList st :- IMap owns :- IMap facts :- Facts esc :- Sids] :- Sids
+  (match params
+    (PNil [] (SNil))
+    (PCons [p rest]
+      (match p
+        (Param [pname pty pb]
+          (if (and (= pb 0)
+                   (b-param-moves (clone pty) (clone facts))
+                   (= (im-get (clone owns) pname 0) 1)
+                   (= (im-get (clone st) pname -1) 0)
+                   (not (sids-has (clone esc) pname)))
+            (SCons pname (fp-frees (clone rest) (clone st) (clone owns) (clone facts) (clone esc)))
+            (fp-frees (clone rest) (clone st) (clone owns) (clone facts) (clone esc))))))))
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
 (defn b-plan [name :- i64 params :- PList body :- HExpr facts :- Facts
-             tab :- i64 shared :- Sids] :- BPlan
-  ; `shared` (externs + borrowed-param callees + builtins) is computed
-  ; once per program by check-program — computing it per defn walked the
-  ; whole Defns chain 1000+ times.
+             tab :- i64 shared :- Sids adts :- AdtTab dparams :- DParams] :- BPlan
+  ; `shared` (builtins, which never consume) and `dparams` (per-callee
+  ; parameter borrows) are computed once per program by check-program —
+  ; computing them per defn walked the whole Defns chain 1000+ times.
   (let [escaped (b-tail-escape (clone body) (SNil))
         shadowed (b-shadowed-of (b-count-binds (clone body) (MNil)) (SNil))
         rem0 (b-count-vars (clone body) (MNil))
@@ -969,12 +1114,13 @@
     (match r
       (BLErr [msg] (BPlanErr msg))
       (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil))]
+        (let [bcx (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) shared (SNil) (clone adts) (clone dparams))]
           (match (bcheck (clone body) (clone st0) (clone owns0) (clone rem0) (clone cons0) (clone tys0) bcx)
             (BErr [msg]
               (BPlanErr (str "ownership check failed in " (sym-str (clone tab) name) ": " msg)))
             (BOk [st1 owns1 rem1 cons1 body2]
-              (BPlan st1 owns1 body2))))))))
+              (BPlan (clone st1) (clone owns1) body2
+                     (fp-frees (clone params) (clone st1) (clone owns1) (clone facts) (clone escaped))))))))))
 
 (defn b-init-params [params :- PList facts :- Facts st :- IMap owns :- IMap
                     rem :- IMap cons :- IMap tys :- TyEnv] :- BLRes
@@ -1032,7 +1178,7 @@
               (CKErr [msg :- str]))
 
 (defn check-defns [ds :- Defns acc :- Defns facts :- Facts tab :- i64
-                  shared :- Sids] :- CkRes
+                  shared :- Sids adts :- AdtTab dparams :- DParams] :- CkRes
   ; the whole-program state threads by move — a per-step clone of facts/
   ; tab/alldefs made the self-compile quadratic (S8)
   (match ds
@@ -1041,47 +1187,53 @@
       (match h
         (Defn [name params ret ie body]
           (if (= ie 1)
-            (check-defns t (defns-append acc h) facts tab shared)
-            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared))
+            (check-defns t (defns-append acc h) facts tab shared adts dparams)
+            (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
               (BPlanErr [msg] (CKErr msg))
-              (BPlan [st owns body2]
+              (BPlan [st owns body2 frees]
+                (let [body3 (if (sids-null (clone frees))
+                              (clone body2)
+                              (HLet (BNil) (clone body2) (clone frees)))]
                 (check-defns t
                              (defns-append acc (Defn name (clone params) (clone ret) ie
                                                      (if (ty-eq (clone ret) (t-str))
-                                                       (own-str-return (clone body2))
-                                                       (clone body2))))
-                             facts tab shared)))))))))
+                                                       (own-str-return (clone body3))
+                                                       (clone body3))))
+                             facts tab shared adts dparams))))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
 
 (defn check-lams [ls :- Lams acc :- Lams facts :- Facts tab :- i64
-                 shared :- Sids] :- LkRes
+                 shared :- Sids adts :- AdtTab dparams :- DParams] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))
     (LMCons [h t]
       (match h
         (Lam [mangled caps params ret body]
-          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone shared))
+          (match (b-plan mangled (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
             (BPlanErr [msg] (LErrL msg))
-            (BPlan [st owns body2]
+            (BPlan [st owns body2 _frees]
               (check-lams (clone t) (lams-append acc (Lam mangled (clone caps) (clone params) (clone ret)
                                                           (if (ty-eq (clone ret) (t-str))
                                                             (own-str-return (clone body2))
                                                             (clone body2))))
-                          (clone facts) (clone tab) (clone shared)))))))))
+                          (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams)))))))))
 
 (defn check-program [defs :- Defns lams :- Lams facts :- Facts
-                    tab :- i64] :- CkRes
-  (let [shared (b-add-builtins (b-shared-callees defs (SNil)))
+                    tab :- i64 adts :- AdtTab] :- CkRes
+  (let [shared (b-add-builtins (SNil))
+        dparams (b-dparams defs (DPNil))
         ; the second stage re-reads the small program state: clone it
         ; before the first call moves it
         facts2 (clone facts)
         tab2 (clone tab)
-        shared2 (clone shared)]
-    (match (check-defns defs (DNil) facts tab shared)
+        shared2 (clone shared)
+        adts2 (clone adts)
+        dparams2 (clone dparams)]
+    (match (check-defns defs (DNil) facts tab shared adts dparams)
       (CKErr [msg] (CKErr msg))
       (CKOk [defs2 lams0]
-        (match (check-lams lams (LMNil) facts2 tab2 shared2)
+        (match (check-lams lams (LMNil) facts2 tab2 shared2 adts2 dparams2)
           (LErrL [msg] (CKErr msg))
           (LOkL [lams2] (CKOk defs2 lams2)))))))
 

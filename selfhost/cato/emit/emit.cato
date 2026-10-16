@@ -180,15 +180,15 @@
          (adt-clone-words nm off (- cnt 1) u))))
 
 (defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
-  ; S8 bootstrap: drop glue is a no-op. The kernel's self-compile hit a
-  ; premature-free class the ownership model does not see yet (a drop of
-  ; a still-referenced chain corrupts live state), and the pipeline
-  ; already tolerates leaks (match-scrutinee temps never freed). Frees
-  ; return with the post-fixpoint memory pass; correctness first.
   (let [nm (adt-name-at (clone adts) i (clone tab))]
     (str "define void @drop__" nm "(ptr %src) {\n"
          "entry:\n"
-         "  ret void\n"
+         "  %tag = load i64, ptr %src\n"
+         (glue-switch (clone adts) i 0 "bad")
+         "bad:\n  unreachable\n\n"
+         (adt-drop-variants (clone adts) (clone owns) i 0 (clone tab))
+         "freebox:\n  call void @free(ptr %src)\n  ret void\n"
+         "done:\n  ret void\n"
          "}\n")))
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
@@ -210,11 +210,11 @@
           nm (adt-name-at (clone adts) i (clone tab))
           tg (ty-tag (clone fty))]
       (adt-drop-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
-                       (str acc (drop-field-text (clone fty) off nm (clone adts) (clone owns) serial tg (clone tab)))))))
+                       (str acc (drop-field-text (clone fty) off nm (clone adts) (clone owns) vi serial tg (clone tab)))))))
 
 (defn drop-field-text [fty :- Ty off :- i64 nm :- str adts :- AdtTab
-                       owns :- Sids serial :- i64 tg :- i64 tab :- i64] :- str
-  (let [u (str off "x" serial)]
+                       owns :- Sids vi :- i64 serial :- i64 tg :- i64 tab :- i64] :- str
+  (let [u (str "v" vi "f" serial)]
     (cond
       (= tg 12)
       (str "  %fp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
@@ -250,17 +250,17 @@
 
 (defn emit-program [adts :- AdtTab defs :- Defns lams :- Lams csigs :- Sigs
                     tab :- i64] :- str
-  (do (print-string "PHASE emit-start\n")
+  (do
   (let [owns (facts-owns-of (clone adts))
         sigs (sigs-build (clone defs) (ESTNil))
         st0 (match (em-new (clone tab) (clone adts) (clone owns) (clone csigs) sigs)
               (Emit [c m s] (Emit c (md-seed-decls m) s)))]
     (match (emit-defns (clone defs) st0 (EOut (sb-new)))
       (EORes [st1 out1]
-        (do (print-string "PHASE emit-defns-done\n")
+        (do
         (match (emit-lams lams st1 out1)
           (EORes [st2 out2]
-            (do (print-string "PHASE emit-lams-done\n")
+            (do
             (let [mdl (match st2 (Emit [c m s] m))
                   sb1 (sb-add-line (sb-new) "; cato: kernel LLVM IR (S7)")
                   sb2 (sb-add-line sb1 "%VecI64 = type { ptr, i64, i64 }")
@@ -269,7 +269,7 @@
                   sb5 (md-decls-lines mdl sb4)
                   sb6 (sb-add-line sb5 (sb-str (md-globals mdl)))
                   sb7 (adt-glue (clone adts) (clone owns) 0 (clone tab) sb6)]
-              (do (print-string "PHASE emit-assembled\n")
+              (do
               (sb-str (sb-add-line sb7 (sb-str (out2-sb out2)))))))))))))))
 
 (defn out2-sb [o :- EOut] :- StrBuf

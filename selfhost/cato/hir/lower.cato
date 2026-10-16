@@ -2947,9 +2947,36 @@
         (lok tab adts insts sigs lams rets ncached defs (HVecLit 1 (kids-f64s (clone els) (VVNil))))
         (LErr "vec-f64 elements must be numeric literals")))))
 
+; --- (str ...) constant folding ---------------------------------------------------
+; A single-argument (str x) is just x; an all-literal (str "a" "b" ...) folds to a
+; single literal. Without this the kernel emits a runtime malloc+memcpy for every
+; literal string fragment, of which the kernel source has very many.
+(defn hs-lit-of [e :- &HExpr] :- bool
+  (match e
+    (HStrLit [_] true)
+    (_ false)))
+
+(defn hs-all-lit [es :- &HExprs] :- bool
+  (match es
+    (HENil [] true)
+    (HECons [kid next] (if (hs-lit-of kid) (hs-all-lit next) false))))
+
+(defn hs-join-lit [es :- &HExprs acc :- str] :- str
+  (match es
+    (HENil [] acc)
+    (HECons [kid next]
+      (match kid
+        (HStrLit [s] (hs-join-lit next (str acc s)))
+        (_ acc)))))
+
+(defn hs-one [es :- &HExprs] :- bool
+  (match es
+    (HECons [_ next] (hes-null next))
+    (HENil [] false)))
+
 (defn lower-str [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
-                insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
-                ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
+                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
+                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (< (asts-depth (clone items)) 2)
     (LErr "str expects at least one argument")
     (lower-str-args (asts-tail (clone items)) (HENil) (clone env) tab adts insts sigs lams rets ncached defs raws)))
@@ -2958,8 +2985,12 @@
                      adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                      rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (if (asts-null (clone els))
-    (let [args (hes-rev (clone acc) (HENil))]
-      (lok tab adts insts sigs lams rets ncached defs (HStrCat (clone args))))
+     (let [args (hes-rev (clone acc) (HENil))]
+       (if (hs-one args)
+         (lok tab adts insts sigs lams rets ncached defs (hes-head-hes args))
+         (if (hs-all-lit args)
+           (lok tab adts insts sigs lams rets ncached defs (HStrLit (hs-join-lit args "")))
+           (lok tab adts insts sigs lams rets ncached defs (HStrCat (clone args))))))
     (let [r (lower-1 (asts-idx (clone els) 0) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
         (LErr [msg] (LErr msg))
