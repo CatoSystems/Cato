@@ -1,9 +1,9 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 19.34 GB (−61.7%)**;
-  ALLOC_CALLS **1.19B → 474M (−60%)**; kernel self-build wall time
-  **47.5 s → 16.7 s (−65%)**.
+- Kernel self-build alloc churn: **50.56 GB → 5.67 GB (−88.8%)**;
+  ALLOC_CALLS **1.19B → 159M (−86.6%)**; kernel self-build wall time
+  **47.5 s → 7.9 s (−83%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -12,6 +12,45 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 3 results (inclusive attribution, 19.34 → 5.67 GB)
+The decisive tool: **inclusive per-call-site byte attribution**.
+`tools/instr_clones.py` brackets every `clone__X(...)` call with
+`__dbg_enter/__dbg_exit`, and `tools/dbg_hit.c` — built as a *dylib* and
+injected, because interposition does not work from the main executable
+(link the instrumented IR with `-Wl,-undefined,dynamic_lookup`) — adds each
+allocation to the outermost bracketed call. One run ranks "how much churn
+does this call site start", with no modelling guesswork:
+```bash
+./target/release/cato selfhost/cato.cato --emit-ir -o /tmp/k.ll
+python3 tools/instr_clones.py /tmp/k.ll /tmp/i.ll /tmp/map.tsv
+clang -dynamiclib -O2 -o /tmp/dbg_hit.dylib tools/dbg_hit.c
+clang -O2 -Wl,-undefined,dynamic_lookup /tmp/i.ll runtime/runtime.c -o /tmp/ki
+DYLD_INSERT_LIBRARIES=/tmp/dbg_hit.dylib DBG_MAP=/tmp/map.tsv \
+  /tmp/ki build selfhost/cato.cato /tmp/k3 2>/tmp/sites.txt
+sort -t$'\t' -k4 -rn /tmp/sites.txt | head -20   # SITE id calls bytes fn callee
+```
+What it found (each step verified by the gate and by byte-identical IR from
+the pre/post compilers on the same input):
+- **One call site was 38% of all churn.** `match-variant-arm` lowered an arm
+  body and then passed a *clone* of the whole `Defns` list (every definition
+  emitted so far, bodies included) to the next arm. Expression lowering never
+  adds a definition, so the list the lowering returns is that same value;
+  threading it removes the copy. (19.34 → 9.41 GB with the next item.)
+- **`md-adt-name` cloned the whole ADT table to index one entry.**
+- **Cloning `Emit`/`Mdl` to read one field** (5 sites) copied the globals
+  StrBuf (every emitted line), the ADT table and the signature table; the
+  `em-boxed-at` / `em-adt-name` borrowed readers fix it (9.41 → 7.41 GB).
+- `adts-tparams` / `instance-of-template` borrowed (callers cloned the whole
+  table and the callee dropped it); `varnt-fields-at` fused its
+  AdtInfo/Varnt walk so only the small field list is copied (7.41 → 7.01 GB).
+- `match-binders` threaded the ADT table and instance map and returned them
+  untouched — callers cloned a whole `AdtTab` *and* an `IMap` per arm. The
+  dead parameters are gone; the arm body's lowering threads what it returns.
+  Plus `(adt-of scrut (clone st1))` and `(varnt-fields-at (b-adts-of bcx)
+  ...)` copies (7.01 → 5.67 GB).
+- `ps-err` now moves its fields instead of cloning them (the copies were
+  already elided at codegen — a cleanup, not a measured win).
 
 ## Round 2 results (borrowed tables + destructuring, 21.73 → 19.34 GB)
 Self-build wall time 21.4 s → 16.7 s (−22%); cumulative runtime −65%.
