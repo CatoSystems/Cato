@@ -32,12 +32,13 @@ COPY_TYPES = {
 
 
 class Binder:
-    __slots__ = ("name", "eligible", "uses")
+    __slots__ = ("name", "eligible", "uses", "bare")
 
     def __init__(self, name, eligible):
         self.name = name
         self.eligible = eligible
         self.uses = []
+        self.bare = False  # referenced as a bare atom (a potential move)
 
 
 class Scope:
@@ -166,11 +167,18 @@ def bind_let(binds, scope):
     return out
 
 
-def collect_uses(node, scope, inner):
-    """Set of outer Binder objects referenced in node (inner ones excluded)."""
+def collect_uses(node, scope, inner, mark=True):
+    """Set of outer Binder objects referenced in node (inner ones excluded).
+
+    `mark` is False for positions that are never moves (a match scrutinee, an
+    if condition): a bare atom there borrows, so it must not suppress the
+    last-use move of an arm binder / clone elsewhere on the path.
+    """
     if is_atom(node):
         b = scope.lookup(node[1])
         if b is not None and b not in inner:
+            if mark:
+                b.bare = True  # a bare atom use is a potential move
             return {b}
         return set()
     if not is_list(node):
@@ -185,14 +193,19 @@ def collect_uses(node, scope, inner):
     if h == "defn":
         return set()  # nested defn: separate function, ignore
     if h == "match":
-        res = collect_uses(k[1], scope, inner)
+        res = collect_uses(k[1], scope, inner, mark=False)
         for arm in k[2:]:
             ns = Scope(scope)
             bind_arm(arm, ns)
             for n in ns.binders.values():
                 inner.add(n)
             for body in arm[2][2:]:
-                res |= collect_uses(body, ns, inner)
+                res |= collect_uses(body, ns, inner, mark)
+        return res
+    if h == "if":
+        res = collect_uses(k[1], scope, inner, mark=False)
+        for c in k[2:]:
+            res |= collect_uses(c, scope, inner, mark)
         return res
     if h == "let":
         ns = Scope(scope)
@@ -201,13 +214,13 @@ def collect_uses(node, scope, inner):
             inner.add(n)
         res = set()
         for _, val, _ in vals:
-            res |= collect_uses(val, ns, inner)
+            res |= collect_uses(val, ns, inner, mark)
         for body in k[2:]:
-            res |= collect_uses(body, ns, inner)
+            res |= collect_uses(body, ns, inner, mark)
         return res
     res = set()
     for c in k[1:]:
-        res |= collect_uses(c, scope, inner)
+        res |= collect_uses(c, scope, inner, mark)
     return res
 
 
@@ -215,15 +228,19 @@ def uses_of(node, scope):
     return collect_uses(node, scope, set())
 
 
-def walk(node, scope, after, edits):
+def walk(node, scope, after, edits, mark=True):
     if not is_list(node):
+        if is_atom(node):
+            b = scope.lookup(node[1])
+            if b is not None and mark:
+                b.bare = True
         return
     h = head(node)
     k = node[2]
     arg = clone_arg(node)
     if arg is not None:
         b = scope.lookup(arg[1])
-        if b is not None and b.eligible and b not in after:
+        if b is not None and b.eligible and not b.bare and b not in after:
             edits.append((node[1][1], node[3][1] + 1, arg[1]))
         return
     if h == "defn":
@@ -247,7 +264,13 @@ def walk(node, scope, after, edits):
                         ns.no_move.add(b.name)
             for body in arm[2][2:]:
                 arm_uses |= uses_of(body, ns)
-        walk(k[1], scope, after | arm_uses, edits)
+        # Keep the scrutinee's own clone. `(match (clone r) …)` gives the
+        # checker a temp scrutinee; a bare Var scrutinee plus a moved arm
+        # binder trips its box watch/retirement model ("use of moved
+        # value"). The temp clone is load-bearing; the arm-binder clones
+        # (the expensive ones) are still elided.
+        if clone_arg(sel) is None:
+            walk(sel, scope, after | arm_uses, edits, mark=False)
         for arm in arms:
             ns = Scope(scope)
             bind_arm(arm, ns)
@@ -267,7 +290,7 @@ def walk(node, scope, after, edits):
             other |= uses_of(then, scope)
         if els is not None:
             other |= uses_of(els, scope)
-        walk(cond, scope, after | other, edits)
+        walk(cond, scope, after | other, edits, mark=False)
         if then is not None:
             walk(then, scope, after, edits)
         if els is not None:
