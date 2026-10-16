@@ -6886,27 +6886,32 @@
             ; externs: no lowering; the seed appends the declaration with
             ; a (const 0) placeholder body, all params Shared
             (= isextern 1)
-            (build-lower-2 rs (+ i 1) n (clone ps)
+            ; Each branch is an alternative path and ends in the recursive
+            ; call, so the state moves: cloning it here copied the whole
+            ; parser state, definition chain and instance list per defn.
+            (build-lower-2 rs (+ i 1) n ps
                            (defns-append defs (Defn name (clone params) (clone ret) 1 (HConstI64 0) 0))
-                           (clone instdefs)
-                           (clone tab) adts insts sigs lams rets ncached)
+                           instdefs
+                           tab adts insts sigs lams rets ncached)
 
             (> (sids-depth typarams) 0)
-            (build-lower-2 rs (+ i 1) n (clone ps) (clone defs) (clone instdefs)
-                           (clone tab) adts insts sigs lams rets ncached)
+            (build-lower-2 rs (+ i 1) n ps defs instdefs
+                           tab adts insts sigs lams rets ncached)
 
             (let [env (binds-of-params (clone params))
                   ; the defs chain threads through lowering: instances
                   ; minted during this body append to it (the seed's
                   ; InstState::extra drain)
-                  lr (lower-body-raw body env (clone ret) (clone tab) (clone adts)
-                                     (clone insts) (clone sigs) (clone lams) (clone rets) ncached defs rs)]
+                  lr (lower-body-raw body env (clone ret) tab adts
+                                     insts sigs lams rets ncached defs rs)]
               (match lr
                 (LErr [msg] (LLoopErr msg))
                 (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
-                  (build-lower-2 rs (+ i 1) n (clone ps)
+                  ; the recursive call already gets the tables lowering
+                  ; returned; the inputs are dead here
+                  (build-lower-2 rs (+ i 1) n ps
                                  (defns-append d2 (Defn name params ret 0 body2 rb))
-                                 (clone instdefs)
+                                 instdefs
                                  t2 a2 i2 s2 l2 r2 n2))))))))))
 
 (defn build-program [forms :- Asts tab :- i64] :- POut
