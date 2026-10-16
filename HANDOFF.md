@@ -13,6 +13,32 @@
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
 
+## Round 11 results (no gain; the `TyEnv` conversion spec)
+Checked the other two "narrow read" candidates and rejected both on the same
+grounds as round 10: `vlist-at`'s three remaining callers (`find-variant-2`,
+`variant-fields` at 2574, `fill-variants`) need the variant's *name and* its
+field list, so two narrow walks cost more than the row copy they save. The
+remaining cheap conversions are gone.
+
+**The next real lever is threading the type environment back through `LRes`**
+(the trick that worked for `BCtx` in round 9), worth ~0.58 GB:
+`(deftype LRes (LOk [tab adts insts sigs lams rets ncached defs e]) ...)` —
+adding `env :- TyEnv` and constructing every `LOk` with the environment the
+function *received* lets each caller reuse it for its next sub-expression
+instead of copying it. Sizing: **59 `(LOk …)` constructions and 58 `LOk [`
+matches** in `lower.cato`.
+- The trap: an arm that *extends* the environment for a let body
+  (`(lower body (te-put env k v) …)`) must still construct `LOk` with the
+  **original** `env`, otherwise the extension leaks out of the let and the
+  caller lowers the rest of the enclosing expression with the wrong scope.
+  Audit each of the 59 sites for which `env`-named variable it has in hand.
+- Matches are mechanical (append a binder to the `LOk [` vector); the
+  constructions are the ones that need the audit.
+- Guard the edit the way the round-9 mistake was caught: after any structural
+  edit, diff this file's top-level definition names against `HEAD` before
+  compiling, and close restructured forms by counting depth rather than
+  eyeballing parens.
+
 ## Round 10 results (no gain; how to test a narrow-read conversion)
 Tried the `adts-at` narrow-read conversion on the hottest caller
 (`subst-ty`'s ADT arm): added `adts-tpl-at` / `adts-tplargs-at` and split the
