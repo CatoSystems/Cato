@@ -1,14 +1,48 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 21.73 GB (−57.0%)**;
-  ALLOC_CALLS **1.19B → 548M (−54%)**; kernel self-build wall time
-  **47.5 s → 21.4 s (−55%)**.
+- Kernel self-build alloc churn: **50.56 GB → 19.34 GB (−61.7%)**;
+  ALLOC_CALLS **1.19B → 474M (−60%)**; kernel self-build wall time
+  **47.5 s → ~21 s (−56%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
   interpreter scoping bug, pre-existing) and the `cato-cli` repl pty test
   (sandbox denies `openpty`: `script: openpty: Operation not permitted`).
+- CPU: ~40% of the self-build is now the kernel *waiting for clang*
+  (`__wait4_nocancel` samples); of the rest, allocation/free dominates
+  (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 2 results (borrowed tables + destructuring, 21.73 → 19.34 GB)
+Worked:
+- **Narrow `Mdl` accessors.** `md-adts`/`md-owns`/`md-csigs` return an owned
+  table (a deep copy of the ADT table / ownership list / signature table)
+  and were only ever called to feed a `&T` parameter. `md-fs-total`,
+  `md-fs-off`, `md-fs-field-ty`, `md-esigs-at` and an inlined `md-owns-at`
+  do the read inside the match. Same for `(b-borrowed-call v (b-retb-of
+  bcx))` → `b-borrowed-call-of`.
+- **`TyEnv` borrows.** 38 signatures take `&TyEnv`; the walkers that extend
+  the environment keep it owned and clone only at the extension site.
+- **Destructure instead of clone-then-split.** `(hes-first (clone args))`
+  retires the chain box, so reading the tail afterwards copied the whole
+  remaining list; matching the chain once removes both.
+- `esigs-at` carried an unread `Mdl` parameter — dropping it lets a
+  borrowed Mdl be searched without copying the signature table.
+
+Tried and rejected (do not repeat without new evidence):
+- **Blanket `&HExpr` on the emitter.** It cascades: the emitter walkers
+  *consume* the expression and move its fields (arm lists, binders, bind
+  lists) into owned consumers, so borrowing a parameter forces clones of
+  those fields — trading one outer clone for many inner ones. Flipping all
+  `HExpr` params in `emit/*.cato` and reverting what the checker rejects
+  keeps only 6 functions. The same experiment on `TyEnv` worked because
+  most type-env consumers are read-only probes.
+- **`ESplit` (an ADT carrying head+tail).** The box costs more than the
+  small-list clone it replaces (+46 MB); matching the list directly is the
+  win.
+- Borrowing the read-only predicate family (`all-paths-recur`,
+  `validate-arms`, `arms-of` consumers) plus fused `-of` helpers: neutral
+  (−0.1%) for ~40 lines.
 
 ## How to see where the churn/CPU goes (do this first)
 Deterministic, byte-stable, no MAXRSS noise:
@@ -54,19 +88,29 @@ Deterministic, byte-stable, no MAXRSS noise:
    35.18 GB → 21.73 GB.
 
 ## Remaining work (measured, in order)
-- `clone__TyList` 5.19 GB and `clone__HExpr` 4.82 GB — now hundreds of
-  small entry sites (thousands of calls each), not one culprit:
-  `match-binders`, `call-marshal`, `lower-ctor-fields`, `emit-field-store`,
-  `arms-of`, `ctor-store-args`, `md-owns-at`, `sigs-at`. Same medicine:
-  `&T` params on read-only helpers. `md-owns-at` is the cheapest remaining
-  one (it clones the whole `owns` Sids list just to index it).
-- `strdup <- clone__StrCell` 1.39 GB: cloning a `FnCtx`/`Mdl` deep-copies
-  its `StrBuf` (every emitted line). `fc-*`/`md-*` are borrowed now; the
-  remaining sites pass whole `Emit`/`Mdl` values (`(match st (Emit [c m s]
-  (clone m)))` in `emit.cato`/`heap.cato`) and could read the field through
-  `&Emit` accessors instead.
-- `clone__PList` 0.77 GB (`dparams-get`), `clone__TyEnv` 0.88 GB
-  (`lower`, `lower-call-args`, `b-kids`, `unbound-param-2`).
+Fresh profile at 19.34 GB (`tools/alloc_profile.c`): `clone__TyList` 5.06 GB,
+`clone__HExpr` 4.84 GB, libc-internal 1.20, `clone__Sids` 1.12,
+`clone__HExprs` 1.10, `clone__VList` 1.67 (0 entry sites — wholly nested
+inside other clones), `clone__TyEnv` 0.93, `clone__PList` 0.71,
+`clone__AdtTab` 1.04, `clone__HArms` 0.35, `clone__StrCell` 0.34.
+- `clone__TyList` has only **11 entry callers** (`call-marshal` 18.7k,
+  `match-binders` 8.6k, `lower-ctor-fields` 4.4k, `b-arms` 3.8k,
+  `lower-match-plain` 2.9k) but 17.8M total calls, i.e. most of the work is
+  nested inside `clone__AdtInfo`/`clone__AdtTab`/`clone__Sig` — so the
+  remaining ADT-table and signature-table copies are still the root.
+- `clone__HExpr` has **50 entry callers** and 79M total calls — genuinely
+  diffuse (a small sub-tree copy per node boundary). Only targeted,
+  measured edits will move it; the blanket borrow conversion does not (see
+  Round 2 negative results).
+- `clone__HExprs`: 7 callers (`ctor-store-args` 10.0k, `bcheck` 7.8k).
+- `clone__Sids`: `md-owns` was the top caller and is fixed; `b-arms` 6.7k
+  remains.
+- `clone__PList` 0.71 GB (`dparams-get` 19.7k — fuse the lookup with its two
+  consumers the way `md-fs-off` fuses an Mdl read).
+- `strdup <- clone__StrCell`: cloning a `FnCtx`/`Mdl` deep-copies its
+  `StrBuf` (every emitted line). `fc-*`/`md-*` are borrowed; the remaining
+  sites pass whole `Emit`/`Mdl` values (`(match st (Emit [c m s] (clone m)))`)
+  and could read through `&Emit` accessors.
 - Cato-level leak guards remain unexplored (see the original note below).
 - Goal: approach seed behaviour/resource profile.
 
@@ -101,9 +145,13 @@ compiler** emit for the *same* input (byte-identical ⇒ semantics-preserving)
 (parity suites) + a focused micro-benchmark with identical output.
 
 ## Next agent todo
-1. Convert the remaining read-only accessors (`md-owns-at`, `sigs-at`,
-   `Emit`/`Mdl` field readers, `dparams-get`, `TyEnv` walks) to borrows;
-   measure after each batch with the gate.
-2. Explore adding Cato-level leak guards (ownership semantics) to catch
+1. Fuse `dparams-get` with its two consumers (`b-call-move-ps`,
+   `b-tail-args-ok`) so the param list stays borrowed; convert the
+   remaining `(match st (Emit [c m s] (clone m)))` reads to `&Emit`
+   accessors (targets `clone__StrCell` + `clone__PList`).
+2. Chase the nested `clone__TyList` volume: find which remaining callers
+   clone a whole `AdtTab`/`Sigs`/`AdtInfo` (entry sites are few — the
+   instrumentation in the quick commands lists them), and shrink those.
+3. Explore adding Cato-level leak guards (ownership semantics) to catch
    leaks at compile time.
-3. Keep changes semantics-preserving; run the gate after each batch.
+4. Keep changes semantics-preserving; run the gate after each batch.
