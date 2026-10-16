@@ -202,6 +202,14 @@ def collect_uses(node, scope, inner, mark=True):
             for body in arm[2][2:]:
                 res |= collect_uses(body, ns, inner, mark)
         return res
+    if h == "cond":
+        res = set()
+        pairs = k[1:]
+        for i in range(0, len(pairs), 2):
+            res |= collect_uses(pairs[i], scope, inner, mark=False)
+            if i + 1 < len(pairs):
+                res |= collect_uses(pairs[i + 1], scope, inner, mark)
+        return res
     if h == "if":
         res = collect_uses(k[1], scope, inner, mark=False)
         for c in k[2:]:
@@ -298,6 +306,22 @@ def walk(node, scope, after, edits, mark=True):
                     if sel_no_move:
                         ns.no_move.add(b.name)
             walk_block(arm[2][2:], ns, after, edits)
+        return
+    if h == "cond":
+        # `(cond t1 e1 t2 e2 ...)` is an if-chain: the tests are evaluated in
+        # order, but the result expressions are alternative paths, so a binder
+        # may be moved in each of them (and must stay cloned only when a later
+        # test or result still reads it).
+        pairs = k[1:]
+        for i in range(0, len(pairs), 2):
+            test = pairs[i]
+            res = pairs[i + 1] if i + 1 < len(pairs) else None
+            later = set()
+            for j in range(i + 1, len(pairs)):
+                later |= uses_of(pairs[j], scope)
+            walk(test, scope, after | later, edits, mark=False)
+            if res is not None:
+                walk(res, scope, after | later, edits)
         return
     if h == "if":
         cond = k[1]

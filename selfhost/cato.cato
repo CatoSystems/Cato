@@ -1765,12 +1765,15 @@
   (match ps
     (PS [tab decls adts sigs typarams err] (> (count err) 0))))
 
+; The scrutinee is consumed, so its fields can be *moved* into the result:
+; cloning them deep-copied the whole ADT and signature tables on every call
+; (the message is only ever threaded alongside the tables it arrived with).
 (defn ps-err [ps :- PS msg :- str] :- PS
   (match ps
     (PS [tab decls adts sigs typarams err]
       (if (> (count err) 0)
-        (clone ps)
-        (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) (clone msg))))))
+        (PS tab decls adts sigs typarams err)
+        (PS tab decls adts sigs typarams msg)))))
 
 (defn ps-tab [ps :- PS] :- i64
   (match ps (PS [tab decls adts sigs typarams err] tab)))
