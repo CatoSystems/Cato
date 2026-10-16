@@ -1761,7 +1761,10 @@
 (deftype PS (PS [tab :- i64 decls :- Decls adts :- AdtTab
                 sigs :- Sigs typarams :- Sids err :- str]))
 
-(defn ps-failed [ps :- PS] :- bool
+; Reads the error flag alone: taking the state by value made every caller
+; copy the whole parser state (ADT and signature tables included) to keep
+; its own copy for the success path.
+(defn ps-failed [ps :- &PS] :- bool
   (match ps
     (PS [tab decls adts sigs typarams err] (> (count err) 0))))
 
@@ -2017,14 +2020,14 @@
       (let [r (parse-fn-elem e ps)]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PTyRes ps2 (t-none))
               (parse-fn-elems rest (TyCons ty acc) ret ps2))))))
     (KNil []
       (let [r (parse-fn-elem ret ps)]
         (match r
           (PTyRes [ps2 rty]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PTyRes ps2 (t-none))
               (register-sig ps2 (tys-rev acc (TyNil)) rty))))))))
 
@@ -2045,7 +2048,7 @@
                     (let [rargs (parse-ty-args (asts-drop kids 1) (TyNil) (clone ps))]
                       (match rargs
                         (PArgsRes [ps2 args]
-                          (if (ps-failed (clone ps2))
+                          (if (ps-failed ps2)
                             (PTyRes ps2 (t-none))
                             (let [ri (instantiate-adt idx args ps2)]
                               (match ri
@@ -2060,7 +2063,7 @@
       (let [r (parse-ty e ps)]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PArgsRes ps2 (TyNil))
               (parse-ty-args rest (TyCons ty acc) ps2))))))
     (KNil [] (PArgsRes ps (tys-rev acc (TyNil))))))
@@ -2159,7 +2162,7 @@
                 (let [rf (fill-fields fields (TyNil) (clone args) ps)]
                   (match rf
                     (PFRes [ps2 fs]
-                      (if (ps-failed (clone ps2))
+                      (if (ps-failed ps2)
                         (PVRes ps2 (VNil))
                         (fill-variants tpl args (+ vi 1) (VCons (Varnt vn fs) acc) ps2)))))))))))))
 
@@ -2169,7 +2172,7 @@
       (let [r (subst-field-ty h (clone args) ps)]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PFRes ps2 (TyNil))
               (fill-fields t (TyCons ty acc) args ps2))))))
     (TyNil [] (PFRes ps (tys-rev acc (TyNil))))))
@@ -2278,7 +2281,7 @@
       (let [r (parse-variant v ps)]
         (match r
           (PVOne [ps2 vt]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PVRes2 ps2 (VNil))
               (parse-variants-1 rest (VCons vt acc) ps2))))))
     (KNil [] (PVRes2 ps (vlist-rev acc (VNil))))))
@@ -2331,7 +2334,7 @@
                       rt (parse-field-ty ty-node ps)]
                   (match rt
                     (PTyRes [ps2 ty]
-                      (if (ps-failed (clone ps2))
+                      (if (ps-failed ps2)
                         (PFRes ps2 (TyNil))
                         (parse-fields fs (+ i 3) (TyCons ty acc) vn ps2)))))))))))))
 
@@ -2462,7 +2465,7 @@
               (let [rt (parse-ty (clone ty-node) ps)]
                 (match rt
                   (PTyRes [ps2 ty]
-                    (if (ps-failed (clone ps2))
+                    (if (ps-failed ps2)
                       (PParRes ps2 (PNil))
                       (let [p (Param (ast-sid-of nm-node) ty 0)]
                         (parse-params ks (+ i 3) (PCons p acc) ps2))))))
@@ -2476,7 +2479,7 @@
                     rt (parse-ty-sym-str ps bare)]
                 (match rt
                   (PTyRes [ps2 ty]
-                    (if (ps-failed (clone ps2))
+                    (if (ps-failed ps2)
                       (PParRes ps2 (PNil))
                       (let [p (Param (ast-sid-of nm-node) ty (if borrowed 1 0))]
                         (parse-params ks (+ i 3) (PCons p acc) ps2)))))))))))))
@@ -2500,7 +2503,7 @@
                       rp (parse-params (ast-kids-of (clone pvec)) 0 (PNil) ps0)]
                   (match rp
                     (PParRes [ps1 params]
-                      (if (ps-failed (clone ps1))
+                      (if (ps-failed ps1)
                         (RawRes ps1 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                         (parse-defn-ret items n 3 params name-sid isextern ps1)))))))))))
     (ANil [at] (RawRes (ps-err ps "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
@@ -2533,13 +2536,13 @@
                 rt (parse-ty-sym-str ps bare)]
             (match rt
               (PTyRes [ps2 ret]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (RawRes ps2 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                   (parse-defn-body items n (+ i 2) params name-sid ret 1 isextern ps2)))))
           (let [rt (parse-ty (clone ret-node) ps)]
             (match rt
               (PTyRes [ps2 ret]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (RawRes ps2 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                   (parse-defn-body items n (+ i 2) params name-sid ret 0 isextern ps2)))))))
       (parse-defn-body items n i params name-sid (t-i64) 0 isextern ps))))
@@ -3961,7 +3964,7 @@
                                                 (PS (clone tab2) (DLNil) adts2 (SGNil) (SNil) ""))]
                         (match ri
                           (PIARes [ps2 idx]
-                            (if (ps-failed (clone ps2))
+                            (if (ps-failed ps2)
                               (SRes tab2 (ps-adts (clone ps2)) (clone ty) (ps-err-msg ps2))
                               (SRes (ps-tab (clone ps2)) (ps-adts ps2) (t-adt idx) "")))))))))
               (SRes tab (clone adts) (clone ty) "")))))
@@ -4155,7 +4158,7 @@
       (let [r (resolve-ann-ty e (clone tab) (clone adts) (clone sigs))]
         (match r
           (PTyRes [ps2 ty]
-            (if (ps-failed (clone ps2))
+            (if (ps-failed ps2)
               (PArgsRes ps2 (TyNil))
               (let [rr (resolve-ann-args rest (clone tab) adts sigs)]
                 (match rr
@@ -4196,7 +4199,7 @@
           (let [rargs (resolve-ann-args (asts-tail kids) (clone tab) adts sigs)]
             (match rargs
               (PArgsRes [ps2 args]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (PTyRes ps2 (t-none))
                   (let [ri (instantiate-adt (info-idx hit) args ps2)]
                     (match ri
@@ -4489,7 +4492,7 @@
               ra (resolve-ann-ty ann tab (clone adts) (clone sigs))]
           (match ra
             (PTyRes [ps2 ty]
-              (if (ps-failed (clone ps2))
+              (if (ps-failed ps2)
                 (LBErr (ps-err-msg ps2))
                 (match (clone ps2)
                   (PS [t d a sg y e]
@@ -5209,7 +5212,7 @@
         (let [rp (closure-params (ast-kids-of (clone pvec)) 0 (PNil) (PS tab (DLNil) adts sigs (SNil) "") (SNil))]
           (match rp
             (PParRes [ps2 params]
-              (if (ps-failed (clone ps2))
+              (if (ps-failed ps2)
                 (LErr (ps-err-msg ps2))
                 (match (clone ps2)
                   (PS [t2 d2 a2 s2 y2 e2]
@@ -5337,7 +5340,7 @@
                 ra (resolve-ann-ty tyn tab (clone adts) (clone sigs))]
             (match ra
               (PTyRes [ps2 ty]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (LBErr (ps-err-msg ps2))
                   (match (clone ps2)
                     (PS [t2 d2 a2 s2 y2 e2]
@@ -5959,7 +5962,7 @@
   (let [r (instantiate-adt adt targs (PS tab (DLNil) adts sigs (SNil) ""))]
     (match r
       (PIARes [ps2 idx]
-        (if (ps-failed (clone ps2))
+        (if (ps-failed ps2)
           (LErr (ps-err-msg ps2))
           (match (clone ps2)
             (PS [t2 d2 a2 s2 y2 e2]
@@ -6769,7 +6772,7 @@
                 (let [rv (parse-deftype-variants f2 (PS (clone tab) (clone decls) (clone adts) (clone sigs) (clone typarams) ""))]
                   (match rv
                     (PVRes2 [ps2 vs]
-                      (if (ps-failed (clone ps2))
+                      (if (ps-failed ps2)
                         (VarRes (ATNil) (ps-err-msg ps2))
                         (match (build-variants rest (+ i 1) n decls adts tab sigs)
                           (VarRes [restv msg]
@@ -6796,7 +6799,7 @@
           (let [r (parse-defn f (clone ps) 1)]
             (match r
               (RawRes [ps2 raw]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (RawsRes (clone ps2) (RNil) (ps-err-msg ps2))
                   (match (build-raws rest (+ i 1) n ps2 acc)
                     (RawsRes [ps3 rs msg]
@@ -6808,7 +6811,7 @@
           (let [r (parse-defn f (clone ps) 0)]
             (match r
               (RawRes [ps2 raw]
-                (if (ps-failed (clone ps2))
+                (if (ps-failed ps2)
                   (RawsRes (clone ps2) (RNil) (ps-err-msg ps2))
                   (match (build-raws rest (+ i 1) n ps2 acc)
                     (RawsRes [ps3 rs msg]
@@ -11081,7 +11084,7 @@
 (defn match-vec-pair [scrut :- &HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
-      (let [ai (adt-of scrut (clone st1))
+      (let [ai (adt-of scrut st1)
             name (em-adt-name st1 ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")

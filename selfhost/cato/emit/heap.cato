@@ -577,7 +577,7 @@
 (defn match-vec-pair [scrut :- &HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
-      (let [ai (adt-of scrut (clone st1))
+      (let [ai (adt-of scrut st1)
             name (em-adt-name st1 ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
