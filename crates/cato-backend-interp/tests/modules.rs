@@ -154,6 +154,31 @@ fn unknown_alias_is_a_build_error() {
 }
 
 #[test]
+fn extern_in_required_module_is_global() {
+    // `extern` names are global C symbols: the declaring module keeps them
+    // bare and callers (in any module) call them bare, so a required
+    // module's extern call resolves (regression: renaming them left the
+    // declaration unprefixed and the call prefixed -> unknown function).
+    let entry = project(
+        "externmod",
+        &[
+            (
+                "main.cato",
+                "(ns m) (require [\"lib.cato\" :as l])\n(defn main [] :- i64 (l/one 0))\n",
+            ),
+            (
+                "lib.cato",
+                "(ns lib)\n(extern system [cmd :- str] :- i64)\n(defn one [x :- i64] :- i64 (system \"true\"))\n",
+            ),
+        ],
+    );
+    let src = std::fs::read_to_string(&entry).unwrap();
+    let p = cato_core::compile_named(&entry.to_string_lossy(), &src).expect("compile");
+    assert!(p.defns.iter().any(|d| d.name == "l__one"));
+    assert!(p.defns.iter().any(|d| d.name == "system"));
+}
+
+#[test]
 fn missing_required_file_is_an_error() {
     let entry = project(
         "missing",

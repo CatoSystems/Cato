@@ -261,12 +261,14 @@ fn rewrite_heads_expr(e: &mut Expr, from: &str, to: &str) {
     }
 }
 
-/// Defn/extern names declared by these forms.
+/// Defn names declared by these forms. Only `defn` — `extern` names are
+/// global C symbols (the backend emits them verbatim, e.g. `system`,
+/// `cato_str_byte`), so they are never prefixed and every module sees them.
 fn defn_names(forms: &[(Expr, crate::ast::Span)]) -> Vec<String> {
     let mut out = Vec::new();
     for (f, _) in forms {
         if let Expr::List(items) = f {
-            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn" || h == "extern") {
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn") {
                 if let Some(Expr::LitSym(n)) = items.get(1) {
                     out.push(n.clone());
                 }
