@@ -1,9 +1,9 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 5.67 GB (−88.8%)**;
-  ALLOC_CALLS **1.19B → 159M (−86.6%)**; kernel self-build wall time
-  **47.5 s → 7.9 s (−83%)**.
+- Kernel self-build alloc churn: **50.56 GB → 4.09 GB (−91.9%)**;
+  ALLOC_CALLS **1.19B → 114M (−90.5%)**; kernel self-build wall time
+  **47.5 s → 5.2 s (−89%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -12,6 +12,25 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 4 results (parser state, 5.67 → 4.09 GB)
+Same method: inclusive attribution per call site, fix the top site, verify
+with the gate and with byte-identical IR from the pre/post compilers.
+- `ps-failed` took the parser state by value and only read the error flag:
+  24 call sites copied the whole state (ADT table, signature table,
+  declarations) to keep their own copy. 5.26 → 4.71 GB.
+- The remaining `ps-*` readers: `ps-tab` / `ps-str-of` / `ps-err-msg` return
+  Copy values and now borrow; `ps-adt-at` / `ps-adts-depth` /
+  `ps-adts-find-inst` / `ps-adt-inst-name` fuse a `(f (ps-adts (clone ps)))`
+  read into one borrowed walk; `inst-name-loop` / `ty-mangle-str` copied the
+  whole ADT table per type argument for a suffix. 4.71 → 4.09 GB.
+- Narrow variant reads (`varnt-name-at`, `vlist-fields-at`, `variant-fields`
+  borrowing its `AdtInfo`), `defn-ret-ll` borrowing the module, and the
+  wildcard arm threading the definition list its lowering returned.
+Negative result: flipping `DParams`/`TyEnv` parameters wholesale and letting
+the checker reject the rest (the loop that worked for `TyEnv` in round 2)
+now converges to almost nothing — the remaining owned consumers are real,
+so those sites need fused accessors, not signature changes.
 
 ## Round 3 results (inclusive attribution, 19.34 → 5.67 GB)
 The decisive tool: **inclusive per-call-site byte attribution**.
@@ -128,26 +147,22 @@ Deterministic, byte-stable, no MAXRSS noise:
    35.18 GB → 21.73 GB.
 
 ## Remaining work (measured, in order)
-Inclusive attribution at 5.67 GB (top call sites, bytes started):
-- `clone__Varnt <- vlist_at` 0.27 GB: the remaining `vlist-at` callers take
-  a whole `Varnt` (fields included) to read one field. `varnt-fields-at` is
-  fused now; the others need the same narrow accessors (`varnt-name-at`,
-  `varnt-bind-count-at`, ...).
-- `clone__DParams <- check_defns` 0.27 GB: `b-plan`/`b-plan-body` take an
-  owned `DParams` and only read it (every `dparams-get` / `b-tail-*` already
-  borrows). Flipping those signatures and letting the checker reject the
-  rest (the flip-then-revert loop used for `TyEnv`) should remove it.
-- `clone__PS <- parse_params` 0.75 GB (3 sites) and `<- parse_ty` 0.32 GB:
-  the parser rebuilds its state per step. The measured bytes are *inside*
-  `ps-err`-style rebuilds, so check with inclusive attribution whether the
-  remaining copies are real before rewriting the parser's state threading.
-- `clone__Mdl <- emit_plain` 0.21 GB: another whole-module copy for one read.
-- `clone__TyEnv <- lower_ctor_fields` 0.20, `match_variant_arm` 0.17,
-  `lower_str_args` 0.13 GB: the remaining owned `TyEnv` walkers.
-- `clone__Defns <- match_arms` 0.15 GB, `<- lower_cmp` 0.08 GB: the same
-  "thread what the callee returned" shape as `match-variant-arm`'s fix.
-- `clone__AdtInfo <- adts_at` 0.14 GB: `adts-at` returns a whole `AdtInfo`;
-  callers that read one field want a narrow accessor.
+Re-run the inclusive attribution (commands above) before choosing; at
+4.09 GB the profile has shifted. Last measured leaders:
+- `clone__Varnt <- vlist_at`: callers that take a whole `Varnt` to read its
+  field list (`variant-index` returns it, `lower` reads fields at 2453/2571,
+  `fill-variants` at forms 598). `vlist-fields-at` exists; the remaining
+  cost is the field-list copy itself, so these need the *consumer* to accept
+  a borrowed list or the field list to stop being needed twice.
+- `clone__TyEnv <- lower_ctor_fields` / `match_variant_arm` /
+  `lower_str_args`: owned `TyEnv` walkers. The whole-program flip converges
+  to nothing (round 4 negative result) — fuse the read instead.
+- `clone__AdtInfo <- adts_at`: `adts-at` hands back a whole `AdtInfo`
+  (variants and field lists); callers that read one field want a narrow
+  accessor (`adts-name-at`, `adts-tparams-at`, ...).
+- `clone__Defns <- lower_cmp` and the other `(clone defs)` / `(clone insts)`
+  sites in `lower.cato` error paths: check with inclusive attribution
+  whether they are hot before touching them.
 - `clone__HExpr` is now small but diffuse (small sub-tree copies at node
   boundaries); only targeted, measured edits move it — the blanket borrow
   conversion does not (see Round 2 negative results).
