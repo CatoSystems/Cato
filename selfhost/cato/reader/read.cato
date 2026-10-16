@@ -47,6 +47,12 @@
 (defn read-all [src :- str] :- RRes
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
+; The reader entry the S6/S7 drivers and the kernel CLI share: the scan is
+; seeded with an already-populated intern table (the driver's magic table),
+; so special-form dispatch downstream is a sid compare. One copy, here.
+(defn read-all-with [src :- str tab :- i64] :- RRes
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+
 ; ---------------------------------------------------------------------------
 ; byte access
 ; ---------------------------------------------------------------------------

@@ -16,8 +16,7 @@
 ; the reader's span, expansion errors with the enclosing top-level
 ; form's span, build errors bare.
 
-(defn read-all-with [src :- str tab :- i64] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+; read-all-with lives in reader/read.cato (this concat includes it).
 
 (defn print-lines [s :- str]
   (if (> (count s) 0)

@@ -27,10 +27,7 @@
           (CKOk [defs2 lams2]
             (emit-print-lines (emit-program adts defs2 lams2 sigs tab2))))))))
 
-; shared with the S6 driver (hir_ref.cato), which is not part of this
-; concat — emit_ref defines the only main.
-(defn read-all-with [src :- str tab :- i64] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+; read-all-with lives in reader/read.cato (this concat includes it).
 
 (defn main []
   (let [a (args)

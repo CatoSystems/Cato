@@ -43,6 +43,7 @@ const CONCAT_FILES: &[&str] = &[
     "hir/lower",
     "hir/moveck",
     "hir/dump",
+    "hir/modules",
     "emit/state",
     "emit/scalars",
     "emit/heap",

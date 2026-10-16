@@ -370,6 +370,12 @@
 (defn read-all [src :- str] :- RRes
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
+; The reader entry the S6/S7 drivers and the kernel CLI share: the scan is
+; seeded with an already-populated intern table (the driver's magic table),
+; so special-form dispatch downstream is a sid compare. One copy, here.
+(defn read-all-with [src :- str tab :- i64] :- RRes
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+
 ; ---------------------------------------------------------------------------
 ; byte access
 ; ---------------------------------------------------------------------------
@@ -9112,6 +9118,342 @@
         sb2 (d-lams lams (clone tab) sb1)
         sb3 (d-sigs sigs sb2)]
     (sb-str sb3)))
+; modules.cato — S8: the kernel's (ns)/(require) loader.
+;
+; Faithful port of the seed's `expand_file` (crates/cato-core/src/lib.rs) so
+; the two compilers accept and reject the same module programs. A program is
+; a tree of files wired by (require ["rel.cato" :as a]); resolve-modules walks
+; it depth-first in require order and returns one flat, dependency-first form
+; list whose `defn` names have been renamed `prefix__name`.
+;
+; Renaming is canonical-per-file, not per-edge: the first require of a file
+; fixes its prefix (the alias it was first required with), later/diamond
+; requirers reuse it, and a requirer rewrites its `a/name` references to that
+; canonical name. Types are never renamed. Externs are GLOBAL C symbols and
+; are also never renamed: a required file's `extern` declaration and its call
+; sites must keep their own names, so only `defn` headers and call heads are
+; rewritten.
+;
+; Output order: all required children (require order), then all own forms
+; (source order). Rename order matches the seed: defn heads/refs first, then
+; alias references.
+;
+; Every map is an `IMap` (sid -> sid): the deftype field grammar admits no
+; `(AList V)` fields, and sids make key comparisons pointer-free. Paths,
+; aliases, defn names and their `prefix__name` forms are interned into the
+; shared table via stab-find/stab-conj.
+
+(deftype ModSt
+  (ModSt [files :- IMap nss :- IMap canon :- IMap aliases :- IMap]))
+
+; OK carries the merged forms, the (possibly grown) intern table and the
+; accumulated graph state; Err carries the seed's message and span.
+(deftype ORES
+  (OROk [forms :- Asts tab :- i64 st :- ModSt])
+  (ORErr [msg :- str at :- Span]))
+
+; ---------------------------------------------------------------------------
+; paths and interning
+; ---------------------------------------------------------------------------
+
+; "a/b/c.cato" -> "a/b", "c.cato" -> "" (the seed's Path::parent+join,
+; string-concatenated, no normalization).
+(defn path-dir [p :- str] :- str
+  (path-dir-from p (- (count p) 1)))
+
+(defn path-dir-from [p :- str i :- i64] :- str
+  (if (< i 0)
+    ""
+    (if (= (str-byte p i) 47)
+      (subs p 0 i)
+      (path-dir-from p (- i 1)))))
+
+(defn path-join [dir :- str rel :- str] :- str
+  (if (= (count dir) 0) rel (str dir "/" rel)))
+
+(defn mo-intern [tab :- i64 s :- str] :- i64
+  (let [s0 (stab-find tab s)]
+    (if (< s0 0) (stab-conj tab s) s0)))
+
+; `prefix__name`, or `name` when prefix is -1 (the root's no-prefix sentinel).
+(defn mo-prefixed [tab :- i64 prefix :- i64 name :- i64] :- i64
+  (if (< prefix 0)
+    name
+    (mo-intern tab (str (stab-get tab prefix) "__" (stab-get tab name)))))
+
+; ---------------------------------------------------------------------------
+; module state
+; ---------------------------------------------------------------------------
+
+(defn mod-empty [] :- ModSt (ModSt (MNil) (MNil) (MNil) (MNil)))
+
+(defn mod-files [st :- ModSt] :- IMap (match st (ModSt [f n c a] f)))
+(defn mod-nss [st :- ModSt] :- IMap (match st (ModSt [f n c a] n)))
+(defn mod-canon [st :- ModSt] :- IMap (match st (ModSt [f n c a] c)))
+
+(defn mo-set-nss [st :- ModSt n :- IMap] :- ModSt
+  (match st (ModSt [f _n c a] (ModSt f n c a))))
+
+; Record a file before recursing into it: `files` presence marks it seen (so
+; cycles terminate) and `canon` fixes its prefix.
+(defn mo-add-file [st :- ModSt sid :- i64 prefix :- i64] :- ModSt
+  (match st (ModSt [f n c a] (ModSt (im-put f sid 1) n (im-put c sid prefix) a))))
+
+; ---------------------------------------------------------------------------
+; (require [rel :as alias]) recognition — ':as' is not a magic sid, so the
+; middle symbol is compared by name (the seed compares strings).
+; ---------------------------------------------------------------------------
+
+(deftype MoRSpec (MoReq [path :- str alias :- i64]) (MoNotReq))
+
+(defn mo-require-of [tab :- i64 f :- Ast] :- MoRSpec
+  (match f
+    (AList [kids at]
+      (if (= (asts-head-sid kids) (s-require))
+        (match (asts-idx kids 1)
+          (AVec [vk vat]
+            (if (= (asts-depth vk) 3)
+              (mo-require-spec tab (asts-idx (clone vk) 0) (asts-idx (clone vk) 1) (asts-idx vk 2))
+              (MoNotReq)))
+          (_ (MoNotReq)))
+        (MoNotReq)))
+    (_ (MoNotReq))))
+
+(defn mo-require-spec [tab :- i64 p :- Ast a1 :- Ast a2 :- Ast] :- MoRSpec
+  (match p
+    (AStr [pv pat]
+      (match a1
+        (ASym [s1 s1at]
+          (if (= (stab-get tab s1) ":as")
+            (match a2
+              (ASym [s2 s2at] (MoReq pv s2))
+              (_ (MoNotReq)))
+            (MoNotReq)))
+        (_ (MoNotReq))))
+    (_ (MoNotReq))))
+
+; ---------------------------------------------------------------------------
+; (ns name) recognition
+; ---------------------------------------------------------------------------
+
+(deftype MoNSOf (MoNSName [sid :- i64]) (MoNSBad) (MoNSNot))
+
+(defn mo-ns-of [f :- Ast] :- MoNSOf
+  (match f
+    (AList [kids at]
+      (if (= (asts-head-sid kids) (s-ns))
+        (match (asts-idx kids 1)
+          (ASym [sid sat] (MoNSName sid))
+          (_ (MoNSBad)))
+        (MoNSNot)))
+    (_ (MoNSNot))))
+
+; Pass 1: drop every (ns name) form, validating one-per-file and globally
+; unique; `acc` collects the kept forms in reverse.
+(deftype MoDNR (MoDNOk [forms :- Asts nss :- IMap]) (MoDNErr [msg :- str at :- Span]))
+
+(defn mo-drop-ns [forms :- Asts tab :- i64 nss :- IMap acc :- Asts] :- MoDNR
+  (match forms
+    (KCons [f rest]
+      (match (mo-ns-of (clone f))
+        (MoNSNot [] (mo-drop-ns rest tab nss (KCons f acc)))
+        (MoNSBad [] (MoDNErr "ns expects a name" (ast-at f)))
+        (MoNSName [sid]
+          (if (im-has nss sid)
+            (MoDNErr (str "duplicate ns " (stab-get tab sid)) (ast-at f))
+            (mo-drop-ns rest tab (im-put nss sid 1) acc)))))
+    (KNil [] (MoDNOk (asts-rev acc (KNil)) nss))))
+
+; ---------------------------------------------------------------------------
+; list plumbing
+; ---------------------------------------------------------------------------
+
+; Prepend every element of `ks` (in order) onto `acc`.
+(defn mo-prepend [ks :- Asts acc :- Asts] :- Asts
+  (match ks
+    (KCons [k rest] (mo-prepend rest (KCons k acc)))
+    (KNil [] acc)))
+
+(defn asts-cat [a :- Asts b :- Asts] :- Asts
+  (match a
+    (KCons [k rest] (KCons k (asts-cat rest b)))
+    (KNil [] b)))
+
+; ---------------------------------------------------------------------------
+; renaming (mirrors rewrite_heads_expr / rewrite_alias_expr)
+; ---------------------------------------------------------------------------
+
+; Defn names declared by `forms` (in source order). Only `defn`: externs are
+; global C symbols and are never prefixed.
+(defn defn-name-sids [forms :- Asts tab :- i64 acc :- Sids] :- Sids
+  (match forms
+    (KCons [f rest]
+      (match f
+        (AList [kids at]
+          (if (= (asts-head-sid kids) (s-defn))
+            (match (asts-idx kids 1)
+              (ASym [sid sat] (defn-name-sids rest tab (SCons sid acc)))
+              (_ (defn-name-sids rest tab acc)))
+            (defn-name-sids rest tab acc)))
+        (_ (defn-name-sids rest tab acc))))
+    (KNil [] (sids-rev acc (SNil)))))
+
+; name-sid -> prefixed-name-sid, interned once per name.
+(defn build-pairs [names :- Sids tab :- i64 prefix :- i64 acc :- IMap] :- IMap
+  (match names
+    (SCons [sid rest] (build-pairs rest tab prefix (im-put acc sid (mo-prefixed tab prefix sid))))
+    (SNil [] acc)))
+
+; Replace the head symbol of a chain (used when the head is a renamed defn).
+(defn mo-rename-head [kids :- Asts n :- i64] :- Asts
+  (match kids
+    (KCons [h rest]
+      (match h
+        (ASym [sid at] (KCons (ASym n at) rest))
+        (_ (KCons h rest))))
+    (KNil [] (KNil))))
+
+; Rename the second child when it names a defn of this file (the defn header).
+(defn mo-rename-defn [kids :- Asts pairs :- &IMap] :- Asts
+  (match kids
+    (KCons [h r1]
+      (match r1
+        (KCons [nm r2]
+          (match nm
+            (ASym [sid at]
+              (if (im-has pairs sid)
+                (KCons h (KCons (ASym (im-get pairs sid -1) at) r2))
+                (KCons h (KCons nm r2))))
+            (_ (KCons h r1))))
+        (KNil [] (KCons h r1))))
+    (KNil [] (KNil))))
+
+(defn rewrite-head-sids [a :- Ast pairs :- &IMap] :- Ast
+  (match a
+    (ANil [at] (ANil at))
+    (ASym [sid at] (ASym sid at))
+    (AInt [v at] (AInt v at))
+    (AF64 [v at] (AF64 v at))
+    (ABool [v at] (ABool v at))
+    (AStr [v at] (AStr v at))
+    (AList [kids at]
+      (let [h (asts-head-sid kids)]
+        (if (im-has pairs h)
+          (AList (mo-rewrite-head-kids (mo-rename-head kids (im-get pairs h -1)) pairs) at)
+          (if (= h (s-defn))
+            (AList (mo-rewrite-head-kids (mo-rename-defn kids pairs) pairs) at)
+            (AList (mo-rewrite-head-kids kids pairs) at)))))
+    (AVec [kids at] (AVec (mo-rewrite-head-kids kids pairs) at))
+    (AMap [kids at] (AMap (mo-rewrite-head-kids kids pairs) at))
+    ; The seed's rewrite_heads_expr does not descend into set literals.
+    (ASet [kids at] (ASet kids at))))
+
+(defn mo-rewrite-head-kids [ks :- Asts pairs :- &IMap] :- Asts
+  (match ks
+    (KCons [k rest] (KCons (rewrite-head-sids k pairs) (mo-rewrite-head-kids rest pairs)))
+    (KNil [] (KNil))))
+
+(defn mo-rewrite-head-forms [forms :- Asts pairs :- &IMap] :- Asts
+  (match forms
+    (KCons [f rest] (KCons (rewrite-head-sids f pairs) (mo-rewrite-head-forms rest pairs)))
+    (KNil [] (KNil))))
+
+; One `alias/name` symbol -> `canon__name` sid, first matching alias wins.
+(defn mo-alias-sid [sid :- i64 nm :- str als :- &IMap tab :- i64] :- i64
+  (match als
+    (MCons [a p next]
+      (let [an (stab-get tab a) plen (count an)]
+        (if (and (> (count nm) plen)
+                 (= (subs nm 0 plen) an)
+                 (= (str-byte nm plen) 47))
+          (mo-prefixed tab p (mo-intern tab (subs nm (+ plen 1) (count nm))))
+          (mo-alias-sid sid nm next tab))))
+    (MNil [] sid)))
+
+(defn rewrite-alias-sids [a :- Ast tab :- i64 aliases :- &IMap] :- Ast
+  (match a
+    (ANil [at] (ANil at))
+    (ASym [sid at]
+      (ASym (mo-alias-sid sid (stab-get tab sid) aliases tab) at))
+    (AInt [v at] (AInt v at))
+    (AF64 [v at] (AF64 v at))
+    (ABool [v at] (ABool v at))
+    (AStr [v at] (AStr v at))
+    (AList [kids at] (AList (mo-rewrite-alias-kids kids tab aliases) at))
+    (AVec [kids at] (AVec (mo-rewrite-alias-kids kids tab aliases) at))
+    (AMap [kids at] (AMap (mo-rewrite-alias-kids kids tab aliases) at))
+    (ASet [kids at] (ASet kids at))))
+
+(defn mo-rewrite-alias-kids [ks :- Asts tab :- i64 aliases :- &IMap] :- Asts
+  (match ks
+    (KCons [k rest] (KCons (rewrite-alias-sids k tab aliases) (mo-rewrite-alias-kids rest tab aliases)))
+    (KNil [] (KNil))))
+
+(defn mo-rewrite-alias-forms [forms :- Asts tab :- i64 aliases :- &IMap] :- Asts
+  (match forms
+    (KCons [f rest] (KCons (rewrite-alias-sids f tab aliases) (mo-rewrite-alias-forms rest tab aliases)))
+    (KNil [] (KNil))))
+
+; ---------------------------------------------------------------------------
+; the loader
+; ---------------------------------------------------------------------------
+
+(deftype MoLRR
+  (MoLROk [merged :- Asts own :- Asts aliases :- IMap st :- ModSt])
+  (MoLRErr [msg :- str at :- Span]))
+
+; Pass 2: split kept forms into required children (`merged-rev`, prepended in
+; require order) and own forms (`own-rev`); recurse into each unseen child.
+(defn mo-load-requires [path :- str forms :- Asts tab :- i64 st :- ModSt
+                        merged-rev :- Asts own-rev :- Asts aliases :- IMap] :- MoLRR
+  (match forms
+    (KCons [f rest]
+      (match (mo-require-of tab (clone f))
+        (MoNotReq []
+          (mo-load-requires path rest tab st merged-rev (KCons f own-rev) aliases))
+        (MoReq [rel alias]
+          (let [child (path-join (path-dir path) rel)
+                csid (mo-intern tab child)]
+            (if (im-has (mod-files (clone st)) csid)
+              (let [canon (im-get (mod-canon (clone st)) csid -1)]
+                (mo-load-requires path rest tab st merged-rev own-rev
+                                  (im-put aliases alias canon)))
+              (let [r (read-all-with (slurp child) tab)]
+                (match r
+                  (RErr [msg at] (MoLRErr msg at))
+                  (ROk [cforms tab2]
+                    (let [st1 (mo-add-file (clone st) csid alias)]
+                      (match (mo-expand-file child cforms tab2 st1 alias)
+                        (ORErr [msg at] (MoLRErr msg at))
+                        (OROk [cforms2 tab3 st2]
+                          (mo-load-requires path rest tab3 st2
+                                            (mo-prepend cforms2 merged-rev)
+                                            own-rev
+                                            (im-put aliases alias alias)))))))))))))
+    (KNil [] (MoLROk (asts-rev merged-rev (KNil)) (asts-rev own-rev (KNil)) aliases st))))
+
+; Load one file: validate/drop ns forms, pull in requires, rename this file's
+; own members under its canonical prefix, then point its alias refs at the
+; canonical members of each required module.
+(defn mo-expand-file [path :- str forms :- Asts tab :- i64 st :- ModSt prefix :- i64] :- ORES
+  (match (mo-drop-ns forms tab (mod-nss (clone st)) (KNil))
+    (MoDNErr [msg at] (ORErr msg at))
+    (MoDNOk [kept nss2]
+      (let [st2 (mo-set-nss st nss2)]
+        (match (mo-load-requires path kept tab st2 (KNil) (KNil) (MNil))
+          (MoLRErr [msg at] (ORErr msg at))
+          (MoLROk [merged own aliases st3]
+            (let [names (defn-name-sids (clone own) tab (SNil))
+                  pairs (build-pairs names tab prefix (MNil))
+                  own2 (mo-rewrite-head-forms own pairs)
+                  own3 (mo-rewrite-alias-forms own2 tab aliases)]
+              (OROk (asts-cat merged own3) tab st3))))))))
+
+; Entry point: mark the root file seen (no prefix) and expand it.
+(defn resolve-modules [path :- str forms :- Asts tab :- i64 st :- ModSt] :- ORES
+  (let [rsid (mo-intern tab path)
+        st0 (mo-add-file st rsid -1)]
+    (mo-expand-file path forms tab st0 -1)))
 ; state.cato — S7: emitter state, module state, layout math, LLVM text
 ; helpers.
 ;
@@ -13619,10 +13961,8 @@
 (defn exit-of [status :- i64] :- i64
   (if (= status -1) -1 (/ status 256)))
 
-; The reader entry shared with the S6/S7 drivers (the _ref files are not
-; part of this concat): the scan is seeded with the pre-interned table.
-(defn read-all-with [src :- str tab :- i64] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+; The reader entry (read-all-with in reader/read.cato) is seeded with the
+; pre-interned table; the S6/S7 drivers share it.
 
 (defn usage [] :- i64
   (do
@@ -13643,9 +13983,13 @@
         r (read-all-with src (magic-table))]
     (match r
       (ROk [forms tab]
-        (match (expand-all forms (KNil))
-          (EOk [xforms] (compile-build tab xforms))
-          (EErr [msg at]
+        (match (resolve-modules path forms tab (mod-empty))
+          (OROk [forms2 tab2 st]
+            (match (expand-all forms2 (KNil))
+              (EOk [xforms] (compile-build tab2 xforms))
+              (EErr [msg at]
+                (do (print-string (str "err " (spat at) " " msg)) ""))))
+          (ORErr [msg at]
             (do (print-string (str "err " (spat at) " " msg)) ""))))
       (RErr [msg at]
         (do (print-string (str "err " (spat at) " " msg)) "")))))

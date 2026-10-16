@@ -53,6 +53,7 @@ check_out() { # file expected
 }
 check_out t1 "la=X"; check_out t2 "X"; check_out t3 "7"
 check_out t4 "3";    check_out t5 "3"; check_out t6 "3"
+check_out mod "$(printf '49\n25\n16')"
 
 check_ok()  { kb "$FX/$1.cato" "/tmp/run_$1" && echo "OK $1" || { echo "ACCEPT FAIL $1"; fail=1; }; }
 check_bad() { kb "$FX/$1.cato" "/tmp/run_$1" && { echo "REJECT FAIL $1"; fail=1; } || echo "OK $1(rejected)"; }

@@ -23,10 +23,8 @@
 (defn exit-of [status :- i64] :- i64
   (if (= status -1) -1 (/ status 256)))
 
-; The reader entry shared with the S6/S7 drivers (the _ref files are not
-; part of this concat): the scan is seeded with the pre-interned table.
-(defn read-all-with [src :- str tab :- i64] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+; The reader entry (read-all-with in reader/read.cato) is seeded with the
+; pre-interned table; the S6/S7 drivers share it.
 
 (defn usage [] :- i64
   (do
@@ -47,9 +45,13 @@
         r (read-all-with src (magic-table))]
     (match r
       (ROk [forms tab]
-        (match (expand-all forms (KNil))
-          (EOk [xforms] (compile-build tab xforms))
-          (EErr [msg at]
+        (match (resolve-modules path forms tab (mod-empty))
+          (OROk [forms2 tab2 st]
+            (match (expand-all forms2 (KNil))
+              (EOk [xforms] (compile-build tab2 xforms))
+              (EErr [msg at]
+                (do (print-string (str "err " (spat at) " " msg)) ""))))
+          (ORErr [msg at]
             (do (print-string (str "err " (spat at) " " msg)) ""))))
       (RErr [msg at]
         (do (print-string (str "err " (spat at) " " msg)) "")))))
