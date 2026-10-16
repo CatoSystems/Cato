@@ -330,7 +330,7 @@
     (DNil [] (EORes st out))
     (DCons [h t]
       (match h
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (match st
             (Emit [c mdl sigs]
               (if (= isextern 1)

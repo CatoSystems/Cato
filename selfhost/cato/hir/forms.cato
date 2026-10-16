@@ -19,7 +19,8 @@
 (deftype PList (PNil) (PCons [h :- Param t :- PList]))
 
 (deftype RawDefn (RawDefn [name :- i64 params :- PList ret :- Ty
-                          typarams :- Sids isextern :- i64 body :- Ast]))
+                          typarams :- Sids isextern :- i64 body :- Ast
+                          ret-borrowed :- i64]))
 (deftype Raws (RNil) (RCons [h :- RawDefn t :- Raws]))
 
 (deftype Varnt (Varnt [name :- i64 fields :- TyList]))
@@ -32,7 +33,7 @@
 (deftype AdtTab (ATNil) (ATCons [h :- AdtInfo t :- AdtTab]))
 
 (deftype Defn (Defn [name :- i64 params :- PList ret :- Ty isextern :- i64
-                    body :- HExpr]))
+                    body :- HExpr ret-borrowed :- i64]))
 (deftype Defns (DNil) (DCons [h :- Defn t :- Defns]))
 
 (deftype Sig (Sig [params :- TyList ret :- Ty]))
@@ -112,7 +113,7 @@
 (defn raws-at [rs :- &Raws i :- i64] :- RawDefn
   (match rs
     (RCons [h t] (if (= i 0) (clone h) (raws-at t (- i 1))))
-    (RNil [] (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))))
+    (RNil [] (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))))
 
 (defn raws-append [rs :- Raws r :- RawDefn] :- Raws
   (match rs
@@ -922,13 +923,13 @@
     (AList [items at]
       (let [n (asts-depth (clone items))]
         (if (< n 3)
-          (RawRes (ps-err (clone ps) "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+          (RawRes (ps-err (clone ps) "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
           (let [name-node (asts-idx (clone items) 1)
                 pvec (asts-idx (clone items) 2)]
             (if (not (= (ast-tag name-node) 1))
-              (RawRes (ps-err (clone ps) "defn name must be a symbol") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+              (RawRes (ps-err (clone ps) "defn name must be a symbol") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
               (if (not (= (ast-tag pvec) 6))
-                (RawRes (ps-err (clone ps) "defn params must be a vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawRes (ps-err (clone ps) "defn params must be a vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                 (let [name-sid (ast-sid-of name-node)
                       ; each form starts with its own type-parameter scope
                       ps0 (ps-reset-typarams (clone ps))
@@ -936,17 +937,17 @@
                   (match rp
                     (PParRes [ps1 params]
                       (if (ps-failed (clone ps1))
-                        (RawRes (clone ps1) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                        (RawRes (clone ps1) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                         (parse-defn-ret (clone items) n 3 (clone params) name-sid isextern (clone ps1))))))))))))
-    (ANil [at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ASym [sid at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AInt [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AF64 [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ABool [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AStr [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AVec [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AMap [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ASet [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))))
+    (ANil [at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ASym [sid at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AInt [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AF64 [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ABool [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AStr [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AVec [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AMap [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ASet [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))))
 
 (defn ps-reset-typarams [ps :- PS] :- PS
   (match ps
@@ -959,38 +960,50 @@
                      (= (ast-tag (asts-idx (clone items) i)) 1)
                      (= (ast-sid-of (asts-idx (clone items) i)) (s-sep)))]
     (if has-ret
-      (let [rt (parse-ty (asts-idx (clone items) (+ i 1)) (clone ps))]
-        (match rt
-          (PTyRes [ps2 ret]
-            (if (ps-failed (clone ps2))
-              (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-              (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret isextern (clone ps2))))))
-      (parse-defn-body (clone items) n i (clone params) name-sid (t-i64) isextern (clone ps)))))
+      (let [ret-node (asts-idx (clone items) (+ i 1))
+            ; `:- &T` — a borrowed return (symbol form only). The sigil is
+            ; stripped and parsed like a param annotation.
+            ret-str (if (= (ast-tag ret-node) 1) (node-str (clone ret-node) (ps-tab (clone ps))) "")]
+        (if (borrow-sigil (clone ret-str))
+          (let [bare (subs (clone ret-str) 1 (count (clone ret-str)))
+                rt (parse-ty-sym-str (clone ps) bare)]
+            (match rt
+              (PTyRes [ps2 ret]
+                (if (ps-failed (clone ps2))
+                  (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+                  (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret 1 isextern (clone ps2))))))
+          (let [rt (parse-ty (clone ret-node) (clone ps))]
+            (match rt
+              (PTyRes [ps2 ret]
+                (if (ps-failed (clone ps2))
+                  (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+                  (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret 0 isextern (clone ps2))))))))
+      (parse-defn-body (clone items) n i (clone params) name-sid (t-i64) 0 isextern (clone ps)))))
 
 (defn parse-defn-body [items :- Asts n :- i64 i :- i64 params :- PList
-                      name-sid :- i64 ret :- Ty isextern :- i64 ps :- PS] :- RawRes
+                      name-sid :- i64 ret :- Ty ret-borrowed :- i64 isextern :- i64 ps :- PS] :- RawRes
   (match ps
     (PS [tab decls adts sigs typarams err]
       (cond
         (and (= isextern 1) (> (sids-depth (clone typarams)) 0))
         (RawRes (ps-err (clone ps) "extern declarations must have concrete types")
-                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= isextern 1)
         (if (< i n)
           (RawRes (ps-err (clone ps) "extern declarations take no body")
-                  (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)))))
+                  (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)) ret-borrowed)))
 
         (>= i n)
         (RawRes (ps-err (clone ps) "defn body required")
-                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= (- n i) 1)
-        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 (asts-idx (clone (clone items)) i)))
+        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 (asts-idx (clone (clone items)) i) ret-borrowed))
 
         (let [doform (AList (KCons (ASym (s-do) (asts-at-of (clone items) i)) (asts-drop (clone items) i)) (asts-at-of (clone items) i))]
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 doform)))))))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 doform ret-borrowed)))))))
 
 (defn asts-at-of [ks :- Asts i :- i64] :- Span
   (ast-at (asts-idx (clone ks) i)))

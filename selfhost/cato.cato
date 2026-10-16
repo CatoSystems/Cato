@@ -1559,7 +1559,8 @@
 (deftype PList (PNil) (PCons [h :- Param t :- PList]))
 
 (deftype RawDefn (RawDefn [name :- i64 params :- PList ret :- Ty
-                          typarams :- Sids isextern :- i64 body :- Ast]))
+                          typarams :- Sids isextern :- i64 body :- Ast
+                          ret-borrowed :- i64]))
 (deftype Raws (RNil) (RCons [h :- RawDefn t :- Raws]))
 
 (deftype Varnt (Varnt [name :- i64 fields :- TyList]))
@@ -1572,7 +1573,7 @@
 (deftype AdtTab (ATNil) (ATCons [h :- AdtInfo t :- AdtTab]))
 
 (deftype Defn (Defn [name :- i64 params :- PList ret :- Ty isextern :- i64
-                    body :- HExpr]))
+                    body :- HExpr ret-borrowed :- i64]))
 (deftype Defns (DNil) (DCons [h :- Defn t :- Defns]))
 
 (deftype Sig (Sig [params :- TyList ret :- Ty]))
@@ -1652,7 +1653,7 @@
 (defn raws-at [rs :- &Raws i :- i64] :- RawDefn
   (match rs
     (RCons [h t] (if (= i 0) (clone h) (raws-at t (- i 1))))
-    (RNil [] (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))))
+    (RNil [] (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))))
 
 (defn raws-append [rs :- Raws r :- RawDefn] :- Raws
   (match rs
@@ -2462,13 +2463,13 @@
     (AList [items at]
       (let [n (asts-depth (clone items))]
         (if (< n 3)
-          (RawRes (ps-err (clone ps) "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+          (RawRes (ps-err (clone ps) "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
           (let [name-node (asts-idx (clone items) 1)
                 pvec (asts-idx (clone items) 2)]
             (if (not (= (ast-tag name-node) 1))
-              (RawRes (ps-err (clone ps) "defn name must be a symbol") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+              (RawRes (ps-err (clone ps) "defn name must be a symbol") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
               (if (not (= (ast-tag pvec) 6))
-                (RawRes (ps-err (clone ps) "defn params must be a vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawRes (ps-err (clone ps) "defn params must be a vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                 (let [name-sid (ast-sid-of name-node)
                       ; each form starts with its own type-parameter scope
                       ps0 (ps-reset-typarams (clone ps))
@@ -2476,17 +2477,17 @@
                   (match rp
                     (PParRes [ps1 params]
                       (if (ps-failed (clone ps1))
-                        (RawRes (clone ps1) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                        (RawRes (clone ps1) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                         (parse-defn-ret (clone items) n 3 (clone params) name-sid isextern (clone ps1))))))))))))
-    (ANil [at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ASym [sid at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AInt [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AF64 [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ABool [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AStr [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AVec [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (AMap [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
-    (ASet [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))))
+    (ANil [at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ASym [sid at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AInt [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AF64 [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ABool [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AStr [v at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AVec [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (AMap [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
+    (ASet [ks at] (RawRes (ps-err (clone ps) "expected (defn ...)") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))))
 
 (defn ps-reset-typarams [ps :- PS] :- PS
   (match ps
@@ -2499,38 +2500,50 @@
                      (= (ast-tag (asts-idx (clone items) i)) 1)
                      (= (ast-sid-of (asts-idx (clone items) i)) (s-sep)))]
     (if has-ret
-      (let [rt (parse-ty (asts-idx (clone items) (+ i 1)) (clone ps))]
-        (match rt
-          (PTyRes [ps2 ret]
-            (if (ps-failed (clone ps2))
-              (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-              (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret isextern (clone ps2))))))
-      (parse-defn-body (clone items) n i (clone params) name-sid (t-i64) isextern (clone ps)))))
+      (let [ret-node (asts-idx (clone items) (+ i 1))
+            ; `:- &T` — a borrowed return (symbol form only). The sigil is
+            ; stripped and parsed like a param annotation.
+            ret-str (if (= (ast-tag ret-node) 1) (node-str (clone ret-node) (ps-tab (clone ps))) "")]
+        (if (borrow-sigil (clone ret-str))
+          (let [bare (subs (clone ret-str) 1 (count (clone ret-str)))
+                rt (parse-ty-sym-str (clone ps) bare)]
+            (match rt
+              (PTyRes [ps2 ret]
+                (if (ps-failed (clone ps2))
+                  (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+                  (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret 1 isextern (clone ps2))))))
+          (let [rt (parse-ty (clone ret-node) (clone ps))]
+            (match rt
+              (PTyRes [ps2 ret]
+                (if (ps-failed (clone ps2))
+                  (RawRes (clone ps2) (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+                  (parse-defn-body (clone items) n (+ i 2) (clone params) name-sid ret 0 isextern (clone ps2))))))))
+      (parse-defn-body (clone items) n i (clone params) name-sid (t-i64) 0 isextern (clone ps)))))
 
 (defn parse-defn-body [items :- Asts n :- i64 i :- i64 params :- PList
-                      name-sid :- i64 ret :- Ty isextern :- i64 ps :- PS] :- RawRes
+                      name-sid :- i64 ret :- Ty ret-borrowed :- i64 isextern :- i64 ps :- PS] :- RawRes
   (match ps
     (PS [tab decls adts sigs typarams err]
       (cond
         (and (= isextern 1) (> (sids-depth (clone typarams)) 0))
         (RawRes (ps-err (clone ps) "extern declarations must have concrete types")
-                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= isextern 1)
         (if (< i n)
           (RawRes (ps-err (clone ps) "extern declarations take no body")
-                  (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)))))
+                  (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)) ret-borrowed)))
 
         (>= i n)
         (RawRes (ps-err (clone ps) "defn body required")
-                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0))))
+                (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= (- n i) 1)
-        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 (asts-idx (clone (clone items)) i)))
+        (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 (asts-idx (clone (clone items)) i) ret-borrowed))
 
         (let [doform (AList (KCons (ASym (s-do) (asts-at-of (clone items) i)) (asts-drop (clone items) i)) (asts-at-of (clone items) i))]
-          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 doform)))))))
+          (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 0 doform ret-borrowed)))))))
 
 (defn asts-at-of [ks :- Asts i :- i64] :- Span
   (ast-at (asts-idx (clone ks) i)))
@@ -3915,7 +3928,7 @@
                   defs :- Defns raws :- &Raws] :- MIRes
   (let [raw (raws-find raws name)]
     (match raw
-      (RawDefn [rname params ret2 typarams isextern body]
+      (RawDefn [rname params ret2 typarams isextern body rb]
         (if (= (sids-depth (clone typarams)) 0)
           (MIRes (clone tab) adts insts sigs lams rets ncached defs name (clone ret2) "")
           (if (not (= (plist-depth (clone params)) (tys-depth (clone argtys))))
@@ -3957,7 +3970,7 @@
                                                   (LErr [msg] (MIRes (clone tab4) (clone adts4) (clone insts) (clone sigs) (clone lams) (clone rets2) nc2 (clone defs) mangled (t-none) msg))
                                                   (LOk [tab5 adts5 insts5 sigs5 lams5 rets5 nc5 defs5 body]
                                                     (MIRes (clone tab5) (clone adts5) (clone insts5) (clone sigs5) (clone lams5) (clone rets5) nc5
-                                                           (defns-append defs5 (Defn mangled (clone mparams) mret 0 (clone body)))
+                                                           (defns-append defs5 (Defn mangled (clone mparams) mret 0 (clone body) rb))
                                                            mangled mret "")))))))))))))))))))))))))))
 
 ; The lowered instance defn appends to the program's defn list at build
@@ -3969,14 +3982,14 @@
 ; The mono instance defns in creation order (drained into the program's
 ; defn list after plain defns and externs, matching build.rs).
 (defn raws-find [rs :- &Raws name :- i64] :- RawDefn
-  (raws-find-2 rs name (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
+  (raws-find-2 rs name (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
 
 (defn raws-find-2 [rs :- &Raws name :- i64 best :- RawDefn] :- RawDefn
   ; last-declared wins (the seed's HashMap overwrite on duplicates)
   (match rs
     (RCons [h t]
       (match h
-        (RawDefn [rname params ret typarams isextern body]
+        (RawDefn [rname params ret typarams isextern body rb]
           (if (= rname name)
             (raws-find-2 t name (clone h))
             (raws-find-2 t name best)))))
@@ -5991,7 +6004,7 @@
         (FVMiss []
           (let [raw (raws-find raws head)]
             (match raw
-              (RawDefn [rname rp rret rtps rie rbody]
+              (RawDefn [rname rp rret rtps rie rbody rb]
                 (cond
                   (> (sids-depth (clone rtps)) 0)
                   (match (lower-call-args (clone items) 1 (clone env) tab adts insts sigs lams rets ncached defs head 0 -1 (HENil) raws)
@@ -6730,7 +6743,7 @@
   (match rs
     (RCons [h t]
       (match h
-        (RawDefn [name params ret typarams isextern body]
+        (RawDefn [name params ret typarams isextern body rb]
           (if (= (sids-depth (clone typarams)) 0)
             (seed-rets t (te-put rets name (clone ret)))
             (seed-rets t rets)))))
@@ -6765,13 +6778,13 @@
           (LLoopRes ps defs instdefs tab adts insts sigs lams rets ncached))))
     (let [r (raws-at rs i)]
       (match r
-        (RawDefn [name params ret typarams isextern body]
+        (RawDefn [name params ret typarams isextern body rb]
           (cond
             ; externs: no lowering; the seed appends the declaration with
             ; a (const 0) placeholder body, all params Shared
             (= isextern 1)
             (build-lower-2 rs (+ i 1) n (clone ps)
-                           (defns-append defs (Defn name (clone params) (clone ret) 1 (HConstI64 0)))
+                           (defns-append defs (Defn name (clone params) (clone ret) 1 (HConstI64 0) 0))
                            (clone instdefs)
                            (clone tab) adts insts sigs lams rets ncached)
 
@@ -6789,7 +6802,7 @@
                 (LErr [msg] (LLoopErr msg))
                 (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
                   (build-lower-2 rs (+ i 1) n (clone ps)
-                                 (defns-append d2 (Defn name (clone params) (clone ret) 0 (clone body2)))
+                                 (defns-append d2 (Defn name (clone params) (clone ret) 0 (clone body2) rb))
                                  (clone instdefs)
                                  (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2))))))))))
 
@@ -6850,15 +6863,15 @@
           (partition-defns t rs plains exts (defns-append insts h)))))))
 
 (defn h-defn-ext [d :- Defn] :- i64
-  (match d (Defn [name params ret ie body] ie)))
+  (match d (Defn [name params ret ie body rb] ie)))
 
 (defn h-defn-name [d :- Defn] :- i64
-  (match d (Defn [name params ret ie body] name)))
+  (match d (Defn [name params ret ie body rb] name)))
 
 (defn raws-has [rs :- &Raws name :- i64] :- bool
   (let [hit (raws-find rs name)]
     (match hit
-      (RawDefn [hname hp hret htp hie hbody] (not (= hname -1))))))
+      (RawDefn [hname hp hret htp hie hbody rb] (not (= hname -1))))))
 
 (defn defns-concat [xs :- Defns ys :- Defns] :- Defns
   (match xs
@@ -7243,7 +7256,7 @@
     (DNil [] acc)
     (DCons [h t]
       (match (clone h)
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (b-dparams t
             (DPCons name
               (if (= isextern 1) (b-mark-borrowed (clone params)) (clone params))
@@ -7937,7 +7950,7 @@
       ; walk, so the inner match consumes a clone of the box (the walk
       ; itself stays O(n))
       (match (clone h)
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (b-shared-callees t
             (if (or (= isextern 1) (plist-has-borrowed params))
               (SCons name acc) acc)))))))
@@ -8051,7 +8064,7 @@
     (DNil [] (CKOk acc (LMNil)))
     (DCons [h t]
       (match h
-        (Defn [name params ret ie body]
+        (Defn [name params ret ie body rb]
           (if (= ie 1)
             (check-defns t (defns-append acc h) facts tab shared adts dparams)
             (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
@@ -8064,7 +8077,8 @@
                              (defns-append acc (Defn name (clone params) (clone ret) ie
                                                      (if (ty-eq (clone ret) (t-str))
                                                        (own-str-return (clone body3))
-                                                       (clone body3))))
+                                                       (clone body3))
+                                                     rb))
                              facts tab shared adts dparams))))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))
@@ -8387,7 +8401,7 @@
 
 (defn d-defn-line [d :- Defn tab :- i64] :- str
   (match d
-    (Defn [name params ret isextern body]
+    (Defn [name params ret isextern body rb]
       (str "(defn " (sym-str (clone tab) name)
            " " (d-params (clone params) (clone tab))
            " :- " (d-ty ret)
@@ -9053,7 +9067,7 @@
   (match ds
     (DCons [h t]
       (match h
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (sigs-build (clone t)
                       (ESTCons name (ESig (pl-tylist (clone params) (TyNil)) (clone ret)) acc)))))
     (DNil [] (clone acc))))
@@ -12436,7 +12450,7 @@
     (DNil [] (EORes st out))
     (DCons [h t]
       (match h
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (match st
             (Emit [c mdl sigs]
               (if (= isextern 1)

@@ -536,7 +536,7 @@
                   defs :- Defns raws :- &Raws] :- MIRes
   (let [raw (raws-find raws name)]
     (match raw
-      (RawDefn [rname params ret2 typarams isextern body]
+      (RawDefn [rname params ret2 typarams isextern body rb]
         (if (= (sids-depth (clone typarams)) 0)
           (MIRes (clone tab) adts insts sigs lams rets ncached defs name (clone ret2) "")
           (if (not (= (plist-depth (clone params)) (tys-depth (clone argtys))))
@@ -578,7 +578,7 @@
                                                   (LErr [msg] (MIRes (clone tab4) (clone adts4) (clone insts) (clone sigs) (clone lams) (clone rets2) nc2 (clone defs) mangled (t-none) msg))
                                                   (LOk [tab5 adts5 insts5 sigs5 lams5 rets5 nc5 defs5 body]
                                                     (MIRes (clone tab5) (clone adts5) (clone insts5) (clone sigs5) (clone lams5) (clone rets5) nc5
-                                                           (defns-append defs5 (Defn mangled (clone mparams) mret 0 (clone body)))
+                                                           (defns-append defs5 (Defn mangled (clone mparams) mret 0 (clone body) rb))
                                                            mangled mret "")))))))))))))))))))))))))))
 
 ; The lowered instance defn appends to the program's defn list at build
@@ -590,14 +590,14 @@
 ; The mono instance defns in creation order (drained into the program's
 ; defn list after plain defns and externs, matching build.rs).
 (defn raws-find [rs :- &Raws name :- i64] :- RawDefn
-  (raws-find-2 rs name (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)))))
+  (raws-find-2 rs name (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0)))
 
 (defn raws-find-2 [rs :- &Raws name :- i64 best :- RawDefn] :- RawDefn
   ; last-declared wins (the seed's HashMap overwrite on duplicates)
   (match rs
     (RCons [h t]
       (match h
-        (RawDefn [rname params ret typarams isextern body]
+        (RawDefn [rname params ret typarams isextern body rb]
           (if (= rname name)
             (raws-find-2 t name (clone h))
             (raws-find-2 t name best)))))
@@ -2612,7 +2612,7 @@
         (FVMiss []
           (let [raw (raws-find raws head)]
             (match raw
-              (RawDefn [rname rp rret rtps rie rbody]
+              (RawDefn [rname rp rret rtps rie rbody rb]
                 (cond
                   (> (sids-depth (clone rtps)) 0)
                   (match (lower-call-args (clone items) 1 (clone env) tab adts insts sigs lams rets ncached defs head 0 -1 (HENil) raws)
@@ -3351,7 +3351,7 @@
   (match rs
     (RCons [h t]
       (match h
-        (RawDefn [name params ret typarams isextern body]
+        (RawDefn [name params ret typarams isextern body rb]
           (if (= (sids-depth (clone typarams)) 0)
             (seed-rets t (te-put rets name (clone ret)))
             (seed-rets t rets)))))
@@ -3386,13 +3386,13 @@
           (LLoopRes ps defs instdefs tab adts insts sigs lams rets ncached))))
     (let [r (raws-at rs i)]
       (match r
-        (RawDefn [name params ret typarams isextern body]
+        (RawDefn [name params ret typarams isextern body rb]
           (cond
             ; externs: no lowering; the seed appends the declaration with
             ; a (const 0) placeholder body, all params Shared
             (= isextern 1)
             (build-lower-2 rs (+ i 1) n (clone ps)
-                           (defns-append defs (Defn name (clone params) (clone ret) 1 (HConstI64 0)))
+                           (defns-append defs (Defn name (clone params) (clone ret) 1 (HConstI64 0) 0))
                            (clone instdefs)
                            (clone tab) adts insts sigs lams rets ncached)
 
@@ -3410,7 +3410,7 @@
                 (LErr [msg] (LLoopErr msg))
                 (LOk [t2 a2 i2 s2 l2 r2 n2 d2 body2]
                   (build-lower-2 rs (+ i 1) n (clone ps)
-                                 (defns-append d2 (Defn name (clone params) (clone ret) 0 (clone body2)))
+                                 (defns-append d2 (Defn name (clone params) (clone ret) 0 (clone body2) rb))
                                  (clone instdefs)
                                  (clone t2) (clone a2) (clone i2) (clone s2) (clone l2) (clone r2) n2))))))))))
 
@@ -3471,15 +3471,15 @@
           (partition-defns t rs plains exts (defns-append insts h)))))))
 
 (defn h-defn-ext [d :- Defn] :- i64
-  (match d (Defn [name params ret ie body] ie)))
+  (match d (Defn [name params ret ie body rb] ie)))
 
 (defn h-defn-name [d :- Defn] :- i64
-  (match d (Defn [name params ret ie body] name)))
+  (match d (Defn [name params ret ie body rb] name)))
 
 (defn raws-has [rs :- &Raws name :- i64] :- bool
   (let [hit (raws-find rs name)]
     (match hit
-      (RawDefn [hname hp hret htp hie hbody] (not (= hname -1))))))
+      (RawDefn [hname hp hret htp hie hbody rb] (not (= hname -1))))))
 
 (defn defns-concat [xs :- Defns ys :- Defns] :- Defns
   (match xs

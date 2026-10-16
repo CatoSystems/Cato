@@ -377,7 +377,7 @@
     (DNil [] acc)
     (DCons [h t]
       (match (clone h)
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (b-dparams t
             (DPCons name
               (if (= isextern 1) (b-mark-borrowed (clone params)) (clone params))
@@ -1071,7 +1071,7 @@
       ; walk, so the inner match consumes a clone of the box (the walk
       ; itself stays O(n))
       (match (clone h)
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (b-shared-callees t
             (if (or (= isextern 1) (plist-has-borrowed params))
               (SCons name acc) acc)))))))
@@ -1185,7 +1185,7 @@
     (DNil [] (CKOk acc (LMNil)))
     (DCons [h t]
       (match h
-        (Defn [name params ret ie body]
+        (Defn [name params ret ie body rb]
           (if (= ie 1)
             (check-defns t (defns-append acc h) facts tab shared adts dparams)
             (match (b-plan name (clone params) (clone body) (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams))
@@ -1198,7 +1198,8 @@
                              (defns-append acc (Defn name (clone params) (clone ret) ie
                                                      (if (ty-eq (clone ret) (t-str))
                                                        (own-str-return (clone body3))
-                                                       (clone body3))))
+                                                       (clone body3))
+                                                     rb))
                              facts tab shared adts dparams))))))))))
 
 (deftype LkRes (LOkL [lams :- Lams]) (LErrL [msg :- str]))

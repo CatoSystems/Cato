@@ -621,7 +621,7 @@
   (match ds
     (DCons [h t]
       (match h
-        (Defn [name params ret isextern body]
+        (Defn [name params ret isextern body rb]
           (sigs-build (clone t)
                       (ESTCons name (ESig (pl-tylist (clone params) (TyNil)) (clone ret)) acc)))))
     (DNil [] (clone acc))))

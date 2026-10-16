@@ -282,7 +282,7 @@
 
 (defn d-defn-line [d :- Defn tab :- i64] :- str
   (match d
-    (Defn [name params ret isextern body]
+    (Defn [name params ret isextern body rb]
       (str "(defn " (sym-str (clone tab) name)
            " " (d-params (clone params) (clone tab))
            " :- " (d-ty ret)
