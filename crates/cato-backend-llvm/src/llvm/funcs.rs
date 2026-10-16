@@ -254,7 +254,7 @@ pub(crate) fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
     for (_, pty) in &defn.params {
         match pty {
             Ty::Vec(e) => {
-                params.push(format!("ptr noalias nocapture readonly %data",));
+                params.push("ptr noalias nocapture readonly %data".to_string());
                 params.push("i64 %len".to_string());
                 let _ = e;
             }
@@ -488,6 +488,18 @@ pub(crate) fn emit_vec_pair(
             // machinery as a let-bound conj, then read the live header.
             let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
             read_grow_slot(&slot, *elem, c)
+        }
+        HExpr::For {
+            el,
+            src,
+            elem,
+            body,
+            res_elem,
+        } => {
+            // A comprehension in vector-value position: same slot machinery
+            // as a let-bound `for` (used to panic here).
+            let slot = emit_for(el, src, *elem, body, *res_elem, c, mdl, sigs);
+            read_grow_slot(&slot, *res_elem, c)
         }
         HExpr::Clone(inner) => {
             // Deep copy of a vector value: str elements strdup through

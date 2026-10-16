@@ -79,7 +79,7 @@ pub fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
         .iter()
         .filter_map(|c| {
             let d = levenshtein(input, c.trim_start_matches('-'));
-            (d <= 2 && d < c.len()).then(|| (d, c))
+            (d <= 2 && d < c.len()).then_some((d, c))
         })
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| (*c).to_string())

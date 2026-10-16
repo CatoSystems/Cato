@@ -590,6 +590,15 @@ fn count_expr_is_vec(
         }
         HExpr::If(_, _, _, t) | HExpr::Match { ty: t, .. } => matches!(t, Ty::Vec(_)),
         HExpr::Split { .. } => true,
+        // These all produce vector headers: a loop annotated (Vector _), a
+        // comprehension, an append, a slice copy, and a clone of anything
+        // vector-valued. Missing arms here used to misroute `count` to the
+        // strlen path, emitting ill-typed IR (a %VecI64 into `@strlen`).
+        HExpr::Loop { ty, .. } => matches!(ty, Ty::Vec(_)),
+        HExpr::For { .. } => true,
+        HExpr::Conj { .. } => true,
+        HExpr::Subvec { .. } => true,
+        HExpr::Clone(inner) => count_expr_is_vec(inner, c, sigs),
         HExpr::Let(binds, body, _) => match body.as_ref() {
             // An inlined body aliases its bind: the bind's recorded type
             // decides (the binding itself is not emitted yet).

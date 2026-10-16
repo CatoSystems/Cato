@@ -156,10 +156,10 @@ pub fn build_program_located(
     }
 
     // Monomorphized generic instantiations generated during lowering.
-    out.extend(ctx.inst.borrow_mut().extra.drain(..));
+    out.append(&mut ctx.inst.borrow_mut().extra);
 
     // Multimethod hidden/dispatch defns generated during lowering.
-    for mut d in ctx.gens.borrow_mut().extra.drain(..) {
+    for d in ctx.gens.borrow_mut().extra.drain(..) {
         out.push(d);
     }
 

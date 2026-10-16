@@ -94,8 +94,15 @@ pub(crate) fn emit_conj(
     c.line(&format!("  {} = add i64 {}, 1", one, len));
 
     // Fast path when len < cap and the append may reuse the buffer; otherwise
-    // always take the copy path. The buffer is freed only under the planner's
-    // in-place verdict (the source is a proven last use).
+    // always take the copy path. The buffer is freed under the planner's
+    // in-place verdict alone (the source is a proven last use of a buffer
+    // the binding really owns) — the loop's own accumulator update
+    // (`self_update`) may append in place but must never free: the slot's
+    // current buffer is only known to the planner, and a `[]`-literal seed
+    // makes it read-only static data.
+    if ptr.starts_with('@') {
+        freeable = false;
+    }
     if !in_place {
         freeable = false;
     }
@@ -317,7 +324,7 @@ pub(crate) fn emit_strcat(
             HExpr::StrLit(s) => {
                 let p = emit_str_val(a, c, mdl, sigs);
                 let l = c.temp();
-                c.line(&format!("  {} = add i64 {}, 0", l, s.bytes().count()));
+                c.line(&format!("  {} = add i64 {}, 0", l, s.len()));
                 parts.push((p, l));
             }
             _ => {
@@ -536,7 +543,7 @@ pub(crate) fn free_binding_storage(name: &str, c: &mut FnCtx, mdl: &mut Mdl) -> 
             return false;
         }
     }
-    if let Some((slot, _)) = c.grow.get(name).cloned() {
+    if let Some((slot, elem)) = c.grow.get(name).cloned() {
         let pf = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -544,8 +551,26 @@ pub(crate) fn free_binding_storage(name: &str, c: &mut FnCtx, mdl: &mut Mdl) -> 
         ));
         let p = c.temp();
         c.line(&format!("  {} = load ptr, ptr {}, align 8", p, pf));
-        mdl.ensure_decl("declare void @free(ptr)");
-        c.line(&format!("  call void @free(ptr {})", p));
+        if elem == Elem::Str {
+            // The array owns a heap copy of every element string (the conj
+            // strdup rule); the buffer free must release them too — the ADT
+            // glue's vec-field path (cato_str_vec_free) already does.
+            let lf = c.temp();
+            c.line(&format!(
+                "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
+                lf, slot
+            ));
+            let l = c.temp();
+            c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
+            mdl.ensure_decl("declare void @cato_str_vec_free(ptr, i64)");
+            c.line(&format!(
+                "  call void @cato_str_vec_free(ptr {}, i64 {})",
+                p, l
+            ));
+        } else {
+            mdl.ensure_decl("declare void @free(ptr)");
+            c.line(&format!("  call void @free(ptr {})", p));
+        }
         return true;
     }
     if let Some((slot, ty)) = c.growm.get(name).cloned() {

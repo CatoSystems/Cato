@@ -73,7 +73,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     continue;
                 }
                 if expected == '{' {
-                    if items.len() % 2 != 0 {
+                    if !items.len().is_multiple_of(2) {
                         return Err(rerr(
                             "map literal must have key/value pairs",
                             Span { lo: open, hi: i + 1 },

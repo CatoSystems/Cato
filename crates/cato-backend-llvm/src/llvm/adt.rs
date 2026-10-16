@@ -16,6 +16,16 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
             Some((Ty::Adt(i), _)) => *i,
             _ => panic!("codegen: call {} does not return an ADT", name),
         },
+        // A seq of effects ending in the value: the tail decides (nothing
+        // inside a Seq frees, so the scrutinee pointer stays valid through
+        // the match). A `let` scrutinee is rejected by the checker — its
+        // scope-exit free would run inside emit_adt, before the arms.
+        HExpr::Seq(vs) => match vs.last() {
+            Some(last) => adt_of(last, c, sigs),
+            None => panic!("codegen: empty seq has no ADT value"),
+        },
+        // The loop's recorded completing type.
+        HExpr::Loop { ty: Ty::Adt(i), .. } => *i,
         HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
         | HExpr::Get { res: Some(Ty::Adt(i)), .. }
         | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => *i,

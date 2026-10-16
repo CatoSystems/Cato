@@ -17,19 +17,19 @@
     (print-string (subs s 0 (- (count s) 1)))
     0))
 
-(defn emit-build [tab :- (Vector str) forms :- Asts]
+(defn emit-build [tab :- i64 forms :- Asts]
   (match (build-program forms tab)
     (PErr [msg] (print-string (str "err " msg)))
     (POk [tab2 adts defs lams sigs]
       (let [facts (facts-compute (adts-templates (clone adts)))]
-        (match (check-program defs lams facts (clone tab2))
+        (match (check-program defs lams facts (clone tab2) (clone adts))
           (CKErr [msg] (print-string (str "err " msg)))
           (CKOk [defs2 lams2]
             (emit-print-lines (emit-program adts defs2 lams2 sigs tab2))))))))
 
 ; shared with the S6 driver (hir_ref.cato), which is not part of this
 ; concat — emit_ref defines the only main.
-(defn read-all-with [src :- str tab :- (Vector str)] :- RRes
+(defn read-all-with [src :- str tab :- i64] :- RRes
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
 
 (defn main []

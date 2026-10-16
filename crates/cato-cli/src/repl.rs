@@ -349,8 +349,7 @@ fn stty(args: &[&str]) -> std::io::Result<String> {
         .stderr(Stdio::null())
         .output()?;
     if !out.status.success() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             "stty failed",
         ));
     }

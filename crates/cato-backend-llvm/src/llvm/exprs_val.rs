@@ -7,7 +7,10 @@ pub(crate) fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl:
     };
     let (label, len, elem) = mdl.mint_vec(lit);
     let t_v = c.temp();
-    c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
+    // The slot hoists to the entry prelude: a literal evaluated inside a
+    // loop body would otherwise alloca once per iteration and walk the
+    // stack (the same discipline as emit_conj's growable slots).
+    c.prelude.push(format!("  {} = alloca %VecI64, align 8", t_v));
     c.line(&format!(
         "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
         label, len, len, t_v
@@ -70,7 +73,8 @@ pub(crate) fn vec_arg(
         HExpr::VecLit(lit) => {
             let (label, len, elem) = mdl.mint_vec(lit);
             let t_v = c.temp();
-            c.line(&format!("  {} = alloca %VecI64, align 8", t_v));
+            // Hoisted to the entry prelude: loop-safe, like materialize_vec_lit.
+            c.prelude.push(format!("  {} = alloca %VecI64, align 8", t_v));
             c.line(&format!(
                 "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
                 label, len, len, t_v
@@ -96,7 +100,7 @@ pub(crate) fn emit_str_val(
     match e {
         HExpr::StrLit(s) => {
             let label = mdl.mint_str(s);
-            let n = s.bytes().count() + 1;
+            let n = s.len() + 1;
             let p = c.temp();
             c.line(&format!(
                 "  {} = getelementptr inbounds [{} x i8], ptr {}, i32 0, i32 0",
@@ -110,8 +114,8 @@ pub(crate) fn emit_str_val(
             .map(|(r, _)| r.clone())
             .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
         HExpr::Subs { s, start, end } => {
-            let p = emit_subs(s, start, end, c, mdl, sigs);
-            p
+            
+            emit_subs(s, start, end, c, mdl, sigs)
         }
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::StrCat(args) => emit_strcat(args, c, mdl, sigs),

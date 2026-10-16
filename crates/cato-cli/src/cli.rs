@@ -188,7 +188,7 @@ pub fn parse_args(args: &[String]) -> Cli {
             },
             "--threads" => match args.get(i + 1) {
                 Some(n) => match n.parse::<usize>() {
-                    Ok(v) if v >= 1 && v <= 1024 => {
+                    Ok(v) if (1..=1024).contains(&v) => {
                         cli.threads = v;
                         i += 2;
                     }

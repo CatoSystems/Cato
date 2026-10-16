@@ -181,19 +181,19 @@ pub(crate) fn rewrite_body(
         },
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
         HExpr::BinW(op, a, b, t) => HExpr::BinW(
-            op.clone(),
+            *op,
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *t,
         ),
         HExpr::CmpW(op, a, b, t) => HExpr::CmpW(
-            op.clone(),
+            *op,
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
             *t,
         ),
         HExpr::BinF(op, a, b) => HExpr::BinF(
-            op.clone(),
+            *op,
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),

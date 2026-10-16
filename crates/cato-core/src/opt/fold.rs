@@ -289,7 +289,7 @@ fn fold_one(e: HExpr) -> HExpr {
                 }
                 _ => None,
             };
-            folded.unwrap_or_else(move || HExpr::Subs { s, start, end })
+            folded.unwrap_or(HExpr::Subs { s, start, end })
         }
         HExpr::Call(name, args) => {
             if name == "even?" {

@@ -10,7 +10,10 @@ fail=0
 
 python3 tools/concat_kernel.py || exit 2
 
-rm -f /tmp/k1 /tmp/k2 /tmp/k2.ll /tmp/k3 /tmp/k3.ll /tmp/k2build.log
+# run_* too: kb() verifies acceptance by artifact existence, so a stale
+# fixture binary from an earlier run fakes an OK (this cost a debugging
+# cycle — the gate reported PASS while k1 rejected bk1/bk3).
+rm -f /tmp/k1 /tmp/k2 /tmp/k2.ll /tmp/k3 /tmp/k3.ll /tmp/k2build.log /tmp/run_*
 
 # Seed (Rust) accepts `-o`; the kernel takes a positional output and exits 0
 # even when cc fails, so every kernel build is verified by its artifact.

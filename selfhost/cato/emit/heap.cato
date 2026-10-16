@@ -851,7 +851,12 @@
                 (let [st7 (if (= el 2)
                             (em-line st6 (str "  store ptr " xv ", ptr " gp ", align 8"))
                             (em-line st6 (str "  store " ll " " xv ", ptr " gp ", align 8")))
-                      st8 (if (= freeable 1)
+                      ; a static global (a `[]`-literal seed) is never heap:
+                      ; never free it, whatever the planner verdicts say —
+                      ; a literal-seeded accumulator grows on its first
+                      ; append and would free read-only data here
+                      st8 (if (and (= freeable 1)
+                                   (not (= 64 (cato-str-byte (clone p) 0))))
                             (em-line st7 (str "  call void @free(ptr " p ")"))
                             st7)
                       st9 (vec-slot-store slot npm 0 st8)

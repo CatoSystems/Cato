@@ -30,7 +30,7 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::ConstB(v) => HExpr::ConstB(*v),
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
         HExpr::StrOrd(op, a, b) => {
-            HExpr::StrOrd(op.clone(), Box::new(check(a)), Box::new(check(b)))
+            HExpr::StrOrd(*op, Box::new(check(a)), Box::new(check(b)))
         }
         HExpr::StrNth { s, idx, res } => HExpr::StrNth {
             s: Box::new(check(s)),
@@ -77,13 +77,13 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
         HExpr::StrCat(args) => HExpr::StrCat(args.iter().map(check).collect()),
         HExpr::BinW(op, a, b, t) => {
-            HExpr::BinW(op.clone(), Box::new(check(a)), Box::new(check(b)), *t)
+            HExpr::BinW(*op, Box::new(check(a)), Box::new(check(b)), *t)
         }
         HExpr::CmpW(op, a, b, t) => {
-            HExpr::CmpW(op.clone(), Box::new(check(a)), Box::new(check(b)), *t)
+            HExpr::CmpW(*op, Box::new(check(a)), Box::new(check(b)), *t)
         }
         HExpr::BinF(op, a, b) => {
-            HExpr::BinF(op.clone(), Box::new(check(a)), Box::new(check(b)))
+            HExpr::BinF(*op, Box::new(check(a)), Box::new(check(b)))
         }
         HExpr::ICast(inner, f, t) => HExpr::ICast(Box::new(check(inner)), *f, *t),
         HExpr::MapLit(pairs) => HExpr::MapLit(
@@ -105,10 +105,7 @@ pub fn check(h: &HExpr) -> HExpr {
         } => HExpr::MapGet {
             src: Box::new(check(src)),
             key: Box::new(check(key)),
-            default: match default {
-                Some(d) => Some(Box::new(check(&d))),
-                None => None,
-            },
+            default: default.as_ref().map(|d| Box::new(check(d))),
             res: *res,
         },
         HExpr::SetLit(vs) => HExpr::SetLit(vs.iter().map(check).collect()),
@@ -179,10 +176,7 @@ pub fn check(h: &HExpr) -> HExpr {
         } => HExpr::Get {
             src: Box::new(check(src)),
             idx: Box::new(check(idx)),
-            default: match default {
-                Some(d) => Some(Box::new(check(&d))),
-                None => None,
-            },
+            default: default.as_ref().map(|d| Box::new(check(d))),
             ty: *ty,
             res: *res,
         },

@@ -1,17 +1,191 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 2.88 GB (−94.3%)**;
-  ALLOC_CALLS **1.19B → 80M (−93.3%)**; kernel self-build wall time
-  **47.5 s → 4.4 s (−91%)**.
-- Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
-- Tests: `cargo test` green apart from two known non-blockers —
-  `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
-  interpreter scoping bug, pre-existing) and the `cato-cli` repl pty test
-  (sandbox denies `openpty`: `script: openpty: Operation not permitted`).
+- Kernel self-build alloc churn: **50.56 GB → 3.00 GB**; ALLOC_CALLS
+  **1.19B → 83M**; wall time 47.5 s → ~5 s. (Round 12 spent +179 MB of
+  the churn budget on ownership soundness; Round 13 recovered 67 MB of
+  it — see Round 13. Round 13 also found that the Round 12 "Gate: PASS"
+  and "tests green" claims were false: every verification instrument had
+  gone stale. See the stale-verification list and re-run everything
+  honestly before trusting a baseline.)
+- Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected;
+  the gate now cleans stale /tmp/run_* artifacts — see Round 13).
+- Tests: `cargo test` fully green (all 26 suites, including
+  `cato-interp kernel_emit` and `kernel_hir`), `tools/tests` 20/20.
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 13 results (3.065 → 2.998 GB; the watch-pair threading + honest verification)
+
+**First: the tree this handoff inherited was NOT green, and the
+instruments that said so were lying.** Each find below was reproduced
+before its fix; all are fixed and everything is verified honestly now.
+
+- **The gate faked a PASS with stale artifacts.** `kb()` verifies
+  acceptance by artifact existence, and the old script never removed
+  `/tmp/run_*` — binaries from an earlier k1 made `OK bk1` true while
+  the current k1 rejected it. The script now cleans `/tmp/run_*`.
+  Rule: after any checker change, `rm -f /tmp/run_*` before trusting
+  any acceptance-based harness.
+- **B13 — the Round 12 esc-transfer port dropped the seed's guard.**
+  `move_var`'s any_alias_escape transfer in the seed is guarded by
+  `!loop_copy.contains(sv) && !scrut_borrowed_param`; the kernel called
+  `move-var` unconditionally, so the legit `&T` shape
+  `(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))` died
+  with "cannot move n: it is a borrowed parameter" — bk1/bk3 were
+  REJECTED. Fixed in `bcheck`'s HMatch arm (guard mirrors the seed).
+- **The S8-era driver arity bug.** `check-program` takes
+  `(defs lams facts tab adts)`; `cli.cato` passes five args but
+  `hir_ref.cato`/`emit_ref.cato` passed four — the interp zips params
+  with args, leaving `adts` unbound, surfacing as
+  `interp: unbound var adts (fn b-retb)` (the fn label is a red
+  herring: INTERP_FN is never restored on return, so the panic names
+  the last *called* function). The seed checker does not flag
+  wrong-arity calls — that gap is what let this ship; it cost a
+  segfault debugging cycle later (a misaligned 8-for-9-arg call to
+  `bcheck` compiled cleanly and crashed at `ldr x0`). Fixed both
+  drivers; the arity gap is recorded as seed-side work, unfixed.
+- **Stale S5-era table typing in the test drivers.** The magic symbol
+  table is an `i64` runtime handle everywhere (`scan`, `build-program`,
+  `dump-forms`, cli.cato) — but `hir_ref.cato`/`emit_ref.cato` declared
+  `tab :- (Vector str)` and passed the i64 result of `(magic-table)`
+  into it. The seed's LLVM backend marshals a Call in a vec-typed
+  position through `emit_vec_call`, which panics on the i64 signature
+  (`call magic-table does not return a vector`). `cato run` (interp)
+  never noticed — values are untyped. Drivers now say `tab :- i64`.
+- **The S6 wire dump carried the param-free wrapper.** The spec's
+  oracle is `build_program_located` = `plan_drops(false)`: let-level
+  frees, in_place bits, capture_owns — but NOT the defn-level
+  `(let [] [params…] body)` param-free wrapper (that is the
+  `plan_drops(true)` compile-pipeline stage, run after opt). The
+  kernel's single `build-program` always wraps, so `closures.cato`'s
+  `call1 [f:(Fn 0)]` dumped `(let [] [f] …)` where the oracle had none.
+  Fixed at the dump boundary: `d-unwrap-param-frees` in `dump.cato`
+  sheds exactly that shape (HLet with no binds and a non-empty frees
+  list — a user `(let [] body)` binds nothing so its frees are empty,
+  making the shape unambiguous). Codegen keeps the wrapper.
+
+**The watch-pair threading (the Round 12 recovery lever) landed.**
+`watchsc`/`watchbs` are gone from `BCtx` (11 fields again);
+`bcx-with-watch`/`bcx-without-watch` are deleted. The pair rides as
+`wsc :- i64 wbs :- &Sids` beside `bcx` through the 13 checking
+functions (`bcheck`, `b-kids`, `b-default`, `b-let-binds`, `b-loop-binds`,
+`b-arms`, `b-caps`, `b-call-move{,-ps,-walk}`, `b-ctor-move`,
+`move-var`, `move-if-nc`); `use-var` and the read-only helpers don't
+need it. Semantics mirrored exactly:
+- armed arm (boxed ∧ named scrutinee ∧ mentioned ∧ non-empty alias
+  set) → the body walks with `(scrid, aliasing-binders …)`; otherwise
+  the outer pair passes through — `(clone wbs)` costs one small-list
+  clone per non-armed arm (usually `SNil`), vs the ten-table BCtx
+  rebuild per armed arm before.
+- a loop body still resets the watch (`-1 (SNil)`), matching the old
+  `bcx-with-loopcopy` reset; the b-arms recursion passes the *outer*
+  pair to the next arm.
+
+Measured: **−67 MB, −1.37M alloc calls** (3.065 → 2.998 GB; 84.36M →
+82.99M). That is the whole `bcx-with-watch` term of Round 12's +179 MB
+— "the dominant term" was ~37% of it, not most; the rest is the
+no_move/watch-scan machinery itself (the `b-mentions` pre-scan walk is
+CPU, the watch lists are small). Decision-identity is proven, not
+argued: the post-refactor k1 emits **byte-identical IR** for all eight
+kernel fixtures and **identical rejection messages** for all four
+error programs vs the pre-refactor k1; gate fixpoint OK; `cargo test`
+and `tools/tests` fully green.
+
+Seed-side gaps found on the way (documented, not fixed):
+- The checker does not reject wrong-arity calls (see above; an E-code
+  for call arity would have saved two debugging cycles today).
+- The interp's `unbound var (fn …)` label names the last-entered
+  function, not the panicking one (INTERP_FN is never popped).
+
+## Round 12 results (ownership soundness + selfhost checker parity; 2.88 → 3.06 GB)
+An audit of the ownership model found confirmed memory-unsafety bugs in
+both compilers. All are fixed; every fix has a probe (kept in
+/tmp/cato_audit, with an ASAN/footprint harness — LeakSanitizer is NOT
+available on this macOS, `cato build --asan` compiles the .ll at -O2
+which optimizes the toy double-frees away; the working recipe is
+`clang -O0 -fsanitize=address <(cato --emit-ir [--no-opt]) runtime.c`).
+
+Seed-side confirmed bugs (each reproduced before the fix):
+- **B1 — moves inside `for`/fused-loop bodies were never checked**
+  (`ownership.rs` skipped the nodes entirely). The same double move that
+  E301s when written flat compiled inside a `for` body and double-freed
+  per iteration (ASAN-confirmed, optimizer-independent). Now the body is
+  checked against the live state and moves of pre-loop bindings are
+  rejected (`forbid_pred_moves`; per-iteration bindings may still move).
+- **B2 — copy-prop dissolved single-use owning ADT/Str/Fn bindings**
+  (`simplify.rs` guarded only Vec/Map/Set): the binding vanished, its
+  free with it, and the box leaked. Probe: 242 MB → 1 MB at 5M
+  iterations.
+- **B4 — `count_expr_is_vec` missed Loop/For/Conj/Subvec/Clone**:
+  `(count (loop ...))` emitted `strlen` on a `%VecI64` (clang-rejected
+  IR). Now type-directed arms; m1 probe compiles and runs.
+- **B5 — `for` as a loop-binding seed** panicked
+  (`funcs.rs` `emit_vec_pair` had no For arm); now emitted.
+- **B6 — `(match (let ...) ...)`: checker accepted, backend panicked** —
+  and the panic was protecting a double-free (the scrutinee let's free
+  runs inside `emit_adt` before the arms). Now rejected: "bind it to a
+  name first"; `adt_of` gained safe Seq/Loop arms.
+- **B7 — vector literals inside loops emitted per-iteration `alloca`**
+  (`materialize_vec_lit` / `vec_arg`'s VecLit arm): 50k iterations fine,
+  5M → SIGSEGV. Allocas hoisted to the entry prelude (the kernel emitter
+  already hoisted via `em-pre`).
+- **B8 (new find) — a non-`&T`-marked function returning a borrowed
+  param** (`(defn f [b :- &Box] :- Box b)`) compiled and the caller
+  freed the alias → ASAN double-free. Both checkers now reject it via
+  the inverse of `tail_borrow_ok`.
+
+Leak classes fixed (footprint deltas at 1–5M iterations vs controls):
+- **L-a** if/match owning merges: arm-tail duty transfer at bind sites
+  (`transfer_merge_tails`; arms that only alias keep the old behavior).
+  97 MB probe → 1 MB.
+- **L-b** `(Vector str)` scope frees release only the pointer array:
+  now `cato_str_vec_free` in `free_binding_storage` (seed) and
+  `fallthrough-free` (kernel emitter) — the ADT glue already did this.
+- **L-f** loop accumulators: `owns` seeded for loop binds (with owns
+  restore — a stale owns=1 past the loop would let a later conj fire
+  in-place on an aliased buffer), plus the recur self-update rule: the
+  planner arms `recur_ok` for exactly the backend's `recur_fast` shape
+  (single conj of a fresh-seeded loop var, no sibling recur argument
+  reads it). The backend frees grown-out buffers on the planner's
+  in_place verdict. 150 MB → 68 MB (the rest is the c.vecs
+  final-buffer class).
+- **L-g** scope-aware shadowing: the defn-wide "bound twice, never
+  frees" pre-pass became a per-let `rebound_in_body` walk
+  (`b-rebound` in the kernel) — sibling-branch lets of the same name
+  are distinct bindings and each frees its own buffer. 9.3 MB → 1 MB.
+
+Selfhost checker parity (the audit's B3): `moveck.cato` was a weakened
+fork — the old k1 ACCEPTED `examples/errors/move_borrowed.cato` and a
+borrowed-param shape (d4) whose binary ASAN-confirmably double-freed.
+Ported: `no_move` + borrowed-param error (seed-identical message),
+watch lists (scrutinee moved inside its own arm retires aliasing
+binders; armed only for a named owned scrutinee the arm body mentions —
+temps are never freed, so watching them is pure churn), loop-init
+moves, `loopcopy` guards (use-var, let-of-var, accumulating nested
+loops), B8, borrowed-result-into-owned-param, loop-bind owns seeding
+with restore, scope-aware shadowing. D1/D4 now reject in k1 with the
+seed's exact message. Remaining divergence (documented): the watch is
+innermost-only and `fp-scrut-adt` is still HVar/HCtor (call-scrutinee
+binders are leaky-not-unsound because the temp box is never freed).
+
+**The trap this round** (cost a gate failure): the first free verdict
+keyed off the backend's `recur_fast` alone. `sb-str` seeds its
+accumulator with the `[]` LITERAL — static global — and the first
+growth freed read-only data ("pointer being freed was not allocated",
+k1 abort). Rule: **a free keys only off the planner's in_place verdict
+(owns-gated); `self_update` may append in place but never free.** The
+`@`-prefix guard in emit_conj stays as a belt but cannot see loaded
+pointers — it is not a substitute. Also: rebuild BOTH seed binaries
+before the gate (the gate uses target/debug/cato; a stale debug seed
+emits different IR and wastes a debugging cycle).
+
+Churn accounting: +179 MB total. `bcx-with-watch` clones program-wide
+tables (dparams/retb/adts/shared) per armed arm — the dominant term.
+Recovery lever if it must go: thread a small `(wsc, wbs)` pair beside
+`bcx` through bcheck instead of rebuilding BCtx (~30 helper
+signatures).
 
 ## Round 11 results (no gain; the `TyEnv` conversion spec)
 Checked the other two "narrow read" candidates and rejected both on the same
@@ -309,7 +483,9 @@ Deterministic, byte-stable, no MAXRSS noise:
 
 ## Remaining work (measured, in order)
 Re-run the inclusive attribution (commands above) before choosing; at
-4.09 GB the profile has shifted. Last measured leaders:
+3.00 GB the profile has shifted again (Round 12 added the +179 MB
+watch/no-move port; Round 13 recovered 67 MB of it by threading the
+watch pair — see both churn accountings). Last measured leaders:
 - `clone__Varnt <- vlist_at`: callers that take a whole `Varnt` to read its
   field list (`variant-index` returns it, `lower` reads fields at 2453/2571,
   `fill-variants` at forms 598). `vlist-fields-at` exists; the remaining
@@ -327,17 +503,43 @@ Re-run the inclusive attribution (commands above) before choosing; at
 - `clone__HExpr` is now small but diffuse (small sub-tree copies at node
   boundaries); only targeted, measured edits move it — the blanket borrow
   conversion does not (see Round 2 negative results).
-- Cato-level leak guards remain unexplored (see the original note below).
-- Goal: approach seed behaviour/resource profile.
+- Cato-level leak guards remain unexplored (compile-time rejection of
+  the leak classes: control-flow merges of owning values bound to
+  intermediates, call-returned vectors bound read-only).
+- L-c is now unblocked: call-returned vectors/`split` results bind
+  read-only (c.vecs) and never free. Materializing them into grow slots
+  is sound only BECAUSE B8 now forbids returning borrowed collections
+  from unmarked functions — do both together or neither.
+- Goal: approach seed behaviour/resource profile (Round 12 spent
+  +179 MB of it on soundness; Round 13's watch-pair threading recovered
+  67 MB — the `bcx-with-watch` term).
 
 ## Files to focus
-- `tools/borrow_drop.py` (argument side of the borrow conversion),
-  `tools/instr_clones.py`, `tools/alloc_stack.c`, `tools/alloc_profile.c`
-- `selfhost/cato/emit/state.cato`, `emit/*.cato`, `hir/lower.cato`,
-  `hir/moveck.cato` (hotspots)
-- `crates/cato-backend-llvm/src/llvm/heap_vec.rs`,
-  `exprs_flow.rs`, `funcs.rs` (growable-slot codegen)
-- `crates/cato-core/src/hir/ownership.rs` (planner) if adding leak rules
+- `selfhost/cato/hir/moveck.cato` — the ported checker (no_move, watch
+  pair `wsc`/`wbs` threaded beside `bcx` through the 13 checking
+  functions, loopcopy, B8, per-let shadowing, B13 guard); the largest
+  Round 13 edit site
+- `crates/cato-core/src/hir/ownership.rs` — the reference planner
+  (forbid_pred_moves, recur_ok, transfer_merge_tails, rebound_in_body,
+  B8); change the seed FIRST, then port to moveck.cato
+- `crates/cato-core/src/opt/simplify.rs` — the heap-owning Keep guard
+  (B2); the guard list must match `heap_owning`
+- `crates/cato-backend-llvm/src/llvm/heap_vec.rs` (free verdicts —
+  planner-in_place only, never `recur_fast`), `adt.rs` (glue +
+  `adt_of`), `exprs.rs` (`count_expr_is_vec`), `exprs_val.rs`/`funcs.rs`
+  (hoisted allocas, For arm)
+- `selfhost/cato/emit/adt.cato` (`fallthrough-free` str-vec release),
+  `emit/heap.cato` (conj-grow static guard), `emit/*.cato`,
+  `hir/lower.cato` (hotspots), `hir/dump.cato`
+  (`d-unwrap-param-frees` — the S6 wire dump sheds the defn-level
+  param-free wrapper; codegen keeps it)
+- `selfhost/cato/hir/hir_ref.cato`, `emit/emit_ref.cato` — the S6/S7
+  test drivers (now arity- and typing-correct: `check-program` takes
+  five args, the magic table is `i64`)
+- `tools/instr_clones.py`, `tools/alloc_stack.c`, `tools/alloc_profile.c`
+  (attribution); `tools/kernel_gate.sh` (cleans /tmp/run_*); the Round
+  12 probes/harness live in `/tmp/cato_audit` (ephemeral — re-create
+  from the Round 12 notes if gone)
 
 ## Quick commands
 ```bash
@@ -349,8 +551,10 @@ python3 tools/instr_clones.py /tmp/k.ll /tmp/i.ll /tmp/map.tsv
 clang -O2 -c -o /tmp/dbg_hit.o tools/dbg_hit.c
 clang -O2 /tmp/i.ll runtime/runtime.c /tmp/dbg_hit.o -o /tmp/ki
 DBG_MAP=/tmp/map.tsv /tmp/ki build selfhost/cato.cato /tmp/k3 2>/tmp/hits.txt
-python3 -m pytest tools/tests -q && cargo test
+python3 -m unittest discover -s tools/tests && cargo test
 cargo build && cargo build --release   # the gate uses target/debug/cato: rebuild BOTH
+# (stale target/debug/cato emits different IR than release — a wasted
+#  debugging cycle looks like a nondeterministic gate failure)
 ```
 
 ## Verification discipline that worked
@@ -361,13 +565,25 @@ compiler** emit for the *same* input (byte-identical ⇒ semantics-preserving)
 (parity suites) + a focused micro-benchmark with identical output.
 
 ## Next agent todo
-1. Fuse `dparams-get` with its two consumers (`b-call-move-ps`,
+1. Re-run the inclusive attribution (the profile shifted again: Round 13
+   removed the per-armed-arm BCtx rebuild). The known next candidates:
+2. Fuse `dparams-get` with its two consumers (`b-call-move-ps`,
    `b-tail-args-ok`) so the param list stays borrowed; convert the
    remaining `(match st (Emit [c m s] (clone m)))` reads to `&Emit`
    accessors (targets `clone__StrCell` + `clone__PList`).
-2. Chase the nested `clone__TyList` volume: find which remaining callers
+3. Chase the nested `clone__TyList` volume: find which remaining callers
    clone a whole `AdtTab`/`Sigs`/`AdtInfo` (entry sites are few — the
    instrumentation in the quick commands lists them), and shrink those.
-3. Explore adding Cato-level leak guards (ownership semantics) to catch
-   leaks at compile time.
-4. Keep changes semantics-preserving; run the gate after each batch.
+4. L-c: materialize call-returned vectors/`split` results into grow
+   slots (B8, now in place, is the precondition); also fixes the
+   sb-str/loop-result final-buffer class.
+5. Compile-time leak guards: the checker already knows L-a/L-c shapes —
+   a `-Wleak` diagnostic tier (warn, don't reject) is cheap now.
+6. Seed-side, low priority but real: an E-code for wrong-arity calls
+   (two debugging cycles today were caused by its absence — the interp
+   shows a bogus unbound-var panic instead); and the interp's
+   `INTERP_FN` label should be saved/restored around calls.
+7. Keep changes semantics-preserving; run the gate after each batch.
+   Remember: rebuild BOTH seed binaries first, never key a free off
+   `recur_fast`, and `rm -f /tmp/run_*` before trusting an
+   acceptance-based harness.

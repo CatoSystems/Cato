@@ -563,12 +563,24 @@
       (if (fc-gr-has c k)
         (match (fc-gr-get c k)
           (GroVal [slot el]
-            (match (em-ins2 st
-                     (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
-                     (str "  ~ = load ptr, ptr ^1, align 8"))
-              (ET2Res [st1 pf p]
-                (EURes (em-decl-line st1 (str "  call void @free(ptr " p ")")
-                      "declare void @free(ptr)")) ))))
+            ; a (Vector str) growable binding owns a heap copy of every
+            ; element string (the conj strdup rule): the release frees the
+            ; elements too, matching the seed's free_binding_storage
+            (if (= el 2)
+              (match (em-ins4 st
+                       (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
+                       (str "  ~ = load ptr, ptr ^1, align 8")
+                       (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 1")
+                       (str "  ~ = load i64, ptr ^1, align 8"))
+                (ET4Res [st1 pf p lf l]
+                  (EURes (em-decl-line st1 (str "  call void @cato_str_vec_free(ptr " p ", i64 " l ")")
+                        "declare void @cato_str_vec_free(ptr, i64)"))))
+              (match (em-ins2 st
+                       (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
+                       (str "  ~ = load ptr, ptr ^1, align 8"))
+                (ET2Res [st1 pf p]
+                  (EURes (em-decl-line st1 (str "  call void @free(ptr " p ")")
+                        "declare void @free(ptr)")) )))))
         (EURes st)))))
 
 (defn emit-stmt [e :- HExpr st :- Emit] :- EURes

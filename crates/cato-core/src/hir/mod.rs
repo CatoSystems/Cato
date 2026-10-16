@@ -512,7 +512,6 @@ pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
 pub(crate) use ownership::plan_drops;
-pub(crate) use ownership::*;
 pub(crate) use parse::*;
 pub(crate) use pipeline::*;
 pub(crate) use stagefn::*;

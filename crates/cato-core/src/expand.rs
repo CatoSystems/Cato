@@ -124,12 +124,12 @@ fn expand_cond(items: Vec<Expr>) -> Result<Expr, String> {
     if arms.is_empty() {
         return Err("cond expects at least one test/body pair".into());
     }
-    let (pairs, default) = if arms.len() % 2 == 0 {
-        (&arms[..], None)
+    let (pairs, default) = if arms.len().is_multiple_of(2) {
+        (arms, None)
     } else {
         (&arms[..arms.len() - 1], Some(arms[arms.len() - 1].clone()))
     };
-    let mut result = default.unwrap_or_else(|| Expr::LitI64(0));
+    let mut result = default.unwrap_or(Expr::LitI64(0));
     for pair in pairs.rchunks(2) {
         result = list(vec![
             sym("if"),

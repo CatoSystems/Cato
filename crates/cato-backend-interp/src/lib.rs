@@ -1200,7 +1200,7 @@ pub fn fmt_f64(v: f64) -> String {
         return "0".to_string();
     }
     let a = v.abs();
-    if a >= 1e6 || a < 1e-4 {
+    if !(1e-4..1e6).contains(&a) {
         // Exponent form: C prints 6 significant digits and a 2+ digit exp.
         let s = format!("{:.5e}", v); // e.g. "1.04858e6"
         if let Some(pos) = s.find('e') {
@@ -1224,16 +1224,12 @@ pub fn fmt_f64(v: f64) -> String {
 
 /// The interpreter backend: `emit` executes the program and returns the
 /// captured stdout as the artifact.
+#[derive(Default)]
 pub struct InterpBackend {
     /// Arguments visible to `(args)` (everything after the source file).
     pub program_args: Vec<String>,
 }
 
-impl Default for InterpBackend {
-    fn default() -> Self {
-        InterpBackend { program_args: Vec::new() }
-    }
-}
 
 impl Backend for InterpBackend {
     fn name(&self) -> &'static str {
@@ -1263,7 +1259,7 @@ pub fn fmt_value(v: &Value) -> String {
         Value::F32(f) => format!("{}f", fmt_f64(*f as f64)),
         Value::Str(s) => format!("{:?}", s),
         Value::Vec(xs) => {
-            let inner: Vec<String> = xs.iter().map(|v| fmt_value(v)).collect();
+            let inner: Vec<String> = xs.iter().map(fmt_value).collect();
             format!("[{}]", inner.join(" "))
         }
         Value::Set(xs) => {
@@ -1278,7 +1274,7 @@ pub fn fmt_value(v: &Value) -> String {
             format!("{{{}}}", inner.join(", "))
         }
         Value::Adt { variant, fields } => {
-            let inner: Vec<String> = fields.iter().map(|v| fmt_value(v)).collect();
+            let inner: Vec<String> = fields.iter().map(fmt_value).collect();
             format!("#<variant {} ({})>", variant, inner.join(" "))
         }
         Value::Closure { .. } => "#<closure>".to_string(),

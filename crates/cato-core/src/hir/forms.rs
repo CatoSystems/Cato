@@ -263,7 +263,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
         // Vector destructuring: `[a b] expr` binds a = (get expr 0),
         // b = (get expr 1). `_` skips an element.
         if let Expr::Vector(pat) = &binds[i] {
-            let value = lower(&binds[i + 1], &mut child, ctx)?;
+            let value = lower(&binds[i + 1], &child, ctx)?;
             let t = ty_of(&value, &child, ctx);
             let elem = match t {
                 Ty::Vec(e) => e,
@@ -321,7 +321,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                     return Err(format!("let binding {} expects a value after the type", name));
                 };
                 let t = resolve_ann_ty(ann, ctx)?;
-                let value = lower_expect(value_form, &mut child, ctx, Some(t))?;
+                let value = lower_expect(value_form, &child, ctx, Some(t))?;
                 let vt = ty_of(&value, &child, ctx);
                 let empty_vec = matches!((&t, &value), (Ty::Vec(_), HExpr::VecLit(crate::hir::VLit::I64(vs))) if vs.is_empty());
                 if vt != t && !(t == Ty::F64 && vt == Ty::I64) && !empty_vec {
@@ -336,7 +336,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                 continue;
             }
         }
-        let value = lower(&binds[i + 1], &mut child, ctx)?;
+        let value = lower(&binds[i + 1], &child, ctx)?;
         let t = ty_of(&value, &child, ctx);
         child.insert(name.clone(), t);
         resolved.push((name.clone(), value, t));

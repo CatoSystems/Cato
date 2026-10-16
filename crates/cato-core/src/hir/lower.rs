@@ -739,7 +739,7 @@ pub(crate) fn lower_expect(
                     };
                     let a = lower(&items[1], env, ctx)?;
                     let b = lower(&items[2], env, ctx)?;
-                    return promote_bin(op, a, b, env, ctx);
+                    promote_bin(op, a, b, env, ctx)
                 }
                 _ => {
                     // Calling a closure value bound to a local.
@@ -1261,7 +1261,7 @@ pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExp
             ));
         };
         params.push((name.clone(), ty));
-        i += if ty_name_len(&pitems, i) == 3 { 3 } else { 1 };
+        i += if ty_name_len(pitems, i) == 3 { 3 } else { 1 };
     }
     let mut child = env.clone();
     for (n, t) in &params {
@@ -1368,7 +1368,7 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
         let Some(init_form) = binds.get(i + 3) else {
             return Err(format!("loop binding {} expects an initial value", name));
         };
-        let init = lower_expect(init_form, &mut child, ctx, Some(ty))?;
+        let init = lower_expect(init_form, &child, ctx, Some(ty))?;
         let it = ty_of(&init, &child, ctx);
         let empty_vec = matches!((&ty, &init), (Ty::Vec(_), HExpr::VecLit(VLit::I64(vs))) if vs.is_empty());
         if it != ty && !(ty == Ty::F64 && it == Ty::I64) && !empty_vec {

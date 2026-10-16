@@ -39,6 +39,12 @@ fn scrutinee_adt(
         HExpr::Match { ty: Ty::Adt(i), .. } => Some(*i),
         HExpr::If(_, _, _, Ty::Adt(i)) => Some(*i),
         HExpr::Clone(inner) => scrutinee_adt(inner, tys, rets),
+        // Let/Seq scrutinees are rejected in `check` (their owning box frees
+        // inside a scope the binder-escape suppression cannot reach), so
+        // they never reach the alias analysis here. A loop's recorded
+        // completing type is safe: the temp is never freed, so binders
+        // alias a leaked value and moves through them stay sound.
+        HExpr::Loop { ty: Ty::Adt(i), .. } => Some(*i),
         HExpr::Call(name, _) => match rets.get(name) {
             Some(Ty::Adt(i)) => Some(*i),
             _ => None,
@@ -107,9 +113,6 @@ pub(crate) struct BCheck<'a> {
     /// Non-Copy loop variables (S8): the checker treats them as Copy —
     /// reads never move, calls never consume, and no scope frees one.
     pub(crate) loop_copy: HashSet<String>,
-    /// Names bound more than once in the defn: codegen shares the env slot,
-    /// so frees stay suppressed (known limitation).
-    pub(crate) shadowed: HashSet<String>,
     /// Consumed names (see struct docs).
     pub(crate) consumed: HashSet<String>,
     /// Remaining occurrences of each name (pre-counted); a conj source whose
@@ -124,6 +127,17 @@ pub(crate) struct BCheck<'a> {
     pub(crate) param_frees: Vec<String>,
     /// Boxed-scrutinee arms on the check path (innermost last); see `Watch`.
     watches: Vec<Watch>,
+    /// While a `recur` argument is being checked: the accumulator whose
+    /// conj is the loop's own self-update (the planner mirror of the
+    /// backend's `recur_fast`). The backend proves the append unobservable
+    /// for this shape; pairing it with `loop_seed_fresh` proves the old
+    /// buffer uniquely owned, so the conj is a last use even though the
+    /// completing tail also names the accumulator.
+    recur_ok: Option<String>,
+    /// Loop variables whose seed allocated a fresh buffer (not a moved
+    /// Var: a transferred buffer is also reachable through the seed's old
+    /// binding slot, and the backend keeps those copying — `loop_alias`).
+    loop_seed_fresh: HashSet<String>,
     pub(crate) errs: Vec<String>,
 }
 
@@ -147,16 +161,6 @@ pub(crate) fn plan_drops(
 ) -> Result<(), String> {
     let mut escaped = HashSet::new();
     tail_escape(body, &mut escaped);
-
-    // Shadowing pre-pass: names bound by more than one `let` share a codegen
-    // slot, so they never free.
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    count_binds(body, &mut counts);
-    let shadowed: HashSet<String> = counts
-        .into_iter()
-        .filter(|(_, c)| *c > 1)
-        .map(|(n, _)| n)
-        .collect();
 
     let mut var_counts: HashMap<String, i64> = HashMap::new();
     count_vars(body, &mut var_counts);
@@ -192,6 +196,27 @@ pub(crate) fn plan_drops(
                     .to_string(),
             );
         }
+    } else if !ret.is_copy_ty() {
+        // The inverse discipline (B8): a function whose return type *moves*
+        // may not return a value derived from a borrowed parameter. The
+        // caller binds the result as owned and frees it at scope exit while
+        // the parameter's owner frees the same buffer — the confirmed
+        // double-free behind `(defn f [b :- &Box] :- Box b)`. Marked `&T`
+        // returns are exempt above; Copy returns carry no duty.
+        let borrowed_params: HashSet<String> = params
+            .iter()
+            .zip(borrows.iter())
+            .filter(|(_, b)| !b.is_owned())
+            .map(|((n, _), _)| n.clone())
+            .collect();
+        if !borrowed_params.is_empty()
+            && tail_borrow_ok(body, &borrowed_params, sigs, ret_borrowed_names)
+        {
+            return Err(
+                "a function returning a move type may not return a value derived from a `&` parameter: the caller would free a buffer the parameter's owner still frees. Mark the return `&T`, or clone the value before returning it."
+                    .to_string(),
+            );
+        }
     }
 
     let mut bc = BCheck {
@@ -209,12 +234,13 @@ pub(crate) fn plan_drops(
         boxed_full,
         escaped,
         loop_copy: HashSet::new(),
-        shadowed,
         consumed: HashSet::new(),
         remaining: var_counts,
         rets,
         param_frees: Vec::new(),
         watches: Vec::new(),
+        recur_ok: None,
+        loop_seed_fresh: HashSet::new(),
         errs: Vec::new(),
     };
     let mut tys: HashMap<String, Ty> = HashMap::new();
@@ -277,39 +303,38 @@ fn param_moves_by_value(ty: Ty, facts: &AdtFacts) -> bool {
     }
 }
 
-fn count_binds(e: &HExpr, counts: &mut HashMap<String, usize>) {
+/// Is `name` re-bound by a `let` anywhere inside this expression? The
+/// scope-exit free stays suppressed only then — that is the one shape where
+/// the old "shadowed names share a slot" concern is real. Sibling-branch
+/// lets of the same name are distinct bindings in distinct registers (the
+/// backend save/restores per scope; the interpreter uses child envs), so
+/// each frees its own buffer.
+fn rebound_in_body(e: &HExpr, name: &str) -> bool {
     match e {
         HExpr::Let(binds, body, _) => {
-            for (n, value, _) in binds {
-                *counts.entry(n.clone()).or_insert(0) += 1;
-                count_binds(value, counts);
-            }
-            count_binds(body, counts);
+            binds.iter()
+                .any(|(n, v, _)| n == name || rebound_in_body(v, name))
+                || rebound_in_body(body, name)
         }
-        HExpr::Seq(vs) | HExpr::StrCat(vs) => vs.iter().for_each(|v| count_binds(v, counts)),
+        HExpr::Seq(vs) => vs.iter().any(|v| rebound_in_body(v, name)),
         HExpr::If(c, t, f, _) => {
-            count_binds(c, counts);
-            count_binds(t, counts);
-            count_binds(f, counts);
+            rebound_in_body(c, name)
+                || rebound_in_body(t, name)
+                || rebound_in_body(f, name)
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            rebound_in_body(scrut, name)
+                || arms.iter().any(|a| rebound_in_body(&a.body, name))
         }
         HExpr::Loop { binds, body, .. } => {
-            binds.iter().for_each(|(_, _, e)| count_binds(e, counts));
-            count_binds(body, counts);
+            binds.iter().any(|(_, _, i)| rebound_in_body(i, name))
+                || rebound_in_body(body, name)
         }
-        HExpr::Recur(args) => args.iter().for_each(|a| count_binds(a, counts)),
-        HExpr::ToStr(e, _) => count_binds(e, counts),
-        HExpr::ParseNum { s, .. } => count_binds(s, counts),
-        HExpr::Slurp(p) => count_binds(p, counts),
-        HExpr::Spit { path, data } => {
-            count_binds(path, counts);
-            count_binds(data, counts);
+        HExpr::Recur(args) => args.iter().any(|a| rebound_in_body(a, name)),
+        HExpr::And(a, b) | HExpr::Or(a, b) => {
+            rebound_in_body(a, name) || rebound_in_body(b, name)
         }
-        HExpr::Exit(c) => count_binds(c, counts),
-        HExpr::And(c, t) | HExpr::Or(c, t) => {
-            count_binds(c, counts);
-            count_binds(t, counts);
-        }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -514,6 +539,7 @@ impl<'a> BCheck<'a> {
             // once-per-body check stays sound across iterations.
             HExpr::Loop { binds, body, .. } => {
                 let mut shadowed_vars: Vec<(String, Option<VState>)> = Vec::new();
+                let mut shadowed_owns: Vec<(String, Option<bool>)> = Vec::new();
                 for (n, ty, init) in binds.iter_mut() {
                     self.check(init, tys, st, owns);
                     // A non-Copy Var initializer moves into the loop: the
@@ -521,14 +547,35 @@ impl<'a> BCheck<'a> {
                     // scope ever frees it, so the source's drop duty ends
                     // here (without this, a boxed parameter that seeds a
                     // loop would free live state at body exit).
+                    let mut init_owns = false;
+                    let mut seed_fresh = false;
                     if let HExpr::Var(v) = init {
                         if !ty.is_copy_ty() && !self.loop_copy.contains(v) {
+                            // The loop slot inherits the source's duty. A
+                            // transferred buffer stays reachable through
+                            // the seed's old slot: owned, but never a
+                            // fresh seed (the backend keeps those copying).
+                            init_owns = owns.get(v).copied().unwrap_or(false);
                             self.move_var(v, st, owns);
                         }
+                    } else if !ty.is_copy_ty() && allocates(init, self.facts) {
+                        init_owns = true;
+                        seed_fresh = true;
+                    }
+                    if seed_fresh {
+                        self.loop_seed_fresh.insert(n.clone());
                     }
                     shadowed_vars.push((n.clone(), st.get(n).copied()));
+                    shadowed_owns.push((n.clone(), owns.get(n).copied()));
                     tys.insert(n.clone(), *ty);
                     st.insert(n.clone(), VState::Owned);
+                    // The loop slot owns the buffer it rides (a fresh
+                    // allocation, or the duty a moved seed transferred).
+                    // Without this the planner can never prove a last use
+                    // on the accumulator, so `conj` stays copying and the
+                    // backend's grow path never frees the old buffer —
+                    // every geometric growth leaked.
+                    owns.insert(n.clone(), init_owns);
                     // Non-Copy loop variables ride as Copy (S8): reads and
                     // calls never move them, and no scope frees them.
                     if !ty.is_copy_ty() {
@@ -547,12 +594,74 @@ impl<'a> BCheck<'a> {
                         }
                     }
                     self.loop_copy.remove(n);
+                    self.loop_seed_fresh.remove(n);
+                }
+                // owns restores with st: a stale owns=true leaking past the
+                // loop would let a later conj on the shadowed outer binding
+                // fire in-place on a buffer it only aliases.
+                for (n, prev) in shadowed_owns.iter().rev() {
+                    match prev {
+                        Some(o) => {
+                            owns.insert(n.clone(), *o);
+                        }
+                        None => {
+                            owns.remove(n);
+                        }
+                    }
                 }
             }
             HExpr::Recur(args) => {
-                for a in args {
+                // The self-update shape — `(recur ... (conj acc x) ...)` —
+                // is the loop's accumulator update: the backend proves the
+                // append unobservable there (the slot is rebound right
+                // after, and every read of the old header carries the
+                // pre-append length), so the conj is a last use of the
+                // accumulator even though the loop's completing tail also
+                // names it. Conditions mirror the backend's `recur_fast`:
+                // single conj of a fresh-seeded loop variable, and no
+                // sibling argument reads it (a later arg reading the old
+                // header would observe the append — or the growth free).
+                let mut conj_counts: HashMap<String, i64> = HashMap::new();
+                for a in args.iter() {
+                    if let HExpr::Conj { v, .. } = a {
+                        if let HExpr::Var(n) = &**v {
+                            *conj_counts.entry(n.clone()).or_insert(0) += 1;
+                        }
+                    }
+                }
+                for ai in 0..args.len() {
+                    // Is args[ai] the loop's self-update (mirroring the
+                    // backend's recur_fast conditions)? Computed before the
+                    // mutable borrow of the argument below.
+                    let candidate = match &args[ai] {
+                        HExpr::Conj { v, .. } => match &**v {
+                            HExpr::Var(n)
+                                if conj_counts.get(n) == Some(&1)
+                                    && self.loop_copy.contains(n)
+                                    && self.loop_seed_fresh.contains(n) =>
+                            {
+                                let sibling_reads = args.iter().enumerate().any(|(k, o)| {
+                                    k != ai && {
+                                        let mut m: HashMap<String, i64> = HashMap::new();
+                                        count_vars(o, &mut m);
+                                        m.get(n).copied().unwrap_or(0) > 0
+                                    }
+                                });
+                                if sibling_reads {
+                                    None
+                                } else {
+                                    Some(n.clone())
+                                }
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    self.recur_ok = candidate;
+                    let a = &mut args[ai];
                     self.check(a, tys, st, owns);
                 }
+                self.recur_ok = None;
             }
             HExpr::ToStr(e, _) => self.check(e, tys, st, owns),
             HExpr::ParseNum { s, .. } => self.check(s, tys, st, owns),
@@ -625,7 +734,40 @@ impl<'a> BCheck<'a> {
                 self.check(start, tys, st, owns);
                 self.check(end, tys, st, owns);
             }
-            HExpr::For { .. } => {} // per-iteration: captures are borrows
+            HExpr::For {
+                el,
+                src,
+                elem,
+                body,
+                ..
+            } => {
+                self.check(src, tys, st, owns);
+                // The body runs once per element: it must be checked, and
+                // against the *live* state (not a per-branch clone), so a
+                // use-after-move inside the body is seen textually. A move
+                // of a binding that predates the loop can never be sound —
+                // the second iteration would read a moved value — so any
+                // such move is an error after the walk. Bindings created
+                // inside the body (including `el` and nested match binders)
+                // are per-iteration and may move freely: their temporaries
+                // are freshly minted each iteration.
+                let elem_ty = match elem {
+                    Elem::I64 => Ty::I64,
+                    Elem::F64 => Ty::F64,
+                    Elem::Str => Ty::Str,
+                    Elem::Param(k) => Ty::Param(*k),
+                };
+                let pre: HashSet<String> = st.keys().cloned().collect();
+                let pre_moved: HashSet<String> = st
+                    .iter()
+                    .filter(|(_, s)| **s == VState::Moved)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                tys.insert(el.clone(), elem_ty);
+                st.insert(el.clone(), VState::Owned);
+                self.check(body, tys, st, owns);
+                self.forbid_pred_moves(&pre, &pre_moved, st, tys, "a `for` body");
+            }
             HExpr::Conj {
                 v,
                 x,
@@ -643,7 +785,8 @@ impl<'a> BCheck<'a> {
                     last_use_owned = tys.get(&name).map(|t| is_non_copy(*t)).unwrap_or(false)
                         && st.get(&name) == Some(&VState::Owned)
                         && owns.get(&name).copied().unwrap_or(false)
-                        && self.remaining.get(&name).copied() == Some(0);
+                        && (self.remaining.get(&name).copied() == Some(0)
+                            || self.recur_ok.as_deref() == Some(name.as_str()));
                     if last_use_owned {
                         self.move_var(&name, st, owns);
                     }
@@ -739,6 +882,19 @@ impl<'a> BCheck<'a> {
             }
             HExpr::Match { scrut, arms, .. } => {
                 self.check(scrut, tys, st, owns);
+                // A let-wrapped scrutinee owns its box in a scope the
+                // binder-escape suppression below cannot reach (the
+                // suppression targets a *named* scrutinee): a moved binder
+                // plus the let's own scope free would double-free. Require
+                // the binding form instead — `(let [x (f)] (match x ...))`
+                // — where every existing rule composes. (Seq scrutinees
+                // share the shape; their tail var is owned by an enclosing
+                // binding the match cannot suppress either.)
+                if matches!(&**scrut, HExpr::Let(..) | HExpr::Seq(..)) {
+                    self.errs.push(
+                        "match scrutinee must not be a `let`/`do` form: bind it to a name first (its buffer would be freed before the arms run)".to_string(),
+                    );
+                }
                 // Every arm starts from the same post-scrutinee state: a
                 // move in one arm (e.g. a generic-dispatch call) must not
                 // poison the other arms — only one arm runs.
@@ -803,7 +959,7 @@ impl<'a> BCheck<'a> {
                         // children copy whole, so their binders keep the
                         // unrestricted I64 stand-in.
                         let fty = match scrut_boxed
-                            .then(|| arm_fields)
+                            .then_some(arm_fields)
                             .flatten()
                             .and_then(|f| f.1.get(k).copied())
                         {
@@ -968,6 +1124,16 @@ impl<'a> BCheck<'a> {
             HExpr::Let(binds, body, frees) => {
                 for (name, value, ty) in binds.iter_mut() {
                     self.check(value, tys, st, owns);
+                    // Owning control-flow merges (L-a): an `if`/`match`
+                    // result of heap-owning type leaks today because
+                    // `allocates` cannot see through the merge. At a bind
+                    // site the duty has a receiver: arm tails that own a
+                    // heap buffer move into the binding, and the binding
+                    // owns the merge exactly when every arm yields owned
+                    // duty (a fresh allocation, or a moved tail var). Arms
+                    // that alias (binders of another box, non-owning
+                    // aliases) do not move and keep the old behavior.
+                    let merge_owns = self.transfer_merge_tails(value, tys, st, owns);
                     // Binding a non-Copy Var moves the buffer: the drop
                     // duty transfers to the new binding. Read the source's
                     // ownership before the move clears it.
@@ -1001,6 +1167,10 @@ impl<'a> BCheck<'a> {
                             {
                                 false
                             }
+                            // An if/match merge whose every arm yielded
+                            // owned duty: the binding owns the winning
+                            // arm's buffer and frees it at scope exit.
+                            None if merge_owns => true,
                             None => allocates(value, self.facts),
                         },
                     );
@@ -1018,7 +1188,11 @@ impl<'a> BCheck<'a> {
                         && st.get(name) == Some(&VState::Owned)
                         && !self.escaped.contains(name)
                         && !self.consumed.contains(name)
-                        && !self.shadowed.contains(name)
+                        // Suppressed only when this very body rebinds the
+                        // name (the one shape where slot sharing is real).
+                        // Sibling-branch lets of the same name are distinct
+                        // bindings in distinct slots: each frees its own.
+                        && !rebound_in_body(body, name)
                     {
                         out.push(name.clone());
                     }
@@ -1030,10 +1204,224 @@ impl<'a> BCheck<'a> {
                     self.check(v, tys, st, owns);
                 }
             }
-            // Fused loop stages run per iteration: captures are shared
-            // (borrowed), never moved.
-            HExpr::Reduce(_) => {}
+            // Fused loop stages run per iteration, with the same rule as
+            // `for`: the body is checked against the live state, and moves
+            // of bindings that predate the loop are rejected (the second
+            // iteration would read a moved value). Stage binders (`el`,
+            // `acc`) are per-iteration; their types are not carried on the
+            // node, so they keep the I64 stand-in (a reduce accumulator of
+            // move type stays untracked — the pre-existing limitation).
+            HExpr::Reduce(r) => {
+                let (init, src, maps, filters, closure_body, acc, el) = match &mut **r {
+                    HReduce::Pipeline {
+                        init,
+                        src,
+                        maps,
+                        filters,
+                        ..
+                    } => (init, src, maps, filters, None, None, None),
+                    HReduce::Closure {
+                        init,
+                        src,
+                        maps,
+                        filters,
+                        acc,
+                        el,
+                        body,
+                        ..
+                    } => (
+                        init,
+                        src,
+                        maps,
+                        filters,
+                        Some(body),
+                        Some(acc),
+                        Some(el),
+                    ),
+                };
+                let pre: HashSet<String> = st.keys().cloned().collect();
+                let pre_moved: HashSet<String> = st
+                    .iter()
+                    .filter(|(_, s)| **s == VState::Moved)
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                self.check(init, tys, st, owns);
+                self.check_source(src, tys, st, owns);
+                for m in maps.iter_mut() {
+                    if let Some(e2) = &m.el2 {
+                        tys.insert(e2.clone(), m.el2_ty);
+                        st.insert(e2.clone(), VState::Owned);
+                    }
+                    tys.insert(m.el.clone(), m.el_ty);
+                    st.insert(m.el.clone(), VState::Owned);
+                    self.check(&mut m.body, tys, st, owns);
+                }
+                for f in filters.iter_mut() {
+                    if let Some(e2) = &f.el2 {
+                        tys.insert(e2.clone(), f.el2_ty);
+                        st.insert(e2.clone(), VState::Owned);
+                    }
+                    tys.insert(f.el.clone(), f.el_ty);
+                    st.insert(f.el.clone(), VState::Owned);
+                    self.check(&mut f.body, tys, st, owns);
+                }
+                if let (Some(body), Some(acc), Some(el)) = (closure_body, acc, el) {
+                    tys.insert(acc.clone(), Ty::I64);
+                    st.insert(acc.clone(), VState::Owned);
+                    tys.insert(el.clone(), Ty::I64);
+                    st.insert(el.clone(), VState::Owned);
+                    self.check(body, tys, st, owns);
+                }
+                self.forbid_pred_moves(&pre, &pre_moved, st, tys, "a fused loop");
+            }
             HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::VecLit(_) => {}
+        }
+    }
+
+    /// Reads of a fused-loop source: `Var` sources are plain reads (the
+    /// loop does not consume its vector); bounds and nesting recurse.
+    fn check_source(
+        &mut self,
+        src: &mut HSource,
+        tys: &mut HashMap<String, Ty>,
+        st: &mut HashMap<String, VState>,
+        owns: &mut HashMap<String, bool>,
+    ) {
+        match src {
+            HSource::Var(v) => self.use_var(v, tys, st),
+            HSource::Lit(_) => {}
+            HSource::Range(hi, _) => self.check(hi, tys, st, owns),
+            HSource::Zip(a, b) => {
+                self.check_source(a, tys, st, owns);
+                self.check_source(b, tys, st, owns);
+            }
+            HSource::Take(n, inner) | HSource::Drop(n, inner) => {
+                self.check(n, tys, st, owns);
+                self.check_source(inner, tys, st, owns);
+            }
+        }
+    }
+
+    /// Per-iteration bodies (`for`, fused loops) may move their own fresh
+    /// bindings, but a move of a binding that existed before the loop frees
+    /// a buffer the second iteration still reads. Anything that went Moved
+    /// during the walk and was bound before it is an error.
+    fn forbid_pred_moves(
+        &mut self,
+        pre: &HashSet<String>,
+        pre_moved: &HashSet<String>,
+        st: &HashMap<String, VState>,
+        tys: &HashMap<String, Ty>,
+        what: &str,
+    ) {
+        let mut reported: HashSet<String> = HashSet::new();
+        for (k, v) in st {
+            // Moved *during the walk* (a state transition), on a binding
+            // that predates the loop: st is live, so pre-existing moves
+            // must not be re-flagged here.
+            if *v == VState::Moved
+                && pre.contains(k)
+                && !pre_moved.contains(k)
+                && !self.loop_copy.contains(k)
+                && tys.get(k).map(|t| is_non_copy(*t)).unwrap_or(false)
+                && reported.insert(k.clone())
+            {
+                self.errs.push(format!(
+                    "cannot move {} inside {}: the body runs once per element",
+                    k, what
+                ));
+            }
+        }
+    }
+
+    /// Does this if/match result of heap-owning type have a receiver for
+    /// the arms' drop duty? If so, move every owning arm-tail var into the
+    /// coming binding (the same transfer a plain let-of-var performs) and
+    /// report whether all arms yield owned duty. Arm tails that only alias
+    /// (binder of another box, non-owning alias) do not move: the binding
+    /// keeps the old not-owning behavior for that merge.
+    fn transfer_merge_tails(
+        &mut self,
+        value: &HExpr,
+        tys: &mut HashMap<String, Ty>,
+        st: &mut HashMap<String, VState>,
+        owns: &mut HashMap<String, bool>,
+    ) -> bool {
+        match value {
+            HExpr::If(_, then, els, ty) if heap_owning(*ty, self.facts) => {
+                self.move_tail(then, tys, st, owns);
+                self.move_tail(els, tys, st, owns);
+                self.tail_yields_owned(then, st) && self.tail_yields_owned(els, st)
+            }
+            HExpr::Match { arms, ty, .. } if heap_owning(*ty, self.facts) => {
+                for arm in arms {
+                    self.move_tail(&arm.body, tys, st, owns);
+                }
+                arms.iter().all(|arm| self.tail_yields_owned(&arm.body, st))
+            }
+            _ => false,
+        }
+    }
+
+    /// Move the heap-owning vars in tail position into the enclosing
+    /// result. Only vars that currently *own* their buffer move: aliases
+    /// and match binders (owns=false) stay put — their buffers belong to
+    /// someone else, and moving them here would hand the same buffer to
+    /// two owners.
+    fn move_tail(
+        &mut self,
+        e: &HExpr,
+        tys: &mut HashMap<String, Ty>,
+        st: &mut HashMap<String, VState>,
+        owns: &mut HashMap<String, bool>,
+    ) {
+        match e {
+            HExpr::Var(v) => {
+                if owns.get(v).copied().unwrap_or(false)
+                    && st.get(v) == Some(&VState::Owned)
+                    && tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false)
+                    && !self.loop_copy.contains(v)
+                {
+                    self.move_var(v, st, owns);
+                }
+            }
+            HExpr::Let(_, body, _) => self.move_tail(body, tys, st, owns),
+            HExpr::Seq(vs) => {
+                if let Some(last) = vs.last() {
+                    self.move_tail(last, tys, st, owns);
+                }
+            }
+            HExpr::If(_, then, els, _) => {
+                self.move_tail(then, tys, st, owns);
+                self.move_tail(els, tys, st, owns);
+            }
+            HExpr::Match { arms, .. } => {
+                for arm in arms {
+                    self.move_tail(&arm.body, tys, st, owns);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Does this tail hand the merge a buffer it uniquely owns? A tail var
+    /// counts when it was moved by `move_tail` (duty transferred); anything
+    /// else counts when it allocates fresh.
+    fn tail_yields_owned(&self, e: &HExpr, st: &HashMap<String, VState>) -> bool {
+        match e {
+            HExpr::Var(v) => st.get(v) == Some(&VState::Moved),
+            HExpr::Let(_, body, _) => self.tail_yields_owned(body, st),
+            HExpr::Seq(vs) => vs
+                .last()
+                .map(|last| self.tail_yields_owned(last, st))
+                .unwrap_or(false),
+            HExpr::If(_, then, els, _) => {
+                self.tail_yields_owned(then, st) && self.tail_yields_owned(els, st)
+            }
+            HExpr::Match { arms, .. } => arms
+                .iter()
+                .all(|arm| self.tail_yields_owned(&arm.body, st)),
+            other => allocates(other, self.facts),
         }
     }
 }
@@ -1084,7 +1472,7 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
         HExpr::MapGet { src, key, default, .. } => {
             count_vars(src, counts);
             count_vars(key, counts);
-            default.as_ref().map(|d| count_vars(d, counts));
+            if let Some(d) = default.as_ref() { count_vars(d, counts) }
         }
         HExpr::SetLit(vs) => vs.iter().for_each(|v| count_vars(v, counts)),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
@@ -1146,7 +1534,7 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
         HExpr::Get { src, idx, default, .. } => {
             count_vars(src, counts);
             count_vars(idx, counts);
-            default.as_ref().map(|d| count_vars(d, counts));
+            if let Some(d) = default.as_ref() { count_vars(d, counts) }
         }
         HExpr::If(c, t, f, _) => {
             count_vars(c, counts);

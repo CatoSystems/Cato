@@ -799,7 +799,7 @@ pub(crate) fn generic_call(
             .map(|(pi, s)| match s {
                 // The wildcard is a builtin (non-ADT) position, fixed by
                 // the call's static argument type at the same position.
-                Spec::VecAny => arg_tys[pi].clone(),
+                Spec::VecAny => arg_tys[pi],
                 other => other.ground(),
             })
             .collect();
@@ -930,7 +930,7 @@ fn build_tree(
             build_tree(&sub, adt_positions, depth + 1, params, method_names, ret)?
         };
         arms.push(HArm {
-            variant: Some(v as u32),
+            variant: Some(v),
             binders: vec![format!("__b{}_{}", depth, v)],
             body,
         });

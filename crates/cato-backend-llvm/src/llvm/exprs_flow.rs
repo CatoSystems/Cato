@@ -234,6 +234,123 @@ pub(crate) fn emit_loop_node(
     }
 }
 
+/// Does this expression mention `name` as a bare variable read? Used to
+/// keep a recur accumulator append copy-semantics when a sibling recur
+/// argument still reads the accumulator (the append mutates — and on
+/// growth replaces — the buffer behind the header).
+fn arg_reads_var(e: &HExpr, name: &str) -> bool {
+    match e {
+        HExpr::Var(v) => v == name,
+        HExpr::Conj { v, x, .. } => arg_reads_var(v, name) || arg_reads_var(x, name),
+        HExpr::Subvec { v, start, end, .. } => {
+            arg_reads_var(v, name)
+                || arg_reads_var(start, name)
+                || arg_reads_var(end, name)
+        }
+        HExpr::StrCat(vs) => vs.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::BinW(_, a, b, _) | HExpr::CmpW(_, a, b, _) | HExpr::BinF(_, a, b) => {
+            arg_reads_var(a, name) || arg_reads_var(b, name)
+        }
+        HExpr::ICast(a, _, _) => arg_reads_var(a, name),
+        HExpr::MapLit(pairs) => pairs
+            .iter()
+            .any(|(k, v)| arg_reads_var(k, name) || arg_reads_var(v, name)),
+        HExpr::MapAssoc { m, k, v } => {
+            arg_reads_var(m, name) || arg_reads_var(k, name) || arg_reads_var(v, name)
+        }
+        HExpr::MapGet { src, key, default, .. } => {
+            arg_reads_var(src, name)
+                || arg_reads_var(key, name)
+                || default.as_ref().map(|d| arg_reads_var(d, name)).unwrap_or(false)
+        }
+        HExpr::SetLit(vs) => vs.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
+            arg_reads_var(s, name) || arg_reads_var(x, name)
+        }
+        HExpr::Subs { s, start, end } => {
+            arg_reads_var(s, name)
+                || arg_reads_var(start, name)
+                || arg_reads_var(end, name)
+        }
+        HExpr::Split { s, sep } => arg_reads_var(s, name) || arg_reads_var(sep, name),
+        HExpr::Join { sep, xs } => arg_reads_var(sep, name) || arg_reads_var(xs, name),
+        HExpr::StrNth { s, idx, .. } => arg_reads_var(s, name) || arg_reads_var(idx, name),
+        HExpr::ToStr(a, _) => arg_reads_var(a, name),
+        HExpr::ParseNum { s, .. } => arg_reads_var(s, name),
+        HExpr::Slurp(p) => arg_reads_var(p, name),
+        HExpr::Spit { path, data } => arg_reads_var(path, name) || arg_reads_var(data, name),
+        HExpr::Exit(c) => arg_reads_var(c, name),
+        HExpr::Count(v) => arg_reads_var(v, name),
+        HExpr::Clone(inner) => arg_reads_var(inner, name),
+        HExpr::Closure { captures, .. } => {
+            captures.iter().any(|(n, _)| n == name)
+        }
+        HExpr::ClosureCall { f, args, .. } => {
+            arg_reads_var(f, name) || args.iter().any(|a| arg_reads_var(a, name))
+        }
+        HExpr::Call(_, args) => args.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::Ctor { args, .. } => args.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::Match { scrut, arms, .. } => {
+            arg_reads_var(scrut, name)
+                || arms.iter().any(|a| arg_reads_var(&a.body, name))
+        }
+        HExpr::Get { src, idx, default, .. } => {
+            arg_reads_var(src, name)
+                || arg_reads_var(idx, name)
+                || default.as_ref().map(|d| arg_reads_var(d, name)).unwrap_or(false)
+        }
+        HExpr::If(c, t, f, _) => {
+            arg_reads_var(c, name)
+                || arg_reads_var(t, name)
+                || arg_reads_var(f, name)
+        }
+        HExpr::Let(binds, body, _) => {
+            binds.iter().any(|(_, v, _)| arg_reads_var(v, name))
+                || arg_reads_var(body, name)
+        }
+        HExpr::Seq(vs) => vs.iter().any(|v| arg_reads_var(v, name)),
+        HExpr::And(a, b) | HExpr::Or(a, b) => arg_reads_var(a, name) || arg_reads_var(b, name),
+        HExpr::Not(v) | HExpr::Abs(v, _) | HExpr::DropStmt(v) => arg_reads_var(v, name),
+        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => arg_reads_var(a, name) || arg_reads_var(b, name),
+        HExpr::Recur(args) => args.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::Loop { binds, body, .. } => {
+            binds.iter().any(|(_, _, i)| arg_reads_var(i, name))
+                || arg_reads_var(body, name)
+        }
+        HExpr::For { src, body, .. } => arg_reads_var(src, name) || arg_reads_var(body, name),
+        HExpr::Reduce(r) => match &**r {
+            HReduce::Pipeline { init, src, .. } => {
+                arg_reads_var(init, name) || source_reads_var(src, name)
+            }
+            HReduce::Closure { init, src, body, maps, filters, .. } => {
+                arg_reads_var(init, name)
+                    || source_reads_var(src, name)
+                    || arg_reads_var(body, name)
+                    || maps.iter().any(|m| arg_reads_var(&m.body, name))
+                    || filters.iter().any(|f| arg_reads_var(&f.body, name))
+            }
+        },
+        HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => {
+            arg_reads_var(a, name) || arg_reads_var(b, name)
+        }
+        HExpr::CharStr(c) => arg_reads_var(c, name),
+        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::ConstB(_) | HExpr::StrLit(_)
+        | HExpr::VecLit(_) | HExpr::Args => false,
+    }
+}
+
+fn source_reads_var(s: &HSource, name: &str) -> bool {
+    match s {
+        HSource::Var(v) => v == name,
+        HSource::Lit(_) => false,
+        HSource::Range(a, _) => arg_reads_var(a, name),
+        HSource::Zip(a, b) => source_reads_var(a, name) || source_reads_var(b, name),
+        HSource::Take(n, inner) | HSource::Drop(n, inner) => {
+            arg_reads_var(n, name) || source_reads_var(inner, name)
+        }
+    }
+}
+
 /// Emit a loop body in tail position. `Some(register)` = the path completes
 /// with this value (no terminator emitted; the caller branches to its
 /// merge). `None` = every path in this expression already branched back to
@@ -264,12 +381,23 @@ fn emit_loop_tail(
                     }
                 }
             }
-            for (a, (name, slot, vty)) in args.iter().zip(slots.iter()) {
+            for (ai, (a, (name, slot, vty))) in
+                args.iter().zip(slots.iter()).enumerate()
+            {
                 let self_update = match a {
                     HExpr::Conj { v, .. } => matches!(&**v, HExpr::Var(n) if n == name),
                     _ => false,
                 } && conj_counts.get(name.as_str()) == Some(&1)
-                    && !c.loop_alias.contains(name);
+                    && !c.loop_alias.contains(name)
+                    // No other recur argument may read the variable: the
+                    // append mutates the shared buffer (and, under the
+                    // freeing below, may replace it), so a later argument
+                    // reading the old header would observe the append —
+                    // or worse, freed memory. Such shapes keep plain copy
+                    // semantics.
+                    && !args.iter().enumerate().any(|(k, other)| {
+                        k != ai && arg_reads_var(other, name)
+                    });
                 if self_update {
                     c.recur_fast = Some(name.clone());
                 }

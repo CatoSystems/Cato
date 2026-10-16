@@ -41,11 +41,7 @@ pub(crate) fn promote_init(init: HExpr) -> HExpr {
     match init {
         HExpr::ConstI64(v) => HExpr::ConstF64(v as f64),
         other => {
-            let from = match &other {
-                // Literal-typed inits are i64; anything else already carries
-                // its width in the node.
-                _ => Ty::I64,
-            };
+            let from = Ty::I64;
             HExpr::ICast(Box::new(other), from, Ty::F64)
         }
     }

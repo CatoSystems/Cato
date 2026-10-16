@@ -280,6 +280,21 @@
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-typarams-parts t (clone tab)))))))
 
+; The S6 dump stage is the pre-`plan_drops(true)` HIR (the spec's oracle
+; runs `build_program_located`, i.e. plan_drops(false)): the defn-level
+; param-free wrapper the checker adds for codegen — an HLet with NO binds
+; and a non-empty frees list — must not appear in the wire dump. A user
+; `(let [] body)` binds nothing, so its frees list is empty; the shape is
+; unambiguously the wrapper. Codegen keeps the wrapper; only the dump
+; sheds it.
+(defn d-unwrap-param-frees [e :- HExpr] :- HExpr
+  (match e
+    (HLet [binds body frees]
+      (if (and (binds-null binds) (not (sids-null frees)))
+        (clone body)
+        e))
+    (_ e)))
+
 (defn d-defn-line [d :- Defn tab :- i64] :- str
   (match d
     (Defn [name params ret isextern body rb]
@@ -287,7 +302,7 @@
            " " (d-params params (clone tab))
            " :- " (d-ty ret)
            " " isextern
-           " " (d-e body (clone tab)) ")"))))
+           " " (d-e (d-unwrap-param-frees body) (clone tab)) ")"))))
 
 (defn d-defns [ds :- Defns tab :- i64 sb :- StrBuf] :- StrBuf
   (match ds

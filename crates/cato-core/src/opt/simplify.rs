@@ -85,9 +85,14 @@ fn simplify_let(
         }
         // Heap-owning bindings must stay bound: substituting an allocation
         // into a non-binding position would create an unowned intermediate
-        // that the scope-exit free lists can never release. Dropping an
-        // unused one is still fine below — it simply never allocates.
-        if matches!(ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
+        // that the scope-exit free lists can never release. Owning ADTs,
+        // strings and closures bind heap the same way collections do
+        // (heap_owning), so they stay bound too. Dropping an unused one is
+        // still fine below — it simply never allocates.
+        if matches!(
+            ty,
+            Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Str | Ty::Fn(_) | Ty::Adt(_)
+        ) {
             decisions.push(Decision::Keep);
             continue;
         }
