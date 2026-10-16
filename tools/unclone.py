@@ -41,11 +41,12 @@ class Binder:
 
 
 class Scope:
-    __slots__ = ("parent", "binders")
+    __slots__ = ("parent", "binders", "no_move")
 
     def __init__(self, parent):
         self.parent = parent
         self.binders = {}
+        self.no_move = set()
 
     def lookup(self, name):
         s = self
@@ -55,6 +56,14 @@ class Scope:
                 return b
             s = s.parent
         return None
+
+    def is_no_move(self, name):
+        s = self
+        while s is not None:
+            if name in s.no_move:
+                return True
+            s = s.parent
+        return False
 
 
 def is_atom(n):
@@ -95,6 +104,18 @@ def ty_copy(ty_node):
     return False
 
 
+def ty_borrowed(ty_node):
+    """True iff the type annotation is a borrow (`&T`)."""
+    if ty_node is None:
+        return False
+    if ty_node[0] == "a":
+        return ty_node[1].startswith("&")
+    if ty_node[0] == "l" and ty_node[2]:
+        h = ty_node[2][0]
+        return h[0] == "a" and h[1].startswith("&")
+    return False
+
+
 def bind_params(defn, scope):
     params = defn[2][2]
     items = params[2]
@@ -102,7 +123,9 @@ def bind_params(defn, scope):
     while i + 2 < len(items):
         name = items[i][1]
         ty = items[i + 2]
-        scope.binders[name] = Binder(name, not ty_copy(ty))
+        if ty_borrowed(ty):
+            scope.no_move.add(name)
+        scope.binders[name] = Binder(name, not ty_copy(ty) and not ty_borrowed(ty))
         i += 3
 
 
@@ -207,16 +230,32 @@ def walk(node, scope, after, edits):
         return
     if h == "match":
         arms = k[2:]
+        sel = k[1]
+        sel_var = sel[1] if is_atom(sel) else None
+        sel_no_move = sel_var is not None and scope.is_no_move(sel_var)
+        sb = scope.lookup(sel_var) if sel_var is not None else None
+        sel_used_after = sb is not None and sb in after
+        protect = sel_no_move or sel_used_after
         arm_uses = set()
         for arm in arms:
             ns = Scope(scope)
             bind_arm(arm, ns)
+            if protect:
+                for b in ns.binders.values():
+                    b.eligible = False
+                    if sel_no_move:
+                        ns.no_move.add(b.name)
             for body in arm[2][2:]:
                 arm_uses |= uses_of(body, ns)
         walk(k[1], scope, after | arm_uses, edits)
         for arm in arms:
             ns = Scope(scope)
             bind_arm(arm, ns)
+            if protect:
+                for b in ns.binders.values():
+                    b.eligible = False
+                    if sel_no_move:
+                        ns.no_move.add(b.name)
             walk_block(arm[2][2:], ns, after, edits)
         return
     if h == "if":

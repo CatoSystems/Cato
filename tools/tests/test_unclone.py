@@ -58,6 +58,32 @@ class TestUnclone(unittest.TestCase):
         src = "(defn f [n :- i64] :- i64 (add (clone n) (clone n)))"
         self.assertEqual(run(src), src)
 
+    def test_borrowed_param_clone_is_kept(self):
+        # `&T` params (a single atom, e.g. &Box) cannot move: the clone is
+        # required to hand the callee an owned copy.
+        src = "(defn f [x :- &Box] :- i64 (get (clone x)))"
+        self.assertEqual(run(src), src)
+
+    def test_arm_binder_of_borrowed_scrutinee_is_kept(self):
+        # Moving an aliasing binder of a borrowed-param scrutinee is rejected
+        # by the checker ("aliases a field of the matched value").
+        src = ("(defn f [dp :- &DParams] :- DLook\n"
+               "  (match dp\n"
+               "    (DPNil [] (DMissing))\n"
+               "    (DPCons [n ps next] (DFound (clone ps)))))")
+        self.assertIn("(DFound (clone ps))", run(src))
+
+    def test_arm_binder_of_scrutinee_used_later_is_kept(self):
+        # Moving an aliasing arm binder retires the scrutinee; if the
+        # scrutinee is used again on the path, the clone must stay.
+        src = ("(defn f [fields :- TyList] :- i64\n"
+               "  (let [a (match fields (TyCons [h1 t1] (clone h1)) (TyNil [] 0))\n"
+               "        b (match fields (TyCons [h2 t2] t2) (TyNil [] 0))]\n"
+               "    (+ a b)))")
+        out = run(src)
+        self.assertIn("(clone h1)", out)              # scrutinee reused below
+        self.assertIn("(TyCons [h2 t2] t2)", out)     # last use moves
+
     def test_idempotent(self):
         src = "(defn f [x :- Box] :- i64 (get (clone x)))"
         self.assertEqual(run(run(src)), run(src))
