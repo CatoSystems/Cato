@@ -28,25 +28,23 @@
                 (ctor-tag-store args adt variant name slot st2)))))))))
 
 (defn emit-clone-adt [x :- HExpr st :- Emit] :- ESRes
-  (let [ai (adt-of x (clone st))]
-    (match (clone st)
-      (Emit [c mdl sigs]
-        (let [boxed (md-owns-at mdl ai)
-              name (md-adt-name mdl ai)]
-          (if (= boxed 1)
-            (match (emit-adt x st)
-              (ESRes [st1 v]
-                (match (em-ins st1 (str "  ~ = call ptr @clone__" name "(ptr " v ")"))
-                  (ETRes [st2 r] (ESRes st2 r)))))
-            (match (emit-adt x st)
-              (ESRes [st1 v]
-                (match (em-temp st1)
-                  (ETRes [st2 slot]
-                    (let [st2a (em-pre st2 (str slot " = alloca %" name ", align 8"))]
-                      (match (em-ins st2a (str "~ = load %" name ", ptr " v ", align 8"))
-                        (ETRes [st3 lv]
-                          (let [st4 (em-line st3 (str "  store %" name " " lv ", ptr " slot ", align 8"))]
-                            (ESRes st4 slot)))))))))))))))
+  (let [ai (adt-of x st)
+        boxed (em-boxed-at st ai)
+        name (em-adt-name st ai)]
+    (if (= boxed 1)
+      (match (emit-adt x st)
+        (ESRes [st1 v]
+          (match (em-ins st1 (str "  ~ = call ptr @clone__" name "(ptr " v ")"))
+            (ETRes [st2 r] (ESRes st2 r)))))
+      (match (emit-adt x st)
+        (ESRes [st1 v]
+          (match (em-temp st1)
+            (ETRes [st2 slot]
+              (let [st2a (em-pre st2 (str slot " = alloca %" name ", align 8"))]
+                (match (em-ins st2a (str "~ = load %" name ", ptr " v ", align 8"))
+                  (ETRes [st3 lv]
+                    (let [st4 (em-line st3 (str "  store %" name " " lv ", ptr " slot ", align 8"))]
+                      (ESRes st4 slot))))))))))))
 
 (defn emit-adt [e :- HExpr st :- Emit] :- ESRes
   (match e

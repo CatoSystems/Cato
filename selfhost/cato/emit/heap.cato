@@ -6,7 +6,7 @@
   (match (em-ins st (str "  ~ = call ptr @malloc(i64 " nbytes ")"))
     (ETRes [st2 t] (ETRes (em-decl st2 "declare ptr @malloc(i64)") t))))
 
-(defn adt-of [e :- &HExpr st :- Emit] :- i64
+(defn adt-of [e :- &HExpr st :- &Emit] :- i64
   (match e
     (HVar [v]
       (match st
@@ -578,7 +578,7 @@
   (match (emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
       (let [ai (adt-of scrut (clone st1))
-            name (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
+            name (em-adt-name st1 ai)]
         (match (em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
                  (str "~ = load i64, ptr ^1, align 8"))

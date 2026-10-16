@@ -672,6 +672,15 @@
 (defn em-env-get [st :- &Emit] :- EEnv
   (match st (Emit [c mdl sigs] (fc-env-get c))))
 
+; Read through the emission bundle without copying the module. Matching an
+; `Emit` and cloning its `Mdl` deep-copies the globals string buffer, the ADT
+; table and the signature table to answer one name or one ownership bit.
+(defn em-boxed-at [st :- &Emit adt :- i64] :- i64
+  (match st (Emit [c m s] (md-owns-at m adt))))
+
+(defn em-adt-name [st :- &Emit adt :- i64] :- str
+  (match st (Emit [c m s] (md-adt-name m adt))))
+
 (defn em-env-put [st :- Emit e :- EEnv] :- Emit
   (match st (Emit [c mdl sigs] (Emit (fc-env-put c e) mdl sigs))))
 

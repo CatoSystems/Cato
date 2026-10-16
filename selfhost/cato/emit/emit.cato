@@ -478,13 +478,13 @@
 
         (= tg 16)
         (let [ai (ty-arg ret)
-              boxed (md-owns-at (match st (Emit [c m s] (clone m))) ai)]
+              boxed (em-boxed-at st ai)]
           (match (emit-adt body st)
             (ESRes [st1 v]
               (if (= boxed 1)
                 (let [st2 (em-line st1 (str "  ret ptr " v))]
                   (ET2Res st2 "" ""))
-                (let [nm (md-adt-name (match st1 (Emit [c m s] (clone m))) ai)]
+                (let [nm (em-adt-name st1 ai)]
                   (match (em-ins st1 (str "~ = load %" nm ", ptr " v ", align 8"))
                     (ETRes [st2 lv]
                       (let [st3 (em-line st2 (str "  ret %" nm " " lv))]
