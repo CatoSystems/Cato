@@ -4,7 +4,7 @@
 
 **Goal:** The kernel compiles itself from `selfhost/cato/**/*.cato` wired with `(ns ...)`/`(require ...)`, so `selfhost/cato.cato` and `tools/concat_kernel.py` are deleted and every build path points at a real entry file.
 
-**Architecture:** Both compilers adopt one canonical-per-file rename model for `require`: each required file's `defn`/`extern` names are renamed `canonical__name` exactly once, and every requirer's `alias/name` refs are rewritten to the module's canonical names. Types are never renamed. The seed gets this in `expand_file`; the kernel gets a line-for-line port in a new Cato module (`hir/modules.cato`). Sources are then converted by a one-shot script and the concatenation is removed.
+**Architecture:** Both compilers adopt one canonical-per-file rename model for `require`: each required file's `defn` names are renamed `canonical__name` exactly once, and every requirer's `alias/name` refs are rewritten to the module's canonical names. Types are never renamed. `extern` names are global C symbols and are never renamed. The seed gets this in `expand_file`; the kernel gets a line-for-line port in a new Cato module (`hir/modules.cato`). Sources are then converted by a one-shot script and the concatenation is removed.
 
 **Tech Stack:** Rust (seed compiler, `crates/cato-core`), Cato (selfhost kernel), Python 3 (one-shot conversion script), Bash (`tools/kernel_gate.sh`), Cargo test harness.
 
@@ -13,12 +13,14 @@
 ## Global Constraints
 
 - Seed and kernel must accept/reject the same programs; the loader's errors mirror the seed's messages verbatim.
-- Only `defn`/`extern` names are renamed; `deftype`/constructor/`defgeneric`/`defmethod` names are never renamed.
+- Only `defn` names are renamed; `extern` names are global C symbols and are never renamed (declaration or call site); `deftype`/constructor/`defgeneric`/`defmethod` names are never renamed.
 - One `main` per compilation: `cli.cato` is the kernel entry; each `_ref` file is its own entry and must not appear in another entry's graph.
 - One canonical alias per module, used in every `require` of it; one canonical relative path spelling per module (e.g. `../lib/ast.cato` from `hir/`).
 - No path normalization: dedup by resolved path string, exactly as the seed does (`dir.join(path)` concatenation).
 - Cycle termination: insert a file into the seen set before recursing.
 - Every kernel-source change is gated by `./tools/kernel_gate.sh` PASS and `cargo test`; all `examples/*.cato` keep exact output.
+- The kernel moved under this plan: rounds 1–13 (ownership/churn) rewrote `hir/moveck.cato`, `hir/lower.cato` and `emit/*`; the intern table is an `i64` stab handle (`stab-get`/`stab-find`/`stab-conj`) and `check-program` now takes `(defs lams facts tab adts)`. The line numbers below are anchors — re-read the files before each task.
+- Commit or stash a green baseline before Task 3's mass rewrite; the working tree may carry uncommitted kernel/seed WIP.
 
 ## Review Focus
 
@@ -45,7 +47,7 @@
   - `expand_file(file, src, canon_prefix, ctx) -> Result<Vec<(Expr, Span)>, String>`.
   - `struct ModCtx { canon: HashMap<String,String>, aliases: HashMap<String,String>, ns: Vec<String> }`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `crates/cato-backend-interp/tests/modules.rs`. Use a helper that writes a small module project under `target/module_tests/<case>/`, compiles the entry with `cato_core::compile_named`, and runs it with `cato_interp::Interpreter::new(&program).run()`.
 
@@ -147,12 +149,12 @@ fn missing_required_file_is_an_error() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
-Run: `cargo test -p cato-backend-interp --test modules`
+Run: `cargo test -p cato-interp --test modules`
 Expected: FAIL — `diamond_requires_compile_and_run` / `same_module_under_two_aliases` fail to compile or resolve (`unknown function c/sq` etc.).
 
-- [ ] **Step 3: Implement canonical `expand_file` in `crates/cato-core/src/lib.rs`**
+- [x] **Step 3: Implement canonical `expand_file` in `crates/cato-core/src/lib.rs`**
 
 Replace `expand_file` (keep `require_of`, `rewrite_heads`, `rewrite_heads_expr`, `defn_names`). Add `ModCtx`, `parent_join`, `prefixed`, `rewrite_alias_refs`.
 
@@ -169,15 +171,15 @@ Algorithm:
 
 `rewrite_alias_refs` walks `Expr` recursively; for every `Expr::LitSym(s)` where `s.starts_with(&format!("{alias}/"))`, replace with `prefixed(canon, &s[alias.len()+1..])`. Apply to call-head positions and defn headers consistently (mirror `rewrite_heads_expr`).
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
-Run: `cargo test -p cato-backend-interp --test modules`
+Run: `cargo test -p cato-interp --test modules`
 Expected: PASS (all seven).
 
-Run: `cargo test -p cato-backend-interp --test parity modules_agree_between_backends`
+Run: `cargo test -p cato-interp --test parity modules_agree_between_backends`
 Expected: PASS (`49\n25\n16\n`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/cato-core/src/lib.rs crates/cato-backend-interp/tests/modules.rs
@@ -190,8 +192,9 @@ git commit -m "feat(seed): canonical-per-file require semantics (diamonds work)"
 
 **Files:**
 - Create: `selfhost/cato/hir/modules.cato`
-- Modify: `selfhost/cato/reader/read.cato` (host `read-all-with`, moved from `cli.cato`)
+- Modify: `selfhost/cato/reader/read.cato` (host `read-all-with`, moved from its three copies)
 - Modify: `selfhost/cato/cli.cato` (call the loader; drop the moved defn)
+- Modify: `selfhost/cato/hir/hir_ref.cato`, `selfhost/cato/emit/emit_ref.cato` (drop their local `read-all-with` copies)
 - Modify: `tools/concat_kernel.py` (add `hir/modules` to `FILES`, before `cli`)
 - Create: `selfhost/fixtures/kernel/mod.cato`, `selfhost/fixtures/kernel/mod_geom.cato`
 - Modify: `tools/kernel_gate.sh` (add `check_out mod "49\n25\n16"`)
@@ -204,11 +207,11 @@ git commit -m "feat(seed): canonical-per-file require semantics (diamonds work)"
   - `(defn mod-empty [] :- ModSt ...)`
   - `(defn resolve-modules [path :- str forms :- Asts tab :- i64 st :- ModSt] :- ORES ...)`
   - Helpers (internal): `path-dir [p :- str] :- str`, `path-join [dir :- str rel :- str] :- str`, `rewrite-head-sids [a :- Ast pairs :- (AList i64)] :- Ast`, `rewrite-alias-sids [a :- Ast tab :- i64 aliases :- (AList i64)] :- Ast`, `defn-name-sids [forms :- Asts tab :- i64 acc :- Sids] :- Sids`.
-  - `read-all-with [src :- str tab :- i64] :- RRes` now lives in `reader/read.cato`.
+  - `read-all-with [src :- str tab :- i64] :- RRes` now lives in `reader/read.cato` (it was triplicated in `cli.cato:28`, `hir_ref.cato:19`, `emit_ref.cato:32`; all three copies move there).
 
 - [ ] **Step 1: Move `read-all-with` into `reader/read.cato`**
 
-Cut `read-all-with` (currently `cli.cato:28-29`) and paste it into `reader/read.cato` (it is a reader primitive: seed `scan` with the pre-interned table). `cli.cato` keeps calling `(read-all-with src tab)` — still one namespace at this point, so no call-site change yet.
+`read-all-with` is currently triplicated: `cli.cato:28`, `hir_ref.cato:19`, `emit_ref.cato:32`. Cut all three and paste one copy into `reader/read.cato` (it is a reader primitive: seed `scan` with the pre-interned table). All three entries keep calling `(read-all-with src tab)` bare — still one namespace at this point, so no call-site change yet.
 
 - [ ] **Step 2: Create `selfhost/cato/hir/modules.cato`**
 
@@ -219,7 +222,7 @@ Implement:
 - `resolve-modules`: mirror Task 1's algorithm using `sids` as map keys (intern path/alias/name strings into `tab` via `stab-find`+`stab-conj`):
   1. Insert the current file's path-sid into `files`.
   2. For each top-level form: if head-sid is `(s-ns)` validate the name against `nss` (duplicate → `duplicate ns {name}`); if head-sid is `(s-require)` parse `[rel :as alias]`, resolve `child = path-join (path-dir path) rel`; if `canon` has the child's sid, record `aliases[alias] = canon[child]`, else record `canon[child] = alias`, `slurp` + `read-all-with` the child with `tab`, recurse, and append the child's returned forms; otherwise keep the form as `own`.
-  3. Rename `own`: for each defn/extern name-sid `n`, rewrite heads `n → prefixed(name-of n, canon-of-this-file)`; then rewrite `alias/name` refs for this file's alias bindings to `prefixed(canon, name)`.
+  3. Rename `own`: for each defn name-sid `n` (externs are global, skipped), rewrite heads `n → prefixed(name-of n, canon-of-this-file)`; then rewrite `alias/name` refs for this file's alias bindings to `prefixed(canon, name)`.
   4. Return `OROk (children ++ own) tab st`; errors as `ORErr msg span` with the seed's wording.
 
 `prefix` for a file = the name of the alias it was required with; the entry file (`canon` has no entry) uses no prefix.
@@ -303,7 +306,7 @@ git commit -m "feat(kernel): require loader (canonical rename) in Cato"
 - [ ] **Step 1: Write `tools/split_kernel.py`**
 
 The script:
-- Defines `MODULES`: the 22 kernel files and the 4 `_ref` files, each with a `(path, alias, ns_name)`; `alias` is the canonical short name (e.g. `sym`, `strbuf`, `span`, `ast`, `alist`, `result`, `read`, `rdump`, `types`, `expand`, `forms`, `hexpr`, `lower`, `moveck`, `hdump`, `state`, `scalars`, `heap`, `adt`, `closures`, `emit`, `modules`).
+- Defines `MODULES`: the 23 graph files (the 22 kernel files plus the new `hir/modules.cato`) and the 4 `_ref` files, each with a `(path, alias, ns_name)`; `alias` is the canonical short name (e.g. `sym`, `strbuf`, `span`, `ast`, `alist`, `result`, `read`, `rdump`, `types`, `expand`, `forms`, `hexpr`, `lower`, `moveck`, `hdump`, `state`, `scalars`, `heap`, `adt`, `closures`, `emit`, `modules`).
 - Builds `owner: name -> module path` by scanning `(defn NAME` / `(extern NAME` per file.
 - For each module: collect the set of cross-file heads (symbols at position 0 of a list, and `defn`/`extern` header neighbours, whose name is owned by another file); add `(require ["<relative path>" :as <owner alias>])` for each; rewrite those heads to `<alias>/<name>`; prepend `(ns <ns_name>)`.
 - Relative path from a file's dir to the target file (e.g. from `hir/lower.cato` to `lib/ast.cato` → `../lib/ast.cato`), one canonical spelling.
@@ -314,7 +317,7 @@ The script:
 
 Run: `python3 tools/split_kernel.py`
 Then: `git diff --stat selfhost/cato`
-Expected: all 26 files modified; spot-check one `hir/` file (has `(ns ...)`, `(require ...)` block, aliased heads) and one lib file (`(ns ...)` only, or a couple of requires).
+Expected: all 27 files (23 graph + 4 `_ref`) modified; spot-check one `hir/` file (has `(ns ...)`, `(require ...)` block, aliased heads) and one lib file (`(ns ...)` only, or a couple of requires).
 
 - [ ] **Step 3: Switch the gate and delete the concat**
 
@@ -366,7 +369,7 @@ git commit -m "refactor(kernel): build from require'd modules; delete concat + g
 
 - [ ] **Step 1: Rewire `kernel_reader.rs` / `kernel_emit.rs` / `selfhost.rs`**
 
-Delete `CONCAT_FILES` and the concatenation in `setup()`. Point `cato`/`--emit-ir` and `cato run` at the entry file:
+Delete `CONCAT_FILES` (and `LIB_FILES` in `selfhost.rs`) and the concatenation in `setup()`. Point `cato`/`--emit-ir` and `cato run` at the entry file:
 - `kernel_reader.rs` → `selfhost/cato/reader/reader_ref.cato`
 - `kernel_emit.rs` → `selfhost/cato/emit/emit_ref.cato`
 - `selfhost.rs` → `selfhost/cato/lib/stdlib_ref.cato`
@@ -382,8 +385,8 @@ Delete `CONCAT_FILES`, `generate_concat`, and the `kernel_concat_is_fresh` test.
 
 - [ ] **Step 4: Update docs**
 
-- `ROADMAP.md:240-244`: replace the concat/generator sentences with the module layout and `cato build selfhost/cato/cli.cato`; move the "After the fixpoint" `require` item to shipped.
-- `HANDOFF.md`: replace `python3 tools/concat_kernel.py && …selfhost/cato.cato…` quick commands and the `selfhost/cato.cato` focus reference with `selfhost/cato/cli.cato`.
+- `ROADMAP.md`: every `selfhost/cato.cato` build-path reference (today lines 20, 23, 29, 100, 107, 241, 243, 244, 255, 256) becomes `selfhost/cato/cli.cato`; replace the concat/generator sentences with the module layout; move the "After the fixpoint" `require` item to shipped.
+- `HANDOFF.md`: every `selfhost/cato.cato`/`python3 tools/concat_kernel.py` occurrence (Quick commands and "Files to focus") becomes `selfhost/cato/cli.cato` (line 536's concat step is dropped, not replaced).
 - S8 spec §"The canonical concat": replace with a short note that the kernel is `require`-connected modules and `cli.cato` is the entry.
 
 - [ ] **Step 5: Verify the whole suite**
@@ -393,9 +396,9 @@ Run:
 cargo build
 cargo test
 ./tools/kernel_gate.sh | tail -12
-python3 -m pytest tools/tests/test_unclone.py -q
+python3 -m unittest discover -s tools/tests
 ```
-Expected: `cargo test` green (including `parity::modules_agree_between_backends`, `kernel_reader_*`, `kernel_hir_*`, `kernel_emit_*`, `seed_builds_the_kernel_stdlib_and_both_backends_agree`, `kernel_cli_builds_and_runs_the_fixtures`); `GATE: PASS`; `13 passed`.
+Expected: `cargo test` green (including `parity::modules_agree_between_backends`, `kernel_reader_*`, `kernel_hir_*`, `kernel_emit_*`, `seed_builds_the_kernel_stdlib_and_both_backends_agree`, `kernel_cli_builds_and_runs_the_fixtures`); `GATE: PASS`; `Ran 20 tests … OK`.
 
 - [ ] **Step 6: Commit**
 

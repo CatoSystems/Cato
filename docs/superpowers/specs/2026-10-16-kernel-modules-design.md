@@ -1,9 +1,10 @@
 # Kernel modules: `require` in place of the concat
 
 Date: 2026-10-16
-Goal: the kernel compiles itself from its real source layout — 22
-`selfhost/cato/**/*.cato` files wired with `(ns ...)` and `(require ...)`
-— so the generated single-namespace concat (`selfhost/cato.cato`) and its
+Goal: the kernel compiles itself from its real source layout — the
+`selfhost/cato/**/*.cato` files (22 today, plus the new
+`hir/modules.cato`) wired with `(ns ...)` and `(require ...)` — so the
+generated single-namespace concat (`selfhost/cato.cato`) and its
 generator (`tools/concat_kernel.py`) can be deleted. Every build path
 (seed gate, kernel self-build, the S4–S7 harnesses) points at a real
 entry file instead of a concatenation.
@@ -41,8 +42,11 @@ Two facts shape the work:
    the kernel — leaves the second requirer's refs unresolved. Types are
    never renamed (already global); only `defn`/`extern` are.
 
-Cross-file surface today: 2468 call heads, zero duplicate
-`defn`/`extern` names across the 22 files.
+Cross-file surface today: 2516 call heads, zero duplicate
+`defn`/`extern` names across the 22 files. (Re-measured on the
+post-perf-round tree; the earlier draft cited 2468.) The reader primitive
+`read-all-with` is triplicated — `cli.cato`, `hir_ref.cato`,
+`emit_ref.cato` — and moves to `reader/read.cato` (see §3).
 
 ## Design
 
@@ -54,11 +58,13 @@ module-graph model:
 - Resolve the graph recursively, dedup by resolved path string (insert
   before recursing, so cycles terminate), and assign each file a
   **canonical alias** — the alias it is first required with.
-- Per file, in place: rename its own `defn`/`extern` names `n →
+- Per file, in place: rename its own `defn` names `n →
   canonical__n` (headers + every ref, via the existing `rewrite_heads`
   walk) and rewrite each `localAlias/name` ref to `canonical(child)__name`
   where `child` is the file the local alias was bound to. Type names are
-  untouched.
+  untouched. `extern` names are global C symbols (the backend emits them
+  verbatim, e.g. `system`, `cato_str_byte`) and are **never** renamed, in
+  the declaration or at any call site.
 - Merge in traversal order; drop `(ns ...)` and `(require ...)` forms.
 - Validate and error (with span) on: malformed `require` spec, malformed
   `ns`, duplicate `ns` name across the graph, and a call through an unbound
@@ -90,9 +96,10 @@ resolve-modules path forms tab state -> ORES{forms, tab, state | msg, span}
   already in the seen set (but still register the requirer's alias
   rewrites); else record it, `slurp` the child, `read-all-with` with the
   threaded `tab`, and recurse.
-- Collect the child's `defn`/`extern` name sids; intern each
-  `canonical__name` (`stab-get` name, `str`, `stab-find`/`stab-conj`);
-  rename the child's heads and refs; register `a/name → canonical__name`
+- Collect the child's `defn` name sids (externs are global, never renamed);
+  intern each `canonical__name` (`stab-get` name, `str`,
+  `stab-find`/`stab-conj`); rename the child's defn heads and refs;
+  register `a/name → canonical__name`
   and rewrite the requirer's own refs; append the child's forms in order.
 - Helpers ported from the seed over `Ast`/`Asts`: `require-of`,
   `defn-names`, `rewrite-heads`, plus a `dirname` built from
@@ -111,12 +118,15 @@ threads through the loader and on into `expand-all`/`compile-build`.
 - Give each file `(require ["<relative>" :as <alias>])` for every module
   whose `defn`/`extern` names it calls directly (derived from a
   name→owner map built by scanning `defn`/`extern` heads).
-- Rewrite the 2468 cross-file call heads `foo → <alias>/foo`. One
+- Rewrite the 2516 cross-file call heads `foo → <alias>/foo`. One
   canonical alias per module, used everywhere (e.g. `sym`, `strbuf`,
   `span`, `ast`, `alist`, `result`, `read`, `rdump`, `types`, `expand`,
   `forms`, `hexpr`, `lower`, `moveck`, `hdump`, `state`, `scalars`,
   `heap`, `adt`, `closures`, `emit`, `modules`). Type references are left
   unqualified (types are global).
+- Move the triplicated reader primitive `read-all-with` (defined in
+  `cli.cato`, `hir_ref.cato`, `emit_ref.cato`) into `reader/read.cato`;
+  the three local copies are deleted and the bare call sites stay.
 - Convert the `_ref` harnesses to require-based entries, each defining its
   own `main` and requiring the modules it drives: `lib/stdlib_ref`,
   `reader/reader_ref`, `hir/hir_ref`, `emit/emit_ref`. `cli.cato` is the
@@ -174,7 +184,7 @@ threads through the loader and on into `expand-all`/`compile-build`.
   `selfhost::seed_builds_the_kernel_stdlib_and_both_backends_agree`.
 - `./tools/kernel_gate.sh` → `GATE: PASS` (fixpoint, t1–t6, bk1/bk3 ok,
   bk2/bk4 rejected).
-- `python3 -m pytest tools/tests/test_unclone.py -q` — 13/13.
+- `python3 -m unittest discover -s tools/tests` — 20/20.
 - Every `examples/*.cato` keeps its exact output.
 
 ## Non-goals
