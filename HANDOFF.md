@@ -1,9 +1,9 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 4.09 GB (−91.9%)**;
-  ALLOC_CALLS **1.19B → 114M (−90.5%)**; kernel self-build wall time
-  **47.5 s → 5.2 s (−89%)**.
+- Kernel self-build alloc churn: **50.56 GB → 3.39 GB (−93.3%)**;
+  ALLOC_CALLS **1.19B → 92M (−92.2%)**; kernel self-build wall time
+  **47.5 s → ~4.8 s (−90%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -12,6 +12,23 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 5 results (4.09 → 3.39 GB)
+- **Over-cloning in branch alternatives.** `cond`/`match` branches are
+  alternative paths, so each may *move* the parser state; the clones came
+  from the original autoclone pass, which is conservative. The hot ones were
+  `parse-ty`, `parse-ty-list` and 31 arms of `parse-ty-sym-str` — code that
+  runs for every type annotation. (4.09 → 3.61 GB)
+- **`build-lower-2` cloned its state per definition** (parser state,
+  definition chain, instance list) in each of three branches, and the call
+  into `lower-body-raw` copied the tables the recursive call immediately
+  replaced with what lowering returned. (3.61 → 3.39 GB)
+- Watch out for the move-and-borrow shape: `(RawsRes ps2 (RNil)
+  (ps-err-msg ps2))` moves `ps2` into the constructor *and* borrows it for
+  the message; read the message into a `let` first. Also remember that
+  accessing a matched struct's fields inside its own match arm aliases the
+  consumed scrutinee, so moving the scrutinee there invalidates them
+  (`(RawRes ps ...)` inside `(match ps (PS [...] ...))` fails).
 
 ## Round 4 results (parser state, 5.67 → 4.09 GB)
 Same method: inclusive attribution per call site, fix the top site, verify
