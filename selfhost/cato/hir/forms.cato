@@ -316,23 +316,23 @@
 ; lowering), declared ADT names, uppercase type parameters.
 (defn parse-ty-sym-str [ps :- PS s :- str] :- PTyRes
   (cond
-    (= s "i64")    (PTyRes (clone ps) (t-i64))
-    (= s "i32")    (PTyRes (clone ps) (t-i32))
-    (= s "i8")     (PTyRes (clone ps) (t-i8))
-    (= s "i16")    (PTyRes (clone ps) (t-i16))
-    (= s "u8")     (PTyRes (clone ps) (t-u8))
-    (= s "u16")    (PTyRes (clone ps) (t-u16))
-    (= s "u32")    (PTyRes (clone ps) (t-u32))
-    (= s "u64")    (PTyRes (clone ps) (t-u64))
-    (= s "usize")  (PTyRes (clone ps) (t-usize))
-    (= s "f64")    (PTyRes (clone ps) (t-f64))
-    (= s "f32")    (PTyRes (clone ps) (t-f32))
-    (= s "vec")    (PTyRes (clone ps) (t-vec 0))
-    (= s "bool")   (PTyRes (clone ps) (t-bool))
-    (= s "str")    (PTyRes (clone ps) (t-str))
-    (= s "string") (PTyRes (clone ps) (t-str))
-    (= s "map")    (PTyRes (clone ps) (t-map))
-    (= s "set")    (PTyRes (clone ps) (t-set))
+    (= s "i64")    (PTyRes ps (t-i64))
+    (= s "i32")    (PTyRes ps (t-i32))
+    (= s "i8")     (PTyRes ps (t-i8))
+    (= s "i16")    (PTyRes ps (t-i16))
+    (= s "u8")     (PTyRes ps (t-u8))
+    (= s "u16")    (PTyRes ps (t-u16))
+    (= s "u32")    (PTyRes ps (t-u32))
+    (= s "u64")    (PTyRes ps (t-u64))
+    (= s "usize")  (PTyRes ps (t-usize))
+    (= s "f64")    (PTyRes ps (t-f64))
+    (= s "f32")    (PTyRes ps (t-f32))
+    (= s "vec")    (PTyRes ps (t-vec 0))
+    (= s "bool")   (PTyRes ps (t-bool))
+    (= s "str")    (PTyRes ps (t-str))
+    (= s "string") (PTyRes ps (t-str))
+    (= s "map")    (PTyRes ps (t-map))
+    (= s "set")    (PTyRes ps (t-set))
     (parse-ty-sym-name ps s)))
 
 ; A declared ADT name, or an (uppercase) type parameter — lowercase
@@ -361,9 +361,9 @@
 ; (Vector el) element spelling.
 (defn parse-vec-elem-str [ps :- PS s :- str] :- PTyRes
   (cond
-    (= s "i64") (PTyRes (clone ps) (t-vec 0))
-    (= s "f64") (PTyRes (clone ps) (t-vec 1))
-    (= s "str") (PTyRes (clone ps) (t-vec 2))
+    (= s "i64") (PTyRes ps (t-vec 0))
+    (= s "f64") (PTyRes ps (t-vec 1))
+    (= s "str") (PTyRes ps (t-vec 2))
     (if (is-upper s)
       (let [r (intern1 (ps-tab ps) s)]
         (match r
@@ -426,8 +426,10 @@
 (defn parse-ty [a :- Ast ps :- PS] :- PTyRes
   (let [tag (ast-tag a)]
     (cond
-      (= tag 1) (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of a)))
-      (= tag 5) (parse-ty-list (clone (clone a)) (clone (clone ps)))
+      ; `cond` branches are alternative paths, so each may move `ps`/`a`;
+      ; the copies here were pure over-cloning (a whole parser state each).
+      (= tag 1) (parse-ty-sym-str ps (sym-str (ps-tab ps) (ast-sid-of a)))
+      (= tag 5) (parse-ty-list a ps)
       (PTyRes (ps-err ps "type annotation must be a symbol or (Vector ty)") (t-none)))))
 
 (defn parse-ty-list [a :- Ast ps :- PS] :- PTyRes
@@ -438,13 +440,13 @@
         (cond
           (= h (s-vec))
           (if (not (= n 2))
-            (PTyRes (ps-err (clone ps) (str "unsupported type annotation (expected (Vector ty), got " (- n 1) " elements)")) (t-none))
-            (let [el-node (asts-idx (clone kids) 1)
+            (PTyRes (ps-err ps (str "unsupported type annotation (expected (Vector ty), got " (- n 1) " elements)")) (t-none))
+            (let [el-node (asts-idx kids 1)
                   el-str (node-str el-node (ps-tab ps))]
-              (parse-vec-elem-str (clone ps) (clone el-str))))
+              (parse-vec-elem-str ps el-str)))
 
           (= h (s-fnty))
-          (parse-ty-fn (asts-drop (clone kids) 1) (clone ps))
+          (parse-ty-fn (asts-drop kids 1) ps)
 
           (parse-ty-applied kids n ps))))
     (ANil [at] (PTyRes (ps-err ps "type annotation must be a symbol or (Vector ty)") (t-none)))
@@ -501,7 +503,7 @@
               (match d
                 (Decl [idx tps]
                   (if (= (sids-depth tps) 0)
-                    (PTyRes (ps-err (clone ps) (str (sym-str (clone tab) h) " takes no type parameters")) (t-none))
+                    (PTyRes (ps-err ps (str (sym-str (clone tab) h) " takes no type parameters")) (t-none))
                     (let [rargs (parse-ty-args (asts-drop kids 1) (TyNil) (clone ps))]
                       (match rargs
                         (PArgsRes [ps2 args]
@@ -510,7 +512,7 @@
                             (let [ri (instantiate-adt idx args ps2)]
                               (match ri
                                 (PIARes [ps3 idx2] (PTyRes ps3 (t-adt idx2)))))))))))))
-            (PTyRes (ps-err (clone ps) (str "unknown type name " (sym-str (clone tab) h))) (t-none))))))))
+            (PTyRes (ps-err ps (str "unknown type name " (sym-str (clone tab) h))) (t-none))))))))
 
 (deftype PArgsRes (PArgsRes [ps :- PS args :- TyList]))
 
@@ -639,8 +641,8 @@
     (cond
       (= t 18)
       (if (>= (ty-arg f) (tys-depth args))
-        (PTyRes (ps-err (clone ps) (str "unresolved type parameter " (ty-arg f) " in ADT field")) (t-none))
-        (PTyRes (clone ps) (tys-idx (clone args) (ty-arg f))))
+        (PTyRes (ps-err ps (str "unresolved type parameter " (ty-arg f) " in ADT field")) (t-none))
+        (PTyRes ps (tys-idx (clone args) (ty-arg f))))
       (= t 16)
       (let [j (ty-arg f)
             td (ps-adt-at ps j)]
@@ -650,7 +652,7 @@
               (let [ri (instantiate-adt j args (clone ps))]
                 (match ri
                   (PIARes [ps2 idx] (PTyRes ps2 (t-adt idx)))))
-              (PTyRes (clone ps) (clone f))))))
+              (PTyRes ps (clone f))))))
       (PTyRes ps f))))
 
 ; --- deftype parsing --------------------------------------------------------
@@ -668,21 +670,21 @@
                 ht (ast-tag h)]
             (cond
               (= ht 1)
-              (HDRRes (clone ps) (ast-sid-of h) (SNil))
+              (HDRRes ps (ast-sid-of h) (SNil))
 
               (= ht 5)
               (match (asts-idx (ast-kids-of (clone h)) 0)
-                (AList [hks hat] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
+                (AList [hks hat] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
                 (ASym [nsid nat]
                   (parse-typarams (asts-drop (ast-kids-of (clone h)) 1) (SNil) nsid (clone ps)))
-                (AInt [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (AF64 [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (ABool [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (AStr [v at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (AVec [ks at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (AMap [ks at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (ASet [ks at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil)))
-                (ANil [at] (HDRRes (ps-err (clone ps) "deftype name must be a symbol") -1 (SNil))))
+                (AInt [v at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (AF64 [v at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (ABool [v at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (AStr [v at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (AVec [ks at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (AMap [ks at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (ASet [ks at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))
+                (ANil [at] (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil))))
 
               (HDRRes (ps-err ps "deftype name must be a symbol") -1 (SNil)))))))
     (ANil [at] (HDRRes (ps-err ps "expected (deftype ...)") -1 (SNil)))
@@ -702,18 +704,18 @@
       (match p
         (ASym [pn pat]
           (if (sids-has (clone (clone acc)) pn)
-            (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " repeats type parameter " (ps-str-of ps pn)))
+            (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " repeats type parameter " (ps-str-of ps pn)))
                     -1 (SNil))
             (parse-typarams rest (SCons pn acc) name ps)))
-        (ANil [at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AInt [v at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AF64 [v at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (ABool [v at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AStr [v at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AList [ks at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AVec [ks at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (AMap [ks at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
-        (ASet [ks at] (HDRRes (ps-err (clone ps) (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))))
+        (ANil [at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AInt [v at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AF64 [v at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (ABool [v at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AStr [v at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AList [ks at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AVec [ks at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (AMap [ks at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))
+        (ASet [ks at] (HDRRes (ps-err ps (str "deftype " (ps-str-of ps name) " type parameter must be a symbol")) -1 (SNil)))))
     (KNil [] (HDRRes ps name (sids-rev acc (SNil))))))
 
 ; Variants (pass 0b): (VName [field :- ty ...]) per variant. `ps`'s
@@ -755,9 +757,9 @@
             (let [fvec (asts-idx vitems 1)
                   ft (ast-tag fvec)]
               (if (not (= ft 6))
-                (PVOne (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " fields must be a vector")) (Varnt -1 (TyNil)))
+                (PVOne (ps-err ps (str "variant " (ps-str-of ps vn) " fields must be a vector")) (Varnt -1 (TyNil)))
                 (if (> n 2)
-                  (PVOne (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " takes only a fields vector")) (Varnt -1 (TyNil)))
+                  (PVOne (ps-err ps (str "variant " (ps-str-of ps vn) " takes only a fields vector")) (Varnt -1 (TyNil)))
                   (let [rf (parse-fields (ast-kids-of (clone fvec)) 0 (TyNil) vn ps)]
                     (match rf
                       (PFRes [ps2 fs] (PVOne ps2 (Varnt vn fs))))))))
@@ -780,13 +782,13 @@
       (let [fn-node (asts-idx (clone fs) i)
             fnt (ast-tag fn-node)]
         (if (not (= fnt 1))
-          (PFRes (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " field name must be a symbol")) (TyNil))
+          (PFRes (ps-err ps (str "variant " (ps-str-of ps vn) " field name must be a symbol")) (TyNil))
           (let [sep-node (asts-idx (clone fs) (+ i 1))
                 sept (ast-tag sep-node)]
             (if (not (= sept 1))
-              (PFRes (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
+              (PFRes (ps-err ps (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
               (if (not (= (ast-sid-of sep-node) (s-sep)))
-                (PFRes (ps-err (clone ps) (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
+                (PFRes (ps-err ps (str "variant " (ps-str-of ps vn) " field " (node-str (clone fn-node) (ps-tab ps)) " expects (name :- ty)")) (TyNil))
                 (let [ty-node (asts-idx (clone fs) (+ i 2))
                       rt (parse-field-ty ty-node ps)]
                   (match rt
@@ -804,15 +806,15 @@
       (= tag 1)
       (let [s (node-str (clone e) (ps-tab ps))]
         (cond
-          (= (clone s) "i64")  (PTyRes (clone ps) (t-i64))
-          (= (clone s) "i32")  (PTyRes (clone ps) (t-i32))
-          (= (clone s) "f64")  (PTyRes (clone ps) (t-f64))
-          (= (clone s) "bool") (PTyRes (clone ps) (t-bool))
-          (= (clone s) "str")  (PTyRes (clone ps) (t-str))
+          (= (clone s) "i64")  (PTyRes ps (t-i64))
+          (= (clone s) "i32")  (PTyRes ps (t-i32))
+          (= (clone s) "f64")  (PTyRes ps (t-f64))
+          (= (clone s) "bool") (PTyRes ps (t-bool))
+          (= (clone s) "str")  (PTyRes ps (t-str))
           (let [sid (ast-sid-of e)
                 k (typaram-index (clone ps) sid)]
             (if (>= (clone k) 0)
-              (PTyRes (clone ps) (t-param (clone k)))
+              (PTyRes ps (t-param (clone k)))
               (parse-field-adt-name (clone ps) (clone s) sid)))))
 
       (= tag 5)
@@ -846,9 +848,9 @@
           (let [el-node (asts-idx items 1)
                 el-str (node-str (clone el-node) (ps-tab ps))]
             (cond
-              (= (clone el-str) "i64") (PTyRes (clone ps) (t-vec 0))
-              (= (clone el-str) "f64") (PTyRes (clone ps) (t-vec 1))
-              (= (clone el-str) "str") (PTyRes (clone ps) (t-vec 2))
+              (= (clone el-str) "i64") (PTyRes ps (t-vec 0))
+              (= (clone el-str) "f64") (PTyRes ps (t-vec 1))
+              (= (clone el-str) "str") (PTyRes ps (t-vec 2))
               (let [k (typaram-index (clone ps) (ast-sid-of el-node))]
                 (if (>= (clone k) 0)
                   (PTyRes ps (t-vec (+ 100 (clone k))))
@@ -862,7 +864,7 @@
                       (let [msg (str (ps-str-of ps h) " expects " (sids-depth tps) " type argument(s) in a field type, got " (asts-depth args))]
                         (PTyRes (ps-err ps msg) (t-none)))
                       (check-positional args tps 0 ps h idx))))))
-            (PTyRes (ps-err (clone ps) (str "unknown ADT name " (ps-str-of ps h) " in field type")) (t-none))))))
+            (PTyRes (ps-err ps (str "unknown ADT name " (ps-str-of ps h) " in field type")) (t-none))))))
     (ANil [at] (PTyRes (ps-err ps "field type must be a symbol or an applied ADT name") (t-none)))
     (ASym [sid at] (PTyRes (ps-err ps "field type must be a symbol or an applied ADT name") (t-none)))
     (AInt [v at] (PTyRes (ps-err ps "field type must be a symbol or an applied ADT name") (t-none)))
@@ -879,7 +881,7 @@
     (let [a (asts-idx (clone args) i)
           at (ast-tag a)]
       (if (not (= at 1))
-        (PTyRes (ps-err (clone ps) (str (ps-str-of ps h) " type argument must be a parameter name of this deftype")) (t-none))
+        (PTyRes (ps-err ps (str (ps-str-of ps h) " type argument must be a parameter name of this deftype")) (t-none))
         (let [asid (ast-sid-of a)
             p (sids-idx tps i)]
           (if (not (= asid p))
@@ -907,14 +909,14 @@
           (borrow-sigil (clone nm-str))
           ; the sigil on the NAME would need re-interning of the stripped
           ; symbol; borrows are written on the annotation (`ks :- &Asts`).
-          (PParRes (ps-err (clone ps) (str "unsupported borrow parameter " (clone nm-str))) (PNil))
+          (PParRes (ps-err ps (str "unsupported borrow parameter " (clone nm-str))) (PNil))
 
           (not (= (ast-tag nm-node) 1))
-          (PParRes (ps-err (clone ps) "param must be a symbol") (PNil))
+          (PParRes (ps-err ps "param must be a symbol") (PNil))
 
           (let [sep-node (asts-idx (clone ks) (+ i 1))]
             (not (and (= (ast-tag sep-node) 1) (= (ast-sid-of sep-node) (s-sep)))))
-          (PParRes (ps-err (clone ps) (str "function parameter '" (clone nm-str) "' must have a type annotation (param :- ty)")) (PNil))
+          (PParRes (ps-err ps (str "function parameter '" (clone nm-str) "' must have a type annotation (param :- ty)")) (PNil))
 
           (let [ty-node (asts-idx (clone ks) (+ i 2))
                 ty-tag2 (ast-tag ty-node)]
@@ -1010,17 +1012,17 @@
     (PS [tab decls adts sigs typarams err]
       (cond
         (and (= isextern 1) (> (sids-depth typarams) 0))
-        (RawRes (ps-err (clone ps) "extern declarations must have concrete types")
+        (RawRes (ps-err ps "extern declarations must have concrete types")
                 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= isextern 1)
         (if (< i n)
-          (RawRes (ps-err (clone ps) "extern declarations take no body")
+          (RawRes (ps-err ps "extern declarations take no body")
                   (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
           (RawRes (clone ps) (RawDefn name-sid (clone params) (clone ret) (clone typarams) 1 (AList (KNil) (Span 0 0 0)) ret-borrowed)))
 
         (>= i n)
-        (RawRes (ps-err (clone ps) "defn body required")
+        (RawRes (ps-err ps "defn body required")
                 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
         (= (- n i) 1)
