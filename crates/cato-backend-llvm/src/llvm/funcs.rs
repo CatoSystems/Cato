@@ -383,6 +383,22 @@ pub(crate) fn emit_typed(
                 c.line(&format!("  {} = load %VecI64, ptr {}, align 8", s, slot));
                 s
             }
+            // A conj's value carries its real capacity. Rebuilding it with
+            // cap = len (the generic path below) threw the capacity away at
+            // every `recur` store back into the loop slot, so the in-place
+            // append's `len < cap` test was never true and each step
+            // re-copied the whole vector — quadratic accumulation.
+            HExpr::Conj { v, x, elem, in_place } => {
+                let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
+                let (p, l, cap) = read_grow_slot_full(&slot, c);
+                let s0 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+                let s1 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+                let s2 = c.temp();
+                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+                s2
+            }
             _ => {
                 let (p, l, _) = emit_vec_pair(e, c, mdl, sigs);
                 let s0 = c.temp();
@@ -641,6 +657,14 @@ fn vec_elem_of(ty: Ty) -> Elem {
 
 /// Read a growable slot's live (ptr, len).
 fn read_grow_slot(slot: &str, elem: Elem, c: &mut FnCtx) -> (String, String, Elem) {
+    let (p, l, _) = read_grow_slot_full(slot, c);
+    (p, l, elem)
+}
+
+/// (ptr, len, cap) of a growable binding's live header. The capacity is the
+/// part a *value* must keep: it is what lets the next append on this binding
+/// reuse the buffer instead of copying it.
+fn read_grow_slot_full(slot: &str, c: &mut FnCtx) -> (String, String, String) {
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -655,7 +679,14 @@ fn read_grow_slot(slot: &str, elem: Elem, c: &mut FnCtx) -> (String, String, Ele
     ));
     let l = c.temp();
     c.line(&format!("  {} = load i64, ptr {}, align 8", l, lf));
-    (p, l, elem)
+    let cf = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
+        cf, slot
+    ));
+    let cap = c.temp();
+    c.line(&format!("  {} = load i64, ptr {}, align 8", cap, cf));
+    (p, l, cap)
 }
 
 /// Join one (ptr, len) pair arriving from two predecessor blocks.

@@ -43,6 +43,7 @@ use cato_core::hir::*;
 use cato_core::{hir::AdtDef, hir::Defn, Backend};
 use cato_core::Lambda;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 pub fn emit_module(adts: &[AdtDef], fns: &[Defn]) -> String {
     emit_module_fast(adts, fns, false, &[], &[], 1)

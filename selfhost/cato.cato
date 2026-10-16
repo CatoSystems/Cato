@@ -371,6 +371,21 @@
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
 ; ---------------------------------------------------------------------------
+; byte access
+; ---------------------------------------------------------------------------
+
+; `(nth s i 0)` is bounds-checked, and a str's length is a strlen: paying
+; one per byte makes any byte-at-a-time walk quadratic (the scan below
+; strlens its own 500 KB source). Every walk here already carries the
+; length and guards its index, so it reads through the length-free
+; primitive instead. At i == n the terminator reads as 0, exactly the
+; `(nth s i 0)` default; nothing here indexes further than that.
+(extern cato-str-byte [s :- str i :- i64] :- i64)
+
+(defn str-byte [s :- str i :- i64] :- i64
+  (cato-str-byte s i))
+
+; ---------------------------------------------------------------------------
 ; byte predicates (ASCII byte values)
 ; ---------------------------------------------------------------------------
 
@@ -400,7 +415,7 @@
 (defn tok-end [src :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     i
-    (let [c (nth src i 0)]
+    (let [c (str-byte src i)]
       (if (or (is-ws c) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123)
               (= c 125) (= c 59) (= c 34))
         i
@@ -411,7 +426,7 @@
 (defn skip-line [src :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     i
-    (if (= (nth src i 0) 10)
+    (if (= (str-byte src i) 10)
       i
       (skip-line src (+ i 1) n))))
 
@@ -421,7 +436,7 @@
 (defn str-end [src :- str j :- i64 n :- i64] :- i64
   (if (>= j n)
     -1
-    (let [c (nth src j 0)]
+    (let [c (str-byte src j)]
       (if (= c 34)
         j
         (if (= c 92)
@@ -437,7 +452,7 @@
 (defn advance [src :- str i :- i64 end :- i64 line :- i64 col :- i64] :- LC
   (if (>= i end)
     (LC line col)
-    (if (= (nth src i 0) 10)
+    (if (= (str-byte src i) 10)
       (advance src (+ i 1) end (+ 1 line) 0)
       (advance src (+ i 1) end line (+ 1 col)))))
 
@@ -449,7 +464,7 @@
 (defn next-bs [raw :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     n
-    (if (= (nth raw i 0) 92)
+    (if (= (str-byte raw i) 92)
       i
       (next-bs raw (+ i 1) n))))
 
@@ -459,10 +474,10 @@
 (defn unesc [raw :- str i :- i64 n :- i64 acc :- str] :- str
   (if (>= i n)
     acc
-    (if (= (nth raw i 0) 92)
+    (if (= (str-byte raw i) 92)
       (if (>= (+ i 1) n)
         (str acc "\\")
-        (let [e (nth raw (+ i 1) 0)]
+        (let [e (str-byte raw (+ i 1))]
           (if (= e 110)
             (unesc raw (+ i 2) n (str acc "\n"))
             (if (= e 116)
@@ -494,7 +509,7 @@
 (defn has-dot [tok :- str i :- i64 n :- i64] :- bool
   (if (>= i n)
     false
-    (if (= (nth tok i 0) 46)
+    (if (= (str-byte tok i) 46)
       true
       (has-dot tok (+ i 1) n))))
 
@@ -556,7 +571,7 @@
       (if (> depth 0)
         (RErr "unclosed delimiter" (Span bline bcol 1))
         (ROk (asts-rev kids (KNil)) tab))
-      (let [c (nth src i 0)]
+      (let [c (str-byte src i)]
         (cond
           (is-ws c)
           (if (= c 10)
@@ -583,7 +598,7 @@
                        tab
                        n))))
 
-          (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
+          (if (= c 35) (= (str-byte src (+ i 1)) 123) false)
           (let [lcv (advance src i (+ i 2) line col)]
             (match lcv
               (LC [l2 c2]
@@ -602,7 +617,7 @@
                     (Span line col 1)))
             (RSFrame [kind open oline ocol kidsF rest]
               (if (kind-accepts kind c)
-                (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
+                (if (and (= kind 2) (not (even? (asts-depth kids))))
                   (RErr "map literal must have key/value pairs"
                         (Span oline ocol (+ (- i open) 1)))
                   (let [k (asts-rev kids (KNil))
@@ -854,7 +869,7 @@
 ; LLVM-safe suffix for an instantiation's type arguments; missing means
 ; "render as an ADT name" (the mangle fallback).
 (defn ty-suffix [x :- Ty] :- str
-  (let [t (ty-tag (clone x))
+  (let [t (ty-tag x)
         a (ty-arg x)]
     (cond
       (= t 0) "i64"
@@ -877,12 +892,12 @@
 
 ; --- type lists -------------------------------------------------------------
 
-(defn tys-null [ks :- TyList] :- bool
+(defn tys-null [ks :- &TyList] :- bool
   (match ks
     (TyNil [] true)
     (TyCons [h t] false)))
 
-(defn tys-depth [ks :- TyList] :- i64
+(defn tys-depth [ks :- &TyList] :- i64
   (match ks
     (TyCons [h t] (+ 1 (tys-depth t)))
     (TyNil [] 0)))
@@ -902,7 +917,10 @@
     (TyNil [] (TyCons x (TyNil)))
     (TyCons [h t] (TyCons h (tys-append t x)))))
 
-(defn tys-eq [xs :- TyList ys :- TyList] :- bool
+; Borrowed on both sides: this walk is a pure read, and cloning a cons
+; clones its whole tail — passing owned lists made every signature-table
+; probe (and every type-argument comparison) quadratic in list length.
+(defn tys-eq [xs :- &TyList ys :- &TyList] :- bool
   (match xs
     (TyNil [] (tys-null ys))
     (TyCons [xh xt]
@@ -1804,7 +1822,7 @@
 (defn register-ty-param [ps :- PS name :- i64] :- PS
   (match ps
     (PS [tab decls adts sigs typarams err]
-      (if (sids-has (clone typarams) name)
+      (if (sids-has typarams name)
         (PS tab decls adts sigs typarams err)
         (PS tab decls adts sigs (sids-append typarams name) err)))))
 
@@ -1862,8 +1880,8 @@
       (let [r (intern1 tab s)]
         (match r
           (I1Res [tab2 sid]
-            (if (dl-has (clone decls) sid)
-              (let [d (dl-get (clone decls) sid)]
+            (if (dl-has decls sid)
+              (let [d (dl-get decls sid)]
                 (match d
                   (Decl [idx tps]
                     (PTyRes (PS tab2 decls adts sigs typarams err)
@@ -1898,7 +1916,7 @@
 (defn parse-fn-elem [a :- Ast ps :- PS] :- PTyRes
   (let [tag (ast-tag a)]
     (if (= tag 1)
-      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone ps)) (ast-sid-of (clone a))))
+      (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone ps)) (ast-sid-of a)))
       (if (= tag 5)
         (parse-ty (clone a) ps)
         (PTyRes (ps-err ps "Fn param/ret types must be scalars, str, or (Vector ty)") (t-none))))))
@@ -1906,7 +1924,7 @@
 ; Register a closure signature (deduped structurally); the index — its
 ; table position — is the `Ty::Fn` payload.
 (defn register-sig [ps :- PS params :- TyList ret :- Ty] :- PTyRes
-  (let [i (sigs-find (ps-sigs (clone ps)) (clone params) (clone ret) 0)]
+  (let [i (sigs-find (ps-sigs (clone ps)) params (clone ret) 0)]
     (if (>= i 0)
       (PTyRes ps (t-fn i))
       (match ps
@@ -1914,14 +1932,17 @@
           (PTyRes (PS tab decls adts (SGCons (Sig (clone params) ret) (clone sigs)) typarams err)
                   (t-fn (sigs-depth sigs))))))))
 
-(defn sigs-find [ss :- Sigs params :- TyList ret :- Ty i :- i64] :- i64
+; The table and the probed param list are only read: borrow both, so the
+; scan costs no per-entry deep clone of `params` (a cons clone copies the
+; whole tail, which made every registration quadratic in the table size).
+(defn sigs-find [ss :- &Sigs params :- &TyList ret :- Ty i :- i64] :- i64
   (match ss
     (SGCons [h t]
       (match h
         (Sig [hp hr]
-          (if (and (tys-eq hp (clone (clone params))) (ty-eq hr (clone ret)))
+          (if (and (tys-eq hp params) (ty-eq hr (clone ret)))
             i
-            (sigs-find t (clone params) ret (+ i 1))))))
+            (sigs-find t params ret (+ i 1))))))
     (SGNil [] -1)))
 
 ; The string of an atom node (only symbol/string position is queried).
@@ -1942,15 +1963,15 @@
 (defn parse-ty [a :- Ast ps :- PS] :- PTyRes
   (let [tag (ast-tag a)]
     (cond
-      (= tag 1) (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of (clone a))))
+      (= tag 1) (parse-ty-sym-str (clone (clone ps)) (sym-str (ps-tab (clone (clone ps))) (ast-sid-of a)))
       (= tag 5) (parse-ty-list (clone (clone a)) (clone (clone ps)))
       (PTyRes (ps-err ps "type annotation must be a symbol or (Vector ty)") (t-none)))))
 
 (defn parse-ty-list [a :- Ast ps :- PS] :- PTyRes
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))
-            n (asts-depth (clone kids))]
+      (let [h (asts-head-sid kids)
+            n (asts-depth kids)]
         (cond
           (= h (s-vec))
           (if (not (= n 2))
@@ -1982,7 +2003,7 @@
       (let [t1 (ast-tag pvec)]
         (if (not (= t1 6))
           (PTyRes (ps-err ps "Fn params must be a vector") (t-none))
-          (if (asts-null (clone pret))
+          (if (asts-null pret)
             (PTyRes (ps-err ps "Fn annotation expects a return type") (t-none))
             (let [ret (asts-idx pret 0)]
               (parse-fn-elems (ast-kids-of (clone pvec)) (TyNil) ret ps))))))))
@@ -2007,13 +2028,13 @@
 ; Applied ADT annotation: (Name arg ...) — instantiate the template
 ; eagerly. The name must be a generic declared template.
 (defn parse-ty-applied [kids :- Asts n :- i64 ps :- PS] :- PTyRes
-  (let [h (asts-head-sid (clone kids))]
+  (let [h (asts-head-sid kids)]
     (if (and (= h (s-vec)) (not (= n 2)))
       (PTyRes (ps-err ps (str "unsupported type annotation (expected (Vector ty), got " (- n 1) " elements)")) (t-none))
       (match ps
         (PS [tab decls adts sigs typarams err]
-          (if (dl-has (clone decls) h)
-            (let [d (dl-get (clone decls) h)]
+          (if (dl-has decls h)
+            (let [d (dl-get decls h)]
               (match d
                 (Decl [idx tps]
                   (if (= (sids-depth tps) 0)
@@ -2049,22 +2070,22 @@
   (let [td (adts-at (ps-adts (clone ps)) tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
-        (if (not (= (sids-depth (clone tps)) (tys-depth (clone (clone args)))))
+        (if (not (= (sids-depth tps) (tys-depth (clone (clone args)))))
           (let [msg (str (ps-str-of (clone ps) name)
                          " expects " (sids-depth tps)
                          " type argument(s), got " (tys-depth args))]
             (PIARes (ps-err ps msg) -1))
-          (let [hit (adts-find-inst (ps-adts (clone ps)) tpl (clone args) 0)]
+          (let [hit (adts-find-inst (ps-adts (clone ps)) tpl args 0)]
             (if (>= (clone hit) 0)
               (PIARes ps (clone hit))
               (instantiate-adt-new tpl args ps))))))))
 
-(defn adts-find-inst [ts :- AdtTab tpl :- i64 args :- TyList i :- i64] :- i64
+(defn adts-find-inst [ts :- &AdtTab tpl :- i64 args :- &TyList i :- i64] :- i64
   (match ts
     (ATCons [h t]
       (match h
         (AdtInfo [name tps variants vtpl vtargs]
-          (if (and (= vtpl tpl) (tys-eq vtargs (clone (clone args))))
+          (if (and (= vtpl tpl) (tys-eq vtargs args))
             i
             (adts-find-inst t tpl args (+ i 1))))))
     (ATNil [] -1)))
@@ -2089,7 +2110,7 @@
 
 ; `Name__arg1_arg2` — the seed's adt_arg_suffix join.
 (defn adt-inst-name [adts :- AdtTab tab :- i64 tpl :- i64 args :- TyList] :- I1Res
-  (let [td (adts-at (clone adts) tpl)]
+  (let [td (adts-at adts tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
         (inst-name-loop adts (clone tab) (sym-str (clone tab) name) args 1)))))
@@ -2106,10 +2127,10 @@
   (let [suf (ty-suffix (clone x))]
     (if (not (= suf "?"))
       suf
-      (let [t (ty-tag (clone x))]
+      (let [t (ty-tag x)]
         (cond
           (= t 16)
-          (let [td (adts-at adts (ty-arg (clone x)))]
+          (let [td (adts-at adts (ty-arg x))]
             (match td
               (AdtInfo [name tps variants vtpl vargs] (sym-str (clone tab) name))))
           (= t 18) (str "t" (ty-arg x))
@@ -2127,7 +2148,7 @@
   (let [td (adts-at (ps-adts (clone ps)) tpl)]
     (match td
       (AdtInfo [name tps variants vtpl vargs]
-        (if (>= vi (vlist-depth (clone variants)))
+        (if (>= vi (vlist-depth variants))
           (PVRes ps (vlist-rev acc (VNil)))
           (let [v (vlist-at variants vi)]
             (match v
@@ -2151,14 +2172,14 @@
     (TyNil [] (PFRes ps (tys-rev acc (TyNil))))))
 
 (defn subst-field-ty [f :- Ty args :- TyList ps :- PS] :- PTyRes
-  (let [t (ty-tag (clone f))]
+  (let [t (ty-tag f)]
     (cond
       (= t 18)
-      (if (>= (ty-arg (clone f)) (tys-depth (clone args)))
-        (PTyRes (ps-err (clone ps) (str "unresolved type parameter " (ty-arg (clone f)) " in ADT field")) (t-none))
-        (PTyRes (clone ps) (tys-idx (clone args) (ty-arg (clone f)))))
+      (if (>= (ty-arg f) (tys-depth args))
+        (PTyRes (ps-err (clone ps) (str "unresolved type parameter " (ty-arg f) " in ADT field")) (t-none))
+        (PTyRes (clone ps) (tys-idx (clone args) (ty-arg f))))
       (= t 16)
-      (let [j (ty-arg (clone f))
+      (let [j (ty-arg f)
             td (adts-at (ps-adts (clone ps)) j)]
         (match td
           (AdtInfo [name tps variants vtpl vargs]
@@ -2177,7 +2198,7 @@
 (defn parse-deftype-header [a :- Ast ps :- PS] :- HDRRes
   (match a
     (AList [kids at]
-      (let [n (asts-depth (clone kids))]
+      (let [n (asts-depth kids)]
         (if (< n 2)
           (HDRRes (ps-err ps "deftype expects a name and at least one variant") -1 (SNil))
           (let [h (asts-idx kids 1)
@@ -2263,8 +2284,8 @@
 (defn parse-variant [v :- Ast ps :- PS] :- PVOne
   (match v
     (AList [vitems at]
-      (let [vn (asts-head-sid (clone vitems))
-            n (asts-depth (clone vitems))]
+      (let [vn (asts-head-sid vitems)
+            n (asts-depth vitems)]
         (if (< vn 0)
           (PVOne (ps-err ps "deftype variant name must be a symbol") (Varnt -1 (TyNil)))
           (if (> n 1)
@@ -2290,7 +2311,7 @@
 
 ; `name :- ty` triples.
 (defn parse-fields [fs :- Asts i :- i64 acc :- TyList vn :- i64 ps :- PS] :- PFRes
-  (let [n (asts-depth (clone fs))]
+  (let [n (asts-depth fs)]
     (if (>= i n)
       (PFRes ps (tys-rev acc (TyNil)))
       (let [fn-node (asts-idx (clone fs) i)
@@ -2356,8 +2377,8 @@
 (defn parse-field-applied [e :- Ast ps :- PS] :- PTyRes
   (match e
     (AList [items at]
-      (let [h (asts-head-sid (clone items))
-            n (asts-depth (clone items))]
+      (let [h (asts-head-sid items)
+            n (asts-depth items)]
         (if (and (= h (s-vec)) (= n 2))
           (let [el-node (asts-idx items 1)
                 el-str (node-str (clone el-node) (ps-tab (clone ps)))]
@@ -2374,7 +2395,7 @@
               (match d
                 (Decl [idx tps]
                   (let [args (asts-drop items 1)]
-                    (if (not (= (asts-depth (clone args)) (sids-depth (clone tps))))
+                    (if (not (= (asts-depth args) (sids-depth tps)))
                       (let [msg (str (ps-str-of (clone ps) h) " expects " (sids-depth tps) " type argument(s) in a field type, got " (asts-depth args))]
                         (PTyRes (ps-err ps msg) (t-none)))
                       (check-positional args tps 0 ps h idx))))))
@@ -2397,7 +2418,7 @@
       (if (not (= at 1))
         (PTyRes (ps-err (clone ps) (str (ps-str-of ps h) " type argument must be a parameter name of this deftype")) (t-none))
         (let [asid (ast-sid-of a)
-            p (sids-idx (clone tps) i)]
+            p (sids-idx tps i)]
           (if (not (= asid p))
             (let [msg (str "field type (" (ps-str-of (clone ps) h) " ...) must apply " (ps-str-of (clone ps) h) " to this deftype's parameters in order (expected " (ps-str-of (clone ps) p) ")")]
               (PTyRes (ps-err ps msg) (t-none)))
@@ -2414,7 +2435,7 @@
 ; `(name :- ty)` triples. `&` borrows are outside the kernel contract and
 ; fail as unsupported; everything else mirrors parse_params.
 (defn parse-params [ks :- Asts i :- i64 acc :- PList ps :- PS] :- PParRes
-  (let [n (asts-depth (clone ks))]
+  (let [n (asts-depth ks)]
     (if (>= i n)
       (PParRes ps (plist-rev acc (PNil)))
       (let [nm-node (asts-idx (clone ks) i)
@@ -2461,7 +2482,7 @@
 (defn parse-defn [a :- Ast ps :- PS isextern :- i64] :- RawRes
   (match a
     (AList [items at]
-      (let [n (asts-depth (clone items))]
+      (let [n (asts-depth items)]
         (if (< n 3)
           (RawRes (ps-err ps "defn expects a name and a params vector") (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
           (let [name-node (asts-idx (clone items) 1)
@@ -2525,7 +2546,7 @@
   (match ps
     (PS [tab decls adts sigs typarams err]
       (cond
-        (and (= isextern 1) (> (sids-depth (clone typarams)) 0))
+        (and (= isextern 1) (> (sids-depth typarams) 0))
         (RawRes (ps-err (clone ps) "extern declarations must have concrete types")
                 (RawDefn -1 (PNil) (t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
 
@@ -2612,7 +2633,7 @@
 
 (defn facts-edges [adts :- &AdtTab n :- i64 t :- i64 edge :- Mat] :- Mat
   (if (>= t n)
-    (facts-closure edge n 0 0 0)
+    (facts-closure edge n 0)
     (facts-edges-vi adts n t 0 edge)))
 
 (defn facts-edges-vi [adts :- &AdtTab n :- i64 t :- i64 vi :- i64 edge :- Mat] :- Mat
@@ -2629,20 +2650,43 @@
           (facts-edges-fs rest adts n t vi edge))))
     (TyNil [] (facts-edges-vi adts n t (+ vi 1) edge))))
 
-(defn facts-closure [edge :- Mat n :- i64 k :- i64 i :- i64 j :- i64] :- Mat
-  (cond
-    (>= k n) edge
-    (>= i n) (facts-closure edge n (+ k 1) 0 0)
-    (>= j n) (facts-closure edge n k (+ i 1) 0)
-    (let [ij (mat-get edge i j)
-          ik (mat-get edge i k)
-          kj (mat-get edge k j)]
-      (if (or (= ij 1) (and (= ik 1) (= kj 1)))
-        (facts-closure (mat-set edge i j 1) n k i (+ j 1))
-        (facts-closure edge n k i (+ j 1))))))
+; Warshall as row absorption: for each k, every row i whose k-th column is
+; set absorbs row k — a[i][j] |= a[i][k] & a[k][j] for all j at once.
+; The cell-wise form probed cons-list rows three times per cell, so a probe
+; was O(n) and the whole traversal O(n^4) (154 deftypes: ~1.7e9 list steps,
+; seconds of every build). Row k is invariant through pass k (the standard
+; in-place Warshall property), so it is read once per pass, and each row is
+; walked once — O(n^3) with a constant of one compare per cell.
+(defn mat-row-ref [m :- &Mat i :- i64] :- Sids
+  (match m
+    (MatCons [row next] (if (= i 0) (clone row) (mat-row-ref next (- i 1))))
+    (MatNil [] (SNil))))
+
+; Element-wise OR of two 0/1 rows; the second is only read, so one row
+; serves every absorbing row in a pass without a per-row copy.
+(defn mat-row-or [a :- Sids b :- &Sids] :- Sids
+  (match a
+    (SCons [ha ta]
+      (match b
+        (SCons [hb tb] (SCons (if (or (= ha 1) (= hb 1)) 1 0) (mat-row-or ta tb)))
+        (SNil [] (SCons ha (mat-row-or ta b)))))
+    (SNil [] (SNil))))
+
+(defn facts-absorb [m :- Mat k :- i64 rowk :- &Sids] :- Mat
+  (match m
+    (MatCons [row next]
+      (if (= (sids-idx-ref row k) 1)
+        (MatCons (mat-row-or row rowk) (facts-absorb next k rowk))
+        (MatCons row (facts-absorb next k rowk))))
+    (MatNil [] (MatNil))))
+
+(defn facts-closure [edge :- Mat n :- i64 k :- i64] :- Mat
+  (if (>= k n)
+    edge
+    (facts-closure (facts-absorb edge k (mat-row-ref edge k)) n (+ k 1))))
 
 (defn facts-edges-wrap [edge :- Mat n :- i64 t :- i64] :- Mat
-  (if (>= t n) (facts-closure edge n 0 0 0) edge))
+  (if (>= t n) (facts-closure edge n 0) edge))
 
 (defn facts-diag [m :- &Mat n :- i64 i :- i64 acc :- Sids] :- Sids
   (if (>= i n)
@@ -3608,7 +3652,7 @@
     (HJoin [sep xs] (t-str))
     (HStrNth [s idx res] (clone res))
     (HCharStr [x] (t-str))
-    (HGet [src idx dflt ty res] (if (ty-noneq (clone res)) (clone ty) (clone res)))
+    (HGet [src idx dflt ty res] (if (ty-noneq res) (clone ty) (clone res)))
     (HConj [v x el inplace] (t-vec el))
     (HIf [c t2 e2 ty] (clone ty))
     (HAnd [a b] (t-bool))
@@ -3803,19 +3847,19 @@
 (defn unify-seen [pat :- Ty actual :- Ty subs :- TyEnv depth :- i64] :- URes
   (if (> depth 100)
     (UResOk (clone subs))
-    (let [pt (ty-tag (clone pat))
-          at (ty-tag (clone actual))]
+    (let [pt (ty-tag pat)
+          at (ty-tag actual)]
       (cond
         (= pt 18)
-        (let [i (ty-arg (clone pat))
+        (let [i (ty-arg pat)
               bound (te-get subs i)]
-          (if (ty-noneq (clone bound))
+          (if (ty-noneq bound)
             (UResOk (te-put (clone subs) i (clone actual)))
             (if (ty-eq bound (clone actual))
               (UResOk (clone subs))
               (UResErr))))
 
-        (and (= pt 15) (>= (ty-arg (clone pat)) 100) (= at 15))
+        (and (= pt 15) (>= (ty-arg pat) 100) (= at 15))
         (unify-vec-pat (clone pat) (clone actual) (clone subs) depth)
 
         (and (ty-eq pat actual))
@@ -3831,7 +3875,7 @@
       (UResErr)
       (let [a (elem-ty actual-el)
             bound (te-get subs k)]
-        (if (ty-noneq (clone bound))
+        (if (ty-noneq bound)
           (UResOk (te-put (clone subs) k a))
           (if (ty-eq bound a)
             (UResOk (clone subs))
@@ -3852,22 +3896,22 @@
 (deftype SRes (SRes [tab :- i64 adts :- AdtTab ty :- Ty msg :- str]))
 
 (defn subst-ty [ty :- Ty subs :- TyEnv tab :- i64 adts :- AdtTab] :- SRes
-  (let [t (ty-tag (clone ty))]
+  (let [t (ty-tag ty)]
     (cond
       (= t 18)
-      (let [bound (te-get subs (ty-arg (clone ty)))]
-        (if (ty-noneq (clone bound))
-          (SRes tab (clone adts) (t-none) (str "unresolved type parameter " (ty-arg (clone ty))))
+      (let [bound (te-get subs (ty-arg ty))]
+        (if (ty-noneq bound)
+          (SRes tab (clone adts) (t-none) (str "unresolved type parameter " (ty-arg ty)))
           (SRes tab (clone adts) bound "")))
 
       (= t 15)
-      (let [elc (ty-arg (clone ty))]
+      (let [elc (ty-arg ty)]
         (if (>= elc 100)
           (let [bound (te-get subs (- elc 100))]
             (cond
               (ty-eq (clone bound) (t-i64)) (SRes tab (clone adts) (t-vec 0) "")
               (ty-eq (clone bound) (t-f64)) (SRes tab (clone adts) (t-vec 1) "")
-              (= (ty-tag (clone bound)) 15)         (SRes tab (clone adts) (t-vec (ty-arg bound)) "")
+              (= (ty-tag bound) 15)         (SRes tab (clone adts) (t-vec (ty-arg bound)) "")
               (SRes tab (clone adts) (t-none) (str "unresolved vector element parameter " (- elc 100)))))
           (SRes tab (clone adts) (clone ty) "")))
 
@@ -3875,7 +3919,7 @@
       ; (the seed's subst_ty ADT arm); dedup makes this a cache hit when
       ; the args are already concrete
       (= t 16)
-      (let [info (adts-at (clone adts) (ty-arg (clone ty)))]
+      (let [info (adts-at adts (ty-arg ty))]
         (match info
           (AdtInfo [name tps variants tpl tplargs]
             (if (>= tpl 0)
@@ -3929,9 +3973,9 @@
   (let [raw (raws-find raws name)]
     (match raw
       (RawDefn [rname params ret2 typarams isextern body rb]
-        (if (= (sids-depth (clone typarams)) 0)
+        (if (= (sids-depth typarams) 0)
           (MIRes (clone tab) adts insts sigs lams rets ncached defs name ret2 "")
-          (if (not (= (plist-depth (clone params)) (tys-depth (clone argtys))))
+          (if (not (= (plist-depth params) (tys-depth argtys)))
             (MIRes (clone tab) adts insts sigs lams rets ncached defs name (t-none)
                    (str "function " (sym-str (clone tab) name) " expects " (plist-depth params) " argument(s), got " (tys-depth argtys)))
             (let [ru (unify-params (clone params) argtys (TENil))]
@@ -4092,7 +4136,7 @@
 (defn resolve-ann-applied [a :- Ast tab :- i64 adts :- AdtTab sigs :- Sigs] :- PTyRes
   (match a
     (AList [kids at]
-      (let [h (asts-head-sid (clone kids))]
+      (let [h (asts-head-sid kids)]
         ; `(Vector el)` — the built-in generic (S8: loop-bind annotations
         ; carry full type forms, e.g. the reader's `tab :- i64`)
         (if (= h (s-vec))
@@ -4205,7 +4249,7 @@
 (defn lower-do [forms :- Asts env :- TyEnv expected :- Ty tab :- i64
                adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (asts-null (clone forms))
+  (if (asts-null forms)
     (lok tab adts insts sigs lams rets ncached defs (HConstI64 0))
     (lower-do-2 forms (HENil) env expected tab adts insts sigs lams rets ncached defs raws)))
 
@@ -4214,14 +4258,14 @@
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [kid (asts-idx (clone forms) 0)
         rest (asts-tail forms)
-        lastq (asts-null (clone rest))
+        lastq (asts-null rest)
         exp (if lastq (clone expected) (t-none))
         r (lower kid (clone env) exp tab adts insts sigs lams rets ncached defs raws)]
     (match r
       (LErr [msg] (LErr msg))
       (LOk [tab2 adts2 insts2 sigs2 lams2 rets2 nc2 defs2 e2]
         (if lastq
-          (if (hes-null (clone acc))
+          (if (hes-null acc)
             (lok tab2 adts2 insts2 sigs2 lams2 rets2 nc2 defs2 e2)
             (lok tab2 adts2 insts2 sigs2 lams2 rets2 nc2 defs2
                  (HSeq (hes-rev (HECons e2 acc) (HENil)))))
@@ -4246,7 +4290,7 @@
 ; side's type (S8: the reader's scan wraps its recur continuations in
 ; match/let/if tails — a bare HRecur tag check is not enough).
 (defn all-paths-recur [e :- HExpr] :- bool
-  (let [tag (h-tag (clone e))]
+  (let [tag (h-tag e)]
     (cond
       (= tag 32) true
       (= tag 22) (and (all-paths-recur (hv-b e))
@@ -4257,9 +4301,9 @@
       false)))
 
 (defn seq-all-recur [es :- HExprs] :- bool
-  (if (asts-null (clone es))
+  (if (asts-null es)
     false
-    (if (asts-null (asts-tail-hes (clone es)))
+    (if (asts-null (asts-tail-hes es))
       (all-paths-recur (hes-head-hes es))
       (seq-all-recur (asts-tail-hes es)))))
 
@@ -4272,7 +4316,7 @@
 (defn lower-if [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 4))
+  (if (not (= (asts-depth items) 4))
     (LErr "if expects (if cond then else)")
     (let [c (asts-idx (clone items) 1)
           rc (lower-1 c (clone env) tab adts insts sigs lams rets ncached defs raws)]
@@ -4321,7 +4365,7 @@
         (LErr "let bindings must be a vector")
         (if (not (even? (asts-depth (ast-kids-of (clone bvec)))))
           (LErr "let bindings must be key/value pairs")
-          (if (asts-null (clone brest))
+          (if (asts-null brest)
             (LErr "let body required")
             (let [rb (lower-let-binds (ast-kids-of (clone bvec)) 0 (clone env) env (BNil)
                                       tab adts insts sigs lams rets ncached defs raws)]
@@ -4340,7 +4384,7 @@
 (defn lower-body-1 [rest :- Asts body :- Ast env :- TyEnv expected :- Ty
                    tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                    lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (asts-null (clone rest))
+  (if (asts-null rest)
     (lower body env expected tab adts insts sigs lams rets ncached defs raws)
     (lower-body-seq (KCons body rest) (HENil) env tab adts insts sigs lams rets ncached defs raws)))
 
@@ -4388,11 +4432,11 @@
             (LErr [msg] (LBErr msg))
             (LOk [t2 a2 i2 s2 l2 r2 n2 d2 value]
               (let [vt (ty-of value env r2 s2)]
-                (if (not (= (ty-tag (clone vt)) 15))
+                (if (not (= (ty-tag vt) 15))
                   (LBErr (str "destructured binding source must be a vector, got " (ty-name vt)))
                   (let [elc (ty-arg vt)
                         ; $d{ncached + resolved-so-far}
-                        tmp-n (+ n2 (binds-depth (clone acc)))
+                        tmp-n (+ n2 (binds-depth acc))
                         rtmp (intern1 t2 (str "$d" tmp-n))]
                     (match rtmp
                       (I1Res [t3 tmp] 
@@ -4452,7 +4496,7 @@
                         env :- TyEnv tab :- i64 adts :- AdtTab
                         insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                         ncached :- i64 defs :- Defns acc :- Binds] :- LBRes
-  (if (>= k (asts-depth (clone pat)))
+  (if (>= k (asts-depth pat))
     (LBRes tab adts insts sigs lams rets ncached defs env acc)
     (let [p (asts-idx (clone pat) k)
           pt (ast-tag p)]
@@ -4474,7 +4518,7 @@
 (defn lower-cmp [op :- i64 items :- Asts env :- TyEnv tab :- i64
                 adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                 rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr (str "comparison expects 2 operands"))
     (let [a (asts-idx (clone items) 1)
           b (asts-idx items 2)
@@ -4502,14 +4546,14 @@
 (defn lower-not [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "not expects 1 operand")
     (lower-1-bool (asts-idx items 1) env tab adts insts sigs lams rets ncached defs "not expects a boolean operand" 25 raws)))
 
 (defn lower-abs [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "abs expects 1 operand")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -4523,7 +4567,7 @@
 (defn lower-minmax [op :- i64 items :- Asts env :- TyEnv tab :- i64
                    adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                    rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr (if (= op 0) "min expects 2 operands" "max expects 2 operands"))
     (let [a (asts-idx (clone items) 1)
           ra (lower-1 a (clone env) tab adts insts sigs lams rets ncached defs raws)]
@@ -4561,7 +4605,7 @@
 (defn lower-andor [kind :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "and/or expects 2 operands")
     (let [a (asts-idx (clone items) 1)
           b (asts-idx items 2)
@@ -4968,11 +5012,11 @@
     (HParseNum [_ _ _] (HENil))))
 
 (defn collect-caps [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (let [tag (h-tag (clone e))]
+  (let [tag (h-tag e)]
     (cond
       (= tag 3)
       (let [v (name-of e)
-            hit (or (sids-has params v) (sids-has (clone seen) v))]
+            hit (or (sids-has params v) (sids-has seen v))]
         (if hit
           (CapsRes (clone caps) (clone seen))
           (if (te-has env v)
@@ -5128,7 +5172,7 @@
 (defn lower-closure [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                     insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                     ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "fn expects (fn [params] <body>)")
     (let [pvec (asts-idx (clone items) 1)]
       (if (not (= (ast-tag pvec) 6))
@@ -5159,7 +5203,7 @@
                                       rs (register-sig2 (clone s3) ptys (clone ret))]
                                   (match rs
                                     (SigRes [s4 sig]
-                                      (let [midx (lams-depth (clone lams))
+                                      (let [midx (lams-depth lams)
                                             rm (intern1 t3 (str "lambda_" midx))]
                                         (match rm
                                           (I1Res [t5 mangled]
@@ -5193,7 +5237,7 @@
 (deftype SigRes (SigRes [sigs :- Sigs idx :- i64]))
 
 (defn register-sig2 [sigs :- Sigs params :- TyList ret :- Ty] :- SigRes
-  (let [i (sigs-find (clone sigs) (clone params) (clone ret) 0)]
+  (let [i (sigs-find sigs params (clone ret) 0)]
     (if (>= i 0)
       (SigRes sigs i)
       (SigRes (SGCons (Sig params ret) (clone sigs)) (sigs-depth sigs)))))
@@ -5225,11 +5269,11 @@
       (let [r (intern1 (clone tab) s)]
         (match r
           (I1Res [tab2 sid]
-            (CtyRes (sids-append (clone tps) sid) (t-param (sids-depth (clone tps))) ""))))
+            (CtyRes (sids-append (clone tps) sid) (t-param (sids-depth tps)) ""))))
       (CtyRes tps (t-none) (str "unknown type name " s)))))
 
 (defn closure-params [els :- Asts i :- i64 acc :- PList ps :- PS tps :- Sids] :- PParRes
-  (if (>= i (asts-depth (clone els)))
+  (if (>= i (asts-depth els))
     (PParRes (clone ps) (plist-rev acc (PNil)))
     (let [nm (asts-idx (clone els) i)
           sep (asts-idx (clone els) (+ i 1))]
@@ -5274,17 +5318,17 @@
                       ; Loop variables are never freed and never moved, so
                       ; the recursion the loop replaces cannot double-free.
                       (if (and (not (is-copy-ty (clone ty)))
-                               (not (or (= (ty-tag (clone ty)) 16)
-                                        (= (ty-tag (clone ty)) 15)
-                                        (= (ty-tag (clone ty)) 13)
-                                        (= (ty-tag (clone ty)) 14))))
+                               (not (or (= (ty-tag ty) 16)
+                                        (= (ty-tag ty) 15)
+                                        (= (ty-tag ty) 13)
+                                        (= (ty-tag ty) 14))))
                         (LBErr (str "loop variable " (node-str (clone nm) t2) " has non-Copy type " (ty-name ty) " — loop variables are numeric/bool/str/ADT/collection in this slice"))
                         (let [ri (lower-e initn (clone env) ty t2 a2 (clone insts) s2 (clone lams) (clone rets) ncached (clone defs) raws)]
                           (match ri
                             (LErr [msg] (LBErr msg))
                             (LOk [t3 a3 i3 s3 l3 r3 n3 d3 init]
                               (let [it (ty-of init env r3 s3)
-                                    empty-vec (and (= (ty-tag ty) 15) (= (h-tag (clone init)) 5) (= (vvals-depth-of (clone init)) 0))]
+                                    empty-vec (and (= (ty-tag ty) 15) (= (h-tag init) 5) (= (vvals-depth-of (clone init)) 0))]
                                 (if (and (not (ty-eq (clone it) ty)) (not (and (ty-eq ty (t-f64)) (ty-eq (clone it) (t-i64)))) (not empty-vec))
                                   (LBErr (str "loop binding " (node-str (clone nm) t3) " ascribed " (ty-name ty) " but the initial value is " (ty-name it)))
                                   (let [init2 (if (and (ty-eq ty (t-f64)) (ty-eq it (t-i64)))
@@ -5297,7 +5341,7 @@
 (defn lower-loop [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (< (asts-depth (clone items)) 3)
+  (if (< (asts-depth items) 3)
     (LErr "loop expects (loop [x :- ty init ...] body...)")
     (let [bvec (asts-idx (clone items) 1)]
       (if (not (= (ast-tag bvec) 6))
@@ -5317,7 +5361,7 @@
                   (LErr [msg] (LErr msg))
                   (LOk [t3 a3 i3 s3 l3 r3 n3 d3 body2]
                     (let [ty (ty-of body2 env2 r3 s3)
-                          rv (validate-recurs (clone body2) (binds-depth (clone binds2)))]
+                          rv (validate-recurs (clone body2) (binds-depth binds2))]
                       (match rv
                         (VErr [msg] (LErr (str "loop: " msg)))
                         (LOk2 [] (lok t3 a3 i3 (clone s3) l3 (clone r3) n3 d3 (HLoop (binds-rev binds2 (BNil)) ty (clone body2))))))))))))))))
@@ -5332,7 +5376,7 @@
   (validate-recurs-2 e arity true false))
 
 (defn validate-recurs-2 [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [tag (h-tag (clone e))]
+  (let [tag (h-tag e)]
     (cond
       (= tag 32)
       (v-recur-arm (clone e) arity inloop crossed)
@@ -5396,10 +5440,10 @@
           (LOk2 [] (validate-let next body arity inloop crossed)))))))
 
 (defn validate-seq [es :- HExprs arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [restq (asts-null (asts-tail-hes (clone es)))]
+  (let [restq (asts-null (asts-tail-hes es))]
     (if restq
       (validate-recurs-2 (hes-head-hes es) arity inloop crossed)
-      (let [r (validate-recurs-2 (hes-head-hes (clone es)) arity false crossed)]
+      (let [r (validate-recurs-2 (hes-head-hes es) arity false crossed)]
         (match r
           (VErr [msg] (VErr msg))
           (LOk2 [] (validate-seq (asts-tail-hes es) arity inloop crossed)))))))
@@ -5416,7 +5460,7 @@
 (defn contains-recur [e :- HExpr depth :- i64] :- bool
   (if (> depth 200)
     false
-    (let [tag (h-tag (clone e))]
+    (let [tag (h-tag e)]
       (cond
         (= tag 32) true
         (= tag 37) false
@@ -5456,7 +5500,7 @@
 (defn lower-match [items :- Asts env :- TyEnv expected :- Ty tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (< (asts-depth (clone items)) 3)
+  (if (< (asts-depth items) 3)
     (LErr "match expects a scrutinee and at least one arm")
     (match (find-guard (asts-tail (asts-tail (clone items))) 0)
       (GFound [gi garm] (lower-match-g items env expected tab adts insts sigs lams rets ncached defs gi garm raws))
@@ -5475,7 +5519,7 @@
 
 (defn arm-has-guard [arm :- Ast] :- bool
   (let [kids (ast-kids-of arm)]
-    (if (< (asts-depth (clone kids)) 2)
+    (if (< (asts-depth kids) 2)
       false
       (let [bs (asts-idx kids 1)]
         (if (not (= (ast-tag bs) 6))
@@ -5539,12 +5583,12 @@
         (LErr [msg] (LErr msg))
         (LOk [t2 a2 i2 s2 l2 r2 n2 d2 probe]
           (let [pt (ty-of probe env r2 s2)]
-            (if (not (= (ty-tag (clone pt)) 16))
+            (if (not (= (ty-tag pt) 16))
               (LErr "guard arms require an ADT scrutinee")
               (let [vdef (adts-at a2 (ty-arg pt))
                     rest (asts-tail (asts-drop (clone items) (+ 2 gi)))
                     rest-heads (arm-heads (clone rest))
-                    covered (or (sids-has (clone rest-heads) (s-wild))
+                    covered (or (sids-has rest-heads (s-wild))
                                 (all-covered rest-heads vdef 0))]
                 (if (not covered)
                   (LErr (str "guard arm " (sym-str (clone tab) (asts-head-sid (ast-kids-of garm))) " falls through, but the later arms do not cover every variant (add a _ arm)"))
@@ -5605,7 +5649,7 @@
   (if (not (= (ast-tag arm) 5))
     false
     (let [vitems (ast-kids-of (clone arm))]
-      (and (= (asts-depth (clone vitems)) 3)
+      (and (= (asts-depth vitems) 3)
            (let [bs (asts-idx vitems 1)
                  bs-kids (ast-kids-of (clone bs))
                  wpos (guard-pos (clone bs-kids) 0)]
@@ -5629,11 +5673,11 @@
 (defn all-covered [heads :- Sids info :- AdtInfo i :- i64] :- bool
   (match info
     (AdtInfo [name typarams variants tpl tplargs]
-      (if (>= i (vlist-depth (clone variants)))
+      (if (>= i (vlist-depth variants))
         true
         (let [vn (match (vlist-at variants i)
                    (Varnt [vname fields] vname))]
-          (if (sids-has (clone heads) vn)
+          (if (sids-has heads vn)
             (all-covered heads info (+ i 1))
             false))))))
 
@@ -5647,10 +5691,10 @@
       (LErr [msg] (LErr msg))
       (LOk [t2 a2 i2 s2 l2 r2 n2 d2 scrut2]
         (let [pt (ty-of scrut2 env r2 s2)]
-          (if (not (= (ty-tag (clone pt)) 16))
+          (if (not (= (ty-tag pt) 16))
             (LErr "match scrutinee must be an ADT value")
-            (let [adt (ty-arg (clone pt))
-                  vdef (adts-at (clone a2) adt)
+            (let [adt (ty-arg pt)
+                  vdef (adts-at a2 adt)
                   ra (match-arms (asts-tail (asts-tail items)) (clone vdef) adt (clone env) pt t2 a2 i2 (clone s2) l2 (clone r2) n2 d2 (HANil) (TyNil) false 0 raws)]
               (match ra
                 (MArr [msg] (LErr msg))
@@ -5711,7 +5755,7 @@
 (defn variant-index [info :- AdtInfo name :- i64 i :- i64] :- i64
   (match info
     (AdtInfo [name2 typarams variants tpl tplargs]
-      (if (>= i (vlist-depth (clone variants)))
+      (if (>= i (vlist-depth variants))
         -1
         (let [vn (match (vlist-at variants i)
                    (Varnt [vname fields] vname))]
@@ -5731,12 +5775,12 @@
   (if (not (= (ast-tag arm) 5))
     (MArr "match arm must be a list")
     (let [vitems (ast-kids-of (clone arm))]
-      (if (not (= (asts-depth (clone vitems)) 3))
-        (MArr (str "match arm " (sym-str (clone tab) (asts-head-sid (clone vitems))) " expects (" (sym-str (clone tab) (asts-head-sid vitems)) " [binders...] body)"))
+      (if (not (= (asts-depth vitems) 3))
+        (MArr (str "match arm " (sym-str (clone tab) (asts-head-sid vitems)) " expects (" (sym-str (clone tab) (asts-head-sid vitems)) " [binders...] body)"))
         (let [bs (asts-idx (clone vitems) 1)]
           (if (not (= (ast-tag bs) 6))
             (MArr (str "match arm " (sym-str (clone tab) (asts-head-sid vitems)) " binders must be a vector"))
-            (if (not (= (asts-depth (ast-kids-of (clone bs))) (tys-depth (clone fields))))
+            (if (not (= (asts-depth (ast-kids-of (clone bs))) (tys-depth fields)))
               (MArr (str "variant " (adts-name vdef (clone tab)) " has " (tys-depth fields) " field(s) but the arm binds " (asts-depth (ast-kids-of (clone bs)))))
               ; binders: wildcard `_` gets a gensym
               (let [rb (match-binders (ast-kids-of (clone bs)) fields 0 (clone env) (SNil) (SNil) (clone tab) (clone adts) (clone insts) ncached)]
@@ -5760,7 +5804,7 @@
 (defn match-binders [bs :- Asts fields :- TyList k :- i64 env :- TyEnv acc :- Sids
                     seen :- Sids tab :- i64 adts :- AdtTab insts :- IMap
                     ncached :- i64] :- MBRes
-  (if (>= k (asts-depth (clone bs)))
+  (if (>= k (asts-depth bs))
     (MBRes tab adts insts ncached env (sids-rev acc (SNil)))
     (let [b (asts-idx (clone bs) k)
           fty (tys-idx (clone fields) k)]
@@ -5854,7 +5898,7 @@
     (FVFound [adt variant fields]
       (let [tpl-params (adts-tparams (clone adts) adt)
             ; expected pinning: an instance of this template takes its fields
-            inst-exp (if (and (> tpl-params 0) (= (ty-tag (clone expected)) 16))
+            inst-exp (if (and (> tpl-params 0) (= (ty-tag expected) 16))
                        (instance-of-template (clone adts) (ty-arg expected) adt)
                        -1)]
         (if (>= inst-exp 0)
@@ -5898,9 +5942,9 @@
                           tab adts insts sigs lams rets ncached defs raws)
         ; unbound parameters: a nullary ctor of a generic ADT infers from
         ; the expected instance of the same template
-        (if (not (= (ty-tag (clone expected)) 16))
+        (if (not (= (ty-tag expected) 16))
           (LErr (str "cannot infer the type argument(s) of the constructor — ascribe the binding"))
-          (let [ed (adts-at (clone adts) (ty-arg expected))]
+          (let [ed (adts-at adts (ty-arg expected))]
             (match ed
               (AdtInfo [en etp ev etpl eargs]
                 (if (not (= etpl adt))
@@ -5913,9 +5957,9 @@
                         tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                         lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns
                         k :- i64 acc :- HExprs raws :- &Raws] :- LRes
-  (if (not (= (tys-depth (clone fields)) (- (asts-depth (clone items)) 1)))
+  (if (not (= (tys-depth fields) (- (asts-depth items) 1)))
     (LErr (str "constructor expects " (tys-depth fields) " argument(s), got " (- (asts-depth items) 1)))
-    (if (>= k (tys-depth (clone fields)))
+    (if (>= k (tys-depth fields))
       (ctor-finish adt variant (hes-rev acc (HENil)) nparams subs (clone env)
                    tab adts insts sigs lams rets ncached defs raws)
       (let [argn (asts-idx (clone items) (+ k 1))
@@ -5928,8 +5972,8 @@
                   ; literal-friendly coercions: an i64 argument widens where
                   ; the field is f64; an empty vector literal satisfies any
                   ; vector field (the seed's rules)
-                  emptv (and (= (ty-tag (clone fty)) 15)
-                             (= (h-tag (clone e2)) 5)
+                  emptv (and (= (ty-tag fty) 15)
+                             (= (h-tag e2) 5)
                              (= (vvals-depth-of (clone e2)) 0))
                   widq (and (ty-eq (clone fty) (t-f64)) (ty-eq (clone at0) (t-i64)))
                   e3 (if widq (HICast (clone e2) (t-i64) (t-f64)) (clone e2))
@@ -5966,7 +6010,7 @@
                       adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                       rets :- TyEnv ncached :- i64 defs :- Defns head :- i64
                       kind :- i64 sig :- i64 acc :- HExprs raws :- &Raws] :- LRes
-  (if (>= i (asts-depth (clone items)))
+  (if (>= i (asts-depth items))
     (lok tab adts insts sigs lams rets ncached defs
          (if (= kind 0)
            (HCall head (hes-rev acc (HENil)))
@@ -5989,12 +6033,12 @@
                  tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
                  lams :- Lams rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [ht (te-get env head)]
-    (if (= (ty-tag (clone ht)) 17)
+    (if (= (ty-tag ht) 17)
       (let [sig (ty-arg ht)]
-        (match (sigs-at (clone sigs) sig)
+        (match (sigs-at sigs sig)
           (Sig [want swant]
-            (let [nargs (- (asts-depth (clone items)) 1)]
-              (if (not (= nargs (tys-depth (clone want))))
+            (let [nargs (- (asts-depth items) 1)]
+              (if (not (= nargs (tys-depth want)))
                 (LErr (str "closure call expects " (tys-depth want) " argument(s), got " nargs))
                 (lower-call-args items 1 (clone env) tab adts insts sigs lams rets ncached defs head 1 sig (HENil) raws))))))
       (match (find-variant adts head)
@@ -6010,7 +6054,7 @@
                   (match (lower-call-args (clone items) 1 (clone env) tab adts insts sigs lams rets ncached defs head 0 -1 (HENil) raws)
                     (LErr [msg] (LErr msg))
                     (LOk [t2 a2 i2 s2 l2 r2 n2 d2 e2]
-                      (if (not (= (h-tag (clone e2)) 39))
+                      (if (not (= (h-tag e2) 39))
                         (LErr "internal: call args shape")
                         (let [args (hargs-of e2)
                               argtys (call-argtys (clone args) (clone env) (clone r2) (clone s2) (TyNil))
@@ -6030,7 +6074,7 @@
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   (let [kids (ast-kids-of a)
-        h (asts-head-sid (clone kids))]
+        h (asts-head-sid kids)]
     (cond
       (= h (s-do))
       (lower-do (asts-tail (clone kids)) (clone env) (clone expected) tab adts insts sigs lams rets ncached defs raws)
@@ -6148,7 +6192,7 @@
 (defn lower-arith [op :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "binary op expects 2 operands")
     (let [a (asts-idx (clone items) 1)
           ra (lower-1 a (clone env) tab adts insts sigs lams rets ncached defs raws)]
@@ -6181,7 +6225,7 @@
 (defn lower-cast [h :- i64 items :- Asts env :- TyEnv tab :- i64
                  adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                  rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "cast expects exactly 1 argument")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6202,7 +6246,7 @@
 (defn lower-recur-2 [args :- Asts acc :- HExprs env :- TyEnv tab :- i64
                     adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                     rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (asts-null (clone args))
+  (if (asts-null args)
     (lok tab adts insts sigs lams rets ncached defs (HRecur (hes-rev acc (HENil))))
     (let [r (lower-1 (asts-idx (clone args) 0) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6213,7 +6257,7 @@
 (defn lower-count [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "count expects exactly 1 argument")
     (let [r (lower-1 (asts-idx items 1) env tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6224,7 +6268,7 @@
 (defn lower-clone [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "clone expects 1 argument")
     (let [r (lower-1 (asts-idx items 1) env tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6235,7 +6279,7 @@
 (defn lower-drop [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "drop expects 1 argument")
     (let [r (lower-1 (asts-idx items 1) env tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6246,7 +6290,7 @@
 (defn lower-charstr [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                     insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                     ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "char->str expects exactly 1 argument")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6259,7 +6303,7 @@
 (defn lower-slurp [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "slurp expects (slurp <path>)")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6272,7 +6316,7 @@
 (defn lower-spit [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "spit expects (spit <path> <content>)")
     (let [r1 (lower-1 (asts-idx (clone items) 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match (clone r1)
@@ -6287,7 +6331,7 @@
 (defn lower-exit [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "exit expects (exit <status>)")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6300,7 +6344,7 @@
 (defn lower-parse [intf :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "parse expects (parse <s>)")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6317,7 +6361,7 @@
 (defn lower-print [h :- i64 items :- Asts env :- TyEnv tab :- i64
                   adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                   rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 2))
+  (if (not (= (asts-depth items) 2))
     (LErr "print-* expects exactly 1 argument")
     (let [r (lower-1 (asts-idx items 1) (clone env) tab adts insts sigs lams rets ncached defs raws)]
       (match r
@@ -6369,14 +6413,14 @@
 (defn lower-str [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (< (asts-depth (clone items)) 2)
+  (if (< (asts-depth items) 2)
     (LErr "str expects at least one argument")
     (lower-str-args (asts-tail items) (HENil) env tab adts insts sigs lams rets ncached defs raws)))
 
 (defn lower-str-args [els :- Asts acc :- HExprs env :- TyEnv tab :- i64
                      adts :- AdtTab insts :- IMap sigs :- Sigs lams :- Lams
                      rets :- TyEnv ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (asts-null (clone els))
+  (if (asts-null els)
      (let [args (hes-rev acc (HENil))]
        (if (hs-one args)
          (lok tab adts insts sigs lams rets ncached defs (hes-head-hes args))
@@ -6396,28 +6440,28 @@
 (defn lower-subs [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 4))
+  (if (not (= (asts-depth items) 4))
     (LErr "subs expects (subs <s> <start> <end>)")
     (lower-3-to items 0 env tab adts insts sigs lams rets ncached defs raws)))
 
 (defn lower-split [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                   insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                   ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "split expects (split <s> <sep>)")
     (lower-2-to items 0 env tab adts insts sigs lams rets ncached defs "split" 16 raws)))
 
 (defn lower-join [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "join expects (join <sep> <strs>)")
     (lower-join-2 items env tab adts insts sigs lams rets ncached defs raws)))
 
 (defn lower-get [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                 insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (let [n (asts-depth (clone items))]
+  (let [n (asts-depth items)]
     (if (and (not (= n 3)) (not (= n 4)))
       (LErr "get expects (get <vec> <idx>) or (get <vec> <idx> <default>)")
       (let [src (asts-idx (clone items) 1)
@@ -6426,7 +6470,7 @@
           (LErr [msg] (LErr msg))
           (LOk [t1 a1 i1 s1 l1 r1 n1 d1 src2]
             (let [st (ty-of src2 env r1 s1)]
-              (if (not (= (ty-tag (clone st)) 15))
+              (if (not (= (ty-tag st) 15))
                 (LErr (str "get source must be a vector, got " (ty-name st)))
                 (let [elc (ty-arg st)
                       et (elem-ty elc)
@@ -6492,15 +6536,15 @@
   ; static literal (zero runtime cost) — the seed's three fold arms
   (let [xt (ty-of x2 env rets sigs)]
     (cond
-      (and (= (h-tag (clone v2)) 5) (= (h-tag (clone x2)) 0) (= (hvec-el (clone v2)) 0))
+      (and (= (h-tag v2) 5) (= (h-tag x2) 0) (= (hvec-el (clone v2)) 0))
       (lok tab adts insts sigs lams rets ncached defs
            (HVecLit 0 (vvals-append-i64 (hvec-vals (clone v2)) (hconst-i64-of (clone x2)))))
 
-      (and (= (h-tag (clone v2)) 5) (= (h-tag (clone x2)) 1) (= (hvec-el (clone v2)) 1))
+      (and (= (h-tag v2) 5) (= (h-tag x2) 1) (= (hvec-el (clone v2)) 1))
       (lok tab adts insts sigs lams rets ncached defs
            (HVecLit 1 (vvals-append-f64 (hvec-vals (clone v2)) (hconst-f64-of (clone x2)))))
 
-      (and (= (h-tag (clone v2)) 5) (= (h-tag (clone x2)) 1) (= (hvec-el (clone v2)) 0))
+      (and (= (h-tag v2) 5) (= (h-tag x2) 1) (= (hvec-el (clone v2)) 0))
       (lok tab adts insts sigs lams rets ncached defs
            (HVecLit 1 (vvals-append-f64 (vvals-promote (hvec-vals (clone v2))) (hconst-f64-of (clone x2)))))
 
@@ -6511,7 +6555,7 @@
 (defn lower-conj [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
                  insts :- IMap sigs :- Sigs lams :- Lams rets :- TyEnv
                  ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
-  (if (not (= (asts-depth (clone items)) 3))
+  (if (not (= (asts-depth items) 3))
     (LErr "conj expects (conj <vec> <x>)")
     (let [v (asts-idx (clone items) 1)
           rv (lower-1 v (clone env) tab adts insts sigs lams rets ncached defs raws)]
@@ -6519,7 +6563,7 @@
         (LErr [msg] (LErr msg))
         (LOk [t1 a1 i1 s1 l1 r1 n1 d1 v2]
           (let [vt (ty-of v2 env r1 s1)]
-            (if (not (= (ty-tag (clone vt)) 15))
+            (if (not (= (ty-tag vt) 15))
               (LErr (str "conj source must be a vector, got " (ty-name vt)))
               (let [elc (ty-arg vt)
                     x (asts-idx items 2)
@@ -6534,7 +6578,7 @@
                 ncached :- i64 defs :- Defns raws :- &Raws] :- LRes
   ; two-argument nth is (StrNth s idx (Option i64)); the explicit-default
   ; form desugars to a match over it with binder $b (the seed's rule)
-  (let [n (asts-depth (clone items))]
+  (let [n (asts-depth items)]
     (if (or (> n 4) (< n 3))
       (LErr "nth expects (nth <s> <idx>) or (nth <s> <idx> <default>)")
       (let [snode (asts-idx (clone items) 1)
@@ -6615,7 +6659,7 @@
 ; i64 fallback for the builtin print heads.
 (defn h-call-ty [rets :- &TyEnv name :- i64] :- Ty
   (let [r (te-get rets name)]
-    (if (ty-noneq (clone r)) (t-i64) r)))
+    (if (ty-noneq r) (t-i64) r)))
 
 
 ; --- program assembly (build.rs) -------------------------------------------------
@@ -6660,7 +6704,7 @@
             (HDRRes [ps2 name typarams]
               (if (< name 0)
                 (DeclRes (DLNil) 0 (ps-err-msg ps2))
-                (if (dl-has (clone decls) name)
+                (if (dl-has decls name)
                   (DeclRes (DLNil) 0 (str "duplicate deftype " (sym-str (ps-tab (clone ps)) name)))
                   (match (collect-decls rest (+ i 1) n decls ps2)
                     (DeclRes [d nd msg]
@@ -6744,7 +6788,7 @@
     (RCons [h t]
       (match h
         (RawDefn [name params ret typarams isextern body rb]
-          (if (= (sids-depth (clone typarams)) 0)
+          (if (= (sids-depth typarams) 0)
             (seed-rets t (te-put rets name (clone ret)))
             (seed-rets t rets)))))
     (RNil [] rets)))
@@ -6807,7 +6851,7 @@
                                  t2 a2 i2 s2 l2 r2 n2))))))))))
 
 (defn build-program [forms :- Asts tab :- i64] :- POut
-  (let [n (asts-depth (clone forms))
+  (let [n (asts-depth forms)
         ; the prelude: the (Option a) template seeded as adt 0, with its
         ; declaration registered so annotations resolve
         ps0 (ps-new (clone tab))
@@ -6927,7 +6971,7 @@
   (let [dec (- (im-get rem v 0) 1)
         rem2 (im-put rem v dec)
         t (te-get tys v)]
-    (if (and (not (ty-noneq (clone t)))
+    (if (and (not (ty-noneq t))
              (is-non-copy-ty t)
              (= (im-get st v 0) 1))
       (match bcx
@@ -6949,7 +6993,7 @@
 (defn move-if-nc [v :- i64 st :- IMap owns :- IMap rem :- IMap cons :- IMap
                  tys :- TyEnv bcx :- &BCtx] :- MncRes
   (let [t (te-get tys v)]
-    (if (and (not (ty-noneq (clone t))) (is-non-copy-ty t))
+    (if (and (not (ty-noneq t)) (is-non-copy-ty t))
       (match (use-var v rem tys st bcx)
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
@@ -6958,7 +7002,7 @@
               ; a non-Copy loop variable rides as Copy: calls and
               ; constructors borrow it, nothing moves (S8)
               (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp _retb]
-                (if (sids-has (clone loopcopy) v)
+                (if (sids-has loopcopy v)
                   (MncRes st owns rem2 cons)
                   (match (move-var v st owns cons)
                     (MoveRes [st2 owns2 cons2] (MncRes st2 owns2 rem2 cons2)))))))))
@@ -7265,7 +7309,7 @@
                   cons :- IMap tys :- TyEnv bcx :- &BCtx] :- B4
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb]
-      (if (sids-has (clone shared) name)
+      (if (sids-has shared name)
         (B4 st owns rem cons)
         (match (dparams-get dp name)
           (DFound [ps] (b-call-move-ps args ps st owns rem cons tys bcx))
@@ -7281,7 +7325,7 @@
         (PCons [h pt]
           (match h
             (Param [pname pty pb]
-              (if (and (= pb 0) (= (h-tag (clone kid)) 3))
+              (if (and (= pb 0) (= (h-tag kid) 3))
                 (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
                   (MncErr [msg] (B4Err msg))
                   (MncRes [st2 owns2 rem2 cons2]
@@ -7293,7 +7337,7 @@
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
-      (if (= (h-tag (clone kid)) 3)
+      (if (= (h-tag kid) 3)
         ; the seed's kinds loop: use + move only NON-COPY Var args
         (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
           (MncErr [msg] (B4Err msg))
@@ -7314,14 +7358,14 @@
       (match (bcheck value st owns rem cons (clone tys) bcx)
         (BErr [msg] (BLErr msg))
         (BOk [st1 owns1 rem1 cons1 v2]
-          (let [isv (= (h-tag (clone v2)) 3)
+          (let [isv (= (h-tag v2) 3)
                 vn (name-of (clone v2))
                 ncopy (is-non-copy-ty ty)]
             (if (and isv ncopy)
               ; a non-Copy Var init moves the buffer: the drop duty
               ; transfers to the new binding (read the source's ownership
               ; before the move clears it)
-              (let [src-owns (im-get (clone owns1) vn 0)]
+              (let [src-owns (im-get owns1 vn 0)]
                 (match (move-var vn st1 owns1 cons1)
                   (MoveRes [st2 owns2 cons2]
                     (b-let-binds next (im-put st2 name 0)
@@ -7423,7 +7467,7 @@
   (match s
     (HVar [v]
       (let [t (te-get tys v)]
-        (if (= (ty-tag (clone t)) 16) (ty-arg t) -1)))
+        (if (= (ty-tag t) 16) (ty-arg t) -1)))
     (HCtor [adt variant args] adt)
     (_ -1)))
 
@@ -7445,9 +7489,9 @@
 ; (vec/map/set or a boxed ADT child) so a move through it registers; other
 ; fields keep the I64 copy stand-in.
 (defn fp-binder-type [fty :- Ty facts :- &Facts] :- Ty
-  (let [t (ty-tag (clone fty))]
+  (let [t (ty-tag fty)]
     (if (and (or (= t 13) (= t 14) (= t 15) (= t 16))
-             (= (fp-binder-alias (clone fty) facts) 1))
+             (= (fp-binder-alias fty facts) 1))
       fty
       (t-i64))))
 
@@ -7467,10 +7511,10 @@
             frest (match fields (TyCons [h t2] t2) (TyNil [] (TyNil)))
             ; an inline ADT binder is materialized as the field's address
             ; inside the box, so it aliases too (the seed's `|| Adt`)
-            hit (if (and (or (= (fp-binder-alias (clone fty) facts) 1)
+            hit (if (and (or (= (fp-binder-alias fty facts) 1)
                              (= (ty-tag fty) 16))
-                         (or (sids-has (clone escaped) b)
-                             (= (im-get (clone st) b 0) 1)))
+                         (or (sids-has escaped b)
+                             (= (im-get st b 0) 1)))
                   1 acc)]
         (b-arm-esc rest frest st escaped facts hit)))))
 
@@ -7534,12 +7578,12 @@
   (match caps
     (CNil [] (BCapRes st owns rem cons (CNil)))
     (CCons [name ty own next]
-      (match (use-var name rem (clone tys) (clone st) bcx)
+      (match (use-var name rem tys st bcx)
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
             (BCapErr msg)
-            (let [own2 (im-get (clone owns) name 0)]
-              (if (is-non-copy-ty (clone ty))
+            (let [own2 (im-get owns name 0)]
+              (if (is-non-copy-ty ty)
                 (match (move-var name st owns cons)
                   (MoveRes [st2 owns2 cons2]
                     (match (b-caps next st2 owns2 rem2 cons2 tys bcx)
@@ -7580,7 +7624,7 @@
       (BOk st owns rem cons e))
 
     (HVar [name]
-    (match (use-var name rem tys (clone st) bcx)
+    (match (use-var name rem tys st bcx)
       (UseRes [rem2 msg]
         (if (> (count msg) 0) (BErr msg) (BOk st owns rem2 cons e)))))
 
@@ -7799,14 +7843,14 @@
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
           (let [vn (name-of (clone c1))
-              isv (= (h-tag (clone c1)) 3)
+              isv (= (h-tag c1) 3)
               t (te-get tys vn)
               lastq (and isv
-                         (not (ty-noneq (clone t)))
+                         (not (ty-noneq t))
                          (is-non-copy-ty t)
-                         (= (im-get (clone st1) vn 0) 0)
-                         (= (im-get (clone owns1) vn 0) 1)
-                         (= (im-get (clone rem1) vn 0) 0))]
+                         (= (im-get st1 vn 0) 0)
+                         (= (im-get owns1 vn 0) 1)
+                         (= (im-get rem1 vn 0) 0))]
           (if (not lastq)
             (match (bcheck x st1 owns1 rem1 cons1 tys bcx)
               (BErr [msg] (BErr msg))
@@ -7868,7 +7912,7 @@
           (BOk st1 owns1 rem1 cons1 (HCtor adt variant c1))))))
 
     (HMatch [scrut arms ty]
-    (let [adtidx (fp-scrut-adt (clone scrut) tys)
+    (let [adtidx (fp-scrut-adt scrut tys)
           boxed (if (and (>= adtidx 0) (= (facts-boxed-at (b-facts-of bcx) adtidx) 1)) 1 0)]
     (match (bcheck (clone scrut) st owns rem cons (clone tys) bcx)
       (BErr [msg] (BErr msg))
@@ -7878,7 +7922,7 @@
           (BArmsRes [st2 owns2 rem2 cons2 arms2 esc2]
             ; An aliasing binder left the arm: the box's drop duty
             ; transfers, so the scrutinee's own scope free is suppressed.
-            (if (and (= esc2 1) (= (h-tag (clone scrut)) 3))
+            (if (and (= esc2 1) (= (h-tag scrut) 3))
               (match (move-var (name-of scrut) st2 owns2 cons2)
                 (MoveRes [st3 owns3 cons3] (BOk st3 owns3 rem2 cons3 (HMatch c1 arms2 ty))))
               (BOk st2 owns2 rem2 cons2 (HMatch c1 arms2 ty)))))))))
@@ -7887,7 +7931,7 @@
     (match (bcheck x st owns rem cons (clone tys) bcx)
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (if (= (h-tag (clone c1)) 3)
+        (if (= (h-tag c1) 3)
           (match (move-if-nc (name-of (clone c1)) st1 owns1 rem1 cons1 tys bcx)
             (MncErr [msg] (BErr msg))
             (MncRes [st2 owns2 rem2 cons2]
@@ -7933,7 +7977,7 @@
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
-      (if (= (h-tag (clone kid)) 3)
+      (if (= (h-tag kid) 3)
         (match (move-if-nc (name-of kid) st owns rem cons (clone tys) bcx)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2]
@@ -8015,7 +8059,7 @@
                  (if (b-tail-borrow-ok scrut borrows dparams retb) 1 0))]
         (b-tail-arms-ok arms borrows sc dparams retb)))
     (HLet [binds body frees]
-      (b-tail-borrow-ok body (b-tail-let-fold binds (clone borrows) dparams retb) dparams retb))
+      (b-tail-borrow-ok body (b-tail-let-fold binds borrows dparams retb) dparams retb))
     (HSeq [es] (b-tail-seq-ok es borrows dparams retb))
     (_ false)))
 
@@ -8067,10 +8111,10 @@
       (match p
         (Param [pname pty pb]
           (if (and (= pb 0)
-                   (b-param-moves pty (clone facts))
-                   (= (im-get (clone owns) pname 0) 1)
-                   (= (im-get (clone st) pname -1) 0)
-                   (not (sids-has (clone esc) pname)))
+                   (b-param-moves pty facts)
+                   (= (im-get owns pname 0) 1)
+                   (= (im-get st pname -1) 0)
+                   (not (sids-has esc pname)))
             (SCons pname (fp-frees rest st owns facts esc))
             (fp-frees rest st owns facts esc)))))))
 
@@ -8125,7 +8169,7 @@
         (Param [pname pty pb]
           (b-init-params rest facts
                          (im-put st pname 0)
-                         (im-put owns pname (if (and (= pb 0) (b-param-moves (clone pty) facts)) 1 0))
+                         (im-put owns pname (if (and (= pb 0) (b-param-moves pty facts)) 1 0))
                          rem
                          cons
                          (te-put tys pname pty)))))))
@@ -8185,7 +8229,7 @@
             (match (b-plan name (clone params) body (clone ret) rb (clone facts) (clone tab) (clone shared) (clone adts) (clone dparams) (clone retb))
               (BPlanErr [msg] (CKErr msg))
               (BPlan [st owns body2 frees]
-                (let [body3 (if (sids-null (clone frees))
+                (let [body3 (if (sids-null frees)
                               body2
                               (HLet (BNil) body2 frees))]
                 (check-defns t
@@ -8247,7 +8291,7 @@
 ; --- types ------------------------------------------------------------------
 
 (defn d-ty [ty :- Ty] :- str
-  (let [t (ty-tag (clone ty))
+  (let [t (ty-tag ty)
         a (ty-arg ty)]
     (cond
       (= t 0) "i64"
@@ -8284,7 +8328,7 @@
   (match tys
     (TyNil [] "")
     (TyCons [h t]
-      (if (tys-null (clone t))
+      (if (tys-null t)
         (d-ty h)
         (str (d-ty h) " " (d-tys-parts t))))))
 
@@ -8313,7 +8357,7 @@
     (HStrNth [s idx res] (str "(nth " (d-e s (clone tab)) " " (d-e idx (clone tab)) " " (d-ty res) ")"))
     (HCharStr [x] (str "(charstr " (d-e x (clone tab)) ")"))
     (HGet [src idx dflt ty res]
-      (if (hes-null (clone dflt))
+      (if (hes-null dflt)
         (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-ty ty) " " (d-ty res) ")")
         (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-e (hes-head-hes dflt) (clone tab)) " " (d-ty ty) " " (d-ty res) ")")))
     (HConj [v x el inplace] (str "(conj " (d-e v (clone tab)) " " (d-e x (clone tab)) " " el " " inplace ")"))
@@ -8417,7 +8461,7 @@
   (match ks
     (SNil [] "")
     (SCons [h t]
-      (if (sids-null (clone t))
+      (if (sids-null t)
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-sids-parts t (clone tab)))))))
 
@@ -8512,7 +8556,7 @@
   (match ks
     (SNil [] "")
     (SCons [h t]
-      (if (sids-null (clone t))
+      (if (sids-null t)
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-typarams-parts t (clone tab)))))))
 
@@ -8604,32 +8648,32 @@
 
 ; Keyed chains: first match wins (prepend-on-bind = the seed's
 ; map-overwrite-under-shadowing).
-(defn esc-get [t :- EScTab k :- i64] :- RegVal
+(defn esc-get [t :- &EScTab k :- i64] :- RegVal
   (match t
-    (EScCons [ek ev next] (if (= ek k) ev (esc-get next k)))
+    (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get next k)))
     (EScNil [] (RegVal "" (t-none)))))
 
-(defn esc-has [t :- EScTab k :- i64] :- bool
+(defn esc-has [t :- &EScTab k :- i64] :- bool
   (match t
     (EScCons [ek ev next] (if (= ek k) true (esc-has next k)))
     (EScNil [] false)))
 
-(defn evc-get [t :- EVcTab k :- i64] :- VecVal
+(defn evc-get [t :- &EVcTab k :- i64] :- VecVal
   (match t
-    (EVcCons [ek ev next] (if (= ek k) ev (evc-get next k)))
+    (EVcCons [ek ev next] (if (= ek k) (clone ev) (evc-get next k)))
     (EVcNil [] (VecVal "" "" -1))))
 
-(defn evc-has [t :- EVcTab k :- i64] :- bool
+(defn evc-has [t :- &EVcTab k :- i64] :- bool
   (match t
     (EVcCons [ek ev next] (if (= ek k) true (evc-has next k)))
     (EVcNil [] false)))
 
-(defn egr-get [t :- EGrTab k :- i64] :- GroVal
+(defn egr-get [t :- &EGrTab k :- i64] :- GroVal
   (match t
-    (EGrCons [ek ev next] (if (= ek k) ev (egr-get next k)))
+    (EGrCons [ek ev next] (if (= ek k) (clone ev) (egr-get next k)))
     (EGrNil [] (GroVal "" -1))))
 
-(defn egr-has [t :- EGrTab k :- i64] :- bool
+(defn egr-has [t :- &EGrTab k :- i64] :- bool
   (match t
     (EGrCons [ek ev next] (if (= ek k) true (egr-has next k)))
     (EGrNil [] false)))
@@ -8652,7 +8696,7 @@
 
 (deftype Strs (StrsNil) (StrsCons [h :- str t :- Strs]))
 
-(defn strs-has [ss :- Strs s :- str] :- bool
+(defn strs-has [ss :- &Strs s :- str] :- bool
   (match ss
     (StrsCons [h t] (if (= h s) true (strs-has t (clone s))))
     (StrsNil [] false)))
@@ -8694,7 +8738,7 @@
 (defn md-decl [m :- Mdl line :- str] :- Mdl
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has (clone decls) (clone line))
+      (if (strs-has decls (clone line))
         (clone m)
         (Mdl (clone tab) (clone g) (clone globals)
              (StrsCons (clone line) (clone decls))
@@ -8712,7 +8756,7 @@
 (defn md-ensure [m :- Mdl line :- str] :- Mdl
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has (clone decls) (clone line))
+      (if (strs-has decls (clone line))
         m
         (md-decl (clone m) (clone line))))))
 
@@ -8734,7 +8778,7 @@
 (defn md-str-bytes [s :- str i :- i64 n :- i64 b :- StrBuf first :- bool] :- StrBuf
   (if (> i n)
     b
-    (let [byte (if (= i n) 0 (nth (clone s) i 0))
+    (let [byte (if (= i n) 0 (str-byte s i))
           b2 (if first
                (sb-add b (str "i8 " byte))
                (sb-add b (str ", i8 " byte)))]
@@ -8748,7 +8792,7 @@
   (match m
     (Mdl [tab g globals decls adts owns csigs]
       (let [label (str "@g_vec_" (clone g))
-            n (vvals-depth (clone vals))
+            n (vvals-depth vals)
             parts (md-vec-items vals (clone el) (sb-new) true)
             ty (if (= el 1) "double" "i64")
             line (str label " = private constant [" n " x " ty "] ["
@@ -8812,12 +8856,12 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr))))
 
-(defn fc-sc-get [c :- FnCtx k :- i64] :- RegVal
+(defn fc-sc-get [c :- &FnCtx k :- i64] :- RegVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (esc-get sc k))))
 
-(defn fc-sc-has [c :- FnCtx k :- i64] :- bool
+(defn fc-sc-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
 
@@ -8826,12 +8870,12 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr))))
 
-(defn fc-vc-get [c :- FnCtx k :- i64] :- VecVal
+(defn fc-vc-get [c :- &FnCtx k :- i64] :- VecVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (evc-get ve k))))
 
-(defn fc-vc-has [c :- FnCtx k :- i64] :- bool
+(defn fc-vc-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
 
@@ -8840,18 +8884,18 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr))))
 
-(defn fc-gr-get [c :- FnCtx k :- i64] :- GroVal
+(defn fc-gr-get [c :- &FnCtx k :- i64] :- GroVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (egr-get gr k))))
 
-(defn fc-gr-has [c :- FnCtx k :- i64] :- bool
+(defn fc-gr-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
 
-(defn fc-lfr [c :- FnCtx] :- LoopFr
+(defn fc-lfr [c :- &FnCtx] :- LoopFr
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] lfr)))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone lfr))))
 
 (defn fc-with-lfr [c :- FnCtx lfr :- LoopFr] :- FnCtx
   (match c
@@ -8940,7 +8984,7 @@
       (cg-fail-s "ll-scalar on non-scalar type"))))
 
 (defn ll-ty [t :- Ty] :- str
-  (let [tag (ty-tag (clone t))]
+  (let [tag (ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -8957,7 +9001,7 @@
   (if (= el 1) "double" "i64"))
 
 (defn ll-loop-slot-ty [t :- Ty mdl :- &Mdl] :- str
-  (let [tag (ty-tag (clone t))]
+  (let [tag (ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -8979,56 +9023,56 @@
 
 ; Payload slots one field occupies: vectors 3; boxed (owning) ADT 1;
 ; inline ADT child its whole struct (1 + its payload); everything else 1.
-(defn fs-count [f :- Ty owns :- Sids adts :- AdtTab] :- i64
-  (let [tag (ty-tag (clone f))]
+(defn fs-count [f :- Ty owns :- &Sids adts :- &AdtTab] :- i64
+  (let [tag (ty-tag f)]
     (cond
       (= tag 15) 3
       (= tag 16)
       (let [j (ty-arg f)]
-        (if (= (sids-idx (clone owns) j) 1)
+        (if (= (sids-idx owns j) 1)
           1
           (+ 1 (fs-pay adts owns j))))
       1)))
 
-(defn fs-pay [adts :- AdtTab owns :- Sids i :- i64] :- i64
+(defn fs-pay [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
   (fs-pay-vi adts owns i 0 0))
 
-(defn fs-pay-vi [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 best :- i64] :- i64
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
+(defn fs-pay-vi [adts :- &AdtTab owns :- &Sids i :- i64 vi :- i64 best :- i64] :- i64
+  (if (>= vi (vlist-depth (adts-variants-at adts i)))
     best
-    (let [sum (fs-sum (varnt-fields-at (clone adts) i vi) (clone owns) (clone adts) 0)]
+    (let [sum (fs-sum (varnt-fields-at adts i vi) owns adts 0)]
       (fs-pay-vi adts owns i (+ vi 1)
                  (if (> sum best) sum best)))))
 
-(defn fs-sum [fs :- TyList owns :- Sids adts :- AdtTab acc :- i64] :- i64
+(defn fs-sum [fs :- TyList owns :- &Sids adts :- &AdtTab acc :- i64] :- i64
   (match fs
     (TyCons [h rest]
-      (fs-sum rest (clone owns) (clone adts) (+ acc (fs-count h owns adts))))
+      (fs-sum rest owns adts (+ acc (fs-count h owns adts))))
     (TyNil [] acc)))
 
 ; Total payload slots of ADT i (the [N x i64] of its struct).
-(defn fs-total [adts :- AdtTab owns :- Sids i :- i64] :- i64
+(defn fs-total [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
   (fs-pay adts owns i))
 
 ; Slot offset of field k in variant vi of ADT ai.
-(defn fs-off [adts :- AdtTab owns :- Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-off-1 (varnt-fields-at (clone adts) ai vi) owns adts 0 k))
+(defn fs-off [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
+  (fs-off-1 (varnt-fields-at adts ai vi) owns adts 0 k))
 
-(defn fs-off-1 [fs :- TyList owns :- Sids adts :- AdtTab at :- i64 k :- i64] :- i64
+(defn fs-off-1 [fs :- TyList owns :- &Sids adts :- &AdtTab at :- i64 k :- i64] :- i64
   (if (= k 0)
     at
     (match fs
       (TyCons [h rest]
         ; k counts down the fields consumed; at accumulates their widths
-        (fs-off-1 rest (clone owns) (clone adts)
+        (fs-off-1 rest owns adts
                   (+ at (fs-count h owns adts)) (- k 1)))
       (TyNil [] at))))
 
 ; Slot count of field k in variant vi of ADT ai.
-(defn fs-count-at [adts :- AdtTab owns :- Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-count (tys-idx (varnt-fields-at (clone adts) ai vi) k) owns adts))
+(defn fs-count-at [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
+  (fs-count (tys-idx (varnt-fields-at adts ai vi) k) owns adts))
 
-(defn fs-field-ty [adts :- AdtTab ai :- i64 vi :- i64 k :- i64] :- Ty
+(defn fs-field-ty [adts :- &AdtTab ai :- i64 vi :- i64 k :- i64] :- Ty
   (tys-idx (varnt-fields-at adts ai vi) k))
 
 ; --- f64 literals: shortest round-trip decimal ------------------------------------
@@ -9386,7 +9430,7 @@
 (defn hes-last [es :- HExprs] :- HExpr
   (match es
     (HECons [kid next]
-      (if (hes-null (clone next)) kid (hes-last next)))
+      (if (hes-null next) kid (hes-last next)))
     (HENil [] (HConstI64 0))))
 
 ; --- typed dispatch --------------------------------------------------------------
@@ -9430,8 +9474,8 @@
     64))
 
 (defn emit-cast [r :- str from :- Ty to :- Ty st :- Emit] :- ESRes
-  (let [ft (ty-tag (clone from))
-        dt (ty-tag (clone to))]
+  (let [ft (ty-tag from)
+        dt (ty-tag to)]
     (if (= ft dt)
       (ESRes st (clone r))
       (if (and (is-int-tag ft) (is-int-tag dt))
@@ -9476,14 +9520,14 @@
           (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty]
-                (if (= (ty-tag (clone ty)) 19) (t-i64) ty)))))))
+                (if (= (ty-tag ty) 19) (t-i64) ty)))))))
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
           (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag (clone ret)) 19) (t-i64) ret)))))))
+                (if (= (ty-tag ret) 19) (t-i64) ret)))))))
     (_ (t-i64))))
 
 ; --- pin (the seed's pin_value: fresh register for constants) ---------------------
@@ -9548,7 +9592,7 @@
 ; bool cases reuse the register as-is (the bool read already widened).
 (defn emit-int-widened [e :- HExpr st :- Emit] :- ESRes
   (let [w (static-int-width (clone e) (clone st))
-        tag (ty-tag (clone w))]
+        tag (ty-tag w)]
     (if (or (= tag 9) (= tag 10))
       (match (emit-float e st)
         (ESRes [st1 v]
@@ -9578,9 +9622,9 @@
     (cond
       (= op 0) "eq"
       (= op 1) "ne"
-      (and (= op 2) (is-uint-tag (ty-tag (clone ty)))) "ult"
-      (and (= op 3) (is-uint-tag (ty-tag (clone ty)))) "ugt"
-      (and (= op 4) (is-uint-tag (ty-tag (clone ty)))) "ule"
+      (and (= op 2) (is-uint-tag (ty-tag ty))) "ult"
+      (and (= op 3) (is-uint-tag (ty-tag ty))) "ugt"
+      (and (= op 4) (is-uint-tag (ty-tag ty))) "ule"
       (and (= op 5) (is-uint-tag (ty-tag ty))) "uge"
       (= op 2) "slt"
       (= op 3) "sgt"
@@ -9598,13 +9642,13 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty]
                 (cond
-                  (= (ty-tag (clone ty)) 19)
-                  (if (fc-vc-has (clone c) v)
-                    (match (fc-vc-get (clone c) v)
+                  (= (ty-tag ty) 19)
+                  (if (fc-vc-has c v)
+                    (match (fc-vc-get c v)
                       (VecVal [p l el] (ESRes st l)))
                     (sf st "unknown var in int context"))
                   (= (ty-tag ty) 11)
@@ -9629,7 +9673,7 @@
                           (= op 0) "add"
                           (= op 1) "sub"
                           (= op 2) "mul"
-                          (if (is-uint-tag (ty-tag (clone ty))) "udiv" "sdiv"))]
+                          (if (is-uint-tag (ty-tag ty)) "udiv" "sdiv"))]
                 (match (em-ins st2 (str "  ~ = " opn " " (ll-scalar ty) " " av ", " bv))
                   (ETRes [st3 t] (ESRes st3 t)))))))))
 
@@ -9654,17 +9698,17 @@
     (HAbs [x ty]
       (match (emit-int (clone x) st)
         (ESRes [st1 v]
-          (if (= (ty-tag (clone ty)) 1)
+          (if (= (ty-tag ty) 1)
             (abs-em v "i32" st1)
             (abs-em v "i64" st1)))))
 
     (HMin [a b ty]
-      (if (= (ty-tag (clone ty)) 1)
+      (if (= (ty-tag ty) 1)
         (minmax-int (clone a) (clone b) "slt" "i32" st)
         (minmax-int (clone a) (clone b) "slt" "i64" st)))
 
     (HMax [a b ty]
-      (if (= (ty-tag (clone ty)) 1)
+      (if (= (ty-tag ty) 1)
         (minmax-int (clone a) (clone b) "sgt" "i32" st)
         (minmax-int (clone a) (clone b) "sgt" "i64" st)))
 
@@ -9683,12 +9727,12 @@
     (HCount [x] (emit-count (clone x) st))
 
     (HStrNth [s idx res]
-      (if (= (ty-tag (clone res)) 19)
+      (if (= (ty-tag res) 19)
         (emit-strnth-raw (clone s) (clone idx) st)
         (sf st "Option nth in i64 context")))
 
     (HGet [src idx dflt ty res]
-      (if (and (= (ty-tag (clone ty)) 0) (= (ty-tag (clone res)) 19))
+      (if (and (= (ty-tag ty) 0) (= (ty-tag res) 19))
         (emit-get (clone src) (clone idx) (clone dflt) (clone ty) st)
         (sf st "get returning non-i64 in i64 context")))
 
@@ -9762,7 +9806,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv (RegVal [r ty] (ESRes st r)))))))
 
     (HBinW [op a b ty]
@@ -9830,7 +9874,7 @@
     (HClone [x] (emit-float (clone x) st))
 
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag (clone ty)) 9)
+      (if (= (ty-tag ty) 9)
         (emit-get (clone src) (clone idx) (clone dflt) (clone ty) st)
         (sf st "get returning non-f64 in f64 context")))
 
@@ -9850,7 +9894,7 @@
     (HConstB [v] (ESRes st (if (= v 1) "true" "false")))
 
     (HCmpW [op a b ty]
-      (let [f (is-float-tag (ty-tag (clone ty)))]
+      (let [f (is-float-tag (ty-tag ty))]
         (match (if f (emit-float a st) (emit-int a st))
           (ESRes [st1 av]
             (match (if f (emit-float b st1) (emit-int b st1))
@@ -9897,7 +9941,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv (RegVal [r ty] (ESRes st r)))))))
 
     (HIf [c t e ty] (emit-if-node c t e ty st))
@@ -9965,7 +10009,7 @@
 (defn emit-stmts-ex-last [es :- HExprs st :- Emit] :- ELRes
   (match es
     (HECons [kid next]
-      (if (hes-null (clone next))
+      (if (hes-null next)
         (ELRes st kid)
         (match (emit-stmt kid st)
           (EURes [st2] (emit-stmts-ex-last next st2)))))
@@ -9992,10 +10036,10 @@
                             st9 (em-line st8 (str "  br label %" bm))
                             st10 (em-open st9 bm)
                             lty (cond
-                                  (= (ty-tag (clone ty)) 9) "double"
-                                  (= (ty-tag (clone ty)) 10) "float"
-                                  (= (ty-tag (clone ty)) 11) "i1"
-                                  (or (= (ty-tag (clone ty)) 12)
+                                  (= (ty-tag ty) 9) "double"
+                                  (= (ty-tag ty) 10) "float"
+                                  (= (ty-tag ty) 11) "i1"
+                                  (or (= (ty-tag ty) 12)
                                       (= (ty-tag ty) 16)) "ptr"
                                   "i64")]
                         (match (em-ins st10 (str "  ~ = phi " lty " [ " tv ", %" tp " ], [ " ev ", %" ep " ]"))
@@ -10091,9 +10135,9 @@
 
 (defn arm-field-loads [binders :- Sids ai :- i64 vi :- i64 k :- i64 st :- Emit
                        scrut :- str name :- str] :- Emit
-  (if (sids-null (clone binders))
+  (if (sids-null binders)
     st
-    (let [b (sids-idx (clone binders) 0)]
+    (let [b (sids-idx binders 0)]
       (match (emit-field-load b ai vi k st scrut name)
         (EURes [st2]
           (arm-field-loads (sids-drop binders 1) ai vi (+ k 1) st2 scrut name))))))
@@ -10184,7 +10228,7 @@
                     st6 (loop-load-slots (clone slots) st5)]
                 (match st6
                   (Emit [c6 m6 s6]
-                    (let [saved (fc-lfr (clone c6))
+                    (let [saved (fc-lfr c6)
                           st7 (em-with-lfr st6 (LoopFr slots head))]
                       (match (emit-loop-tail body ty st7)
                         (ETRRes [st8 v done]
@@ -10262,7 +10306,7 @@
     (HRecur [args]
       (match st
         (Emit [c mdl sigs]
-          (let [lfr (fc-lfr (clone c))]
+          (let [lfr (fc-lfr c)]
             (match lfr
               (LoopFr [slots head]
                 (match (recur-stores args slots st)
@@ -10402,15 +10446,15 @@
           (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty]
-                (if (= (ty-tag (clone ty)) 16)
+                (if (= (ty-tag ty) 16)
                   (ty-arg ty)
                   (do (cg-fail-i (str "not an ADT binding name=" (md-sym mdl v) " sctag=" (ty-tag ty))) -1))))))))
     (HCtor [adt variant args] adt)
     (HMatch [scrut arms ty]
-      (if (= (ty-tag (clone ty)) 16) (ty-arg ty)
+      (if (= (ty-tag ty) 16) (ty-arg ty)
         (do (cg-fail-i "match of non-ADT") -1)))
     (HIf [c t e ty]
-      (if (= (ty-tag (clone ty)) 16) (ty-arg ty)
+      (if (= (ty-tag ty) 16) (ty-arg ty)
         (do (cg-fail-i "if of non-ADT") -1)))
     (HClone [x] (adt-of x st))
     (HCall [name args]
@@ -10419,14 +10463,14 @@
           (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag (clone ret)) 16)
+                (if (= (ty-tag ret) 16)
                   (ty-arg ret)
                   (do (cg-fail-i "call does not return an ADT") -1))))))))
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "get without Option result") -1)))
     (HStrNth [s idx res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "nth without Option result") -1)))
     (HConstI64 [v] (do (cg-fail-i "expected an ADT value") -1))
     (HConstF64 [v] (do (cg-fail-i "expected an ADT value") -1))
@@ -10465,7 +10509,7 @@
     (HArgs [] (do (cg-fail-i "expected an ADT value") -1))
     (HExit [e] (do (cg-fail-i "expected an ADT value") -1))
     (HParseNum [s int res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "parse-num without Option result") -1)))))
 
 (defn emit-str-val [e :- HExpr st :- Emit] :- ESRes
@@ -10481,7 +10525,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty] (ESRes st r)))))))
     (HSubs [s a b] (emit-subs s a b st))
@@ -10714,10 +10758,10 @@
       (match (clone st)
         (Emit [c mdl sigs]
           (cond
-            (fc-gr-has (clone c) s)
+            (fc-gr-has c s)
             (match (fc-gr-get c s)
               (GroVal [slot el] (gr-slot-len slot st)))
-            (fc-vc-has (clone c) s)
+            (fc-vc-has c s)
             (match (fc-vc-get c s)
               (VecVal [p l el] (ESRes st l)))
             (match (fc-sc-get c s)
@@ -10763,7 +10807,7 @@
     (HClone [inner] (count-expr-is-vec inner st))
     (HVar [v]
       (match st
-        (Emit [c mdl sigs] (or (fc-vc-has (clone c) v) (fc-gr-has c v)))))
+        (Emit [c mdl sigs] (or (fc-vc-has c v) (fc-gr-has c v)))))
     (_ false)))
 
 (defn let-has-vec [binds :- Binds v :- i64] :- bool
@@ -10793,13 +10837,13 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) v)
-            (match (fc-gr-get (clone c) v)
+          (if (fc-gr-has c v)
+            (match (fc-gr-get c v)
               (GroVal [slot el]
                 (match (gr-slot-pl slot st)
                   (ET2Res [st1 p l] (EVRes st1 p l el) ))))
-            (if (fc-vc-has (clone c) v)
-              (match (fc-vc-get (clone c) v)
+            (if (fc-vc-has c v)
+              (match (fc-vc-get c v)
                 (VecVal [p l el] (EVRes st p l el)))
               (vf st "not a vector binding"))))))
     (HVecLit [el vals]
@@ -10819,7 +10863,7 @@
     (_ (emit-vec-pair e st))))
 
 (defn vec-elem-of [ty :- Ty] :- i64
-  (if (= (ty-tag (clone ty)) 15)
+  (if (= (ty-tag ty) 15)
     (ty-arg ty)
     (do (cg-fail-i "vector value annotated") -1)))
 
@@ -10856,7 +10900,7 @@
           (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag (clone ret)) 15)
+                (if (= (ty-tag ret) 15)
                   (match (call-user name (clone args) st)
                     (ESRes [st1 v]
                       (match (em-ins2 st1
@@ -11033,7 +11077,7 @@
                    (str "  ~ = getelementptr inbounds " (elem-ll el) ", ptr " d ", i64 ^1")
                    (str "  ~ = load " (elem-ll el) ", ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null (clone dflt))
+              (if (hes-null dflt)
                 (if (= (ty-tag ty) 0)
                   (match (em-ins st3 (str "  ~ = select i1 " inb ", " (elem-ll el) " " v ", " (elem-ll el) " 0"))
                     (ETRes [st4 r] (ESRes st4 r)))
@@ -11054,7 +11098,7 @@
                    (str "  ~ = getelementptr inbounds ptr, ptr " d ", i64 ^1")
                    (str "  ~ = load ptr, ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null (clone dflt))
+              (if (hes-null dflt)
                 (match (em-ins st3 (str "  ~ = select i1 " inb ", ptr " v ", ptr null"))
                   (ETRes [st4 r] (ESRes st4 r)))
                 (match (emit-str-val (hes-first dflt) st3)
@@ -11136,8 +11180,8 @@
     (HVar [name]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) name)
-            (match (fc-gr-get (clone c) name)
+          (if (fc-gr-has c name)
+            (match (fc-gr-get c name)
               (GroVal [slot gel]
                 (match (em-ins4 st
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -11302,7 +11346,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv (RegVal [r ty] (ESRes st r)))))))
     (HCtor [adt variant args] (emit-ctor adt variant args st))
     (HClone [x] (emit-clone-adt x st))
@@ -11374,7 +11418,7 @@
 
 (defn ctor-store-args [args :- HExprs adt :- i64 variant :- i64 k :- i64
                        slot :- str st :- Emit] :- EURes
-  (if (hes-null (clone args))
+  (if (hes-null args)
     (EURes st)
     (match st
       (Emit [c mdl sigs]
@@ -11389,7 +11433,7 @@
   (match st
     (Emit [c mdl sigs]
       (let [name (md-adt-name mdl ai)
-            tg (ty-tag (clone fty))]
+            tg (ty-tag fty)]
         (cond
           (= tg 0)
           (match (emit-int (clone arg) st)
@@ -11485,12 +11529,12 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) v)
-            (match (fc-gr-get (clone c) v)
+          (if (fc-gr-has c v)
+            (match (fc-gr-get c v)
               (GroVal [slot gel]
                 (match (gr-slot-pl slot st)
                   (ET2Res [st1 p l] (HRes st1 p l l) ))))
-            (match (fc-vc-get (clone c) v)
+            (match (fc-vc-get c v)
               (VecVal [p l el] (HRes st p l l)))))))
     (_
       (match (vec-arg arg st)
@@ -11504,7 +11548,7 @@
     (Emit [c mdl sigs]
       (let [fty (fs-field-ty (md-adts mdl) ai vi k)
             off (fs-off (md-adts mdl) (md-owns mdl) ai vi k)
-            tg (ty-tag (clone fty))]
+            tg (ty-tag fty)]
         (cond
           (= tg 0)
           (match (em-ins2 st
@@ -11550,7 +11594,7 @@
                       (EURes [st5]
                         (match (field-load-vec-word (+ off 2) 2 slot scrut name st5)
                           (EURes [st6]
-                            (EURes (em-gr-put st6 binder slot (ty-arg (clone fty)))))))))))))
+                            (EURes (em-gr-put st6 binder slot (ty-arg fty))))))))))))
 
           (= tg 16)
           (let [j (ty-arg fty)
@@ -11588,8 +11632,8 @@
 
 ; Bind one name to one value: the seed's emit_let decision ladder.
 (defn emit-one-bind [name :- i64 value :- HExpr ty :- Ty st :- Emit] :- EURes
-  (let [vtag (h-tag (clone value))
-        ttag (ty-tag (clone ty))]
+  (let [vtag (h-tag value)
+        ttag (ty-tag ty)]
     (cond
       (and (= vtag 39) (= ttag 15))
       (match (emit-vec-pair value st)
@@ -11625,14 +11669,14 @@
       (and (= vtag 20) (= (ty-tag (hget-res (clone value))) 16))
       (match value
         (HGet [src idx dflt ty2 res]
-          (match (emit-get-opt (clone src) (clone idx) (ty-arg (clone res)) st)
+          (match (emit-get-opt (clone src) (clone idx) (ty-arg res) st)
             (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
         (_ (EURes st)))
 
       (and (= vtag 18) (= (ty-tag (hget-res (clone value))) 16))
       (match value
         (HStrNth [s idx res]
-          (match (emit-strnth-opt (clone s) (clone idx) (ty-arg (clone res)) st)
+          (match (emit-strnth-opt (clone s) (clone idx) (ty-arg res) st)
             (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
         (_ (EURes st)))
 
@@ -11682,11 +11726,11 @@
             (match st
               (Emit [c mdl sigs]
                 (cond
-                  (fc-gr-has (clone c) src)
-                  (match (fc-gr-get (clone c) src)
+                  (fc-gr-has c src)
+                  (match (fc-gr-get c src)
                     (GroVal [slot el] (EURes (em-gr-put st name slot el))))
-                  (fc-vc-has (clone c) src)
-                  (match (fc-vc-get (clone c) src)
+                  (fc-vc-has c src)
+                  (match (fc-vc-get c src)
                     (VecVal [p l el] (EURes (em-vc-put st name p l el))))
                   (EURes (do (cg-fail-i "alias of unknown vector") st))))))
           (_ (EURes st)))
@@ -11767,19 +11811,19 @@
     (HExit [x] (t-none))))
 
 (defn emit-frees [frees :- Sids st :- Emit] :- EURes
-  (if (sids-null (clone frees))
+  (if (sids-null frees)
     (EURes st)
-    (match (free-binding-storage (sids-idx (clone frees) 0) st)
+    (match (free-binding-storage (sids-idx frees 0) st)
       (EURes [st2]
         (emit-frees (sids-drop frees 1) st2)))))
 
 (defn free-binding-storage [k :- i64 st :- Emit] :- EURes
   (match st
     (Emit [c mdl sigs]
-      (let [rv (fc-sc-get (clone c) k)]
+      (let [rv (fc-sc-get c k)]
         (match rv
           (RegVal [r ty]
-            (let [tg (ty-tag (clone ty))]
+            (let [tg (ty-tag ty)]
               (cond
                 (= tg 12)
                 (EURes (em-decl-line st (str "  call void @free(ptr " r ")")
@@ -11807,8 +11851,8 @@
 (defn fallthrough-free [k :- i64 st :- Emit] :- EURes
   (match st
     (Emit [c mdl sigs]
-      (if (fc-gr-has (clone c) k)
-        (match (fc-gr-get (clone c) k)
+      (if (fc-gr-has c k)
+        (match (fc-gr-get c k)
           (GroVal [slot el]
             (match (em-ins2 st
                      (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -11860,8 +11904,8 @@
             ; everything the call line needs out of `mdl` is extracted
             ; before `st` moves into call-marshal: after that move the
             ; binders alias a box whose ownership left this arm
-            (let [retag (ty-tag (clone ret))
-                  an (ty-arg (clone ret))
+            (let [retag (ty-tag ret)
+                  an (ty-arg ret)
                   boxed-ret (if (= retag 16)
                               (md-owns-at mdl an)
                               0)
@@ -11896,7 +11940,7 @@
     (HECons [kid next]
       (match params
         (TyCons [pty prest]
-          (let [tg (ty-tag (clone pty))]
+          (let [tg (ty-tag pty)]
             (cond
               (= tg 15)
               (match (emit-vec-pair (clone kid) st)
@@ -11925,7 +11969,7 @@
                 (HVar [v]
                   (match st
                     (Emit [c mdl sigs]
-                      (let [rv (fc-sc-get (clone c) v)]
+                      (let [rv (fc-sc-get c v)]
                         (match rv
                           (RegVal [r rty]
                             (match (em-ins st (str "  ~ = load %Closure, ptr " r ", align 8"))
@@ -11938,7 +11982,7 @@
                   ; the ADT name and boxedness come out of `mdl` before
                   ; `st` moves into emit-adt — the binders retire at the
                   ; move and are not readable after it
-                  (let [j (ty-arg (clone pty))
+                  (let [j (ty-arg pty)
                         jboxed (md-owns-at mdl j)
                         nm (md-adt-name mdl j)]
                     (match (emit-adt (clone kid) st)
@@ -12044,8 +12088,8 @@
 (defn capture-header [name :- i64 ty :- Ty st :- Emit] :- ET3Res
   (match st
     (Emit [c mdl sigs]
-      (if (fc-gr-has (clone c) name)
-        (match (fc-gr-get (clone c) name)
+      (if (fc-gr-has c name)
+        (match (fc-gr-get c name)
           (GroVal [slot gel]
             (match (em-ins4 st
                      (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -12057,7 +12101,7 @@
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 2")
                          (str "  ~ = load i64, ptr ^1, align 8"))
                   (ET2Res [st2 f2 cp] (ET3Res st2 p l cp) ))))))
-          (match (fc-vc-get (clone c) name)
+          (match (fc-vc-get c name)
             (VecVal [p l el]
               (ET3Res st p l l)))))))
 
@@ -12070,7 +12114,7 @@
           (store-captures next env (+ at (capture-slots ty)) st2))))))
 
 (defn store-one-capture [name :- i64 ty :- Ty env :- str at :- i64 st :- Emit] :- EURes
-  (let [tg (ty-tag (clone ty))]
+  (let [tg (ty-tag ty)]
     (cond
       (= tg 15)
       (match (capture-header name ty st)
@@ -12085,7 +12129,7 @@
       (= tg 17)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [slot rty]
                 (match (em-ins st (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 0"))
@@ -12110,7 +12154,7 @@
       (= tg 11)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [v vty]
                 (match (em-ins st (str "  ~ = zext i1 " v " to i8"))
@@ -12120,7 +12164,7 @@
 
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [v vty]
                 (match (capture-word env at v st)
@@ -12167,7 +12211,7 @@
               (HVar [v]
                 (match st
                   (Emit [c2 mdl2 sigs2]
-                    (let [rv (fc-sc-get (clone c2) v)]
+                    (let [rv (fc-sc-get c2 v)]
                       (match rv
                         (RegVal [fslot fty]
                           (match (clo-code-env fslot st)
@@ -12176,7 +12220,7 @@
                                 (ECARes [st2 items]
                                   (let [rev (cs-rev items (CSNil))
                                         pl (str "ptr" (cc-param-list ptys))
-                                        retag (ty-tag (clone ret))
+                                        retag (ty-tag ret)
                                         ret-ll (cond
                                                  (= retag 11) "i1"
                                                  (= retag 12) "ptr"
@@ -12201,7 +12245,7 @@
     (HECons [kid next]
       (match ptys
         (TyCons [pty prest]
-          (let [tg (ty-tag (clone pty))]
+          (let [tg (ty-tag pty)]
             (cond
               (= tg 9)
               (match (emit-float (clone kid) st)
@@ -12226,7 +12270,7 @@
   (match ptys
     (TyNil [] "")
     (TyCons [h t]
-      (let [tg (ty-tag (clone h))]
+      (let [tg (ty-tag h)]
         (str ", " (cond
                     (= tg 9) "double"
                     (= tg 10) "float"
@@ -12286,18 +12330,18 @@
 
 (defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                       sb :- StrBuf] :- StrBuf
-  (if (>= i (adts-depth (clone adts)))
+  (if (>= i (adts-depth adts))
     sb
     (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
-          n (fs-total (clone adts) (clone owns) i)]
+          n (fs-total adts owns i)]
       (adt-type-lines adts owns (+ i 1) tab
                       (sb-add-line sb (str "%" nm " = type { i64, [" n " x i64] }"))))))
 
 (defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                 sb :- StrBuf] :- StrBuf
-  (if (>= i (adts-depth (clone adts)))
+  (if (>= i (adts-depth adts))
     sb
-    (let [sb1 (if (= (sids-idx (clone owns) i) 1)
+    (let [sb1 (if (= (sids-idx owns i) 1)
                 (sb-add-line
                   (sb-add-line
                     (sb-add-line
@@ -12309,7 +12353,7 @@
       (adt-glue adts owns (+ i 1) (clone tab) sb1))))
 
 (defn glue-switch [adts :- AdtTab i :- i64 vi :- i64 dflt :- str] :- str
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
+  (if (>= vi (vlist-depth (adts-variants-at adts i)))
     (if (> vi 0)
       (str "  ]\n")
       "")
@@ -12321,8 +12365,8 @@
 
 (defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
-        slots (fs-total (clone adts) (clone owns) i)
-        nv (vlist-depth (adts-variants-at (clone adts) i))]
+        slots (fs-total adts owns i)
+        nv (vlist-depth (adts-variants-at adts i))]
     (str "define ptr @clone__" nm "(ptr %src) {\n"
          "entry:\n"
          "  %box = call ptr @malloc(i64 " (* 8 (+ slots 1)) ")\n"
@@ -12337,7 +12381,7 @@
 
 (defn adt-clone-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                           tab :- i64] :- str
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
+  (if (>= vi (vlist-depth (adts-variants-at adts i)))
     ""
     (str "v" vi ":\n"
          (adt-clone-fields (clone adts) (clone owns) i vi 0 0 (clone tab) "")
@@ -12346,12 +12390,12 @@
 
 (defn adt-clone-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
                         serial :- i64 tab :- i64 acc :- str] :- str
-  (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
+  (if (>= k (tys-depth (varnt-fields-at adts i vi)))
     acc
-    (let [fty (fs-field-ty (clone adts) i vi k)
-          off (fs-off (clone adts) (clone owns) i vi k)
+    (let [fty (fs-field-ty adts i vi k)
+          off (fs-off adts owns i vi k)
           nm (adt-name-at (clone adts) i (clone tab))
-          tg (ty-tag (clone fty))]
+          tg (ty-tag fty)]
       (adt-clone-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
                         (str acc (clone-field-text fty off nm adts owns vi serial tg (clone tab)))))))
 
@@ -12369,7 +12413,7 @@
            "  store i64 %ni" u ", ptr %dp" u "\n")
 
       (= tg 15)
-      (let [el (ty-arg (clone fty))
+      (let [el (ty-arg fty)
             cp (if (= el 2)
                  (str "  %vcp" u " = call ptr @cato_str_vec_copy(ptr %vptr" u ", i64 %vl" u "k1, i64 %vl" u "k2)\n")
                  (str "  %vnb" u " = mul i64 %vl" u "k2, 8\n"
@@ -12393,8 +12437,8 @@
              "  store i64 %vl" u "k2, ptr %vd" u "k2\n"))
 
       (= tg 16)
-      (let [j (ty-arg (clone fty))]
-        (if (= (sids-idx (clone owns) j) 1)
+      (let [j (ty-arg fty)]
+        (if (= (sids-idx owns j) 1)
           (let [child (adt-name-at (clone adts) j (clone tab))]
             (str "  %sp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
                  "  %sl" u " = load i64, ptr %sp" u "\n"
@@ -12403,7 +12447,7 @@
                  "  %dp" u " = getelementptr inbounds %" nm ", ptr %box, i32 0, i32 1, i32 " off "\n"
                  "  %ni" u " = ptrtoint ptr %nc" u " to i64\n"
                  "  store i64 %ni" u ", ptr %dp" u "\n"))
-          (adt-clone-words nm off (fs-count (clone fty) (clone owns) (clone adts)) u)))
+          (adt-clone-words nm off (fs-count (clone fty) owns adts) u)))
 
       (adt-clone-words nm off (fs-count fty owns adts) u))))
 
@@ -12430,9 +12474,9 @@
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                          tab :- i64] :- str
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
+  (if (>= vi (vlist-depth (adts-variants-at adts i)))
     ""
-    (let [tail (if (> (vlist-depth (adts-variants-at (clone adts) i)) 0) "freebox" "done")]
+    (let [tail (if (> (vlist-depth (adts-variants-at adts i)) 0) "freebox" "done")]
       (str "v" vi ":\n"
            (adt-drop-fields (clone adts) (clone owns) i vi 0 0 (clone tab) "")
            "  br label %" tail "\n\n"
@@ -12440,12 +12484,12 @@
 
 (defn adt-drop-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
                        serial :- i64 tab :- i64 acc :- str] :- str
-  (if (>= k (tys-depth (varnt-fields-at (clone adts) i vi)))
+  (if (>= k (tys-depth (varnt-fields-at adts i vi)))
     acc
-    (let [fty (fs-field-ty (clone adts) i vi k)
-          off (fs-off (clone adts) (clone owns) i vi k)
+    (let [fty (fs-field-ty adts i vi k)
+          off (fs-off adts owns i vi k)
           nm (adt-name-at (clone adts) i (clone tab))
-          tg (ty-tag (clone fty))]
+          tg (ty-tag fty)]
       (adt-drop-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
                        (str acc (drop-field-text fty off nm adts owns vi serial tg (clone tab)))))))
 
@@ -12460,7 +12504,7 @@
            "  call void @free(ptr %fv" u ")\n")
 
       (= tg 15)
-      (let [el (ty-arg (clone fty))]
+      (let [el (ty-arg fty)]
         (str "  %vp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
              "  %vl" u " = load i64, ptr %vp" u "\n"
              "  %vv" u " = inttoptr i64 %vl" u " to ptr\n"
@@ -12527,7 +12571,7 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb]
-          (let [tg (ty-tag (clone ty))]
+          (let [tg (ty-tag ty)]
             (cond
               (= tg 15) (extern-params-rest (clone t) "ptr noalias nocapture readonly %data, i64 %len")
               (= tg 9) (extern-params-rest (clone t) "double")
@@ -12542,7 +12586,7 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb]
-          (let [tg (ty-tag (clone ty))]
+          (let [tg (ty-tag ty)]
             (cond
               (= tg 15) (extern-params-rest (clone t) (str acc ", ptr noalias nocapture readonly %data, i64 %len"))
               (= tg 9) (extern-params-rest (clone t) (str acc ", double"))
@@ -12603,10 +12647,10 @@
             (Emit [c mdl sigs]
               (let [nstr (md-sym mdl pname)
                     r (str "%" (mangle nstr))
-                    tg (ty-tag (clone pty))]
+                    tg (ty-tag pty)]
                 (cond
                   (= tg 15)
-                  (let [el (ty-arg (clone pty))
+                  (let [el (ty-arg pty)
                         d (str "%" (mangle nstr) "_data")
                         l (str "%" (mangle nstr) "_len")
                         p2 (if (> (count acc) 0)
@@ -12628,14 +12672,14 @@
                                 (ET2Res [st4 acc2 _] (ET2Res st4 acc2 "")))))))))
 
                   (= tg 16)
-                  (let [boxed (md-owns-at mdl (ty-arg (clone pty)))]
+                  (let [boxed (md-owns-at mdl (ty-arg pty))]
                     (if (= boxed 1)
                       (let [p2 (if (> (count acc) 0)
                                  (str acc ", ptr " r)
                                  (str acc "ptr " r))]
                         (match (defn-params (clone t) (em-sc-put st pname r pty) p2)
                           (ET2Res [st2 acc2 _] (ET2Res st2 acc2 ""))))
-                      (let [nm (md-adt-name mdl (ty-arg (clone pty)))
+                      (let [nm (md-adt-name mdl (ty-arg pty))
                             p2 (if (> (count acc) 0)
                                  (str acc ", %" nm " " r)
                                  (str acc "%" nm " " r))]
@@ -12654,7 +12698,7 @@
                   (ET2Res (do (cg-fail-i "unresolved type parameter in params") st) "" ""))))))))))
 
 (defn defn-ret-ll [ret :- Ty mdl :- Mdl] :- str
-  (let [tg (ty-tag (clone ret))]
+  (let [tg (ty-tag ret)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
@@ -12662,9 +12706,9 @@
       (= tg 12) "ptr"
       (= tg 15) "%VecI64"
       (= tg 16)
-      (if (= (md-owns-at mdl (ty-arg (clone ret))) 1)
+      (if (= (md-owns-at mdl (ty-arg ret)) 1)
         "ptr"
-        (str "%" (md-adt-name mdl (ty-arg (clone ret)))))
+        (str "%" (md-adt-name mdl (ty-arg ret))))
       (< tg 12) (ll-scalar ret)
       "i64")))
 
@@ -12701,7 +12745,7 @@
                   (HSeq [es] es)
                   (_ (HECons (clone body) (HENil))))]
       (ET2Res (emit-stmts forms st1) "" ""))
-    (let [tg (ty-tag (clone ret))]
+    (let [tg (ty-tag ret)]
       (cond
         (= tg 15)
         (match (emit-vec-pair body st)
@@ -12714,7 +12758,7 @@
                   (ET2Res st3 "" "")) ))))
 
         (= tg 16)
-        (let [ai (ty-arg (clone ret))
+        (let [ai (ty-arg ret)
               boxed (md-owns-at (match st (Emit [c m s] (clone m))) ai)]
           (match (emit-adt body st)
             (ESRes [st1 v]
@@ -12738,7 +12782,7 @@
                 (ET2Res st2 "" ""))))))))
 
 (defn lambda-ll [ty :- Ty] :- str
-  (let [tg (ty-tag (clone ty))]
+  (let [tg (ty-tag ty)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
@@ -12748,7 +12792,7 @@
       (do (cg-fail-i "lambda param type not supported") "i64"))))
 
 (defn lambda-ret-ll [ret :- Ty] :- str
-  (let [tg (ty-tag (clone ret))]
+  (let [tg (ty-tag ret)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
@@ -12807,7 +12851,7 @@
     (CCons [cname ty own next]
       (match st
         (Emit [c mdl sigs]
-          (let [tg (ty-tag (clone ty))]
+          (let [tg (ty-tag ty)]
             (cond
               (= tg 15)
               (match (em-temp st)
@@ -12890,7 +12934,7 @@
             (let [ret-ll (lambda-ret-ll ret)
                   header (str "define " ret-ll " @" mname
                               "(ptr noalias nocapture readonly %env"
-                              (lambda-params params (clone m1)) ") {\n")
+                              (lambda-params params m1) ") {\n")
                   text (fn-text header c1 (str "\n  ret " ret-ll " %retv\n}\n"))
                   dt (lambda-drop-text mname caps (clone m1))]
               (ELPR m1 text dt)))) ))))
@@ -12924,7 +12968,7 @@
                (caps-with-slots next (+ at (capture-slots ty)) (+ bit 1))))))
 
 (defn lambda-drop-one [ty :- Ty off :- i64 mdl :- &Mdl] :- str
-  (let [tg (ty-tag (clone ty))]
+  (let [tg (ty-tag ty)]
     (cond
       (= tg 12)
       (str "  %fp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
@@ -12934,7 +12978,7 @@
       (= tg 15)
       (str "  %vp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
            "  %vv" off " = load ptr, ptr %vp" off ", align 8\n"
-           (if (= (ty-arg (clone ty)) 2)
+           (if (= (ty-arg ty) 2)
              (str "  %vn" off " = getelementptr inbounds i64, ptr %env, i64 " (+ off 1) "\n"
                   "  %vc" off " = load i64, ptr %vn" off ", align 8\n"
                   "  call void @cato_str_vec_free(ptr %vv" off ", i64 %vc" off ")\n")

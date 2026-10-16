@@ -48,6 +48,21 @@
   (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
 
 ; ---------------------------------------------------------------------------
+; byte access
+; ---------------------------------------------------------------------------
+
+; `(nth s i 0)` is bounds-checked, and a str's length is a strlen: paying
+; one per byte makes any byte-at-a-time walk quadratic (the scan below
+; strlens its own 500 KB source). Every walk here already carries the
+; length and guards its index, so it reads through the length-free
+; primitive instead. At i == n the terminator reads as 0, exactly the
+; `(nth s i 0)` default; nothing here indexes further than that.
+(extern cato-str-byte [s :- str i :- i64] :- i64)
+
+(defn str-byte [s :- str i :- i64] :- i64
+  (cato-str-byte s i))
+
+; ---------------------------------------------------------------------------
 ; byte predicates (ASCII byte values)
 ; ---------------------------------------------------------------------------
 
@@ -77,7 +92,7 @@
 (defn tok-end [src :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     i
-    (let [c (nth src i 0)]
+    (let [c (str-byte src i)]
       (if (or (is-ws c) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123)
               (= c 125) (= c 59) (= c 34))
         i
@@ -88,7 +103,7 @@
 (defn skip-line [src :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     i
-    (if (= (nth src i 0) 10)
+    (if (= (str-byte src i) 10)
       i
       (skip-line src (+ i 1) n))))
 
@@ -98,7 +113,7 @@
 (defn str-end [src :- str j :- i64 n :- i64] :- i64
   (if (>= j n)
     -1
-    (let [c (nth src j 0)]
+    (let [c (str-byte src j)]
       (if (= c 34)
         j
         (if (= c 92)
@@ -114,7 +129,7 @@
 (defn advance [src :- str i :- i64 end :- i64 line :- i64 col :- i64] :- LC
   (if (>= i end)
     (LC line col)
-    (if (= (nth src i 0) 10)
+    (if (= (str-byte src i) 10)
       (advance src (+ i 1) end (+ 1 line) 0)
       (advance src (+ i 1) end line (+ 1 col)))))
 
@@ -126,7 +141,7 @@
 (defn next-bs [raw :- str i :- i64 n :- i64] :- i64
   (if (>= i n)
     n
-    (if (= (nth raw i 0) 92)
+    (if (= (str-byte raw i) 92)
       i
       (next-bs raw (+ i 1) n))))
 
@@ -136,10 +151,10 @@
 (defn unesc [raw :- str i :- i64 n :- i64 acc :- str] :- str
   (if (>= i n)
     acc
-    (if (= (nth raw i 0) 92)
+    (if (= (str-byte raw i) 92)
       (if (>= (+ i 1) n)
         (str acc "\\")
-        (let [e (nth raw (+ i 1) 0)]
+        (let [e (str-byte raw (+ i 1))]
           (if (= e 110)
             (unesc raw (+ i 2) n (str acc "\n"))
             (if (= e 116)
@@ -171,7 +186,7 @@
 (defn has-dot [tok :- str i :- i64 n :- i64] :- bool
   (if (>= i n)
     false
-    (if (= (nth tok i 0) 46)
+    (if (= (str-byte tok i) 46)
       true
       (has-dot tok (+ i 1) n))))
 
@@ -233,7 +248,7 @@
       (if (> depth 0)
         (RErr "unclosed delimiter" (Span bline bcol 1))
         (ROk (asts-rev kids (KNil)) tab))
-      (let [c (nth src i 0)]
+      (let [c (str-byte src i)]
         (cond
           (is-ws c)
           (if (= c 10)
@@ -260,7 +275,7 @@
                        tab
                        n))))
 
-          (if (= c 35) (= (nth src (+ i 1) 0) 123) false)
+          (if (= c 35) (= (str-byte src (+ i 1)) 123) false)
           (let [lcv (advance src i (+ i 2) line col)]
             (match lcv
               (LC [l2 c2]
@@ -279,7 +294,7 @@
                     (Span line col 1)))
             (RSFrame [kind open oline ocol kidsF rest]
               (if (kind-accepts kind c)
-                (if (and (= kind 2) (not (even? (asts-depth (clone kids)))))
+                (if (and (= kind 2) (not (even? (asts-depth kids))))
                   (RErr "map literal must have key/value pairs"
                         (Span oline ocol (+ (- i open) 1)))
                   (let [k (asts-rev kids (KNil))

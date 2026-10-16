@@ -24,11 +24,22 @@ pub(crate) fn emit_conj(
     // `in_place` is the planner's verdict: the source is a last use of a
     // binding that owns its buffer. Without it the append must copy — the
     // source stays valid and unchanged (persistent semantics).
+    // One more shape may ride the buffer: the loop's own accumulator update
+    // (`(recur (conj acc x) ...)`, flagged in `c.recur_fast`). The slot's
+    // value is replaced right after the append, and every read of the old
+    // header carries the pre-append length, so the append is unobservable
+    // there — but the old buffer is *not* known-dead (other headers may still
+    // point at it), so it is never freed on the grow path.
     // Source header: live loads for growable bindings; static sources get
     // capacity == length (their data is read-only, forcing the copy path).
     // Only growable (heap) sources may be freed after the copy.
+    let self_update = c.recur_fast.as_deref() == Some(match v {
+        HExpr::Var(n) => n.as_str(),
+        _ => "",
+    });
+    // Freeing stays tied to the planner's last-use verdict alone.
     let mut freeable = false;
-    let may_update_in_place = in_place;
+    let may_update_in_place = in_place || self_update;
     let (ptr, len, cap) = match v {
         HExpr::Var(name) => {
             if let Some((slot, _)) = c.grow.get(name) {
@@ -82,10 +93,10 @@ pub(crate) fn emit_conj(
     let one = c.temp();
     c.line(&format!("  {} = add i64 {}, 1", one, len));
 
-    // Fast path when len < cap and the planner approved in-place update;
-    // otherwise always take the copy path (the old buffer is not freed —
-    // persistent semantics keep it alive for the source).
-    if !may_update_in_place {
+    // Fast path when len < cap and the append may reuse the buffer; otherwise
+    // always take the copy path. The buffer is freed only under the planner's
+    // in-place verdict (the source is a proven last use).
+    if !in_place {
         freeable = false;
     }
     let has_room = c.temp();

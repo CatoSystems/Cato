@@ -92,7 +92,7 @@
 ; LLVM-safe suffix for an instantiation's type arguments; missing means
 ; "render as an ADT name" (the mangle fallback).
 (defn ty-suffix [x :- Ty] :- str
-  (let [t (ty-tag (clone x))
+  (let [t (ty-tag x)
         a (ty-arg x)]
     (cond
       (= t 0) "i64"
@@ -115,12 +115,12 @@
 
 ; --- type lists -------------------------------------------------------------
 
-(defn tys-null [ks :- TyList] :- bool
+(defn tys-null [ks :- &TyList] :- bool
   (match ks
     (TyNil [] true)
     (TyCons [h t] false)))
 
-(defn tys-depth [ks :- TyList] :- i64
+(defn tys-depth [ks :- &TyList] :- i64
   (match ks
     (TyCons [h t] (+ 1 (tys-depth t)))
     (TyNil [] 0)))
@@ -140,7 +140,10 @@
     (TyNil [] (TyCons x (TyNil)))
     (TyCons [h t] (TyCons h (tys-append t x)))))
 
-(defn tys-eq [xs :- TyList ys :- TyList] :- bool
+; Borrowed on both sides: this walk is a pure read, and cloning a cons
+; clones its whole tail — passing owned lists made every signature-table
+; probe (and every type-argument comparison) quadratic in list length.
+(defn tys-eq [xs :- &TyList ys :- &TyList] :- bool
   (match xs
     (TyNil [] (tys-null ys))
     (TyCons [xh xt]

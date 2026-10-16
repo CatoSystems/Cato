@@ -14,15 +14,15 @@
           (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty]
-                (if (= (ty-tag (clone ty)) 16)
+                (if (= (ty-tag ty) 16)
                   (ty-arg ty)
                   (do (cg-fail-i (str "not an ADT binding name=" (md-sym mdl v) " sctag=" (ty-tag ty))) -1))))))))
     (HCtor [adt variant args] adt)
     (HMatch [scrut arms ty]
-      (if (= (ty-tag (clone ty)) 16) (ty-arg ty)
+      (if (= (ty-tag ty) 16) (ty-arg ty)
         (do (cg-fail-i "match of non-ADT") -1)))
     (HIf [c t e ty]
-      (if (= (ty-tag (clone ty)) 16) (ty-arg ty)
+      (if (= (ty-tag ty) 16) (ty-arg ty)
         (do (cg-fail-i "if of non-ADT") -1)))
     (HClone [x] (adt-of x st))
     (HCall [name args]
@@ -31,14 +31,14 @@
           (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag (clone ret)) 16)
+                (if (= (ty-tag ret) 16)
                   (ty-arg ret)
                   (do (cg-fail-i "call does not return an ADT") -1))))))))
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "get without Option result") -1)))
     (HStrNth [s idx res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "nth without Option result") -1)))
     (HConstI64 [v] (do (cg-fail-i "expected an ADT value") -1))
     (HConstF64 [v] (do (cg-fail-i "expected an ADT value") -1))
@@ -77,7 +77,7 @@
     (HArgs [] (do (cg-fail-i "expected an ADT value") -1))
     (HExit [e] (do (cg-fail-i "expected an ADT value") -1))
     (HParseNum [s int res]
-      (if (= (ty-tag (clone res)) 16) (ty-arg res)
+      (if (= (ty-tag res) 16) (ty-arg res)
         (do (cg-fail-i "parse-num without Option result") -1)))))
 
 (defn emit-str-val [e :- HExpr st :- Emit] :- ESRes
@@ -93,7 +93,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv
               (RegVal [r ty] (ESRes st r)))))))
     (HSubs [s a b] (emit-subs s a b st))
@@ -326,10 +326,10 @@
       (match (clone st)
         (Emit [c mdl sigs]
           (cond
-            (fc-gr-has (clone c) s)
+            (fc-gr-has c s)
             (match (fc-gr-get c s)
               (GroVal [slot el] (gr-slot-len slot st)))
-            (fc-vc-has (clone c) s)
+            (fc-vc-has c s)
             (match (fc-vc-get c s)
               (VecVal [p l el] (ESRes st l)))
             (match (fc-sc-get c s)
@@ -375,7 +375,7 @@
     (HClone [inner] (count-expr-is-vec inner st))
     (HVar [v]
       (match st
-        (Emit [c mdl sigs] (or (fc-vc-has (clone c) v) (fc-gr-has c v)))))
+        (Emit [c mdl sigs] (or (fc-vc-has c v) (fc-gr-has c v)))))
     (_ false)))
 
 (defn let-has-vec [binds :- Binds v :- i64] :- bool
@@ -405,13 +405,13 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) v)
-            (match (fc-gr-get (clone c) v)
+          (if (fc-gr-has c v)
+            (match (fc-gr-get c v)
               (GroVal [slot el]
                 (match (gr-slot-pl slot st)
                   (ET2Res [st1 p l] (EVRes st1 p l el) ))))
-            (if (fc-vc-has (clone c) v)
-              (match (fc-vc-get (clone c) v)
+            (if (fc-vc-has c v)
+              (match (fc-vc-get c v)
                 (VecVal [p l el] (EVRes st p l el)))
               (vf st "not a vector binding"))))))
     (HVecLit [el vals]
@@ -431,7 +431,7 @@
     (_ (emit-vec-pair e st))))
 
 (defn vec-elem-of [ty :- Ty] :- i64
-  (if (= (ty-tag (clone ty)) 15)
+  (if (= (ty-tag ty) 15)
     (ty-arg ty)
     (do (cg-fail-i "vector value annotated") -1)))
 
@@ -468,7 +468,7 @@
           (let [sg (sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag (clone ret)) 15)
+                (if (= (ty-tag ret) 15)
                   (match (call-user name (clone args) st)
                     (ESRes [st1 v]
                       (match (em-ins2 st1
@@ -645,7 +645,7 @@
                    (str "  ~ = getelementptr inbounds " (elem-ll el) ", ptr " d ", i64 ^1")
                    (str "  ~ = load " (elem-ll el) ", ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null (clone dflt))
+              (if (hes-null dflt)
                 (if (= (ty-tag ty) 0)
                   (match (em-ins st3 (str "  ~ = select i1 " inb ", " (elem-ll el) " " v ", " (elem-ll el) " 0"))
                     (ETRes [st4 r] (ESRes st4 r)))
@@ -666,7 +666,7 @@
                    (str "  ~ = getelementptr inbounds ptr, ptr " d ", i64 ^1")
                    (str "  ~ = load ptr, ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null (clone dflt))
+              (if (hes-null dflt)
                 (match (em-ins st3 (str "  ~ = select i1 " inb ", ptr " v ", ptr null"))
                   (ETRes [st4 r] (ESRes st4 r)))
                 (match (emit-str-val (hes-first dflt) st3)
@@ -748,8 +748,8 @@
     (HVar [name]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) name)
-            (match (fc-gr-get (clone c) name)
+          (if (fc-gr-has c name)
+            (match (fc-gr-get c name)
               (GroVal [slot gel]
                 (match (em-ins4 st
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")

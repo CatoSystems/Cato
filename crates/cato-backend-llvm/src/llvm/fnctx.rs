@@ -26,6 +26,15 @@ pub(crate) struct FnCtx {
     /// Innermost `loop` (S2): variable slots `(name, alloca, ty)` and the
     /// head block label that `recur` branches back to.
     pub(crate) loop_frame: Option<(Vec<(String, String, Ty)>, String)>,
+    /// Loop variable whose `recur` argument is being emitted and is exactly
+    /// `(conj name x)`: the append replaces the value the slot hands to the
+    /// next iteration, so it may ride the growable slot in place.
+    pub(crate) recur_fast: Option<String>,
+    /// Loop variables whose buffer is reachable through a second live header
+    /// (seeded from another growable binding: `(loop [b a] ...)`). Their
+    /// appends keep copying — two live headers could otherwise interleave
+    /// writes at the same index.
+    pub(crate) loop_alias: HashSet<String>,
 }
 
 impl FnCtx {
@@ -41,6 +50,8 @@ impl FnCtx {
             grow: HashMap::new(),
             growm: HashMap::new(),
             loop_frame: None,
+            recur_fast: None,
+            loop_alias: HashSet::new(),
         }
     }
     pub(crate) fn temp(&mut self) -> String {
@@ -132,6 +143,8 @@ impl FnCtx {
             grow: self.grow.clone(),
             growm: self.growm.clone(),
             loop_frame: self.loop_frame.clone(),
+            recur_fast: self.recur_fast.clone(),
+            loop_alias: self.loop_alias.clone(),
         }
     }
     /// Splice hoisted entry allocas directly after the `entry:` label.

@@ -41,32 +41,32 @@
 
 ; Keyed chains: first match wins (prepend-on-bind = the seed's
 ; map-overwrite-under-shadowing).
-(defn esc-get [t :- EScTab k :- i64] :- RegVal
+(defn esc-get [t :- &EScTab k :- i64] :- RegVal
   (match t
-    (EScCons [ek ev next] (if (= ek k) ev (esc-get next k)))
+    (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get next k)))
     (EScNil [] (RegVal "" (t-none)))))
 
-(defn esc-has [t :- EScTab k :- i64] :- bool
+(defn esc-has [t :- &EScTab k :- i64] :- bool
   (match t
     (EScCons [ek ev next] (if (= ek k) true (esc-has next k)))
     (EScNil [] false)))
 
-(defn evc-get [t :- EVcTab k :- i64] :- VecVal
+(defn evc-get [t :- &EVcTab k :- i64] :- VecVal
   (match t
-    (EVcCons [ek ev next] (if (= ek k) ev (evc-get next k)))
+    (EVcCons [ek ev next] (if (= ek k) (clone ev) (evc-get next k)))
     (EVcNil [] (VecVal "" "" -1))))
 
-(defn evc-has [t :- EVcTab k :- i64] :- bool
+(defn evc-has [t :- &EVcTab k :- i64] :- bool
   (match t
     (EVcCons [ek ev next] (if (= ek k) true (evc-has next k)))
     (EVcNil [] false)))
 
-(defn egr-get [t :- EGrTab k :- i64] :- GroVal
+(defn egr-get [t :- &EGrTab k :- i64] :- GroVal
   (match t
-    (EGrCons [ek ev next] (if (= ek k) ev (egr-get next k)))
+    (EGrCons [ek ev next] (if (= ek k) (clone ev) (egr-get next k)))
     (EGrNil [] (GroVal "" -1))))
 
-(defn egr-has [t :- EGrTab k :- i64] :- bool
+(defn egr-has [t :- &EGrTab k :- i64] :- bool
   (match t
     (EGrCons [ek ev next] (if (= ek k) true (egr-has next k)))
     (EGrNil [] false)))
@@ -89,7 +89,7 @@
 
 (deftype Strs (StrsNil) (StrsCons [h :- str t :- Strs]))
 
-(defn strs-has [ss :- Strs s :- str] :- bool
+(defn strs-has [ss :- &Strs s :- str] :- bool
   (match ss
     (StrsCons [h t] (if (= h s) true (strs-has t (clone s))))
     (StrsNil [] false)))
@@ -131,7 +131,7 @@
 (defn md-decl [m :- Mdl line :- str] :- Mdl
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has (clone decls) (clone line))
+      (if (strs-has decls (clone line))
         (clone m)
         (Mdl (clone tab) (clone g) (clone globals)
              (StrsCons (clone line) (clone decls))
@@ -149,7 +149,7 @@
 (defn md-ensure [m :- Mdl line :- str] :- Mdl
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has (clone decls) (clone line))
+      (if (strs-has decls (clone line))
         m
         (md-decl (clone m) (clone line))))))
 
@@ -171,7 +171,7 @@
 (defn md-str-bytes [s :- str i :- i64 n :- i64 b :- StrBuf first :- bool] :- StrBuf
   (if (> i n)
     b
-    (let [byte (if (= i n) 0 (nth (clone s) i 0))
+    (let [byte (if (= i n) 0 (str-byte s i))
           b2 (if first
                (sb-add b (str "i8 " byte))
                (sb-add b (str ", i8 " byte)))]
@@ -185,7 +185,7 @@
   (match m
     (Mdl [tab g globals decls adts owns csigs]
       (let [label (str "@g_vec_" (clone g))
-            n (vvals-depth (clone vals))
+            n (vvals-depth vals)
             parts (md-vec-items vals (clone el) (sb-new) true)
             ty (if (= el 1) "double" "i64")
             line (str label " = private constant [" n " x " ty "] ["
@@ -249,12 +249,12 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr))))
 
-(defn fc-sc-get [c :- FnCtx k :- i64] :- RegVal
+(defn fc-sc-get [c :- &FnCtx k :- i64] :- RegVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (esc-get sc k))))
 
-(defn fc-sc-has [c :- FnCtx k :- i64] :- bool
+(defn fc-sc-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
 
@@ -263,12 +263,12 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr))))
 
-(defn fc-vc-get [c :- FnCtx k :- i64] :- VecVal
+(defn fc-vc-get [c :- &FnCtx k :- i64] :- VecVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (evc-get ve k))))
 
-(defn fc-vc-has [c :- FnCtx k :- i64] :- bool
+(defn fc-vc-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
 
@@ -277,18 +277,18 @@
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr))))
 
-(defn fc-gr-get [c :- FnCtx k :- i64] :- GroVal
+(defn fc-gr-get [c :- &FnCtx k :- i64] :- GroVal
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (egr-get gr k))))
 
-(defn fc-gr-has [c :- FnCtx k :- i64] :- bool
+(defn fc-gr-has [c :- &FnCtx k :- i64] :- bool
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
 
-(defn fc-lfr [c :- FnCtx] :- LoopFr
+(defn fc-lfr [c :- &FnCtx] :- LoopFr
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] lfr)))
+    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone lfr))))
 
 (defn fc-with-lfr [c :- FnCtx lfr :- LoopFr] :- FnCtx
   (match c
@@ -377,7 +377,7 @@
       (cg-fail-s "ll-scalar on non-scalar type"))))
 
 (defn ll-ty [t :- Ty] :- str
-  (let [tag (ty-tag (clone t))]
+  (let [tag (ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -394,7 +394,7 @@
   (if (= el 1) "double" "i64"))
 
 (defn ll-loop-slot-ty [t :- Ty mdl :- &Mdl] :- str
-  (let [tag (ty-tag (clone t))]
+  (let [tag (ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -416,56 +416,56 @@
 
 ; Payload slots one field occupies: vectors 3; boxed (owning) ADT 1;
 ; inline ADT child its whole struct (1 + its payload); everything else 1.
-(defn fs-count [f :- Ty owns :- Sids adts :- AdtTab] :- i64
-  (let [tag (ty-tag (clone f))]
+(defn fs-count [f :- Ty owns :- &Sids adts :- &AdtTab] :- i64
+  (let [tag (ty-tag f)]
     (cond
       (= tag 15) 3
       (= tag 16)
       (let [j (ty-arg f)]
-        (if (= (sids-idx (clone owns) j) 1)
+        (if (= (sids-idx owns j) 1)
           1
           (+ 1 (fs-pay adts owns j))))
       1)))
 
-(defn fs-pay [adts :- AdtTab owns :- Sids i :- i64] :- i64
+(defn fs-pay [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
   (fs-pay-vi adts owns i 0 0))
 
-(defn fs-pay-vi [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 best :- i64] :- i64
-  (if (>= vi (vlist-depth (adts-variants-at (clone adts) i)))
+(defn fs-pay-vi [adts :- &AdtTab owns :- &Sids i :- i64 vi :- i64 best :- i64] :- i64
+  (if (>= vi (vlist-depth (adts-variants-at adts i)))
     best
-    (let [sum (fs-sum (varnt-fields-at (clone adts) i vi) (clone owns) (clone adts) 0)]
+    (let [sum (fs-sum (varnt-fields-at adts i vi) owns adts 0)]
       (fs-pay-vi adts owns i (+ vi 1)
                  (if (> sum best) sum best)))))
 
-(defn fs-sum [fs :- TyList owns :- Sids adts :- AdtTab acc :- i64] :- i64
+(defn fs-sum [fs :- TyList owns :- &Sids adts :- &AdtTab acc :- i64] :- i64
   (match fs
     (TyCons [h rest]
-      (fs-sum rest (clone owns) (clone adts) (+ acc (fs-count h owns adts))))
+      (fs-sum rest owns adts (+ acc (fs-count h owns adts))))
     (TyNil [] acc)))
 
 ; Total payload slots of ADT i (the [N x i64] of its struct).
-(defn fs-total [adts :- AdtTab owns :- Sids i :- i64] :- i64
+(defn fs-total [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
   (fs-pay adts owns i))
 
 ; Slot offset of field k in variant vi of ADT ai.
-(defn fs-off [adts :- AdtTab owns :- Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-off-1 (varnt-fields-at (clone adts) ai vi) owns adts 0 k))
+(defn fs-off [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
+  (fs-off-1 (varnt-fields-at adts ai vi) owns adts 0 k))
 
-(defn fs-off-1 [fs :- TyList owns :- Sids adts :- AdtTab at :- i64 k :- i64] :- i64
+(defn fs-off-1 [fs :- TyList owns :- &Sids adts :- &AdtTab at :- i64 k :- i64] :- i64
   (if (= k 0)
     at
     (match fs
       (TyCons [h rest]
         ; k counts down the fields consumed; at accumulates their widths
-        (fs-off-1 rest (clone owns) (clone adts)
+        (fs-off-1 rest owns adts
                   (+ at (fs-count h owns adts)) (- k 1)))
       (TyNil [] at))))
 
 ; Slot count of field k in variant vi of ADT ai.
-(defn fs-count-at [adts :- AdtTab owns :- Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-count (tys-idx (varnt-fields-at (clone adts) ai vi) k) owns adts))
+(defn fs-count-at [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
+  (fs-count (tys-idx (varnt-fields-at adts ai vi) k) owns adts))
 
-(defn fs-field-ty [adts :- AdtTab ai :- i64 vi :- i64 k :- i64] :- Ty
+(defn fs-field-ty [adts :- &AdtTab ai :- i64 vi :- i64 k :- i64] :- Ty
   (tys-idx (varnt-fields-at adts ai vi) k))
 
 ; --- f64 literals: shortest round-trip decimal ------------------------------------

@@ -72,8 +72,8 @@
 (defn capture-header [name :- i64 ty :- Ty st :- Emit] :- ET3Res
   (match st
     (Emit [c mdl sigs]
-      (if (fc-gr-has (clone c) name)
-        (match (fc-gr-get (clone c) name)
+      (if (fc-gr-has c name)
+        (match (fc-gr-get c name)
           (GroVal [slot gel]
             (match (em-ins4 st
                      (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -85,7 +85,7 @@
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 2")
                          (str "  ~ = load i64, ptr ^1, align 8"))
                   (ET2Res [st2 f2 cp] (ET3Res st2 p l cp) ))))))
-          (match (fc-vc-get (clone c) name)
+          (match (fc-vc-get c name)
             (VecVal [p l el]
               (ET3Res st p l l)))))))
 
@@ -98,7 +98,7 @@
           (store-captures next env (+ at (capture-slots ty)) st2))))))
 
 (defn store-one-capture [name :- i64 ty :- Ty env :- str at :- i64 st :- Emit] :- EURes
-  (let [tg (ty-tag (clone ty))]
+  (let [tg (ty-tag ty)]
     (cond
       (= tg 15)
       (match (capture-header name ty st)
@@ -113,7 +113,7 @@
       (= tg 17)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [slot rty]
                 (match (em-ins st (str "  ~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 0"))
@@ -138,7 +138,7 @@
       (= tg 11)
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [v vty]
                 (match (em-ins st (str "  ~ = zext i1 " v " to i8"))
@@ -148,7 +148,7 @@
 
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) name)]
+          (let [rv (fc-sc-get c name)]
             (match rv
               (RegVal [v vty]
                 (match (capture-word env at v st)
@@ -195,7 +195,7 @@
               (HVar [v]
                 (match st
                   (Emit [c2 mdl2 sigs2]
-                    (let [rv (fc-sc-get (clone c2) v)]
+                    (let [rv (fc-sc-get c2 v)]
                       (match rv
                         (RegVal [fslot fty]
                           (match (clo-code-env fslot st)
@@ -204,7 +204,7 @@
                                 (ECARes [st2 items]
                                   (let [rev (cs-rev items (CSNil))
                                         pl (str "ptr" (cc-param-list ptys))
-                                        retag (ty-tag (clone ret))
+                                        retag (ty-tag ret)
                                         ret-ll (cond
                                                  (= retag 11) "i1"
                                                  (= retag 12) "ptr"
@@ -229,7 +229,7 @@
     (HECons [kid next]
       (match ptys
         (TyCons [pty prest]
-          (let [tg (ty-tag (clone pty))]
+          (let [tg (ty-tag pty)]
             (cond
               (= tg 9)
               (match (emit-float (clone kid) st)
@@ -254,7 +254,7 @@
   (match ptys
     (TyNil [] "")
     (TyCons [h t]
-      (let [tg (ty-tag (clone h))]
+      (let [tg (ty-tag h)]
         (str ", " (cond
                     (= tg 9) "double"
                     (= tg 10) "float"

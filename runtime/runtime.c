@@ -347,6 +347,15 @@ void *cato_hamt_from_flat(const void *flat, int64_t len) {
 
 void cato_print_str_raw(const char *s) { fputs(s, stdout); }
 
+/* Unchecked byte read, `(cato-str-byte s i)`. The language's `(nth s i d)`
+   is bounds-checked, which costs a strlen per access; byte-at-a-time walks
+   (the kernel reader's scan over its own source) therefore pay a strlen per
+   byte — quadratic. Callers that already carry the string length and guard
+   the index (as every reader walk does) use this instead. Reading one past
+   the end is defined here and yields the NUL terminator, matching the
+   `(nth s i 0)` default of 0. */
+int64_t cato_str_byte(const char *s, int64_t i) { return (unsigned char)s[i]; }
+
 char *cato_num_to_str(long long v) {
     char buf[32];
     snprintf(buf, sizeof buf, "%lld", v);

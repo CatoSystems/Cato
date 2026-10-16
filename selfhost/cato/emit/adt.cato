@@ -53,7 +53,7 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get (clone c) v)]
+          (let [rv (fc-sc-get c v)]
             (match rv (RegVal [r ty] (ESRes st r)))))))
     (HCtor [adt variant args] (emit-ctor adt variant args st))
     (HClone [x] (emit-clone-adt x st))
@@ -125,7 +125,7 @@
 
 (defn ctor-store-args [args :- HExprs adt :- i64 variant :- i64 k :- i64
                        slot :- str st :- Emit] :- EURes
-  (if (hes-null (clone args))
+  (if (hes-null args)
     (EURes st)
     (match st
       (Emit [c mdl sigs]
@@ -140,7 +140,7 @@
   (match st
     (Emit [c mdl sigs]
       (let [name (md-adt-name mdl ai)
-            tg (ty-tag (clone fty))]
+            tg (ty-tag fty)]
         (cond
           (= tg 0)
           (match (emit-int (clone arg) st)
@@ -236,12 +236,12 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has (clone c) v)
-            (match (fc-gr-get (clone c) v)
+          (if (fc-gr-has c v)
+            (match (fc-gr-get c v)
               (GroVal [slot gel]
                 (match (gr-slot-pl slot st)
                   (ET2Res [st1 p l] (HRes st1 p l l) ))))
-            (match (fc-vc-get (clone c) v)
+            (match (fc-vc-get c v)
               (VecVal [p l el] (HRes st p l l)))))))
     (_
       (match (vec-arg arg st)
@@ -255,7 +255,7 @@
     (Emit [c mdl sigs]
       (let [fty (fs-field-ty (md-adts mdl) ai vi k)
             off (fs-off (md-adts mdl) (md-owns mdl) ai vi k)
-            tg (ty-tag (clone fty))]
+            tg (ty-tag fty)]
         (cond
           (= tg 0)
           (match (em-ins2 st
@@ -301,7 +301,7 @@
                       (EURes [st5]
                         (match (field-load-vec-word (+ off 2) 2 slot scrut name st5)
                           (EURes [st6]
-                            (EURes (em-gr-put st6 binder slot (ty-arg (clone fty)))))))))))))
+                            (EURes (em-gr-put st6 binder slot (ty-arg fty))))))))))))
 
           (= tg 16)
           (let [j (ty-arg fty)
@@ -339,8 +339,8 @@
 
 ; Bind one name to one value: the seed's emit_let decision ladder.
 (defn emit-one-bind [name :- i64 value :- HExpr ty :- Ty st :- Emit] :- EURes
-  (let [vtag (h-tag (clone value))
-        ttag (ty-tag (clone ty))]
+  (let [vtag (h-tag value)
+        ttag (ty-tag ty)]
     (cond
       (and (= vtag 39) (= ttag 15))
       (match (emit-vec-pair value st)
@@ -376,14 +376,14 @@
       (and (= vtag 20) (= (ty-tag (hget-res (clone value))) 16))
       (match value
         (HGet [src idx dflt ty2 res]
-          (match (emit-get-opt (clone src) (clone idx) (ty-arg (clone res)) st)
+          (match (emit-get-opt (clone src) (clone idx) (ty-arg res) st)
             (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
         (_ (EURes st)))
 
       (and (= vtag 18) (= (ty-tag (hget-res (clone value))) 16))
       (match value
         (HStrNth [s idx res]
-          (match (emit-strnth-opt (clone s) (clone idx) (ty-arg (clone res)) st)
+          (match (emit-strnth-opt (clone s) (clone idx) (ty-arg res) st)
             (ESRes [st1 slot] (EURes (em-sc-put st1 name slot res)))))
         (_ (EURes st)))
 
@@ -433,11 +433,11 @@
             (match st
               (Emit [c mdl sigs]
                 (cond
-                  (fc-gr-has (clone c) src)
-                  (match (fc-gr-get (clone c) src)
+                  (fc-gr-has c src)
+                  (match (fc-gr-get c src)
                     (GroVal [slot el] (EURes (em-gr-put st name slot el))))
-                  (fc-vc-has (clone c) src)
-                  (match (fc-vc-get (clone c) src)
+                  (fc-vc-has c src)
+                  (match (fc-vc-get c src)
                     (VecVal [p l el] (EURes (em-vc-put st name p l el))))
                   (EURes (do (cg-fail-i "alias of unknown vector") st))))))
           (_ (EURes st)))
@@ -518,19 +518,19 @@
     (HExit [x] (t-none))))
 
 (defn emit-frees [frees :- Sids st :- Emit] :- EURes
-  (if (sids-null (clone frees))
+  (if (sids-null frees)
     (EURes st)
-    (match (free-binding-storage (sids-idx (clone frees) 0) st)
+    (match (free-binding-storage (sids-idx frees 0) st)
       (EURes [st2]
         (emit-frees (sids-drop frees 1) st2)))))
 
 (defn free-binding-storage [k :- i64 st :- Emit] :- EURes
   (match st
     (Emit [c mdl sigs]
-      (let [rv (fc-sc-get (clone c) k)]
+      (let [rv (fc-sc-get c k)]
         (match rv
           (RegVal [r ty]
-            (let [tg (ty-tag (clone ty))]
+            (let [tg (ty-tag ty)]
               (cond
                 (= tg 12)
                 (EURes (em-decl-line st (str "  call void @free(ptr " r ")")
@@ -558,8 +558,8 @@
 (defn fallthrough-free [k :- i64 st :- Emit] :- EURes
   (match st
     (Emit [c mdl sigs]
-      (if (fc-gr-has (clone c) k)
-        (match (fc-gr-get (clone c) k)
+      (if (fc-gr-has c k)
+        (match (fc-gr-get c k)
           (GroVal [slot el]
             (match (em-ins2 st
                      (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
@@ -611,8 +611,8 @@
             ; everything the call line needs out of `mdl` is extracted
             ; before `st` moves into call-marshal: after that move the
             ; binders alias a box whose ownership left this arm
-            (let [retag (ty-tag (clone ret))
-                  an (ty-arg (clone ret))
+            (let [retag (ty-tag ret)
+                  an (ty-arg ret)
                   boxed-ret (if (= retag 16)
                               (md-owns-at mdl an)
                               0)
@@ -647,7 +647,7 @@
     (HECons [kid next]
       (match params
         (TyCons [pty prest]
-          (let [tg (ty-tag (clone pty))]
+          (let [tg (ty-tag pty)]
             (cond
               (= tg 15)
               (match (emit-vec-pair (clone kid) st)
@@ -676,7 +676,7 @@
                 (HVar [v]
                   (match st
                     (Emit [c mdl sigs]
-                      (let [rv (fc-sc-get (clone c) v)]
+                      (let [rv (fc-sc-get c v)]
                         (match rv
                           (RegVal [r rty]
                             (match (em-ins st (str "  ~ = load %Closure, ptr " r ", align 8"))
@@ -689,7 +689,7 @@
                   ; the ADT name and boxedness come out of `mdl` before
                   ; `st` moves into emit-adt — the binders retire at the
                   ; move and are not readable after it
-                  (let [j (ty-arg (clone pty))
+                  (let [j (ty-arg pty)
                         jboxed (md-owns-at mdl j)
                         nm (md-adt-name mdl j)]
                     (match (emit-adt (clone kid) st)

@@ -161,6 +161,13 @@ pub(crate) fn emit_loop_node(
     // of times, and allocas in loops would stack up.
     let mut slots: Vec<(String, String, Ty)> = Vec::new();
     for (name, ty, init) in binds {
+        // A variable seeded from another growable binding shares its buffer:
+        // two live headers over one buffer must never both append in place.
+        if let HExpr::Var(src) = init {
+            if slots.iter().any(|(n, _, _)| n == src) || c.grow.contains_key(src) {
+                c.loop_alias.insert(name.clone());
+            }
+        }
         let llt = loop_slot_ty(mdl, *ty);
         let slot = c.temp();
         c.prelude
@@ -169,6 +176,8 @@ pub(crate) fn emit_loop_node(
         c.line(&format!("  store {} {}, ptr {}, align 8", llt, v, slot));
         slots.push((name.clone(), slot, *ty));
     }
+    // A fresh loop body starts with no in-flight recur append.
+    let saved_fast = c.recur_fast.take();
     let head = c.block_name();
     c.line(&format!("  br label %{}", head));
     let l = c.open(&head);
@@ -204,6 +213,7 @@ pub(crate) fn emit_loop_node(
     c.loop_frame = Some((slots, head));
     let completing = emit_loop_tail(body, *ty, c, mdl, sigs);
     c.loop_frame = saved;
+    c.recur_fast = saved_fast;
     c.restore_binds(scope);
     let after = c.block_name();
     match completing {
@@ -238,9 +248,35 @@ fn emit_loop_tail(
     let (slots, head) = c.loop_frame.clone().expect("codegen: loop tail outside loop");
     match e {
         HExpr::Recur(args) => {
+            // `(recur ... (conj v x) ...)` where the i-th argument is exactly
+            // a conj of the i-th loop variable *is* the loop's accumulator
+            // update: the value the slot holds is replaced for the next
+            // iteration, so the append may grow the buffer in place. Every
+            // header read in this iteration still sees the pre-append length,
+            // so the old value is exactly what a persistent copy would
+            // report. A second conj of the same variable among the arguments
+            // would interleave two appends at one index — keep copying then.
+            let mut conj_counts: HashMap<&str, usize> = HashMap::new();
+            for a in args.iter() {
+                if let HExpr::Conj { v, .. } = a {
+                    if let HExpr::Var(n) = &**v {
+                        *conj_counts.entry(n.as_str()).or_insert(0) += 1;
+                    }
+                }
+            }
             for (a, (name, slot, vty)) in args.iter().zip(slots.iter()) {
-                let _ = name;
+                let self_update = match a {
+                    HExpr::Conj { v, .. } => matches!(&**v, HExpr::Var(n) if n == name),
+                    _ => false,
+                } && conj_counts.get(name.as_str()) == Some(&1)
+                    && !c.loop_alias.contains(name);
+                if self_update {
+                    c.recur_fast = Some(name.clone());
+                }
                 let v = emit_typed(a, *vty, c, mdl, sigs);
+                if self_update {
+                    c.recur_fast = None;
+                }
                 c.line(&format!(
                     "  store {} {}, ptr {}, align 8",
                     loop_slot_ty(mdl, *vty),

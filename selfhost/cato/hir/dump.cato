@@ -11,7 +11,7 @@
 ; --- types ------------------------------------------------------------------
 
 (defn d-ty [ty :- Ty] :- str
-  (let [t (ty-tag (clone ty))
+  (let [t (ty-tag ty)
         a (ty-arg ty)]
     (cond
       (= t 0) "i64"
@@ -48,7 +48,7 @@
   (match tys
     (TyNil [] "")
     (TyCons [h t]
-      (if (tys-null (clone t))
+      (if (tys-null t)
         (d-ty h)
         (str (d-ty h) " " (d-tys-parts t))))))
 
@@ -77,7 +77,7 @@
     (HStrNth [s idx res] (str "(nth " (d-e s (clone tab)) " " (d-e idx (clone tab)) " " (d-ty res) ")"))
     (HCharStr [x] (str "(charstr " (d-e x (clone tab)) ")"))
     (HGet [src idx dflt ty res]
-      (if (hes-null (clone dflt))
+      (if (hes-null dflt)
         (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-ty ty) " " (d-ty res) ")")
         (str "(get " (d-e src (clone tab)) " " (d-e idx (clone tab)) " " (d-e (hes-head-hes dflt) (clone tab)) " " (d-ty ty) " " (d-ty res) ")")))
     (HConj [v x el inplace] (str "(conj " (d-e v (clone tab)) " " (d-e x (clone tab)) " " el " " inplace ")"))
@@ -181,7 +181,7 @@
   (match ks
     (SNil [] "")
     (SCons [h t]
-      (if (sids-null (clone t))
+      (if (sids-null t)
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-sids-parts t (clone tab)))))))
 
@@ -276,7 +276,7 @@
   (match ks
     (SNil [] "")
     (SCons [h t]
-      (if (sids-null (clone t))
+      (if (sids-null t)
         (sym-str (clone tab) h)
         (str (sym-str (clone tab) h) " " (d-typarams-parts t (clone tab)))))))
 

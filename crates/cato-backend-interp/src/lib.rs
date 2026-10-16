@@ -183,6 +183,21 @@ impl<'p> Interpreter<'p> {
                     return Ok(Value::Int(s.len() as i64));
                 }
             }
+            // Unchecked byte read `s[i]`. One past the end is the string's
+            // NUL, matching `(nth s i 0)`'s 0 default; negative indices and
+            // non-strings read as 0.
+            "cato-str-byte" => {
+                if let Value::Str(s) = &args[0] {
+                    let i = int_of(&args[1]);
+                    let b = if i < 0 {
+                        0
+                    } else {
+                        s.as_bytes().get(i as usize).copied().unwrap_or(0)
+                    };
+                    return Ok(Value::Int(b as i64));
+                }
+                return Ok(Value::Int(0));
+            }
             "system" => {
                 // libc semantics: the wait status (exit code << 8), or -1
                 // when the shell could not run. The kernel CLI decodes the
