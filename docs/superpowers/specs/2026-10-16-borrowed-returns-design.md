@@ -73,11 +73,22 @@ The `&` is **stripped** at parse time. The declared `Ty` is unchanged (still
 No new `Ty` variant is introduced, so type equality, monomorphization, and
 mangling are unaffected.
 
-**Constraint:** only **boxed** types may be borrowed returns (recursive ADTs:
+**Return-type form.** The borrowed return type must be written as a **symbol**
+naming a boxed ADT (`:- &HExpr`, `:- &AdtInfo`, `:- &TyEnv`, …). This matches the
+existing borrow-parameter support, which likewise carries the sigil on a symbol
+annotation (`tys :- &TyEnv`); neither compiler supports `&` on a list-form
+annotation. `&` on a list-form or builtin type (`&(Tree a)`, `&i64`, `&str`,
+`&vec`) is a compile error with a message naming the borrowed-return
+restriction. The reader tokenizes `&X` as one symbol and `&(...)` as a
+standalone `&` token followed by a list, so the parser only needs to inspect a
+symbol annotation.
+
+**Boxing.** Only **boxed** types may be borrowed returns (recursive ADTs:
 `HExpr`, `HExprs`, `Binds`, `HArms`, `AdtInfo`, `Varnt`, `VList`, `TyList`,
-`Sids`, `AdtTab`, `Caps`, …). A `&scalar` return (e.g. `&i64`) is a compile
-error — a borrow of a scalar has no stable address in this model. This mirrors
-the existing fact analysis (`boxed = on a cycle in the ADT-field graph`).
+`Sids`, `AdtTab`, `Caps`, …). A borrowed return of a non-boxed named ADT is a
+compile error — a borrow of a scalar/inline value has no stable address in this
+model. This uses the existing fact analysis (`boxed = on a cycle in the ADT-field
+graph`; seed `facts.boxed`, kernel `facts-boxed-at`).
 
 ### 3.2 Soundness rule (no lifetimes)
 
