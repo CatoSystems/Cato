@@ -1,9 +1,9 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 3.31 GB (−93.5%)**;
-  ALLOC_CALLS **1.19B → 90M (−92.5%)**; kernel self-build wall time
-  **47.5 s → ~4.8 s (−90%)**.
+- Kernel self-build alloc churn: **50.56 GB → 3.27 GB (−93.5%)**;
+  ALLOC_CALLS **1.19B → 88M (−92.6%)**; kernel self-build wall time
+  **47.5 s → ~4.7 s (−90%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
   `cato-interp kernel_emit` (`interp: unbound var adts (fn b-retb)`, an
@@ -12,6 +12,24 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 8 results (3.31 → 3.27 GB) and the `check-defns` opening
+- `b-facts-of` / `b-retb-of` hand back an *owned* field, so every read copied
+  the ownership list (one cons per ADT) although the consumers
+  (`b-allocates`, `facts-owns-at`, `b-arm-state`, `b-arm-esc`) only borrow.
+  The reads are fused (`b-facts-owns-at`, `b-allocates-of`,
+  `b-arm-state-of`, `b-arm-esc-of`). Same medicine as `md-*`/`ps-*`.
+- **Concrete opening for the next round** (measured): in `check-defns` the
+  program-wide tables — `facts`, `tab`, `shared`, `adts`, `dparams`,
+  `retb` — are passed *unchanged* through the recursion
+  (`(check-defns t (defns-append acc h) facts tab shared adts dparams retb)`)
+  and only `ds`/`acc` vary. Yet each iteration clones all of them for the
+  `b-plan` call (0.28 GB `DParams` + 0.07 GB `AdtTab` + the rest), because
+  `b-plan-body` builds a `BCtx` whose fields *hold* them. Splitting the
+  program-wide half into its own context, built once and passed by borrow
+  (`&PCtx`) with a per-defn `BCtx` on top, removes that whole cluster. The
+  per-defn fields of `BCtx` (`escaped`, `shadowed`, `lc`) are the reason it
+  cannot simply be hoisted as-is.
 
 ## Round 7 results (no measured gain; where the floor is)
 Two automation attempts were built, run and removed. Both findings matter:
