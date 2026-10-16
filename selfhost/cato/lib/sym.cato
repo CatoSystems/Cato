@@ -63,7 +63,7 @@
 ; consumes its scrutinee, so reading both fields means two clones.
 (defn ires-st [r :- IRes] :- Intern
   (match r
-    (IRes [st sid] (clone st))))
+    (IRes [st sid] st)))
 
 (defn ires-sid [r :- IRes] :- i64
   (match r

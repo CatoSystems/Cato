@@ -143,7 +143,7 @@
     (HJoin [_ _] (HENil))
     (HStrNth [_ _ _] (HENil))
     (HCharStr [_] (HENil))
-    (HGet [src idx dflt ty res] (clone dflt))
+    (HGet [src idx dflt ty res] dflt)
     (HConj [_ _ _ _] (HENil))
     (HIf [_ _ _ _] (HENil))
     (HAnd [_ _] (HENil))
@@ -175,7 +175,7 @@
 ; Recur's argument chain (the args field; empty elsewhere)
 (defn recur-args [e :- HExpr] :- HExprs
   (match e
-    (HRecur [args] (clone args))
+    (HRecur [args] args)
     (HConstI64 [_] (HENil))
     (HConstF64 [_] (HENil))
     (HConstB [_] (HENil))
@@ -226,7 +226,7 @@
 
 (defn vvals-depth-of [e :- HExpr] :- i64
   (match e
-    (HVecLit [el vals] (vvals-depth (clone vals)))
+    (HVecLit [el vals] (vvals-depth vals))
     (HConstI64 [_] 0)
     (HConstF64 [_] 0)
     (HConstB [_] 0)
@@ -322,7 +322,7 @@
 
 (defn hvec-vals [e :- HExpr] :- VVals
   (match e
-    (HVecLit [el vals] (clone vals))
+    (HVecLit [el vals] vals)
     (HConstI64 [_] (VVNil))
     (HConstF64 [_] (VVNil))
     (HConstB [_] (VVNil))
@@ -466,7 +466,7 @@
 
 (defn hclo-caps [e :- HExpr] :- Caps
   (match e
-    (HClosure [sig mangled params caps body] (clone caps))
+    (HClosure [sig mangled params caps body] caps)
     (HConstI64 [_] (CNil))
     (HConstF64 [_] (CNil))
     (HConstB [_] (CNil))
@@ -514,7 +514,7 @@
 
 (defn hclo-body [e :- HExpr] :- HExpr
   (match e
-    (HClosure [sig mangled params caps body] (clone body))
+    (HClosure [sig mangled params caps body] body)
     (HConstI64 [_] (HConstI64 0))
     (HConstF64 [_] (HConstI64 0))
     (HConstB [_] (HConstI64 0))
@@ -562,7 +562,7 @@
 
 (defn hloop-binds [e :- HExpr] :- Binds
   (match e
-    (HLoop [binds ty body] (clone binds))
+    (HLoop [binds ty body] binds)
     (HConstI64 [_] (BNil))
     (HConstF64 [_] (BNil))
     (HConstB [_] (BNil))

@@ -61,7 +61,7 @@
     (or (= t 9) (= t 10))))
 
 (defn is-numeric-ty [x :- Ty] :- bool
-  (or (is-int-ty (clone x)) (is-float-ty (clone x))))
+  (or (is-int-ty (clone x)) (is-float-ty x)))
 
 ; Copy semantics: everything but adt/vec/map/set/fn/param assigns by copy.
 (defn is-copy-ty [x :- Ty] :- bool
@@ -93,7 +93,7 @@
 ; "render as an ADT name" (the mangle fallback).
 (defn ty-suffix [x :- Ty] :- str
   (let [t (ty-tag (clone x))
-        a (ty-arg (clone x))]
+        a (ty-arg x)]
     (cond
       (= t 0) "i64"
       (= t 1) "i32"
@@ -122,31 +122,31 @@
 
 (defn tys-depth [ks :- TyList] :- i64
   (match ks
-    (TyCons [h t] (+ 1 (tys-depth (clone t))))
+    (TyCons [h t] (+ 1 (tys-depth t)))
     (TyNil [] 0)))
 
 (defn tys-rev [ks :- TyList acc :- TyList] :- TyList
   (match ks
-    (TyCons [h t] (tys-rev (clone t) (TyCons h acc)))
+    (TyCons [h t] (tys-rev t (TyCons h acc)))
     (TyNil [] acc)))
 
 (defn tys-idx [ks :- TyList i :- i64] :- Ty
   (match ks
-    (TyCons [h t] (if (= i 0) h (tys-idx (clone t) (- i 1))))
+    (TyCons [h t] (if (= i 0) h (tys-idx t (- i 1))))
     (TyNil [] (t-none))))
 
 (defn tys-append [ks :- TyList x :- Ty] :- TyList
   (match ks
     (TyNil [] (TyCons x (TyNil)))
-    (TyCons [h t] (TyCons h (tys-append (clone t) x)))))
+    (TyCons [h t] (TyCons h (tys-append t x)))))
 
 (defn tys-eq [xs :- TyList ys :- TyList] :- bool
   (match xs
-    (TyNil [] (tys-null (clone ys)))
+    (TyNil [] (tys-null ys))
     (TyCons [xh xt]
       (match ys
         (TyNil [] false)
-        (TyCons [yh yt] (and (ty-eq xh yh) (tys-eq (clone xt) (clone yt))))))))
+        (TyCons [yh yt] (and (ty-eq xh yh) (tys-eq xt yt)))))))
 
 ; --- sids chains ------------------------------------------------------------
 
@@ -184,9 +184,9 @@
 
 (defn sids-drop [ks :- Sids n :- i64] :- Sids
   (if (= n 0)
-    (clone ks)
+    ks
     (match ks
-      (SCons [h t] (sids-drop (clone t) (- n 1)))
+      (SCons [h t] (sids-drop t (- n 1)))
       (SNil [] (SNil)))))
 
 ; The dump renders sid lists space-separated (used for binders/frees).

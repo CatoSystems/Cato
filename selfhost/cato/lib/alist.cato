@@ -17,16 +17,16 @@
   (match e
     (ALCons [ek ev next]
       (if (= ek k)
-        (clone ev)
-        (al-get (clone next) k d)))
+        ev
+        (al-get next k d)))
     (ALNil [] d)))
 
 (defn al-has [e :- (AList T) k :- i64] :- bool
   (match e
-    (ALCons [ek ev next] (if (= ek k) true (al-has (clone next) k)))
+    (ALCons [ek ev next] (if (= ek k) true (al-has next k)))
     (ALNil [] false)))
 
 (defn al-depth [e :- (AList T)] :- i64
   (match e
-    (ALCons [ek ev next] (+ 1 (al-depth (clone next))))
+    (ALCons [ek ev next] (+ 1 (al-depth next)))
     (ALNil [] 0)))

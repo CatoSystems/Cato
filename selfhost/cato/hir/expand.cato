@@ -240,7 +240,7 @@
             r (expand-form f)]
         (match r
           (EOk1 [a] (expand-all rest (KCons a acc)))
-          (EErr1 [msg at] (EErr (clone msg) sp)))))
+          (EErr1 [msg at] (EErr msg sp)))))
     (KNil [] (EOk (asts-rev acc (KNil))))))
 
 (defn expand-kids [ks :- Asts acc :- Asts] :- EResk
@@ -249,7 +249,7 @@
       (let [r (expand-form kid)]
         (match r
           (EOk1 [a] (expand-kids rest (KCons a acc)))
-          (EErr1 [msg at] (EErrk (clone msg) at)))))
+          (EErr1 [msg at] (EErrk msg at)))))
     (KNil [] (EOkk (asts-rev acc (KNil))))))
 
 (defn expand-form [a :- Ast] :- ERes1
@@ -258,17 +258,17 @@
       (let [rk (expand-kids kids (KNil))]
         (match rk
           (EOkk [ks] (expand-list (AList ks at)))
-          (EErrk [msg at2] (EErr1 (clone msg) at2)))))
+          (EErrk [msg at2] (EErr1 msg at2)))))
     (AVec [kids at]
       (let [rk (expand-kids kids (KNil))]
         (match rk
           (EOkk [ks] (EOk1 (AVec ks at)))
-          (EErrk [msg at2] (EErr1 (clone msg) at2)))))
+          (EErrk [msg at2] (EErr1 msg at2)))))
     (AMap [kids at]
       (let [rk (expand-kids kids (KNil))]
         (match rk
           (EOkk [ks] (EOk1 (AMap ks at)))
-          (EErrk [msg at2] (EErr1 (clone msg) at2)))))
+          (EErrk [msg at2] (EErr1 msg at2)))))
     (ANil [at] (EOk1 (ANil at)))
     (ASym [sid at] (EOk1 (ASym sid at)))
     (AInt [v at] (EOk1 (AInt v at)))
@@ -365,7 +365,7 @@
     (KCons [step rest]
       (match (apply-step acc step lastb sl sc sn)
         (EOk1 [a2] (thread-loop rest a2 lastb sl sc sn))
-        (EErr1 [msg at2] (EErr1 (clone msg) at2))))))
+        (EErr1 [msg at2] (EErr1 msg at2))))))
 
 ; A step is a list (insert the previous result at position 1, or append
 ; for `->>`) or a bare symbol (become a call on it).
@@ -512,7 +512,7 @@
                                             (Span sl sc sn))
                                      sl sc sn))))
                     (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
-                (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+                (B2Err [msg] (EErr1 msg (Span sl sc sn)))))
           (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))
         (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))))
 
@@ -531,7 +531,7 @@
                                        (KCons x (KCons doform (KCons (AInt 0 (Span sl sc sn)) (KNil)))))
                                       (Span sl sc sn))
                                sl sc sn))))
-              (B2Err [msg] (EErr1 (clone msg) (Span sl sc sn)))))
+              (B2Err [msg] (EErr1 msg (Span sl sc sn)))))
         (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn)))))
       (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))))))
 

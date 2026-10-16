@@ -10,7 +10,7 @@
 ; field on function exit — results come back as clones.
 (defn unwrap-or [r :- (Result T) d :- T] :- T
   (match r
-    (Ok [v] (clone v))
+    (Ok [v] v)
     (Err [msg] d)))
 
 (defn is-ok [r :- (Result T)] :- bool
@@ -21,4 +21,4 @@
 (defn err-msg [r :- (Result T)] :- str
   (match r
     (Ok [v] "")
-    (Err [msg] (clone msg))))
+    (Err [msg] msg)))

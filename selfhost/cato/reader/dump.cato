@@ -69,7 +69,7 @@
 (defn dump-kids [tab :- i64 ks :- Asts] :- str
   (match ks
     (KCons [kid rest]
-      (str " " (dump-node (clone tab) (clone kid)) (dump-kids tab (clone rest))))
+      (str " " (dump-node (clone tab) kid) (dump-kids tab rest)))
     (KNil [] "")))
 
 ; The node body — no position prefix. Inner nodes carry spans in the
@@ -83,10 +83,10 @@
     (AF64 [v at] (str "(f64 " v ")"))
     (ABool [v at] (str "(bool " v ")"))
     (AStr [v at] (str "(str " (esc-str v 0 (count v) "") ")"))
-    (AList [ks at] (str "(list" (dump-kids tab (clone ks)) ")"))
-    (AVec [ks at] (str "(vec" (dump-kids tab (clone ks)) ")"))
-    (AMap [ks at] (str "(map" (dump-kids tab (clone ks)) ")"))
-    (ASet [ks at] (str "(set" (dump-kids tab (clone ks)) ")"))))
+    (AList [ks at] (str "(list" (dump-kids tab ks) ")"))
+    (AVec [ks at] (str "(vec" (dump-kids tab ks) ")"))
+    (AMap [ks at] (str "(map" (dump-kids tab ks) ")"))
+    (ASet [ks at] (str "(set" (dump-kids tab ks) ")"))))
 
 ; A top-level form: its span prefixes the node body.
 (defn dump-top [tab :- i64 a :- Ast] :- str
@@ -98,6 +98,6 @@
 (defn dump-forms [tab :- i64 forms :- Asts acc :- StrBuf] :- StrBuf
   (match forms
     (KCons [f rest]
-      (dump-forms tab (clone rest)
-                  (sb-add-line acc (dump-top (clone tab) (clone f)))))
+      (dump-forms tab rest
+                  (sb-add-line acc (dump-top (clone tab) f))))
     (KNil [] acc)))
