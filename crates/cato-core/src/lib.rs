@@ -63,10 +63,14 @@ pub fn compile_named(file: &str, src: &str) -> Result<Program, String> {
 /// differential testing).
 pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Program, String> {
     diagnostics::with_source(file, src, || {
-        let mut seen_files = std::collections::HashSet::new();
-        seen_files.insert(file.to_string());
-        let mut seen_ns: Vec<String> = Vec::new();
-        let located = expand_file(file, src, &mut seen_files, &mut seen_ns)?;
+        let mut ctx = ModCtx {
+            canon: std::collections::HashMap::new(),
+            ns: Vec::new(),
+        };
+        // Mark the root as seen (empty prefix) so a cycle back to the entry
+        // file terminates instead of re-expanding it.
+        ctx.canon.insert(file.to_string(), String::new());
+        let located = expand_file(file, src, "", &mut ctx)?;
         // The prelude defines `print` as a multimethod over the builtin
         // types; it participates in the same pipeline as user code.
         let (prelude_forms, _) = reader::read_all_spanned(PRELUDE)
@@ -272,16 +276,88 @@ fn defn_names(forms: &[(Expr, crate::ast::Span)]) -> Vec<String> {
     out
 }
 
+/// Module-graph state threaded through `expand_file`.
+struct ModCtx {
+    /// Resolved path -> canonical prefix (the alias the file was first
+    /// required with; `""` for the root). Presence also marks a file seen,
+    /// so cycles terminate.
+    canon: std::collections::HashMap<String, String>,
+    /// `(ns ...)` names already declared, for the duplicate check.
+    ns: Vec<String>,
+}
+
+/// Resolve a `require` path relative to the requiring file's directory, by
+/// raw string concatenation (no normalization), exactly as the resolver has
+/// always done.
+fn parent_join(file: &str, rel: &str) -> String {
+    std::path::Path::new(file)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""))
+        .join(rel)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// The canonical name of a module member: `prefix__name`, or `name` for the
+/// root (empty prefix) and for every type name.
+fn prefixed(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{}__{}", prefix, name)
+    }
+}
+
+/// Rewrite every `alias/name` symbol in `forms` to the canonical member name
+/// of the module that `alias` was bound to.
+fn rewrite_alias_refs(forms: &mut [(Expr, crate::ast::Span)], aliases: &[(String, String)]) {
+    for (form, _) in forms.iter_mut() {
+        rewrite_alias_expr(form, aliases);
+    }
+}
+
+fn rewrite_alias_expr(e: &mut Expr, aliases: &[(String, String)]) {
+    match e {
+        Expr::LitSym(s) => {
+            for (alias, canon) in aliases {
+                if let Some(rest) = s.strip_prefix(&format!("{}/", alias)) {
+                    *s = prefixed(canon, rest);
+                    break;
+                }
+            }
+        }
+        Expr::List(items) => {
+            for it in items.iter_mut() {
+                rewrite_alias_expr(it, aliases);
+            }
+        }
+        Expr::Vector(items) => {
+            for it in items.iter_mut() {
+                rewrite_alias_expr(it, aliases);
+            }
+        }
+        Expr::MapLit(pairs) => {
+            for (k, v) in pairs.iter_mut() {
+                rewrite_alias_expr(k, aliases);
+                rewrite_alias_expr(v, aliases);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Load `file`, pull in its `(require ...)`s recursively, and return the
-/// flattened (form, span) list (require/ns forms dropped). Required defns
-/// are renamed `alias__name` and the requiring file's `alias/name` call
-/// heads are rewritten to match. `(ns name)` is validated (one per file,
-/// names unique across the compilation) and dropped.
+/// flattened (form, span) list (`ns`/`require` forms dropped). Each required
+/// file has one canonical prefix — the alias it was first required with:
+/// its own `defn`/`extern` names are renamed `prefix__name` and every
+/// requirer's `alias/name` refs are rewritten to that canonical name, so
+/// diamonds resolve. `(ns name)` is validated (one per file, names unique
+/// across the compilation) and dropped. Types are never renamed.
 fn expand_file(
     file: &str,
     src: &str,
-    seen_files: &mut std::collections::HashSet<String>,
-    seen_ns: &mut Vec<String>,
+    canon_prefix: &str,
+    ctx: &mut ModCtx,
 ) -> Result<Vec<(Expr, crate::ast::Span)>, String> {
     let (all_forms, all_spans) = reader::read_all_spanned(src)
         .map_err(|e| diagnostics::locate(e.span, &e.msg))?;
@@ -292,13 +368,13 @@ fn expand_file(
             if matches!(items.first(), Some(Expr::LitSym(h)) if h == "ns") {
                 match items.get(1) {
                     Some(Expr::LitSym(name)) => {
-                        if seen_ns.contains(name) {
+                        if ctx.ns.contains(name) {
                             return Err(diagnostics::locate(
                                 s,
                                 &format!("duplicate ns {}", name),
                             ));
                         }
-                        seen_ns.push(name.clone());
+                        ctx.ns.push(name.clone());
                     }
                     _ => return Err(diagnostics::locate(s, "ns expects a name")),
                 }
@@ -310,44 +386,39 @@ fn expand_file(
 
     let mut merged: Vec<(Expr, crate::ast::Span)> = Vec::new();
     let mut own: Vec<(Expr, crate::ast::Span)> = Vec::new();
-    let mut alias_rewrites: Vec<(String, String)> = Vec::new();
+    let mut this_aliases: Vec<(String, String)> = Vec::new();
     for (f, s) in kept {
         if let Some((path, alias)) = require_of(&f) {
-            let dir = std::path::Path::new(file)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_default();
-            let child_file = dir.join(&path).to_string_lossy().to_string();
-            if !seen_files.insert(child_file.clone()) {
-                continue; // already merged once
-            }
-            let child_src = std::fs::read_to_string(&child_file).map_err(|e| {
-                diagnostics::locate(
-                    s,
-                    &format!("require: cannot read {}: {}", child_file, e),
-                )
-            })?;
-            let child = expand_file(&child_file, &child_src, seen_files, seen_ns)?;
-            // Rename the child's defns under the alias and rewrite its own
-            // internal call heads to the renamed versions.
-            let names = defn_names(&child);
-            let mut renamed = child;
-            for n in &names {
-                rewrite_heads(&mut renamed, n, &format!("{}__{}", alias, n));
-            }
-            merged.extend(renamed);
-            for n in &names {
-                alias_rewrites.push((format!("{}/{}", alias, n), format!("{}__{}", alias, n)));
-            }
+            let child = parent_join(file, &path);
+            let canon = match ctx.canon.get(&child) {
+                Some(c) => c.clone(),
+                None => {
+                    // Record before recursing so a cycle terminates.
+                    ctx.canon.insert(child.clone(), alias.clone());
+                    let child_src = std::fs::read_to_string(&child).map_err(|e| {
+                        diagnostics::locate(
+                            s,
+                            &format!("require: cannot read {}: {}", child, e),
+                        )
+                    })?;
+                    let child_forms = expand_file(&child, &child_src, &alias, ctx)?;
+                    merged.extend(child_forms);
+                    alias.clone()
+                }
+            };
+            this_aliases.push((alias, canon));
             continue;
         }
         own.push((f, s));
     }
-    // Alias rewrites apply to the whole file, so run them after every
-    // form has been collected.
-    for (from, to) in &alias_rewrites {
-        rewrite_heads(&mut own, from, to);
+
+    // Rename this file's own members under its canonical prefix, then point
+    // its `alias/name` refs at the canonical members of each required module.
+    let names = defn_names(&own);
+    for n in &names {
+        rewrite_heads(&mut own, n, &prefixed(canon_prefix, n));
     }
+    rewrite_alias_refs(&mut own, &this_aliases);
     merged.extend(own);
     Ok(merged)
 }
