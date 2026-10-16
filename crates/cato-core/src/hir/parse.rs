@@ -60,6 +60,7 @@ pub(crate) fn parse_extern(
         ty_params,
         is_extern: true,
         body: Expr::List(Vec::new()),
+        ret_borrowed: false,
     })
 }
 
@@ -302,10 +303,36 @@ pub(crate) fn parse_raw(
 
     let mut body_start = 3;
     let mut ret = Ty::I64;
+    let mut ret_borrowed = false;
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
+                match &items[body_start + 1] {
+                    Expr::LitSym(ty_sym) => {
+                        let (b, rest) = split_borrow(ty_sym)?;
+                        if b == Borrow::Shared {
+                            if rest.is_empty() {
+                                return Err(
+                                    "borrowed return must name a boxed ADT (write `:- &Name`, not `&(...)`) — borrowed return"
+                                        .into(),
+                                );
+                            }
+                            ret_borrowed = true;
+                            ret = parse_ty_sym(rest, tcx.adt_by_name, &mut ty_params)?;
+                        } else {
+                            ret = parse_ty(
+                                &items[body_start + 1],
+                                tcx,
+                                &mut ty_params,
+                                fnsigs,
+                            )?;
+                        }
+                    }
+                    _ => {
+                        ret =
+                            parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
+                    }
+                }
                 body_start += 2;
             }
         }
@@ -332,6 +359,7 @@ pub(crate) fn parse_raw(
         ty_params,
         is_extern: false,
         body,
+        ret_borrowed,
     })
 }
 

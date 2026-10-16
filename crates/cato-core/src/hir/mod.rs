@@ -440,6 +440,9 @@ pub struct Defn {
     pub borrows: Vec<Borrow>,
     /// FFI declaration: emitted as an LLVM `declare`, not a `define`.
     pub is_extern: bool,
+    /// Returned value is a borrow (`&T`): non-owning, non-droppable,
+    /// non-movable at the call site.
+    pub ret_borrowed: bool,
 }
 
 type Env = HashMap<String, Ty>;
@@ -455,6 +458,8 @@ pub(crate) struct RawDefn {
     /// FFI declaration: no body, the symbol is a C function.
     pub(crate) is_extern: bool,
     pub(crate) body: Expr,
+    /// Returned value is a borrow (`&T`); see `Defn::ret_borrowed`.
+    pub(crate) ret_borrowed: bool,
 }
 
 /// Monomorphization state shared across lowering: instantiated generics are

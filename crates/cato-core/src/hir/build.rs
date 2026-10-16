@@ -137,6 +137,7 @@ pub fn build_program_located(
             body,
             borrows: raw.borrows.clone(),
             is_extern: raw.is_extern,
+            ret_borrowed: raw.ret_borrowed,
         });
     }
     // FFI declarations: no lowering, all params borrow (C reads them).
@@ -149,6 +150,7 @@ pub fn build_program_located(
                 body: HExpr::ConstI64(0),
                 borrows: vec![Borrow::Shared; raw.params.len()],
                 is_extern: true,
+                ret_borrowed: false,
             });
         }
     }
