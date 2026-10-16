@@ -4249,11 +4249,11 @@
   (let [tag (h-tag (clone e))]
     (cond
       (= tag 32) true
-      (= tag 22) (and (all-paths-recur (hv-b (clone e)))
-                      (all-paths-recur (hv-c (clone e))))
-      (= tag 30) (all-paths-recur (hv-b (clone e)))
-      (= tag 29) (seq-all-recur (hargs-of (clone e)))
-      (= tag 34) (arms-all-recur (arms-of (clone e)))
+      (= tag 22) (and (all-paths-recur (hv-b e))
+                      (all-paths-recur (hv-c e)))
+      (= tag 30) (all-paths-recur (hv-b e))
+      (= tag 29) (seq-all-recur (hargs-of e))
+      (= tag 34) (arms-all-recur (arms-of e))
       false)))
 
 (defn seq-all-recur [es :- HExprs] :- bool
@@ -4581,7 +4581,7 @@
 
 (deftype CapsRes (CapsRes [caps :- Caps seen :- Sids]))
 
-(defn hv-a [e :- HExpr] :- HExpr
+(defn hv-a [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -4630,7 +4630,7 @@
     (HParseNum [s int res] (clone s))
 ))
 
-(defn hv-b [e :- HExpr] :- HExpr
+(defn hv-b [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -4679,7 +4679,7 @@
     (HParseNum [s int res] (HConstI64 0))
 ))
 
-(defn hv-c [e :- HExpr] :- HExpr
+(defn hv-c [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -4872,7 +4872,7 @@
     (HExit [e] (SNil))
     (HParseNum [s int res] (SNil))))
 
-(defn arms-of [e :- HExpr] :- HArms
+(defn arms-of [e :- &HExpr] :- HArms
   (match e
     (HConstI64 [v] (HANil))
     (HConstF64 [v] (HANil))
@@ -4919,7 +4919,7 @@
     (HArgs [] (HANil))
     (HExit [e] (HANil))
     (HParseNum [s int res] (HANil))))
-(defn hargs-of [e :- HExpr] :- HExprs
+(defn hargs-of [e :- &HExpr] :- HExprs
   (match e
     (HConstI64 [_] (HENil))
     (HConstF64 [_] (HENil))
@@ -4981,7 +4981,7 @@
       (CapsRes (clone caps) (clone seen)))))
 
 (defn cap-pair [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-2 (hv-a (clone e)) (hv-b (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-2 (hv-a e) (hv-b e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-2 [a :- HExpr b :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (let [r1 (collect-caps (clone a) (clone env) (clone params) (clone seen) (clone caps))]
@@ -4989,10 +4989,10 @@
       (CapsRes [c2 s2] (collect-caps (clone b) (clone env) (clone params) (clone s2) (clone c2))))))
 
 (defn cap-un [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (collect-caps (hv-a (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (collect-caps (hv-a e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-kids [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-kids-2 (hargs-of (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-kids-2 (hargs-of e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-kids-2 [es :- HExprs env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (match es
@@ -5003,12 +5003,12 @@
           (CapsRes [c2 s2] (cap-kids-2 (clone next) (clone env) (clone params) (clone s2) (clone c2))))))))
 
 (defn cap-f-args [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (let [r1 (collect-caps (hv-a (clone e)) (clone env) (clone params) (clone seen) (clone caps))]
+  (let [r1 (collect-caps (hv-a e) (clone env) (clone params) (clone seen) (clone caps))]
     (match r1
-      (CapsRes [c2 s2] (cap-kids-2 (hargs-of (clone e)) (clone env) (clone params) (clone s2) (clone c2))))))
+      (CapsRes [c2 s2] (cap-kids-2 (hargs-of e) (clone env) (clone params) (clone s2) (clone c2))))))
 
 (defn cap-triple [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-3 (hv-a (clone e)) (hv-b (clone e)) (hv-c (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-3 (hv-a e) (hv-b e) (hv-c e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-3 [a :- HExpr b :- HExpr c :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (let [r1 (collect-caps (clone a) (clone env) (clone params) (clone seen) (clone caps))]
@@ -5341,10 +5341,10 @@
       (v-if-arm (clone e) arity inloop crossed)
 
       (= tag 30)
-      (validate-let (binds-of (clone e)) (hv-b (clone e)) arity inloop crossed)
+      (validate-let (binds-of (clone e)) (hv-b e) arity inloop crossed)
 
       (= tag 29)
-      (validate-seq (hargs-of (clone e)) arity inloop crossed)
+      (validate-seq (hargs-of e) arity inloop crossed)
 
       (= tag 34)
       (v-match-arm (clone e) arity inloop crossed)
@@ -5364,20 +5364,20 @@
         (VErr (str "recur expects " arity " argument(s) to match the loop bindings, got " (hes-depth (recur-args (clone e)))))))))
 
 (defn v-if-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [r1 (validate-recurs-2 (hv-a (clone e)) arity false crossed)]
+  (let [r1 (validate-recurs-2 (hv-a e) arity false crossed)]
     (match r1
       (VErr [msg] (VErr msg))
       (LOk2 []
-        (let [r2 (validate-recurs-2 (hv-b (clone e)) arity inloop crossed)]
+        (let [r2 (validate-recurs-2 (hv-b e) arity inloop crossed)]
           (match r2
             (VErr [msg] (VErr msg))
-            (LOk2 [] (validate-recurs-2 (hv-c (clone e)) arity inloop crossed))))))))
+            (LOk2 [] (validate-recurs-2 (hv-c e) arity inloop crossed))))))))
 
 (defn v-match-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [r1 (validate-recurs-2 (hv-a (clone e)) arity false crossed)]
+  (let [r1 (validate-recurs-2 (hv-a e) arity false crossed)]
     (match r1
       (VErr [msg] (VErr msg))
-      (LOk2 [] (validate-arms (arms-of (clone e)) arity inloop crossed)))))
+      (LOk2 [] (validate-arms (arms-of e) arity inloop crossed)))))
 
 (defn v-default-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
   (if (contains-recur (clone e) 0)
@@ -5420,18 +5420,18 @@
       (cond
         (= tag 32) true
         (= tag 37) false
-        (= tag 22) (or (contains-recur (hv-a (clone e)) (+ depth 1))
-                       (or (contains-recur (hv-b (clone e)) (+ depth 1))
-                           (contains-recur (hv-c (clone e)) (+ depth 1))))
-        (= tag 30) (contains-recur (hv-b (clone e)) (+ depth 1))
-        (= tag 29) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 34) (or (contains-recur (hv-a (clone e)) (+ depth 1))
-                       (arms-contains-recur (arms-of (clone e)) (+ depth 1)))
-        (= tag 39) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 33) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 14) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 23) (or (contains-recur (hv-a (clone e)) (+ depth 1)) (contains-recur (hv-b (clone e)) (+ depth 1)))
-        (= tag 24) (or (contains-recur (hv-a (clone e)) (+ depth 1)) (contains-recur (hv-b (clone e)) (+ depth 1)))
+        (= tag 22) (or (contains-recur (hv-a e) (+ depth 1))
+                       (or (contains-recur (hv-b e) (+ depth 1))
+                           (contains-recur (hv-c e) (+ depth 1))))
+        (= tag 30) (contains-recur (hv-b e) (+ depth 1))
+        (= tag 29) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 34) (or (contains-recur (hv-a e) (+ depth 1))
+                       (arms-contains-recur (arms-of e) (+ depth 1)))
+        (= tag 39) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 33) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 14) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 23) (or (contains-recur (hv-a e) (+ depth 1)) (contains-recur (hv-b e) (+ depth 1)))
+        (= tag 24) (or (contains-recur (hv-a e) (+ depth 1)) (contains-recur (hv-b e) (+ depth 1)))
         false))))
 
 (defn seq-contains-recur [es :- HExprs depth :- i64] :- bool
@@ -7049,165 +7049,144 @@
 
 ; count_vars: every name occurrence, all positions (closure capture names
 ; too — a missed occurrence would make in-place update unsound)
-(defn b-count-vars [e :- HExpr counts :- IMap] :- IMap
-  (let [tag (h-tag (clone e))]
-    (cond
-      (= tag 3) (cv-bump (name-of (clone e)) counts)
+(defn b-count-vars [e :- &HExpr counts :- IMap] :- IMap
+  (match e
+    (HVar [name] (cv-bump name counts))
 
-      ; two-child forms
-      (or (= tag 7) (= tag 8) (= tag 6) (= tag 23) (= tag 24) (= tag 27) (= tag 28)
-          (= tag 9) (= tag 10) (= tag 21) (= tag 15) (= tag 16) (= tag 17) (= tag 18)
-          (= tag 41))
-      (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts))
+    (HBinW [_ a _ _] (b-count-vars a counts))
+    (HBinF [_ a _] (b-count-vars a counts))
+    (HCmpW [_ a _ _] (b-count-vars a counts))
+    (HStrCmp [_ a _] (b-count-vars a counts))
+    (HStrOrd [_ a _] (b-count-vars a counts))
 
-      ; if: three positions
-      (= tag 22)
-      (b-count-vars (hv-c (clone e)) (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts)))
+    (HAnd [a b] (b-count-vars b (b-count-vars a counts)))
+    (HOr [a b] (b-count-vars b (b-count-vars a counts)))
+    (HMin [a b _] (b-count-vars b (b-count-vars a counts)))
+    (HMax [a b _] (b-count-vars b (b-count-vars a counts)))
+    (HConj [v x _ _] (b-count-vars x (b-count-vars v counts)))
+    (HSubs [s a _] (b-count-vars a (b-count-vars s counts)))
+    (HSplit [s sep] (b-count-vars sep (b-count-vars s counts)))
+    (HJoin [sep xs] (b-count-vars xs (b-count-vars sep counts)))
+    (HStrNth [s idx _] (b-count-vars idx (b-count-vars s counts)))
+    (HSpit [path data] (b-count-vars data (b-count-vars path counts)))
 
-      ; one-child forms
-      (or (= tag 12) (= tag 26) (= tag 25) (= tag 35) (= tag 36) (= tag 11)
-          (= tag 19) (= tag 13) (= tag 44) (= tag 40) (= tag 43))
-      (b-count-vars (hv-a (clone e)) counts)
+    (HIf [c t e _] (b-count-vars e (b-count-vars t (b-count-vars c counts))))
 
-      ; child lists
-      (or (= tag 39) (= tag 14) (= tag 33) (= tag 29) (= tag 32))
-      (b-count-vars-kids (hargs-of (clone e)) counts)
+    (HICast [e _ _] (b-count-vars e counts))
+    (HAbs [e _] (b-count-vars e counts))
+    (HNot [e] (b-count-vars e counts))
+    (HClone [e] (b-count-vars e counts))
+    (HDrop [e] (b-count-vars e counts))
+    (HCount [e] (b-count-vars e counts))
+    (HCharStr [e] (b-count-vars e counts))
+    (HToStr [e _] (b-count-vars e counts))
+    (HParseNum [s _ _] (b-count-vars s counts))
+    (HSlurp [p] (b-count-vars p counts))
+    (HExit [e] (b-count-vars e counts))
 
-      ; get: src, idx, default
-      (= tag 20)
-      (b-count-vars-default (hget-dflt (clone e)) (b-count-vars (hv-b (clone e)) (b-count-vars (hv-a (clone e)) counts)))
+    (HStrCat [args] (b-count-vars-kids args counts))
+    (HCall [_ args] (b-count-vars-kids args counts))
+    (HCtor [_ _ args] (b-count-vars-kids args counts))
+    (HSeq [es] (b-count-vars-kids es counts))
+    (HRecur [args] (b-count-vars-kids args counts))
 
-      ; closure: capture names count, then the body
-      (= tag 37)
-      (b-count-vars (hclo-body (clone e)) (b-count-caps (hclo-caps (clone e)) counts))
+    (HGet [src idx dflt _ _]
+      (b-count-vars-default dflt (b-count-vars idx (b-count-vars src counts))))
 
-      ; closure call: f, then args
-      (= tag 38)
-      (b-count-vars-kids (hargs-of (clone e)) (b-count-vars (hv-a (clone e)) counts))
+    (HClosure [_ _ _ caps body] (b-count-vars body (b-count-caps caps counts)))
 
-      ; match: scrutinee, then arm bodies
-      (= tag 34)
-      (b-count-vars-arms (arms-of (clone e)) (b-count-vars (hv-a (clone e)) counts))
+    (HClosureCall [f args _] (b-count-vars-kids args (b-count-vars f counts)))
 
-      ; loop: init values, then the body
-      (= tag 31)
-      (b-count-vars (hv-c (clone e)) (b-count-vars-binds (hloop-binds (clone e)) counts))
+    (HMatch [scrut arms _] (b-count-vars-arms arms (b-count-vars scrut counts)))
 
-      ; let: bind values, then the body
-      (= tag 30)
-      (b-count-vars (hv-b (clone e)) (b-count-vars-binds (binds-of (clone e)) counts))
+    (HLoop [binds _ body] (b-count-vars body (b-count-vars-binds binds counts)))
 
-      ; consts, str lits, vec lits, args: no names
-      counts)))
+    (HLet [binds body _] (b-count-vars body (b-count-vars-binds binds counts)))
 
-(defn b-count-vars-3 [c :- HExpr b :- HExpr a :- HExpr counts :- IMap] :- IMap
-  (b-count-vars c (b-count-vars b (b-count-vars a counts))))
+    (_ counts)))
 
-(defn b-count-vars-kids [es :- HExprs counts :- IMap] :- IMap
+(defn b-count-vars-kids [es :- &HExprs counts :- IMap] :- IMap
   (match es
     (HENil [] counts)
-    (HECons [kid next] (b-count-vars-kids (clone next) (b-count-vars (clone kid) counts)))))
+    (HECons [kid next] (b-count-vars-kids next (b-count-vars kid counts)))))
 
-(defn b-count-vars-binds [binds :- Binds counts :- IMap] :- IMap
+(defn b-count-vars-binds [binds :- &Binds counts :- IMap] :- IMap
   (match binds
     (BNil [] counts)
-    (BCons [name v ty next] (b-count-vars-binds (clone next) (b-count-vars (clone v) counts)))))
+    (BCons [name v ty next] (b-count-vars-binds next (b-count-vars v counts)))))
 
-(defn b-count-vars-arms [arms :- HArms counts :- IMap] :- IMap
+(defn b-count-vars-arms [arms :- &HArms counts :- IMap] :- IMap
   (match arms
     (HANil [] counts)
-    (HACons [variant binders body next] (b-count-vars-arms (clone next) (b-count-vars (clone body) counts)))))
+    (HACons [variant binders body next] (b-count-vars-arms next (b-count-vars body counts)))))
 
-(defn b-count-caps [caps :- Caps counts :- IMap] :- IMap
+(defn b-count-caps [caps :- &Caps counts :- IMap] :- IMap
   (match caps
     (CNil [] counts)
-    (CCons [name ty own next] (b-count-caps (clone next) (cv-bump name counts)))))
+    (CCons [name ty own next] (b-count-caps next (cv-bump name counts)))))
 
-(defn b-count-vars-default [dflt :- HExprs counts :- IMap] :- IMap
-  (match dflt
-    (HENil [] counts)
-    (HECons [kid next] (b-count-vars-kids dflt counts))))
+(defn b-count-vars-default [dflt :- &HExprs counts :- IMap] :- IMap
+  (b-count-vars-kids dflt counts))
 
 ; count_binds: names bound by more than one `let` share a codegen slot, so
 ; their frees stay suppressed (the seed's known limitation). The walk
 ; visits the same node kinds as the seed's count_binds.
-(defn b-count-binds [e :- HExpr counts :- IMap] :- IMap
-  (let [tag (h-tag (clone e))]
-    (cond
-      (= tag 30)
-      (b-count-binds (hv-b (clone e)) (b-count-binds-binds (binds-of (clone e)) counts))
+(defn b-count-binds [e :- &HExpr counts :- IMap] :- IMap
+  (match e
+    (HLet [binds body _] (b-count-binds body (b-count-binds-binds binds counts)))
+    (HSeq [es] (b-count-binds-kids es counts))
+    (HStrCat [args] (b-count-binds-kids args counts))
+    (HRecur [args] (b-count-binds-kids args counts))
+    (HLoop [binds _ body] (b-count-binds body (b-count-binds-binds binds counts)))
+    (HIf [c t e _] (b-count-binds e (b-count-binds t (b-count-binds c counts))))
+    (HToStr [e _] (b-count-binds e counts))
+    (HParseNum [s _ _] (b-count-binds s counts))
+    (HSlurp [p] (b-count-binds p counts))
+    (HExit [e] (b-count-binds e counts))
+    (HSpit [path data] (b-count-binds data (b-count-binds path counts)))
+    (HAnd [a b] (b-count-binds b (b-count-binds a counts)))
+    (HOr [a b] (b-count-binds b (b-count-binds a counts)))
+    (_ counts)))
 
-      (or (= tag 29) (= tag 14))
-      (b-count-binds-kids (hargs-of (clone e)) counts)
-
-      (= tag 22)
-      (b-count-binds-3 (hv-c (clone e)) (hv-b (clone e)) (hv-a (clone e)) counts)
-
-      (= tag 31)
-      (b-count-binds (hv-c (clone e)) (b-count-binds-binds (hloop-binds (clone e)) counts))
-
-      (= tag 32)
-      (b-count-binds-kids (hargs-of (clone e)) counts)
-
-      (or (= tag 13) (= tag 44) (= tag 40) (= tag 43))
-      (b-count-binds (hv-a (clone e)) counts)
-
-      (= tag 41)
-      (b-count-binds-2 (hv-b (clone e)) (hv-a (clone e)) counts)
-
-      (or (= tag 23) (= tag 24))
-      (b-count-binds-2 (hv-b (clone e)) (hv-a (clone e)) counts)
-
-      counts)))
-
-(defn b-count-binds-binds [binds :- Binds counts :- IMap] :- IMap
+(defn b-count-binds-binds [binds :- &Binds counts :- IMap] :- IMap
   (match binds
     (BNil [] counts)
-    (BCons [name v ty next]
-      (b-count-binds-binds (clone next) (b-count-binds (clone v) (cv-bump name counts))))))
+    (BCons [name v ty next] (b-count-binds-binds next (b-count-binds v (cv-bump name counts))))))
 
-(defn b-count-binds-kids [es :- HExprs counts :- IMap] :- IMap
+(defn b-count-binds-kids [es :- &HExprs counts :- IMap] :- IMap
   (match es
     (HENil [] counts)
-    (HECons [kid next] (b-count-binds-kids (clone next) (b-count-binds (clone kid) counts)))))
+    (HECons [kid next] (b-count-binds-kids next (b-count-binds kid counts)))))
 
-(defn b-count-binds-2 [a :- HExpr b :- HExpr counts :- IMap] :- IMap
-  (b-count-binds b (b-count-binds a counts)))
-
-(defn b-count-binds-3 [a :- HExpr b :- HExpr c :- HExpr counts :- IMap] :- IMap
-  (b-count-binds c (b-count-binds b (b-count-binds a counts))))
-
-(defn b-shadowed-of [counts :- IMap acc :- Sids] :- Sids
+(defn b-shadowed-of [counts :- &IMap acc :- Sids] :- Sids
   (match counts
     (MNil [] acc)
-    (MCons [k v next]
-      (b-shadowed-of (clone next) (if (> v 1) (SCons k acc) acc)))))
+    (MCons [k v next] (b-shadowed-of next (if (> v 1) (SCons k acc) acc)))))
 
 ; tail_escape: vars referenced in tail (returned) position; branch results
 ; are tail positions too — a binding returned from an if/match arm
 ; transfers its drop duty to the result
-(defn b-tail-escape [e :- HExpr acc :- Sids] :- Sids
-  (let [tag (h-tag (clone e))]
-    (cond
-      (= tag 30) (b-tail-escape (hv-b (clone e)) acc)
-      (= tag 29) (b-tail-escape-last (hargs-of (clone e)) acc)
-      (= tag 22) (b-tail-escape (hv-b (clone e)) (b-tail-escape (hv-c (clone e)) acc))
-      (= tag 34) (b-tail-escape-arms (arms-of (clone e)) acc)
-      (= tag 3) (SCons (name-of (clone e)) acc)
-      acc)))
+(defn b-tail-escape [e :- &HExpr acc :- Sids] :- Sids
+  (match e
+    (HLet [_ body _] (b-tail-escape body acc))
+    (HSeq [es] (b-tail-escape-last es acc))
+    (HIf [_ t e _] (b-tail-escape e (b-tail-escape t acc)))
+    (HMatch [_ arms _] (b-tail-escape-arms arms acc))
+    (HVar [name] (SCons name acc))
+    (_ acc)))
 
-(defn b-tail-escape-last [es :- HExprs acc :- Sids] :- Sids
+(defn b-tail-escape-last [es :- &HExprs acc :- Sids] :- Sids
   (match es
     (HENil [] acc)
     (HECons [kid next]
-      (if (hes-null (clone next))
-        (b-tail-escape (clone kid) acc)
-        (b-tail-escape-last (clone next) acc)))))
+      (if (hes-null next)
+        (b-tail-escape kid acc)
+        (b-tail-escape-last next acc)))))
 
-(defn b-tail-escape-arms [arms :- HArms acc :- Sids] :- Sids
+(defn b-tail-escape-arms [arms :- &HArms acc :- Sids] :- Sids
   (match arms
     (HANil [] acc)
-    (HACons [variant binders body next] (b-tail-escape-arms (clone next) (b-tail-escape (clone body) acc)))))
+    (HACons [variant binders body next] (b-tail-escape-arms next (b-tail-escape body acc)))))
 
 ; --- the checker -------------------------------------------------------------------
 
@@ -7530,7 +7509,7 @@
               (BOk [st2 owns2 rem2 cons2 body2]
                 ; a value moved in any arm counts as moved and
                 ; unconsumed-eligible afterwards
-                (let [escaped (b-tail-escape (clone body2) (SNil))
+                (let [escaped (b-tail-escape body2 (SNil))
                       esc2 (b-arm-esc (clone binders) (clone fields) (clone st2) escaped (b-facts-of bcx) esc)
                       st3 (b-merge-st (clone st1) (clone st2) (clone st))
                       owns3 (b-merge-owns (clone owns1) (clone owns2) (clone owns))]
@@ -8122,9 +8101,9 @@
   ; `shared` (builtins, which never consume) and `dparams` (per-callee
   ; parameter borrows) are computed once per program by check-program —
   ; computing them per defn walked the whole Defns chain 1000+ times.
-  (let [escaped (b-tail-escape (clone body) (SNil))
-        shadowed (b-shadowed-of (b-count-binds (clone body) (MNil)) (SNil))
-        rem0 (b-count-vars (clone body) (MNil))
+  (let [escaped (b-tail-escape body (SNil))
+        shadowed (b-shadowed-of (b-count-binds body (MNil)) (SNil))
+        rem0 (b-count-vars body (MNil))
         r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
     (match r
       (BLErr [msg] (BPlanErr msg))

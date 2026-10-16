@@ -857,11 +857,11 @@
   (let [tag (h-tag (clone e))]
     (cond
       (= tag 32) true
-      (= tag 22) (and (all-paths-recur (hv-b (clone e)))
-                      (all-paths-recur (hv-c (clone e))))
-      (= tag 30) (all-paths-recur (hv-b (clone e)))
-      (= tag 29) (seq-all-recur (hargs-of (clone e)))
-      (= tag 34) (arms-all-recur (arms-of (clone e)))
+      (= tag 22) (and (all-paths-recur (hv-b e))
+                      (all-paths-recur (hv-c e)))
+      (= tag 30) (all-paths-recur (hv-b e))
+      (= tag 29) (seq-all-recur (hargs-of e))
+      (= tag 34) (arms-all-recur (arms-of e))
       false)))
 
 (defn seq-all-recur [es :- HExprs] :- bool
@@ -1189,7 +1189,7 @@
 
 (deftype CapsRes (CapsRes [caps :- Caps seen :- Sids]))
 
-(defn hv-a [e :- HExpr] :- HExpr
+(defn hv-a [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -1238,7 +1238,7 @@
     (HParseNum [s int res] (clone s))
 ))
 
-(defn hv-b [e :- HExpr] :- HExpr
+(defn hv-b [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -1287,7 +1287,7 @@
     (HParseNum [s int res] (HConstI64 0))
 ))
 
-(defn hv-c [e :- HExpr] :- HExpr
+(defn hv-c [e :- &HExpr] :- HExpr
   (match e
     (HConstI64 [v] (HConstI64 0))
     (HConstF64 [v] (HConstI64 0))
@@ -1480,7 +1480,7 @@
     (HExit [e] (SNil))
     (HParseNum [s int res] (SNil))))
 
-(defn arms-of [e :- HExpr] :- HArms
+(defn arms-of [e :- &HExpr] :- HArms
   (match e
     (HConstI64 [v] (HANil))
     (HConstF64 [v] (HANil))
@@ -1527,7 +1527,7 @@
     (HArgs [] (HANil))
     (HExit [e] (HANil))
     (HParseNum [s int res] (HANil))))
-(defn hargs-of [e :- HExpr] :- HExprs
+(defn hargs-of [e :- &HExpr] :- HExprs
   (match e
     (HConstI64 [_] (HENil))
     (HConstF64 [_] (HENil))
@@ -1589,7 +1589,7 @@
       (CapsRes (clone caps) (clone seen)))))
 
 (defn cap-pair [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-2 (hv-a (clone e)) (hv-b (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-2 (hv-a e) (hv-b e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-2 [a :- HExpr b :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (let [r1 (collect-caps (clone a) (clone env) (clone params) (clone seen) (clone caps))]
@@ -1597,10 +1597,10 @@
       (CapsRes [c2 s2] (collect-caps (clone b) (clone env) (clone params) (clone s2) (clone c2))))))
 
 (defn cap-un [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (collect-caps (hv-a (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (collect-caps (hv-a e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-kids [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-kids-2 (hargs-of (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-kids-2 (hargs-of e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-kids-2 [es :- HExprs env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (match es
@@ -1611,12 +1611,12 @@
           (CapsRes [c2 s2] (cap-kids-2 (clone next) (clone env) (clone params) (clone s2) (clone c2))))))))
 
 (defn cap-f-args [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (let [r1 (collect-caps (hv-a (clone e)) (clone env) (clone params) (clone seen) (clone caps))]
+  (let [r1 (collect-caps (hv-a e) (clone env) (clone params) (clone seen) (clone caps))]
     (match r1
-      (CapsRes [c2 s2] (cap-kids-2 (hargs-of (clone e)) (clone env) (clone params) (clone s2) (clone c2))))))
+      (CapsRes [c2 s2] (cap-kids-2 (hargs-of e) (clone env) (clone params) (clone s2) (clone c2))))))
 
 (defn cap-triple [e :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
-  (cap-3 (hv-a (clone e)) (hv-b (clone e)) (hv-c (clone e)) (clone env) (clone params) (clone seen) (clone caps)))
+  (cap-3 (hv-a e) (hv-b e) (hv-c e) (clone env) (clone params) (clone seen) (clone caps)))
 
 (defn cap-3 [a :- HExpr b :- HExpr c :- HExpr env :- TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (let [r1 (collect-caps (clone a) (clone env) (clone params) (clone seen) (clone caps))]
@@ -1949,10 +1949,10 @@
       (v-if-arm (clone e) arity inloop crossed)
 
       (= tag 30)
-      (validate-let (binds-of (clone e)) (hv-b (clone e)) arity inloop crossed)
+      (validate-let (binds-of (clone e)) (hv-b e) arity inloop crossed)
 
       (= tag 29)
-      (validate-seq (hargs-of (clone e)) arity inloop crossed)
+      (validate-seq (hargs-of e) arity inloop crossed)
 
       (= tag 34)
       (v-match-arm (clone e) arity inloop crossed)
@@ -1972,20 +1972,20 @@
         (VErr (str "recur expects " arity " argument(s) to match the loop bindings, got " (hes-depth (recur-args (clone e)))))))))
 
 (defn v-if-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [r1 (validate-recurs-2 (hv-a (clone e)) arity false crossed)]
+  (let [r1 (validate-recurs-2 (hv-a e) arity false crossed)]
     (match r1
       (VErr [msg] (VErr msg))
       (LOk2 []
-        (let [r2 (validate-recurs-2 (hv-b (clone e)) arity inloop crossed)]
+        (let [r2 (validate-recurs-2 (hv-b e) arity inloop crossed)]
           (match r2
             (VErr [msg] (VErr msg))
-            (LOk2 [] (validate-recurs-2 (hv-c (clone e)) arity inloop crossed))))))))
+            (LOk2 [] (validate-recurs-2 (hv-c e) arity inloop crossed))))))))
 
 (defn v-match-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [r1 (validate-recurs-2 (hv-a (clone e)) arity false crossed)]
+  (let [r1 (validate-recurs-2 (hv-a e) arity false crossed)]
     (match r1
       (VErr [msg] (VErr msg))
-      (LOk2 [] (validate-arms (arms-of (clone e)) arity inloop crossed)))))
+      (LOk2 [] (validate-arms (arms-of e) arity inloop crossed)))))
 
 (defn v-default-arm [e :- HExpr arity :- i64 inloop :- bool crossed :- bool] :- VRes
   (if (contains-recur (clone e) 0)
@@ -2028,18 +2028,18 @@
       (cond
         (= tag 32) true
         (= tag 37) false
-        (= tag 22) (or (contains-recur (hv-a (clone e)) (+ depth 1))
-                       (or (contains-recur (hv-b (clone e)) (+ depth 1))
-                           (contains-recur (hv-c (clone e)) (+ depth 1))))
-        (= tag 30) (contains-recur (hv-b (clone e)) (+ depth 1))
-        (= tag 29) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 34) (or (contains-recur (hv-a (clone e)) (+ depth 1))
-                       (arms-contains-recur (arms-of (clone e)) (+ depth 1)))
-        (= tag 39) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 33) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 14) (seq-contains-recur (hargs-of (clone e)) (+ depth 1))
-        (= tag 23) (or (contains-recur (hv-a (clone e)) (+ depth 1)) (contains-recur (hv-b (clone e)) (+ depth 1)))
-        (= tag 24) (or (contains-recur (hv-a (clone e)) (+ depth 1)) (contains-recur (hv-b (clone e)) (+ depth 1)))
+        (= tag 22) (or (contains-recur (hv-a e) (+ depth 1))
+                       (or (contains-recur (hv-b e) (+ depth 1))
+                           (contains-recur (hv-c e) (+ depth 1))))
+        (= tag 30) (contains-recur (hv-b e) (+ depth 1))
+        (= tag 29) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 34) (or (contains-recur (hv-a e) (+ depth 1))
+                       (arms-contains-recur (arms-of e) (+ depth 1)))
+        (= tag 39) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 33) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 14) (seq-contains-recur (hargs-of e) (+ depth 1))
+        (= tag 23) (or (contains-recur (hv-a e) (+ depth 1)) (contains-recur (hv-b e) (+ depth 1)))
+        (= tag 24) (or (contains-recur (hv-a e) (+ depth 1)) (contains-recur (hv-b e) (+ depth 1)))
         false))))
 
 (defn seq-contains-recur [es :- HExprs depth :- i64] :- bool
