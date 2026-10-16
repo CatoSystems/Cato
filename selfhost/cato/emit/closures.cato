@@ -10,34 +10,34 @@
 (defn emit-closure-val [e :- HExpr st :- Emit] :- ESRes
   (match e
     (HClosure [sig mangled params caps body]
-      (emit-closure-creation sig (clone mangled) (clone caps) st))
+      (emit-closure-creation sig mangled caps st))
     (HLet [binds body frees]
-      (match (emit-let (clone binds) st)
+      (match (emit-let binds st)
         (EURes [st2]
-          (match (emit-closure-val (clone body) st2)
+          (match (emit-closure-val body st2)
             (ESRes [st3 v]
-              (match (emit-frees (clone frees) st3)
+              (match (emit-frees frees st3)
                 (EURes [st4] (ESRes st4 v))))))))
     (HSeq [es]
-      (match (emit-stmts-ex-last (clone es) st)
-        (ELRes [st2 last] (emit-closure-val (clone last) st2))))
+      (match (emit-stmts-ex-last es st)
+        (ELRes [st2 last] (emit-closure-val last st2))))
     (_ (sf st "expected a closure value"))))
 
 ; Env slots a capture occupies: collections and closures take 3.
 (defn capture-slots [ty :- Ty] :- i64
-  (let [tg (ty-tag (clone ty))]
+  (let [tg (ty-tag ty)]
     (if (or (= tg 15) (= tg 17)) 3 1)))
 
 (defn caps-slot-sum [cs :- Caps] :- i64
   (match cs
     (CNil [] 0)
-    (CCons [name ty own next] (+ (capture-slots ty) (caps-slot-sum (clone next))))))
+    (CCons [name ty own next] (+ (capture-slots ty) (caps-slot-sum next)))))
 
 (defn caps-bitmap [cs :- Caps i :- i64 acc :- i64] :- i64
   (match cs
     (CNil [] acc)
     (CCons [name ty own next]
-      (caps-bitmap (clone next) (+ i 1)
+      (caps-bitmap next (+ i 1)
                    (if (= own 1) (+ acc (shl1 i)) acc)))))
 
 (defn shl1 [i :- i64] :- i64
@@ -95,7 +95,7 @@
     (CCons [name ty own next]
       (match (store-one-capture name ty env at st)
         (EURes [st2]
-          (store-captures (clone next) env (+ at (capture-slots ty)) st2))))))
+          (store-captures next env (+ at (capture-slots ty)) st2))))))
 
 (defn store-one-capture [name :- i64 ty :- Ty env :- str at :- i64 st :- Emit] :- EURes
   (let [tg (ty-tag (clone ty))]
@@ -203,7 +203,7 @@
                               (match (cc-marshal args (clone ptys) st1 (CSCons (str "ptr " env) (CSNil)))
                                 (ECARes [st2 items]
                                   (let [rev (cs-rev items (CSNil))
-                                        pl (str "ptr" (cc-param-list (clone ptys)))
+                                        pl (str "ptr" (cc-param-list ptys))
                                         retag (ty-tag (clone ret))
                                         ret-ll (cond
                                                  (= retag 11) "i1"
@@ -220,7 +220,7 @@
   (match ss
     (SGCons [h t]
       (match h
-        (Sig [params ret] (if (= i 0) (ESig (clone params) (clone ret)) (esigs-at mdl (clone t) (- i 1))))))
+        (Sig [params ret] (if (= i 0) (ESig params ret) (esigs-at mdl t (- i 1))))))
     (SGNil [] (ESig (TyNil) (t-none)))))
 
 (defn cc-marshal [args :- HExprs ptys :- TyList st :- Emit acc :- ECalls] :- ECARes
@@ -246,7 +246,7 @@
               (< tg 12)
               (match (emit-int (clone kid) st)
                 (ESRes [st1 v]
-                  (cc-marshal (hes-rest args) (clone prest) st1 (CSCons (str (ll-scalar pty) " " v) acc))))
+                  (cc-marshal (hes-rest args) prest st1 (CSCons (str (ll-scalar pty) " " v) acc))))
               (ECARes (do (cg-fail-i "closure arg type not supported") st) acc))))
         (_ (ECARes (do (cg-fail-i "closure arg/param mismatch") st) acc))))))
 
@@ -262,4 +262,4 @@
                     (= tg 12) "ptr"
                     (< tg 12) (ll-scalar h)
                     "i64")
-             (cc-param-list (clone t)))))))
+             (cc-param-list t))))))

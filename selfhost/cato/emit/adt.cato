@@ -34,11 +34,11 @@
         (let [boxed (md-owns-at mdl ai)
               name (md-adt-name mdl ai)]
           (if (= boxed 1)
-            (match (emit-adt (clone x) st)
+            (match (emit-adt x st)
               (ESRes [st1 v]
                 (match (em-ins st1 (str "  ~ = call ptr @clone__" name "(ptr " v ")"))
                   (ETRes [st2 r] (ESRes st2 r)))))
-            (match (emit-adt (clone x) st)
+            (match (emit-adt x st)
               (ESRes [st1 v]
                 (match (em-temp st1)
                   (ETRes [st2 slot]
@@ -55,25 +55,25 @@
         (Emit [c mdl sigs]
           (let [rv (fc-sc-get (clone c) v)]
             (match rv (RegVal [r ty] (ESRes st r)))))))
-    (HCtor [adt variant args] (emit-ctor adt variant (clone args) st))
-    (HClone [x] (emit-clone-adt (clone x) st))
-    (HIf [c t e2 ty] (emit-if-node (clone c) (clone t) (clone e2) (clone ty) st))
-    (HMatch [scrut arms ty] (emit-match-node (clone scrut) (clone arms) (clone ty) st))
+    (HCtor [adt variant args] (emit-ctor adt variant args st))
+    (HClone [x] (emit-clone-adt x st))
+    (HIf [c t e2 ty] (emit-if-node c t e2 ty st))
+    (HMatch [scrut arms ty] (emit-match-node scrut arms ty st))
     (HLet [binds body frees]
-      (match (emit-let (clone binds) st)
+      (match (emit-let binds st)
         (EURes [st2]
-          (match (emit-adt (clone body) st2)
+          (match (emit-adt body st2)
             (ESRes [st3 v]
-              (match (emit-frees (clone frees) st3)
+              (match (emit-frees frees st3)
                 (EURes [st4] (ESRes st4 v))))))))
     (HSeq [es]
-      (match (emit-stmts-ex-last (clone es) st)
-        (ELRes [st2 last] (emit-adt (clone last) st2))))
+      (match (emit-stmts-ex-last es st)
+        (ELRes [st2 last] (emit-adt last st2))))
     (HStrNth [s idx res]
-      (emit-strnth-opt (clone s) (clone idx) (ty-arg (clone res)) st))
+      (emit-strnth-opt s idx (ty-arg res) st))
     (HGet [src idx dflt ty res]
-      (emit-get-opt (clone src) (clone idx) (ty-arg (clone res)) st))
-    (HCall [name args] (call-user name (clone args) st))
+      (emit-get-opt src idx (ty-arg res) st))
+    (HCall [name args] (call-user name args st))
     (HConstI64 [v] (sf st "expected an ADT expression"))
     (HConstF64 [v] (sf st "expected an ADT expression"))
     (HConstB [v] (sf st "expected an ADT expression"))
@@ -101,7 +101,7 @@
     (HMax [a b ty] (sf st "expected an ADT expression"))
     ; a loop completing with a boxed ADT (the reader's scan returns the
     ; RRes from its loop): the loop machinery's completing register
-    (HLoop [binds ty body] (emit-loop-node (clone binds) (clone ty) (clone body) st))
+    (HLoop [binds ty body] (emit-loop-node binds ty body st))
     (HRecur [args] (sf st "recur outside loop"))
     (HDrop [x] (sf st "drop produces no ADT value"))
     (HClosure [sig mangled params caps body] (sf st "closure value must be bound with let"))
@@ -113,7 +113,7 @@
     ; parse-i64/parse-f64 in value position (e.g. a match scrutinee):
     ; the runtime's 16-byte Option box, a ptr the match consumes.
     (HParseNum [s int res]
-      (match (emit-str-val (clone s) st)
+      (match (emit-str-val s st)
         (ESRes [st1 sv]
           (let [helper (if (= int 1) "cato_parse_i64" "cato_parse_f64")
                 decl (if (= int 1)
@@ -202,10 +202,10 @@
                         (EURes st7))))))))
 
           (= tg 16)
-          (let [j (ty-arg (clone fty))
+          (let [j (ty-arg fty)
                 jboxed (md-owns-at mdl j)
                 child (md-adt-name mdl j)]
-            (match (emit-adt (clone arg) st)
+            (match (emit-adt arg st)
               (ESRes [st1 v]
                 (if (= jboxed 1)
                   (match (em-ins2 st1
@@ -304,7 +304,7 @@
                             (EURes (em-gr-put st6 binder slot (ty-arg (clone fty)))))))))))))
 
           (= tg 16)
-          (let [j (ty-arg (clone fty))
+          (let [j (ty-arg fty)
                 jboxed (md-owns-at mdl j)]
             (if (= jboxed 1)
               (match (em-ins3 st
@@ -334,8 +334,8 @@
   (match binds
     (BNil [] (EURes st))
     (BCons [name value ty next]
-      (match (emit-one-bind name (clone value) (clone ty) st)
-        (EURes [st2] (emit-let (clone next) st2))))))
+      (match (emit-one-bind name value ty st)
+        (EURes [st2] (emit-let next st2))))))
 
 ; Bind one name to one value: the seed's emit_let decision ladder.
 (defn emit-one-bind [name :- i64 value :- HExpr ty :- Ty st :- Emit] :- EURes
@@ -471,9 +471,9 @@
 
 (defn hget-res [e :- HExpr] :- Ty
   (match e
-    (HGet [src idx dflt ty res] (clone res))
-    (HStrNth [s idx res] (clone res))
-    (HParseNum [s int res] (clone res))
+    (HGet [src idx dflt ty res] res)
+    (HStrNth [s idx res] res)
+    (HParseNum [s int res] res)
     (HConstI64 [v] (t-none))
     (HConstF64 [v] (t-none))
     (HConstB [v] (t-none))
@@ -522,7 +522,7 @@
     (EURes st)
     (match (free-binding-storage (sids-idx (clone frees) 0) st)
       (EURes [st2]
-        (emit-frees (sids-drop (clone frees) 1) st2)))))
+        (emit-frees (sids-drop frees 1) st2)))))
 
 (defn free-binding-storage [k :- i64 st :- Emit] :- EURes
   (match st
@@ -537,7 +537,7 @@
                       "declare void @free(ptr)"))
 
                 (= tg 16)
-                (let [i (ty-arg (clone ty))]
+                (let [i (ty-arg ty)]
                   (if (= (md-owns-at mdl i) 1)
                     (let [nm (md-adt-name mdl i)]
                       (EURes (em-line st (str "  call void @drop__" nm "(ptr " r ")"))))
@@ -628,7 +628,7 @@
                              "ptr"
                              (str "%" anm))
                            "i64")]
-              (match (call-marshal args (clone params) st (CSNil))
+              (match (call-marshal args params st (CSNil))
                 (ECARes [st1 items]
                   (let [rev (cs-rev items (CSNil))]
                     (match (em-ins st1 (str "  ~ = call " ret-ll " @" (mangle fname)
@@ -703,7 +703,7 @@
               (< tg 12)
               (match (emit-int (clone kid) st)
                 (ESRes [st1 v]
-                  (call-marshal (hes-rest args) (clone prest) st1
+                  (call-marshal (hes-rest args) prest st1
                                 (CSCons (str (ll-scalar pty) " " v) acc))))
 
               (ECARes (do (cg-fail-i "unresolved type parameter in call args") st) acc))))
@@ -712,12 +712,12 @@
 (defn cs-rev [cs :- ECalls acc :- ECalls] :- ECalls
   (match cs
     (CSNil [] acc)
-    (CSCons [h t] (cs-rev (clone t) (CSCons h acc)))))
+    (CSCons [h t] (cs-rev t (CSCons h acc)))))
 
 (defn cs-join [cs :- ECalls first :- bool] :- str
   (match cs
     (CSNil [] "")
     (CSCons [h t]
       (if first
-        (str h (cs-join (clone t) false))
-        (str ", " h (cs-join (clone t) false))))))
+        (str h (cs-join t false))
+        (str ", " h (cs-join t false))))))

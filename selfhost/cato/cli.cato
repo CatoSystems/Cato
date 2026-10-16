@@ -47,12 +47,12 @@
         r (read-all-with src (magic-table))]
     (match r
       (ROk [forms tab]
-        (match (expand-all (clone forms) (KNil))
-          (EOk [xforms] (compile-build (clone tab) xforms))
+        (match (expand-all forms (KNil))
+          (EOk [xforms] (compile-build tab xforms))
           (EErr [msg at]
-            (do (print-string (str "err " (spat (clone at)) " " (clone msg))) ""))))
+            (do (print-string (str "err " (spat at) " " msg)) ""))))
       (RErr [msg at]
-        (do (print-string (str "err " (spat (clone at)) " " (clone msg))) "")))))
+        (do (print-string (str "err " (spat at) " " msg)) "")))))
 
 (defn compile-build [tab :- i64 forms :- Asts] :- str
   (match (build-program forms tab)
