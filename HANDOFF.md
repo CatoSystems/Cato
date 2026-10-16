@@ -1,8 +1,8 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
 ## Status
-- Kernel self-build alloc churn: **50.56 GB → 3.39 GB (−93.3%)**;
-  ALLOC_CALLS **1.19B → 92M (−92.2%)**; kernel self-build wall time
+- Kernel self-build alloc churn: **50.56 GB → 3.31 GB (−93.5%)**;
+  ALLOC_CALLS **1.19B → 90M (−92.5%)**; kernel self-build wall time
   **47.5 s → ~4.8 s (−90%)**.
 - Gate: PASS (fixpoint k1==k2==k3, t1–t6, bk1/bk3 ok, bk2/bk4 rejected).
 - Tests: `cargo test` green apart from two known non-blockers —
@@ -12,6 +12,37 @@
 - CPU: ~40% of the self-build is now the kernel *waiting for clang*
   (`__wait4_nocancel` samples); of the rest, allocation/free dominates
   (clone/drop glue), strlen is down from ~90% to ~4%.
+
+## Round 6 results (3.39 → 3.31 GB) and the structural blocker
+- `build-raws` copied the parser state into `parse-defn` in both raw-form
+  branches to keep a copy the branch never reads again; the callee threads
+  it back through `RawsRes`.
+- **Why the remaining clusters resist signature changes** (measured, so the
+  next agent does not repeat the experiments):
+  - `clone__TyEnv` (0.69 GB across `lower-ctor-fields`, `match-variant-arm`,
+    `lower-str-args`, `lower-match-plain`, `lower-if`): the lowerer only
+    *reads* its type environment, so borrowing the parameter is right — but
+    the automatic blanket flip does not converge. The checker reports the
+    *function that hands the borrow on*, never the callee that still wants
+    ownership, and reverting the reporter cascades everything back to owned
+    (tried twice: 135 flipped → 0 kept). A correct conversion must flip the
+    *callee* named at each call site, which needs the call graph, not the
+    error text alone (`lok` shows the other end of the trap: it *stores* its
+    parameter into an `LRes`, so it genuinely needs ownership).
+  - `clone__DParams` / `clone__AdtTab` / `clone__Facts` / `clone__Sids` from
+    `check-defns` (0.4 GB): `b-plan-body` builds a `BCtx` whose fields *hold*
+    that state (`(BCtx (clone escaped) shadowed (clone facts) (clone tab)
+    shared (SNil) adts dparams retb)`), so the per-definition copies are
+    structural. The fix is to build the shared context once per program (or
+    make `BCtx` hold it behind a shared handle) rather than per definition.
+  - `clone__Varnt <- vlist_at` (0.27 GB) and `clone__AdtInfo <- adts_at`
+    (0.14 GB): both hand back a whole variant/row so the caller can read one
+    field. Narrow readers help only where the caller does not need the field
+    list itself.
+- A half-built helper for the callee-directed flip was written and removed
+  (`borrow_params.py`): it oscillates without call-graph reasoning. If you
+  rebuild it, resolve the callee per call site and refuse to flip functions
+  that store the parameter (constructors, `lok`, `BCtx` builders).
 
 ## Round 5 results (4.09 → 3.39 GB)
 - **Over-cloning in branch alternatives.** `cond`/`match` branches are
