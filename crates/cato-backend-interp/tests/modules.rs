@@ -12,7 +12,9 @@ fn project(case: &str, files: &[(&str, &str)]) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for (name, body) in files {
-        std::fs::write(dir.join(name), body).unwrap();
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, body).unwrap();
     }
     dir.join("main.cato")
 }
@@ -68,10 +70,9 @@ fn same_module_under_two_aliases() {
 
 #[test]
 fn same_file_reached_by_two_spellings_dedups() {
-    // `a.cato` reaches lib as `lib.cato`; `b.cato` as `./lib.cato`. Both
-    // resolve to the same file string only if spelled identically; when
-    // they differ the second is a distinct path (documented, not a crash).
-    // Pin the same-spelling case that the convention requires.
+    // Different relative spellings of the same file resolve to one
+    // canonical path (lexical `.`/`..` normalization), so both requirers
+    // see the one canonical definition set.
     let entry = project(
         "spelling",
         &[
@@ -85,9 +86,30 @@ fn same_file_reached_by_two_spellings_dedups() {
             ),
             (
                 "b.cato",
-                "(ns b) (require [\"lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n",
+                "(ns b) (require [\"./lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n",
             ),
             ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
+        ],
+    );
+    assert_eq!(run(&entry), "9\n16\n");
+}
+
+#[test]
+fn cross_directory_diamond_dedups() {
+    // `c.cato` is reached from the root as `c.cato` and from `sub/` as
+    // `../c.cato`; both normalize to the same path, so `c` loads once.
+    let entry = project(
+        "xdiamond",
+        &[
+            (
+                "main.cato",
+                "(ns m) (require [\"sub/a.cato\" :as a]) (require [\"c.cato\" :as c])\n(defn main [] :- i64 (do (print (a/g 3)) (print (c/sq 4)) 0))\n",
+            ),
+            (
+                "sub/a.cato",
+                "(ns a) (require [\"../c.cato\" :as c])\n(defn g [x :- i64] :- i64 (c/sq x))\n",
+            ),
+            ("c.cato", "(ns c)\n(defn sq [x :- i64] :- i64 (* x x))\n"),
         ],
     );
     assert_eq!(run(&entry), "9\n16\n");

@@ -15,8 +15,8 @@
 - Seed and kernel must accept/reject the same programs; the loader's errors mirror the seed's messages verbatim.
 - Only `defn` names are renamed; `extern` names are global C symbols and are never renamed (declaration or call site); `deftype`/constructor/`defgeneric`/`defmethod` names are never renamed.
 - One `main` per compilation: `cli.cato` is the kernel entry; each `_ref` file is its own entry and must not appear in another entry's graph.
-- One canonical alias per module, used in every `require` of it; one canonical relative path spelling per module (e.g. `../lib/ast.cato` from `hir/`).
-- No path normalization: dedup by resolved path string, exactly as the seed does (`dir.join(path)` concatenation).
+- One canonical alias per module, used in every `require` of it; requires use a file-relative path spelling (e.g. `../lib/ast.cato` from `hir/`).
+- Requires are resolved by joining onto the requiring file's directory and then normalizing lexically (drop `.`/empty components, resolve `..` against the preceding component, no filesystem resolution) — so a module reached from different directories dedups to one path string. (Plan defect fixed: the original "no normalization, one canonical spelling" rule cannot dedup a module required from `hir/`, `reader/` and the root — sibling `..` spellings resolve to different strings and the file double-loads, `duplicate ns`.)
 - Cycle termination: insert a file into the seen set before recursing.
 - Every kernel-source change is gated by `./tools/kernel_gate.sh` PASS and `cargo test`; all `examples/*.cato` keep exact output.
 - The kernel moved under this plan: rounds 1–13 (ownership/churn) rewrote `hir/moveck.cato`, `hir/lower.cato` and `emit/*`; the intern table is an `i64` stab handle (`stab-get`/`stab-find`/`stab-conj`) and `check-program` now takes `(defs lams facts tab adts)`. The line numbers below are anchors — re-read the files before each task.
@@ -41,7 +41,8 @@
 **Interfaces:**
 - Consumes: `reader::read_all_spanned`, `crate::ast::{Expr, Span}`, `diagnostics::{locate, with_source}` (all existing).
 - Produces: `compile_named_with`/`compile_named`/`compile_to_program` keep their current signatures and behavior for non-`require` input. New internal helpers (not public):
-  - `fn parent_join(file: &str, rel: &str) -> String` — `Path::new(file).parent().unwrap_or_default().join(rel).to_string_lossy().to_string()`.
+  - `fn parent_join(file: &str, rel: &str) -> String` — join `rel` onto `Path::new(file).parent()` then lexically `normalize_path` the result.
+  - `fn normalize_path(p: &str) -> String` — drop `.`/empty components, resolve `..` against the preceding component (leading `..` kept on relative paths, dropped at an absolute root); no filesystem resolution.
   - `fn prefixed(prefix: &str, name: &str) -> String` — `prefix` empty → `name`, else `format!("{prefix}__{name}")`.
   - `fn rewrite_alias_refs(forms: &mut [(Expr, Span)], aliases: &[(String, String)])` — rewrite `alias/name` heads to `prefixed(canon, name)` for each `(alias, canon)`; a symbol is `Expr::LitSym`.
   - `expand_file(file, src, canon_prefix, ctx) -> Result<Vec<(Expr, Span)>, String>`.
@@ -99,14 +100,24 @@ fn same_module_under_two_aliases() {
 #[test]
 fn same_file_reached_by_two_spellings_dedups() {
     // `a.cato` reaches lib as `lib.cato`; `b.cato` as `./lib.cato`. Both
-    // resolve to the same file string only if spelled identically; when
-    // they differ the second is a distinct path (documented, not a crash).
-    // Pin the same-spelling case that the convention requires.
+    // normalize to the same path, so `lib` loads once.
     let entry = project("spelling", &[
         ("main.cato", "(ns m) (require [\"a.cato\" :as a]) (require [\"b.cato\" :as b])\n(defn main [] :- i64 (do (print (a/g 3)) (print (b/g 4)) 0))\n"),
         ("a.cato", "(ns a) (require [\"lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n"),
-        ("b.cato", "(ns b) (require [\"lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n"),
+        ("b.cato", "(ns b) (require [\"./lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n"),
         ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
+    ]);
+    assert_eq!(run(&entry), "9\n16\n");
+}
+
+#[test]
+fn cross_directory_diamond_dedups() {
+    // `c.cato` reached from the root as `c.cato` and from `sub/` as
+    // `../c.cato` normalizes to one path, so `c` loads once.
+    let entry = project("xdiamond", &[
+        ("main.cato", "(ns m) (require [\"sub/a.cato\" :as a]) (require [\"c.cato\" :as c])\n(defn main [] :- i64 (do (print (a/g 3)) (print (c/sq 4)) 0))\n"),
+        ("sub/a.cato", "(ns a) (require [\"../c.cato\" :as c])\n(defn g [x :- i64] :- i64 (c/sq x))\n"),
+        ("c.cato", "(ns c)\n(defn sq [x :- i64] :- i64 (* x x))\n"),
     ]);
     assert_eq!(run(&entry), "9\n16\n");
 }
@@ -309,7 +320,7 @@ The script:
 - Defines `MODULES`: the 23 graph files (the 22 kernel files plus the new `hir/modules.cato`) and the 4 `_ref` files, each with a `(path, alias, ns_name)`; `alias` is the canonical short name (e.g. `sym`, `strbuf`, `span`, `ast`, `alist`, `result`, `read`, `rdump`, `types`, `expand`, `forms`, `hexpr`, `lower`, `moveck`, `hdump`, `state`, `scalars`, `heap`, `adt`, `closures`, `emit`, `modules`).
 - Builds `owner: name -> module path` by scanning `(defn NAME` / `(extern NAME` per file.
 - For each module: collect the set of cross-file heads (symbols at position 0 of a list, and `defn`/`extern` header neighbours, whose name is owned by another file); add `(require ["<relative path>" :as <owner alias>])` for each; rewrite those heads to `<alias>/<name>`; prepend `(ns <ns_name>)`.
-- Relative path from a file's dir to the target file (e.g. from `hir/lower.cato` to `lib/ast.cato` → `../lib/ast.cato`), one canonical spelling.
+- Relative path from a file's dir to the target file (e.g. from `hir/lower.cato` to `lib/ast.cato` → `../lib/ast.cato`); the loader normalizes, so the same file reached from different directories dedups.
 - Never rewrite: local binders, parameters, type names, constructors — only exact matches to an owner name in call/defn-head position.
 - `_ref` files: same treatment (their cross-file heads pull the modules they drive); they keep their single `main`.
 
@@ -419,4 +430,4 @@ git commit -m "test(kernel): drive require'd entries; drop concat from harnesses
 
 **Proportion:** The plan pins signatures, algorithms for the loader (which the signature does not determine), test assertions, and commands; it does not transcribe bodies of the mechanical conversion.
 
-**Review Focus coverage:** cycle → Task 1 `cycle_terminates`; two aliases → Task 1 `same_module_under_two_aliases`; duplicate spelling → Task 1 `same_file_reached_by_two_spellings_dedups` (same-spelling dedup pinned; differing spellings are documented as distinct paths); duplicate ns → Task 1 `duplicate_ns_is_rejected`; unknown alias / missing file → Task 1 `unknown_alias_is_a_build_error` and `missing_required_file_is_an_error`.
+**Review Focus coverage:** cycle → Task 1 `cycle_terminates`; two aliases → Task 1 `same_module_under_two_aliases`; differing spellings → Task 1 `same_file_reached_by_two_spellings_dedups` and `cross_directory_diamond_dedups` (both dedup via lexical normalization); duplicate ns → Task 1 `duplicate_ns_is_rejected`; unknown alias / missing file → Task 1 `unknown_alias_is_a_build_error` and `missing_required_file_is_an_error`.

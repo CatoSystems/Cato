@@ -1,0 +1,5 @@
+(ns xd.main)
+(require ["sub/a.cato" :as a])
+(require ["c.cato" :as c])
+(defn main [] :- i32
+  (do (print-i64 (a/g 3)) (print-i64 (c/sq 4)) 0))

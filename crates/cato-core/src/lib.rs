@@ -288,16 +288,47 @@ struct ModCtx {
     ns: Vec<String>,
 }
 
-/// Resolve a `require` path relative to the requiring file's directory, by
-/// raw string concatenation (no normalization), exactly as the resolver has
-/// always done.
+/// Lexically normalize a path: drop `.` and empty components and resolve
+/// `..` against the preceding component, without touching the filesystem
+/// (no symlink resolution). A leading `..` on a relative path is kept; on
+/// an absolute path it is dropped at the root. This is what lets a module
+/// reached from different directories (`../lib/ast.cato` from `hir/` and
+/// `reader/`, `lib/ast.cato` from the root) dedup to one resolved string.
+fn normalize_path(p: &str) -> String {
+    let absolute = p.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for comp in p.split('/') {
+        match comp {
+            "" | "." => {}
+            ".." => match out.last() {
+                Some(&last) if last != ".." => {
+                    out.pop();
+                }
+                _ if !absolute => out.push(".."),
+                _ => {}
+            },
+            c => out.push(c),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{}", joined)
+    } else {
+        joined
+    }
+}
+
+/// Resolve a `require` path relative to the requiring file's directory and
+/// lexically normalize the result, so the same file reached by different
+/// relative spellings dedups to one canonical path string.
 fn parent_join(file: &str, rel: &str) -> String {
-    std::path::Path::new(file)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new(""))
-        .join(rel)
-        .to_string_lossy()
-        .to_string()
+    normalize_path(
+        &std::path::Path::new(file)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new(""))
+            .join(rel)
+            .to_string_lossy(),
+    )
 }
 
 /// The canonical name of a module member: `prefix__name`, or `name` for the

@@ -36,8 +36,7 @@
 ; paths and interning
 ; ---------------------------------------------------------------------------
 
-; "a/b/c.cato" -> "a/b", "c.cato" -> "" (the seed's Path::parent+join,
-; string-concatenated, no normalization).
+; "a/b/c.cato" -> "a/b", "c.cato" -> "" (the seed's Path::parent).
 (defn path-dir [p :- str] :- str
   (path-dir-from p (- (count p) 1)))
 
@@ -48,8 +47,45 @@
       (subs p 0 i)
       (path-dir-from p (- i 1)))))
 
+; "a/b/../c" -> "a/c": drop ""/"." components and resolve ".." against the
+; preceding one, lexically (no filesystem). A leading ".." is kept on a
+; relative path and dropped at the root of an absolute one. Mirrors the
+; seed's `normalize_path`, so a module reached by different relative
+; spellings dedups to one resolved path string. Character scan (no split/
+; vector indexing): `/` ends a component, the tail is pushed at EOF.
+(defn norm-path [p :- str] :- str
+  (let [abs (= (str-byte p 0) 47)]
+    (let [start (if abs 1 0)
+          core (norm-from abs p start start (count p) "")]
+      (if abs (str "/" core) core))))
+
+(defn norm-from [abs :- bool p :- str i :- i64 seg :- i64 n :- i64 acc :- str] :- str
+  (if (>= i n)
+    (norm-push abs acc (subs p seg n))
+    (if (= (str-byte p i) 47)
+      (norm-from abs p (+ i 1) (+ i 1) n (norm-push abs acc (subs p seg i)))
+      (norm-from abs p (+ i 1) seg n acc))))
+
+; Is acc empty, or does its last component read ".."? "." and ".." are the
+; only multi-byte prefix cases; compare by hand to avoid an allocation.
+(defn dotdot-tail [acc :- str] :- bool
+  (or (= acc "..")
+      (and (>= (count acc) 3)
+           (= (str-byte acc (- (count acc) 1)) 46)
+           (= (str-byte acc (- (count acc) 2)) 46)
+           (= (str-byte acc (- (count acc) 3)) 47))))
+
+(defn norm-push [abs :- bool acc :- str comp :- str] :- str
+  (if (or (= comp "") (= comp "."))
+    acc
+    (if (= comp "..")
+      (if (= (count acc) 0)
+        (if abs "" "..")
+        (if (dotdot-tail acc) (str acc "/..") (path-dir acc)))
+      (if (= (count acc) 0) comp (str acc "/" comp)))))
+
 (defn path-join [dir :- str rel :- str] :- str
-  (if (= (count dir) 0) rel (str dir "/" rel)))
+  (norm-path (if (= (count dir) 0) rel (str dir "/" rel))))
 
 (defn mo-intern [tab :- i64 s :- str] :- i64
   (let [s0 (stab-find tab s)]

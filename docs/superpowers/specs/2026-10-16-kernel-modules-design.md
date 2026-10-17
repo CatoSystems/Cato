@@ -55,9 +55,9 @@ post-perf-round tree; the earlier draft cited 2468.) The reader primitive
 Replace the parent-prefix recursion in `expand_file` with a
 module-graph model:
 
-- Resolve the graph recursively, dedup by resolved path string (insert
-  before recursing, so cycles terminate), and assign each file a
-  **canonical alias** — the alias it is first required with.
+- Resolve the graph recursively, dedup by the normalized resolved path
+  string (insert before recursing, so cycles terminate), and assign each
+  file a **canonical alias** — the alias it is first required with.
 - Per file, in place: rename its own `defn` names `n →
   canonical__n` (headers + every ref, via the existing `rewrite_heads`
   walk) and rewrite each `localAlias/name` ref to `canonical(child)__name`
@@ -92,8 +92,8 @@ resolve-modules path forms tab state -> ORES{forms, tab, state | msg, span}
 ```
 
 - Drop `(ns name)` (validate; record in state for uniqueness).
-- For `(require [p :as a])`: child = `dirname(path) ++ "/" ++ p`; skip if
-  already in the seen set (but still register the requirer's alias
+- For `(require [p :as a])`: child = `normalize(dirname(path) ++ "/" ++ p)`;
+  skip if already in the seen set (but still register the requirer's alias
   rewrites); else record it, `slurp` the child, `read-all-with` with the
   threaded `tab`, and recurse.
 - Collect the child's `defn` name sids (externs are global, never renamed);
@@ -151,10 +151,16 @@ threads through the loader and on into `expand-all`/`compile-build`.
 
 ### 5. Path and ownership rules
 
-- Both compilers dedup requires by the resolved path **string**. Kernel
-  source must use one canonical relative spelling per module (e.g.
-  `../lib/ast.cato` from `hir/`); both implement the same
-  `dirname`+`join` with no normalization.
+- Both compilers dedup requires by the **normalized** resolved path
+  string. Resolution joins the require path onto the requiring file's
+  directory and then normalizes lexically (drop `.`/empty components,
+  resolve `..` against the preceding component, no filesystem/symlink
+  resolution). Kernel source uses a file-relative spelling per module
+  (e.g. `../lib/ast.cato` from `hir/`); normalization collapses the many
+  spellings of one file across directories into a single canonical path
+  string, so a module reached from `hir/`, `reader/` and the root loads
+  once. (Without normalization, sibling directories resolve `..` to
+  different strings and the same module double-loads — `duplicate ns`.)
 - The loader inserts a file into the seen set before recursing (cycle
   termination), same as the seed.
 - `unclone.py`/`autoclone.py` keep working: they transform single files,
@@ -174,8 +180,9 @@ threads through the loader and on into `expand-all`/`compile-build`.
   instead of re-prefixing). Externally visible only in IR symbol names;
   no test depends on them.
 - **Path spelling drift** would silently double-load a module (duplicate
-  defns) or miss a dedup. Mitigated by a single canonical spelling per
-  module and the seed's duplicate-defn rejection.
+  defns) or miss a dedup. Mitigated by lexical normalization (both
+  compilers implement the same `normalize_path`) and the seed's
+  duplicate-defn/duplicate-ns rejection.
 
 ## Verification
 
