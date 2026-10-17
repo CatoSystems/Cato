@@ -1,3 +1,14 @@
+(ns cato.emit.emit)
+(require ["../hir/forms.cato" :as forms])
+(require ["state.cato" :as state])
+(require ["../lib/strbuf.cato" :as strbuf])
+(require ["../hir/types.cato" :as types])
+(require ["scalars.cato" :as scalars])
+(require ["../hir/hexpr.cato" :as hexpr])
+(require ["heap.cato" :as heap])
+(require ["adt.cato" :as adt])
+(require ["closures.cato" :as closures])
+
 
 
 ; emit.cato — S7: module assembly — the port of the seed emitter's
@@ -8,24 +19,24 @@
 ; plumbing), extern declares, lambda bodies + their drop glue.
 
 (defn facts-owns-of [adts :- AdtTab] :- Sids
-  (match (facts-compute adts)
+  (match (forms/facts-compute adts)
     (Facts [owns] owns)))
 
 (defn md-seed-decls [m :- Mdl] :- Mdl
-  (md-decl
-    (md-decl
-      (md-decl
-        (md-decl
-          (md-decl
-            (md-decl
-              (md-decl
-                (md-decl
-                  (md-decl
-                    (md-decl
-                      (md-decl
-                        (md-decl
-                          (md-decl
-                            (md-decl (md-decl (md-decl m "declare void @cato_args_init(i32, ptr)") "declare ptr @cato_args(ptr)") "declare ptr @malloc(i64)")
+  (state/md-decl
+    (state/md-decl
+      (state/md-decl
+        (state/md-decl
+          (state/md-decl
+            (state/md-decl
+              (state/md-decl
+                (state/md-decl
+                  (state/md-decl
+                    (state/md-decl
+                      (state/md-decl
+                        (state/md-decl
+                          (state/md-decl
+                            (state/md-decl (state/md-decl (state/md-decl m "declare void @cato_args_init(i32, ptr)") "declare ptr @cato_args(ptr)") "declare ptr @malloc(i64)")
                             "declare void @free(ptr)")
                           "declare ptr @strdup(ptr)")
                         "declare ptr @cato_str_vec_copy(ptr, i64, i64)")
@@ -44,27 +55,27 @@
   (match m (Mdl [tab g globals decls adts owns csigs] (clone globals))))
 
 (defn adt-name-at [adts :- AdtTab i :- i64 tab :- i64] :- str
-  (match (adts-at adts i)
-    (AdtInfo [name tps variants tpl tplargs] (sym-str (clone tab) name))))
+  (match (forms/adts-at adts i)
+    (AdtInfo [name tps variants tpl tplargs] (forms/sym-str (clone tab) name))))
 
 (defn adt-type-lines [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                       sb :- StrBuf] :- StrBuf
-  (if (>= i (adts-depth adts))
+  (if (>= i (forms/adts-depth adts))
     sb
     (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
-          n (fs-total adts owns i)]
+          n (state/fs-total adts owns i)]
       (adt-type-lines adts owns (+ i 1) tab
-                      (sb-add-line sb (str "%" nm " = type { i64, [" n " x i64] }"))))))
+                      (strbuf/sb-add-line sb (str "%" nm " = type { i64, [" n " x i64] }"))))))
 
 (defn adt-glue [adts :- AdtTab owns :- Sids i :- i64 tab :- i64
                 sb :- StrBuf] :- StrBuf
-  (if (>= i (adts-depth adts))
+  (if (>= i (forms/adts-depth adts))
     sb
-    (let [sb1 (if (= (sids-idx owns i) 1)
-                (sb-add-line
-                  (sb-add-line
-                    (sb-add-line
-                      (sb-add-line sb (adt-clone-text (clone adts) (clone owns) i (clone (clone tab))))
+    (let [sb1 (if (= (types/sids-idx owns i) 1)
+                (strbuf/sb-add-line
+                  (strbuf/sb-add-line
+                    (strbuf/sb-add-line
+                      (strbuf/sb-add-line sb (adt-clone-text (clone adts) (clone owns) i (clone (clone tab))))
                       (adt-drop-text (clone adts) (clone owns) i (clone (clone tab))))
                     "")
                   "")
@@ -72,7 +83,7 @@
       (adt-glue adts owns (+ i 1) (clone tab) sb1))))
 
 (defn glue-switch [adts :- AdtTab i :- i64 vi :- i64 dflt :- str] :- str
-  (if (>= vi (vlist-depth (adts-variants-at adts i)))
+  (if (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
     (if (> vi 0)
       (str "  ]\n")
       "")
@@ -84,8 +95,8 @@
 
 (defn adt-clone-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
   (let [nm (adt-name-at (clone adts) i (clone (clone tab)))
-        slots (fs-total adts owns i)
-        nv (vlist-depth (adts-variants-at adts i))]
+        slots (state/fs-total adts owns i)
+        nv (forms/vlist-depth (forms/adts-variants-at adts i))]
     (str "define ptr @clone__" nm "(ptr %src) {\n"
          "entry:\n"
          "  %box = call ptr @malloc(i64 " (* 8 (+ slots 1)) ")\n"
@@ -100,7 +111,7 @@
 
 (defn adt-clone-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                           tab :- i64] :- str
-  (if (>= vi (vlist-depth (adts-variants-at adts i)))
+  (if (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
     ""
     (str "v" vi ":\n"
          (adt-clone-fields (clone adts) (clone owns) i vi 0 0 (clone tab) "")
@@ -109,12 +120,12 @@
 
 (defn adt-clone-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
                         serial :- i64 tab :- i64 acc :- str] :- str
-  (if (>= k (tys-depth (varnt-fields-at adts i vi)))
+  (if (>= k (types/tys-depth (forms/varnt-fields-at adts i vi)))
     acc
-    (let [fty (fs-field-ty adts i vi k)
-          off (fs-off adts owns i vi k)
+    (let [fty (state/fs-field-ty adts i vi k)
+          off (state/fs-off adts owns i vi k)
           nm (adt-name-at (clone adts) i (clone tab))
-          tg (ty-tag fty)]
+          tg (types/ty-tag fty)]
       (adt-clone-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
                         (str acc (clone-field-text fty off nm adts owns vi serial tg (clone tab)))))))
 
@@ -132,7 +143,7 @@
            "  store i64 %ni" u ", ptr %dp" u "\n")
 
       (= tg 15)
-      (let [el (ty-arg fty)
+      (let [el (types/ty-arg fty)
             cp (if (= el 2)
                  (str "  %vcp" u " = call ptr @cato_str_vec_copy(ptr %vptr" u ", i64 %vl" u "k1, i64 %vl" u "k2)\n")
                  (str "  %vnb" u " = mul i64 %vl" u "k2, 8\n"
@@ -156,8 +167,8 @@
              "  store i64 %vl" u "k2, ptr %vd" u "k2\n"))
 
       (= tg 16)
-      (let [j (ty-arg fty)]
-        (if (= (sids-idx owns j) 1)
+      (let [j (types/ty-arg fty)]
+        (if (= (types/sids-idx owns j) 1)
           (let [child (adt-name-at (clone adts) j (clone tab))]
             (str "  %sp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
                  "  %sl" u " = load i64, ptr %sp" u "\n"
@@ -166,9 +177,9 @@
                  "  %dp" u " = getelementptr inbounds %" nm ", ptr %box, i32 0, i32 1, i32 " off "\n"
                  "  %ni" u " = ptrtoint ptr %nc" u " to i64\n"
                  "  store i64 %ni" u ", ptr %dp" u "\n"))
-          (adt-clone-words nm off (fs-count (clone fty) owns adts) u)))
+          (adt-clone-words nm off (state/fs-count (clone fty) owns adts) u)))
 
-      (adt-clone-words nm off (fs-count fty owns adts) u))))
+      (adt-clone-words nm off (state/fs-count fty owns adts) u))))
 
 (defn adt-clone-words [nm :- str off :- i64 cnt :- i64 u :- str] :- str
   (if (= cnt 0)
@@ -193,9 +204,9 @@
 
 (defn adt-drop-variants [adts :- AdtTab owns :- Sids i :- i64 vi :- i64
                          tab :- i64] :- str
-  (if (>= vi (vlist-depth (adts-variants-at adts i)))
+  (if (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
     ""
-    (let [tail (if (> (vlist-depth (adts-variants-at adts i)) 0) "freebox" "done")]
+    (let [tail (if (> (forms/vlist-depth (forms/adts-variants-at adts i)) 0) "freebox" "done")]
       (str "v" vi ":\n"
            (adt-drop-fields (clone adts) (clone owns) i vi 0 0 (clone tab) "")
            "  br label %" tail "\n\n"
@@ -203,12 +214,12 @@
 
 (defn adt-drop-fields [adts :- AdtTab owns :- Sids i :- i64 vi :- i64 k :- i64
                        serial :- i64 tab :- i64 acc :- str] :- str
-  (if (>= k (tys-depth (varnt-fields-at adts i vi)))
+  (if (>= k (types/tys-depth (forms/varnt-fields-at adts i vi)))
     acc
-    (let [fty (fs-field-ty adts i vi k)
-          off (fs-off adts owns i vi k)
+    (let [fty (state/fs-field-ty adts i vi k)
+          off (state/fs-off adts owns i vi k)
           nm (adt-name-at (clone adts) i (clone tab))
-          tg (ty-tag fty)]
+          tg (types/ty-tag fty)]
       (adt-drop-fields (clone adts) (clone owns) i vi (+ k 1) (+ serial 1) (clone tab)
                        (str acc (drop-field-text fty off nm adts owns vi serial tg (clone tab)))))))
 
@@ -223,7 +234,7 @@
            "  call void @free(ptr %fv" u ")\n")
 
       (= tg 15)
-      (let [el (ty-arg fty)]
+      (let [el (types/ty-arg fty)]
         (str "  %vp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
              "  %vl" u " = load i64, ptr %vp" u "\n"
              "  %vv" u " = inttoptr i64 %vl" u " to ptr\n"
@@ -234,8 +245,8 @@
                (str "  call void @free(ptr %vv" u ")\n"))))
 
       (= tg 16)
-      (let [j (ty-arg fty)]
-        (if (= (sids-idx owns j) 1)
+      (let [j (types/ty-arg fty)]
+        (if (= (types/sids-idx owns j) 1)
           (let [child (adt-name-at adts j (clone tab))]
             (str "  %cp" u " = getelementptr inbounds %" nm ", ptr %src, i32 0, i32 1, i32 " off "\n"
                  "  %cl" u " = load i64, ptr %cp" u "\n"
@@ -252,37 +263,37 @@
                     tab :- i64] :- str
   (do
   (let [owns (facts-owns-of (clone adts))
-        sigs (sigs-build (clone defs) (ESTNil))
-        st0 (match (em-new (clone tab) (clone adts) (clone owns) csigs sigs)
+        sigs (state/sigs-build (clone defs) (ESTNil))
+        st0 (match (state/em-new (clone tab) (clone adts) (clone owns) csigs sigs)
               (Emit [c m s] (Emit c (md-seed-decls m) s)))]
-    (match (emit-defns defs st0 (EOut (sb-new)))
+    (match (emit-defns defs st0 (EOut (strbuf/sb-new)))
       (EORes [st1 out1]
         (do
         (match (emit-lams lams st1 out1)
           (EORes [st2 out2]
             (do
             (let [mdl (match st2 (Emit [c m s] m))
-                  sb1 (sb-add-line (sb-new) "; cato: kernel LLVM IR (S7)")
-                  sb2 (sb-add-line sb1 "%VecI64 = type { ptr, i64, i64 }")
-                  sb3 (sb-add-line sb2 "%Closure = type { ptr, ptr, ptr }")
+                  sb1 (strbuf/sb-add-line (strbuf/sb-new) "; cato: kernel LLVM IR (S7)")
+                  sb2 (strbuf/sb-add-line sb1 "%VecI64 = type { ptr, i64, i64 }")
+                  sb3 (strbuf/sb-add-line sb2 "%Closure = type { ptr, ptr, ptr }")
                   sb4 (adt-type-lines (clone adts) (clone owns) 0 (clone tab) sb3)
-                  sb5 (md-decls-lines mdl sb4)
-                  sb6 (sb-add-line sb5 (sb-str (md-globals mdl)))
+                  sb5 (state/md-decls-lines mdl sb4)
+                  sb6 (strbuf/sb-add-line sb5 (strbuf/sb-str (md-globals mdl)))
                   sb7 (adt-glue adts owns 0 (clone tab) sb6)]
               (do
-              (sb-str (sb-add-line sb7 (sb-str (out2-sb out2)))))))))))))))
+              (strbuf/sb-str (strbuf/sb-add-line sb7 (strbuf/sb-str (out2-sb out2)))))))))))))))
 
 (defn out2-sb [o :- EOut] :- StrBuf
   (match o (EOut [sb] sb)))
 
 (defn extern-ret-ll [ret :- Ty] :- str
-  (let [tg (ty-tag ret)]
+  (let [tg (types/ty-tag ret)]
     (cond
       (= tg 0) "i64"
       (= tg 9) "double"
       (= tg 11) "i1"
       (= tg 12) "ptr"
-      (do (cg-fail-i "extern return must be i64, f64, bool or str") "i64"))))
+      (do (state/cg-fail-i "extern return must be i64, f64, bool or str") "i64"))))
 
 (defn extern-params [params :- PList] :- str
   (match params
@@ -290,14 +301,14 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb]
-          (let [tg (ty-tag ty)]
+          (let [tg (types/ty-tag ty)]
             (cond
               (= tg 15) (extern-params-rest (clone t) "ptr noalias nocapture readonly %data, i64 %len")
               (= tg 9) (extern-params-rest (clone t) "double")
               (= tg 11) (extern-params-rest (clone t) "i1")
               (= tg 12) (extern-params-rest (clone t) "ptr")
-              (< tg 12) (extern-params-rest t (ll-scalar ty))
-              (do (cg-fail-i "extern params must be scalars, strings or vectors") ""))))))))
+              (< tg 12) (extern-params-rest t (state/ll-scalar ty))
+              (do (state/cg-fail-i "extern params must be scalars, strings or vectors") ""))))))))
 
 (defn extern-params-rest [params :- PList acc :- str] :- str
   (match params
@@ -305,14 +316,14 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb]
-          (let [tg (ty-tag ty)]
+          (let [tg (types/ty-tag ty)]
             (cond
               (= tg 15) (extern-params-rest (clone t) (str acc ", ptr noalias nocapture readonly %data, i64 %len"))
               (= tg 9) (extern-params-rest (clone t) (str acc ", double"))
               (= tg 11) (extern-params-rest (clone t) (str acc ", i1"))
               (= tg 12) (extern-params-rest (clone t) (str acc ", ptr"))
-              (< tg 12) (extern-params-rest t (str acc ", " (ll-scalar ty)))
-              (do (cg-fail-i "extern params must be scalars, strings or vectors") acc))))))))
+              (< tg 12) (extern-params-rest t (str acc ", " (state/ll-scalar ty)))
+              (do (state/cg-fail-i "extern params must be scalars, strings or vectors") acc))))))))
 
 (deftype EDRes (EDRes [st :- Emit text :- str]))
 (deftype ELPR (ELPR [mdl :- Mdl text :- str drop-text :- str]))
@@ -321,8 +332,8 @@
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (str header "entry:\n"
-           (sb-str pre)
-           (sb-str body)
+           (strbuf/sb-str pre)
+           (strbuf/sb-str body)
            tail))))
 
 (defn emit-defns [ds :- Defns st :- Emit out :- EOut] :- EORes
@@ -337,15 +348,15 @@
                 ; externs join the deduplicated up-front declares block
                 ; (the seed's Vec::contains chain), not the function text.
                 (let [line (str "declare " (extern-ret-ll ret) " @"
-                                (mangle (md-sym mdl name))
+                                (state/mangle (state/md-sym mdl name))
                                 "(" (extern-params params) ")")]
-                  (emit-defns t (em-decl st line) out))
+                  (emit-defns t (scalars/em-decl st line) out))
                 (match (emit-plain name params (clone ret) body
-                                   (Emit (fn-new) mdl sigs))
+                                   (Emit (state/fn-new) mdl sigs))
                   (EDRes [st2 text]
                     (emit-defns t st2
-                                (EOut (sb-add-line
-                                       (sb-add-line (out2-sb out) text)
+                                (EOut (strbuf/sb-add-line
+                                       (strbuf/sb-add-line (out2-sb out) text)
                                        "")))))))))))))
 
 (defn param-scalar [t :- PList pname :- i64 pty :- Ty r :- str ll :- str
@@ -353,7 +364,7 @@
   (let [p2 (if (> (count acc) 0)
              (str acc ", " ll " " r)
              (str acc ll " " r))]
-    (match (defn-params t (em-sc-put st pname r pty) p2)
+    (match (defn-params t (scalars/em-sc-put st pname r pty) p2)
       (ET2Res [st2 acc2 _] (ET2Res st2 acc2 "") ))))
 
 (defn defn-params [ps :- PList st :- Emit acc :- str] :- ET2Res
@@ -364,60 +375,60 @@
         (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
-              (let [nstr (md-sym mdl pname)
-                    r (str "%" (mangle nstr))
-                    tg (ty-tag pty)]
+              (let [nstr (state/md-sym mdl pname)
+                    r (str "%" (state/mangle nstr))
+                    tg (types/ty-tag pty)]
                 (cond
                   (= tg 15)
-                  (let [el (ty-arg pty)
-                        d (str "%" (mangle nstr) "_data")
-                        l (str "%" (mangle nstr) "_len")
+                  (let [el (types/ty-arg pty)
+                        d (str "%" (state/mangle nstr) "_data")
+                        l (str "%" (state/mangle nstr) "_len")
                         p2 (if (> (count acc) 0)
                              (str acc ", ptr noalias nocapture readonly " d ", i64 " l)
                              (str acc "ptr noalias nocapture readonly " d ", i64 " l))]
-                    (match (defn-params (clone t) (em-vc-put st pname d l el) p2)
+                    (match (defn-params (clone t) (scalars/em-vc-put st pname d l el) p2)
                       (ET2Res [st2 acc2 _] (ET2Res st2 acc2 ""))))
 
                   (= tg 17)
                   (let [p2 (if (> (count acc) 0)
                              (str acc ", %Closure " r)
                              (str acc "%Closure " r))]
-                    (match (em-temp st)
+                    (match (scalars/em-temp st)
                       (ETRes [st1 slot]
-                        (match (em-ins st1 (str "~ = alloca %Closure, align 8"))
+                        (match (scalars/em-ins st1 (str "~ = alloca %Closure, align 8"))
                           (ETRes [st2 slot2]
-                            (let [st3 (em-line st2 (str "  store %Closure " r ", ptr " slot2 ", align 8"))]
-                              (match (defn-params (clone t) (em-sc-put st3 pname slot2 pty) p2)
+                            (let [st3 (scalars/em-line st2 (str "  store %Closure " r ", ptr " slot2 ", align 8"))]
+                              (match (defn-params (clone t) (scalars/em-sc-put st3 pname slot2 pty) p2)
                                 (ET2Res [st4 acc2 _] (ET2Res st4 acc2 "")))))))))
 
                   (= tg 16)
-                  (let [boxed (md-owns-at mdl (ty-arg pty))]
+                  (let [boxed (state/md-owns-at mdl (types/ty-arg pty))]
                     (if (= boxed 1)
                       (let [p2 (if (> (count acc) 0)
                                  (str acc ", ptr " r)
                                  (str acc "ptr " r))]
-                        (match (defn-params (clone t) (em-sc-put st pname r pty) p2)
+                        (match (defn-params (clone t) (scalars/em-sc-put st pname r pty) p2)
                           (ET2Res [st2 acc2 _] (ET2Res st2 acc2 ""))))
-                      (let [nm (md-adt-name mdl (ty-arg pty))
+                      (let [nm (state/md-adt-name mdl (types/ty-arg pty))
                             p2 (if (> (count acc) 0)
                                  (str acc ", %" nm " " r)
                                  (str acc "%" nm " " r))]
-                        (match (em-temp st)
+                        (match (scalars/em-temp st)
                           (ETRes [st1 slot]
-                            (let [st2 (em-pre st1 (str slot " = alloca %" nm ", align 8"))
-                                  st3 (em-line st2 (str "  store %" nm " " r ", ptr " slot ", align 8"))]
-                              (match (defn-params (clone t) (em-sc-put st3 pname slot pty) p2)
+                            (let [st2 (scalars/em-pre st1 (str slot " = alloca %" nm ", align 8"))
+                                  st3 (scalars/em-line st2 (str "  store %" nm " " r ", ptr " slot ", align 8"))]
+                              (match (defn-params (clone t) (scalars/em-sc-put st3 pname slot pty) p2)
                                 (ET2Res [st4 acc2 _] (ET2Res st4 acc2 "")))))))))
 
                   (= tg 9) (param-scalar (clone t) pname pty r "double" acc st)
                   (= tg 10) (param-scalar (clone t) pname pty r "float" acc st)
                   (= tg 11) (param-scalar (clone t) pname pty r "i1" acc st)
                   (= tg 12) (param-scalar (clone t) pname pty r "ptr" acc st)
-                  (< tg 12) (param-scalar t pname pty r (ll-scalar pty) acc st)
-                  (ET2Res (do (cg-fail-i "unresolved type parameter in params") st) "" ""))))))))))
+                  (< tg 12) (param-scalar t pname pty r (state/ll-scalar pty) acc st)
+                  (ET2Res (do (state/cg-fail-i "unresolved type parameter in params") st) "" ""))))))))))
 
 (defn defn-ret-ll [ret :- Ty mdl :- &Mdl] :- str
-  (let [tg (ty-tag ret)]
+  (let [tg (types/ty-tag ret)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
@@ -425,18 +436,18 @@
       (= tg 12) "ptr"
       (= tg 15) "%VecI64"
       (= tg 16)
-      (if (= (md-owns-at mdl (ty-arg ret)) 1)
+      (if (= (state/md-owns-at mdl (types/ty-arg ret)) 1)
         "ptr"
-        (str "%" (md-adt-name mdl (ty-arg ret))))
-      (< tg 12) (ll-scalar ret)
+        (str "%" (state/md-adt-name mdl (types/ty-arg ret))))
+      (< tg 12) (state/ll-scalar ret)
       "i64")))
 
 (defn emit-plain [name :- i64 params :- PList ret :- Ty body :- HExpr
                   st :- Emit] :- EDRes
   (match st
     (Emit [c mdl sigs]
-      (let [nm-str (md-sym mdl name)
-            fname (mangle nm-str)
+      (let [nm-str (state/md-sym mdl name)
+            fname (state/mangle nm-str)
             ismain (= nm-str "main")]
         (match (defn-params params st "")
           (ET2Res [st1 pstr _]
@@ -454,71 +465,71 @@
                                      (defn-ret-ll ret m2))
                             header (str "define " ret-ll " @" fname "(" ps2 ") {\n")
                             tail (if ismain "\n  ret i32 0\n}\n" "\n}\n")]
-                        (EDRes (Emit (fn-new) m2 s2)
+                        (EDRes (Emit (state/fn-new) m2 s2)
                               (fn-text header c2 tail))))) ))) ))))))
 
 (defn defn-body [ismain :- bool ret :- Ty body :- HExpr st :- Emit] :- ET2Res
   (if ismain
-    (let [st1 (em-line st "  call void @cato_args_init(i32 %argc, ptr %argv)")
+    (let [st1 (scalars/em-line st "  call void @cato_args_init(i32 %argc, ptr %argv)")
           forms (match body
                   (HSeq [es] es)
                   (_ (HECons (clone body) (HENil))))]
-      (ET2Res (emit-stmts forms st1) "" ""))
-    (let [tg (ty-tag ret)]
+      (ET2Res (scalars/emit-stmts forms st1) "" ""))
+    (let [tg (types/ty-tag ret)]
       (cond
         (= tg 15)
-        (match (emit-vec-pair body st)
+        (match (heap/emit-vec-pair body st)
           (EVRes [st1 p l el]
-            (match (em-ins2 st1
+            (match (state/em-ins2 st1
                      (str "~ = insertvalue %VecI64 undef, ptr " p ", 0")
                      (str "~ = insertvalue %VecI64 ^1, i64 " l ", 1"))
               (ET2Res [st2 s0 s1]
-                (let [st3 (em-line st2 (str "  ret %VecI64 " s1))]
+                (let [st3 (scalars/em-line st2 (str "  ret %VecI64 " s1))]
                   (ET2Res st3 "" "")) ))))
 
         (= tg 16)
-        (let [ai (ty-arg ret)
-              boxed (em-boxed-at st ai)]
-          (match (emit-adt body st)
+        (let [ai (types/ty-arg ret)
+              boxed (state/em-boxed-at st ai)]
+          (match (adt/emit-adt body st)
             (ESRes [st1 v]
               (if (= boxed 1)
-                (let [st2 (em-line st1 (str "  ret ptr " v))]
+                (let [st2 (scalars/em-line st1 (str "  ret ptr " v))]
                   (ET2Res st2 "" ""))
-                (let [nm (em-adt-name st1 ai)]
-                  (match (em-ins st1 (str "~ = load %" nm ", ptr " v ", align 8"))
+                (let [nm (state/em-adt-name st1 ai)]
+                  (match (scalars/em-ins st1 (str "~ = load %" nm ", ptr " v ", align 8"))
                     (ETRes [st2 lv]
-                      (let [st3 (em-line st2 (str "  ret %" nm " " lv))]
+                      (let [st3 (scalars/em-line st2 (str "  ret %" nm " " lv))]
                         (ET2Res st3 "" "")))))))))
 
-        (match (emit-typed body (clone ret) st)
+        (match (scalars/emit-typed body (clone ret) st)
             (ESRes [st1 v]
               (let [ret-ll (cond
                              (= tg 11) "i1"
                              (= tg 12) "ptr"
-                             (< tg 12) (ll-scalar ret)
+                             (< tg 12) (state/ll-scalar ret)
                              "i64")
-                    st2 (em-line st1 (str "  ret " ret-ll " " v))]
+                    st2 (scalars/em-line st1 (str "  ret " ret-ll " " v))]
                 (ET2Res st2 "" ""))))))))
 
 (defn lambda-ll [ty :- Ty] :- str
-  (let [tg (ty-tag ty)]
+  (let [tg (types/ty-tag ty)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
       (= tg 11) "i1"
       (= tg 12) "ptr"
-      (< tg 12) (ll-scalar ty)
-      (do (cg-fail-i "lambda param type not supported") "i64"))))
+      (< tg 12) (state/ll-scalar ty)
+      (do (state/cg-fail-i "lambda param type not supported") "i64"))))
 
 (defn lambda-ret-ll [ret :- Ty] :- str
-  (let [tg (ty-tag ret)]
+  (let [tg (types/ty-tag ret)]
     (cond
       (= tg 9) "double"
       (= tg 10) "float"
       (= tg 11) "i1"
       (= tg 12) "ptr"
-      (< tg 12) (ll-scalar ret)
-      (do (cg-fail-i "lambda ret type not supported") "i64"))))
+      (< tg 12) (state/ll-scalar ret)
+      (do (state/cg-fail-i "lambda ret type not supported") "i64"))))
 
 (defn lambda-params [ps :- PList mdl :- &Mdl] :- str
   (match ps
@@ -526,7 +537,7 @@
     (PCons [h t]
       (match h
         (Param [pname pty _pb]
-          (str ", " (lambda-ll pty) " %" (mangle (md-sym mdl pname))
+          (str ", " (lambda-ll pty) " %" (state/mangle (state/md-sym mdl pname))
                (lambda-params t mdl)))))))
 
 (defn lambda-bind-params [ps :- PList st :- Emit] :- EURes
@@ -537,30 +548,30 @@
         (Param [pname pty _pb]
           (match st
             (Emit [c mdl sigs]
-              (let [r (str "%" (mangle (md-sym mdl pname)))]
-                (match (lambda-bind-params t (em-sc-put st pname r pty))
+              (let [r (str "%" (state/mangle (state/md-sym mdl pname)))]
+                (match (lambda-bind-params t (scalars/em-sc-put st pname r pty))
                   (EURes [st2] (EURes st2)))))))))))
 
 (defn lambda-cap-vec-word [at :- i64 k :- i64 slot :- str st :- Emit] :- EURes
-  (match (em-ins3 st
+  (match (state/em-ins3 st
            (str "~ = getelementptr inbounds i64, ptr %env, i64 " at)
            (str "~ = load i64, ptr ^1, align 8")
            (str "~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 " k))
     (ET3Res [st1 f raw dst]
       (if (= k 0)
-        (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
+        (match (scalars/em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
           (ETRes [st2 p]
-            (EURes (em-line st2 (str "  store ptr " p ", ptr " dst ", align 8")))))
-        (EURes (em-line st1 (str "  store i64 " raw ", ptr " dst ", align 8")))))))
+            (EURes (scalars/em-line st2 (str "  store ptr " p ", ptr " dst ", align 8")))))
+        (EURes (scalars/em-line st1 (str "  store i64 " raw ", ptr " dst ", align 8")))))))
 
 (defn lambda-cap-clo-word [at :- i64 k :- i64 slot :- str st :- Emit] :- EURes
-  (match (em-ins4 st
+  (match (state/em-ins4 st
            (str "~ = getelementptr inbounds i64, ptr %env, i64 " at)
            (str "~ = load i64, ptr ^1, align 8")
            (str "~ = getelementptr inbounds %Closure, ptr " slot ", i32 0, i32 " k)
            (str "~ = inttoptr i64 ^2 to ptr"))
     (ET4Res [st1 f raw dst p]
-      (EURes (em-line st1 (str "  store ptr " p ", ptr " dst ", align 8"))))))
+      (EURes (scalars/em-line st1 (str "  store ptr " p ", ptr " dst ", align 8"))))))
 
 (deftype EPR2 (EPR2 [st :- Emit v :- str]))
 
@@ -570,59 +581,59 @@
     (CCons [cname ty own next]
       (match st
         (Emit [c mdl sigs]
-          (let [tg (ty-tag ty)]
+          (let [tg (types/ty-tag ty)]
             (cond
               (= tg 15)
-              (match (em-temp st)
+              (match (scalars/em-temp st)
                 (ETRes [st1 slot]
-                  (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))]
+                  (let [st2 (scalars/em-pre st1 (str slot " = alloca %VecI64, align 8"))]
                     (match (lambda-cap-vec-word at 0 slot st2)
                       (EURes [st3]
                         (match (lambda-cap-vec-word (+ at 1) 1 slot st3)
                           (EURes [st4]
                             (match (lambda-cap-vec-word (+ at 2) 2 slot st4)
                               (EURes [st5]
-                                (match (lambda-load-caps (clone next) (+ at 3) (em-gr-put st5 cname slot (vec-elem-of ty)))
+                                (match (lambda-load-caps (clone next) (+ at 3) (scalars/em-gr-put st5 cname slot (heap/vec-elem-of ty)))
                                   (ET2Res [st6 at6 _] (ET2Res st6 at6 "") )))))))))))
 
               (= tg 17)
-              (match (em-temp st)
+              (match (scalars/em-temp st)
                 (ETRes [st1 slot]
-                  (let [st2 (em-pre st1 (str slot " = alloca %Closure, align 8"))]
+                  (let [st2 (scalars/em-pre st1 (str slot " = alloca %Closure, align 8"))]
                     (match (lambda-cap-clo-word at 0 slot st2)
                       (EURes [st3]
                         (match (lambda-cap-clo-word (+ at 1) 1 slot st3)
                           (EURes [st4]
                             (match (lambda-cap-clo-word (+ at 2) 2 slot st4)
                               (EURes [st5]
-                                (match (lambda-load-caps (clone next) (+ at 3) (em-sc-put st5 cname slot ty))
+                                (match (lambda-load-caps (clone next) (+ at 3) (scalars/em-sc-put st5 cname slot ty))
                                   (ET2Res [st6 at6 _] (ET2Res st6 at6 "") )))))))))))
 
               (= tg 11)
-              (match (em-ins2 st
+              (match (state/em-ins2 st
                        (str "~ = getelementptr inbounds i64, ptr %env, i64 " at)
                        (str "~ = load i8, ptr ^1, align 8"))
                 (ET2Res [st1 f v]
-                  (match (em-ins st1 (str "~ = trunc i8 " v " to i1"))
+                  (match (scalars/em-ins st1 (str "~ = trunc i8 " v " to i1"))
                     (ETRes [st2 b]
-                      (match (lambda-load-caps (clone next) (+ at 1) (em-sc-put st2 cname b ty))
+                      (match (lambda-load-caps (clone next) (+ at 1) (scalars/em-sc-put st2 cname b ty))
                         (ET2Res [st3 at3 _] (ET2Res st3 at3 "") )))) ))
 
-              (match (em-ins2 st
+              (match (state/em-ins2 st
                          (str "~ = getelementptr inbounds i64, ptr %env, i64 " at)
                          (str "~ = load i64, ptr ^1, align 8"))
                   (ET2Res [st1 f raw]
                     (let [r2 (cond
                                (= tg 12)
-                               (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
+                               (match (scalars/em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
                                  (ETRes [st3 p] (EPR2 st3 p)))
                                (= tg 16)
-                               (match (em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
+                               (match (scalars/em-ins st1 (str "~ = inttoptr i64 " raw " to ptr"))
                                  (ETRes [st3 p] (EPR2 st3 p)))
                                (EPR2 st1 raw))]
                       (match r2
                         (EPR2 [st3 v]
-                          (match (lambda-load-caps next (+ at (capture-slots ty)) (em-sc-put st3 cname v ty))
+                          (match (lambda-load-caps next (+ at (closures/capture-slots ty)) (scalars/em-sc-put st3 cname v ty))
                             (ET2Res [st4 at4 _] (ET2Res st4 at4 "") ))))) )))))))))
 
 (defn lambda-body [mname :- str caps :- Caps params :- PList ret :- Ty
@@ -631,20 +642,20 @@
     (EURes [st1]
       (match (lambda-load-caps caps 1 st1)
         (ET2Res [st2 at2 _]
-          (match (emit-typed body (clone ret) st2)
+          (match (scalars/emit-typed body (clone ret) st2)
             (ESRes [st3 v]
               (let [ll (lambda-ret-ll ret)
                     st4 (if (= ll "double")
-                          (em-line st3 (str "  %retv = fadd double " v ", 0.000000e+00"))
+                          (scalars/em-line st3 (str "  %retv = fadd double " v ", 0.000000e+00"))
                           (if (= ll "i1")
-                            (em-line st3 (str "  %retv = xor i1 " v ", false"))
-                            (em-line st3 (str "  %retv = add " ll " " v ", 0"))))]
+                            (scalars/em-line st3 (str "  %retv = xor i1 " v ", false"))
+                            (scalars/em-line st3 (str "  %retv = add " ll " " v ", 0"))))]
                 (ET2Res st4 "" "")))) )))))
 
 (defn emit-lambda-pair [mangled :- i64 caps :- Caps params :- PList ret :- Ty
                         body :- HExpr mdl :- Mdl sigs :- ESigTab] :- ELPR
-  (let [mname (md-sym mdl mangled)
-        st0 (Emit (fn-new) mdl sigs)]
+  (let [mname (state/md-sym mdl mangled)
+        st0 (Emit (state/fn-new) mdl sigs)]
     (match (lambda-body mname (clone caps) (clone params) (clone ret)
                         body st0)
       (ET2Res [st1 btext _]
@@ -669,10 +680,10 @@
               (match (emit-lambda-pair mangled caps params
                                        ret body mdl (clone sigs))
                 (ELPR [mdl2 text drop-text]
-                  (emit-lams t (Emit (fn-new) mdl2 sigs)
-                             (EOut (sb-add-line
-                                    (sb-add-line
-                                      (sb-add-line (out2-sb out) text)
+                  (emit-lams t (Emit (state/fn-new) mdl2 sigs)
+                             (EOut (strbuf/sb-add-line
+                                    (strbuf/sb-add-line
+                                      (strbuf/sb-add-line (out2-sb out) text)
                                       drop-text)
                                     ""))))))))))))
 
@@ -684,10 +695,10 @@
     (CNil [] (CSxNil))
     (CCons [name ty own next]
       (CSxCons (ECapSlot ty own at bit)
-               (caps-with-slots next (+ at (capture-slots ty)) (+ bit 1))))))
+               (caps-with-slots next (+ at (closures/capture-slots ty)) (+ bit 1))))))
 
 (defn lambda-drop-one [ty :- Ty off :- i64 mdl :- &Mdl] :- str
-  (let [tg (ty-tag ty)]
+  (let [tg (types/ty-tag ty)]
     (cond
       (= tg 12)
       (str "  %fp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
@@ -697,16 +708,16 @@
       (= tg 15)
       (str "  %vp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
            "  %vv" off " = load ptr, ptr %vp" off ", align 8\n"
-           (if (= (ty-arg ty) 2)
+           (if (= (types/ty-arg ty) 2)
              (str "  %vn" off " = getelementptr inbounds i64, ptr %env, i64 " (+ off 1) "\n"
                   "  %vc" off " = load i64, ptr %vn" off ", align 8\n"
                   "  call void @cato_str_vec_free(ptr %vv" off ", i64 %vc" off ")\n")
              (str "  call void @free(ptr %vv" off ")\n")))
 
       (= tg 16)
-      (let [j (ty-arg ty)]
-        (if (= (md-owns-at mdl j) 1)
-          (let [nm (md-adt-name mdl j)]
+      (let [j (types/ty-arg ty)]
+        (if (= (state/md-owns-at mdl j) 1)
+          (let [nm (state/md-adt-name mdl j)]
             (str "  %cp" off " = getelementptr inbounds i64, ptr %env, i64 " off "\n"
                  "  %cv" off " = load ptr, ptr %cp" off ", align 8\n"
                  "  call void @drop__" nm "(ptr %cv" off ")\n"))
@@ -732,7 +743,7 @@
                 free-l (str "own" label)
                 done-l (str "done" label)
                 own-blk (lambda-drop-one ty off mdl)]
-            (str "  " mask " = and i64 %bm, " (shl1 bit) "\n"
+            (str "  " mask " = and i64 %bm, " (closures/shl1 bit) "\n"
                  "  " cond " = icmp ne i64 " mask ", 0\n"
                  "  br i1 " cond ", label %" free-l ", label %" done-l "\n"
                  free-l ":\n"

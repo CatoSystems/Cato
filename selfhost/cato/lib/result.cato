@@ -1,3 +1,5 @@
+(ns cato.lib.result)
+
 ; result.cato — S4: error plumbing.
 ;
 ; The kernel's compile phases report failure as a value you match on, the

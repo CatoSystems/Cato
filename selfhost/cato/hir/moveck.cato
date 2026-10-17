@@ -1,3 +1,10 @@
+(ns cato.hir.moveck)
+(require ["types.cato" :as types])
+(require ["forms.cato" :as forms])
+(require ["lower.cato" :as lower])
+(require ["hexpr.cato" :as hexpr])
+(require ["expand.cato" :as expand])
+
 ; moveck.cato — S6: the move checker + drop planner.
 ;
 ; A port of the seed's `BCheck`/`plan_drops` over the kernel subset: per-
@@ -56,17 +63,17 @@
 ; use_var: one occurrence consumed; a non-Copy read of a Moved value errors
 (defn use-var [v :- i64 rem :- IMap tys :- &TyEnv st :- &IMap bcx :- &BCtx] :- UseRes
   ; a non-Copy loop variable rides as Copy: reads never see it Moved (S8)
-  (if (sids-has (b-loopcopy-of bcx) v)
-    (UseRes (im-put rem v (- (im-get rem v 0) 1)) "")
-    (let [dec (- (im-get rem v 0) 1)
-          rem2 (im-put rem v dec)
-          t (te-get tys v)]
-      (if (and (not (ty-noneq t))
-               (is-non-copy-ty t)
-               (= (im-get st v 0) 1))
+  (if (types/sids-has (b-loopcopy-of bcx) v)
+    (UseRes (forms/im-put rem v (- (forms/im-get rem v 0) 1)) "")
+    (let [dec (- (forms/im-get rem v 0) 1)
+          rem2 (forms/im-put rem v dec)
+          t (forms/te-get tys v)]
+      (if (and (not (lower/ty-noneq t))
+               (types/is-non-copy-ty t)
+               (= (forms/im-get st v 0) 1))
         (match bcx
           (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
-            (UseRes rem2 (str "use of moved value " (sym-str (clone tab) v)))))
+            (UseRes rem2 (str "use of moved value " (forms/sym-str (clone tab) v)))))
         (UseRes rem2 "")))))
 
 (defn b-loopcopy-of [bcx :- &BCtx] :- Sids
@@ -85,17 +92,17 @@
 ; (wsc, wbs) pair beside bcx, not in the context.
 (defn move-var [v :- i64 st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx
                 wsc :- i64 wbs :- &Sids] :- MoveRes
-  (if (sids-has (b-nomove-of bcx) v)
+  (if (types/sids-has (b-nomove-of bcx) v)
     (match bcx
       (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
         (MoveRes st owns cons
-                 (str "cannot move " (sym-str (clone tab) v)
+                 (str "cannot move " (forms/sym-str (clone tab) v)
                       ": it is a borrowed parameter and still belongs to the caller"))))
     (if (and (>= wsc 0) (= v wsc))
       (match (retire-binders (clone wbs) st owns cons)
         (MoveRes [st2 owns2 cons2 _m]
-          (MoveRes (im-put st2 v 1) (im-put owns2 v 0) (im-put cons2 v 1) "")))
-      (MoveRes (im-put st v 1) (im-put owns v 0) (im-put cons v 1) ""))))
+          (MoveRes (forms/im-put st2 v 1) (forms/im-put owns2 v 0) (forms/im-put cons2 v 1) "")))
+      (MoveRes (forms/im-put st v 1) (forms/im-put owns v 0) (forms/im-put cons v 1) ""))))
 
 (defn b-nomove-of [bcx :- &BCtx] :- Sids
   (match bcx
@@ -107,7 +114,7 @@
   (match bs
     (SNil [] (MoveRes st owns cons ""))
     (SCons [b rest]
-      (retire-binders rest (im-put st b 1) (im-put owns b 0) cons))))
+      (retire-binders rest (forms/im-put st b 1) (forms/im-put owns b 0) cons))))
 
 ; move_if_non_copy: the move sites (call args, conj sources, closure
 ; captures, drop, let-of-var)
@@ -116,8 +123,8 @@
 
 (defn move-if-nc [v :- i64 st :- IMap owns :- IMap rem :- IMap cons :- IMap
                  tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids] :- MncRes
-  (let [t (te-get tys v)]
-    (if (and (not (ty-noneq t)) (is-non-copy-ty t))
+  (let [t (forms/te-get tys v)]
+    (if (and (not (lower/ty-noneq t)) (types/is-non-copy-ty t))
       (match (use-var v rem tys st bcx)
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
@@ -126,7 +133,7 @@
               ; a non-Copy loop variable rides as Copy: calls and
               ; constructors borrow it, nothing moves (S8)
               (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp _retb _nm _crb]
-                (if (sids-has loopcopy v)
+                (if (types/sids-has loopcopy v)
                   (MncRes st owns rem2 cons)
                   (match (move-var v st owns cons bcx wsc wbs)
                     (MoveRes [st2 owns2 cons2 m2]
@@ -147,54 +154,54 @@
 (defn b-merge-st [m1 :- IMap m2 :- IMap st :- IMap] :- IMap
   (match m1
     (MCons [k v next]
-      (b-merge-st next m2 (if (= v 1) (im-put st k 1) st)))
+      (b-merge-st next m2 (if (= v 1) (forms/im-put st k 1) st)))
     (MNil [] (b-merge-st-2 m2 st))))
 
 (defn b-merge-st-2 [m2 :- IMap st :- IMap] :- IMap
   (match m2
     (MCons [k v next]
-      (b-merge-st-2 next (if (= v 1) (im-put st k 1) st)))
+      (b-merge-st-2 next (if (= v 1) (forms/im-put st k 1) st)))
     (MNil [] st)))
 
 ; a name that failed to own in any branch never owns afterwards
 (defn b-merge-owns [m1 :- IMap m2 :- IMap owns :- IMap] :- IMap
   (match m1
     (MCons [k v next]
-      (b-merge-owns next m2 (if (= v 0) (im-put owns k 0) owns)))
+      (b-merge-owns next m2 (if (= v 0) (forms/im-put owns k 0) owns)))
     (MNil [] (b-merge-owns-2 m2 owns))))
 
 (defn b-merge-owns-2 [m2 :- IMap owns :- IMap] :- IMap
   (match m2
     (MCons [k v next]
-      (b-merge-owns-2 next (if (= v 0) (im-put owns k 0) owns)))
+      (b-merge-owns-2 next (if (= v 0) (forms/im-put owns k 0) owns)))
     (MNil [] owns)))
 
 ; --- the seed's predicate helpers ---------------------------------------------------
 
 (defn b-heap-owning [ty :- &Ty facts :- &Facts] :- bool
-  (let [t (ty-tag ty)]
+  (let [t (types/ty-tag ty)]
     (cond
       (= t 15) true
       (= t 12) true
       (= t 17) true
       (= t 13) true
       (= t 14) true
-      (= t 16) (= (facts-owns-at facts (ty-arg ty)) 1)
+      (= t 16) (= (forms/facts-owns-at facts (types/ty-arg ty)) 1)
       false)))
 
 (defn b-param-moves [ty :- &Ty facts :- &Facts] :- bool
   ; boxed ADTs move by pointer; closures move their env
-  (let [t (ty-tag ty)]
+  (let [t (types/ty-tag ty)]
     (cond
       (= t 17) true
-      (= t 16) (= (facts-boxed-at facts (ty-arg ty)) 1)
+      (= t 16) (= (forms/facts-boxed-at facts (types/ty-arg ty)) 1)
       false)))
 
 ; allocates: a fresh heap buffer the binding uniquely owns; aliases (Var),
 ; element loads and control-flow results are excluded (the seed's rule —
 ; control-flow merges leak as today until per-arm scratch drops exist)
 (defn b-allocates [v :- &HExpr facts :- &Facts] :- bool
-  (let [tag (h-tag v)]
+  (let [tag (lower/h-tag v)]
     (cond
       ; subs/split/join/strcat/charstr/tostr: fresh strings
       (or (= tag 15) (= tag 16) (= tag 17) (= tag 14) (= tag 19) (= tag 13)) true
@@ -207,16 +214,16 @@
       (= tag 35) true
       (= tag 40) true
       ; a fresh box for an owning ADT; a fresh Option from parse-*
-      (= tag 33) (= (facts-owns-at facts (hctor-adt v)) 1)
-      (= tag 44) (let [res (hparse-res v)]
-                   (and (= (ty-tag res) 16) (= (facts-owns-at facts (ty-arg res)) 1)))
+      (= tag 33) (= (forms/facts-owns-at facts (hexpr/hctor-adt v)) 1)
+      (= tag 44) (let [res (hexpr/hparse-res v)]
+                   (and (= (types/ty-tag res) 16) (= (forms/facts-owns-at facts (types/ty-arg res)) 1)))
       false)))
 
 ; --- pre-passes: occurrence counts, shadowing, tail escapes -------------------------
 
 (defn cv-bump [name :- i64 counts :- IMap] :- IMap
-  (let [c (+ 1 (im-get counts name 0))]
-    (im-put counts name c)))
+  (let [c (+ 1 (forms/im-get counts name 0))]
+    (forms/im-put counts name c)))
 
 ; count_vars: every name occurrence, all positions (closure capture names
 ; too — a missed occurrence would make in-place update unsound)
@@ -350,7 +357,7 @@
   (match es
     (HENil [] acc)
     (HECons [kid next]
-      (if (hes-null next)
+      (if (hexpr/hes-null next)
         (b-tail-escape kid acc)
         (b-tail-escape-last next acc)))))
 
@@ -365,7 +372,7 @@
 (defn b-kids [es :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
              tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids acc :- HExprs] :- BKRes
   (match es
-    (HENil [] (BKOk st owns rem cons (hes-rev acc (HENil))))
+    (HENil [] (BKOk st owns rem cons (hexpr/hes-rev acc (HENil))))
     (HECons [kid next]
       (match (bcheck kid st owns rem cons (clone tys) bcx wsc wbs)
         (BErr [msg] (BKErr msg))
@@ -436,7 +443,7 @@
                   cons :- IMap tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids] :- B4
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb _nm _crb]
-      (if (sids-has shared name)
+      (if (types/sids-has shared name)
         (B4 st owns rem cons)
         (match (dparams-get dp name)
           (DFound [ps] (b-call-move-ps args ps st owns rem cons tys bcx wsc wbs))
@@ -452,16 +459,16 @@
         (PCons [h pt]
           (match h
             (Param [pname pty pb]
-              (if (and (= pb 0) (= (h-tag (clone kid)) 39)
-                       (= (rb-get (b-retb-of bcx) (name-of (clone kid))) 1))
+              (if (and (= pb 0) (= (lower/h-tag (clone kid)) 39)
+                       (= (rb-get (b-retb-of bcx) (lower/name-of (clone kid))) 1))
                 ; a borrowed (`&T`) call result handed to an owned parameter
                 ; would let the callee free a value that still belongs to
                 ; the borrow's origin (the seed's E-check)
                 (B4Err (str "cannot move the borrowed result of "
-                            (sym-str (b-tab-of bcx) (name-of (clone kid)))
+                            (forms/sym-str (b-tab-of bcx) (lower/name-of (clone kid)))
                             " into an owned parameter: it belongs to the caller"))
-                (if (and (= pb 0) (= (h-tag kid) 3))
-                  (match (move-if-nc (name-of kid) st owns rem cons tys bcx wsc wbs)
+                (if (and (= pb 0) (= (lower/h-tag kid) 3))
+                  (match (move-if-nc (lower/name-of kid) st owns rem cons tys bcx wsc wbs)
                     (MncErr [msg] (B4Err msg))
                     (MncRes [st2 owns2 rem2 cons2]
                       (b-call-move-ps next pt st2 owns2 rem2 cons2 tys bcx wsc wbs)))
@@ -472,9 +479,9 @@
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
-      (if (= (h-tag kid) 3)
+      (if (= (lower/h-tag kid) 3)
         ; the seed's kinds loop: use + move only NON-COPY Var args
-        (match (move-if-nc (name-of kid) st owns rem cons tys bcx wsc wbs)
+        (match (move-if-nc (lower/name-of kid) st owns rem cons tys bcx wsc wbs)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2]
             (b-call-move-walk next st2 owns2 rem2 cons2 tys bcx wsc wbs)))
@@ -493,35 +500,35 @@
       (match (bcheck value st owns rem cons (clone tys) bcx wsc wbs)
         (BErr [msg] (BLErr msg))
         (BOk [st1 owns1 rem1 cons1 v2]
-          (let [isv (= (h-tag v2) 3)
-                vn (name-of (clone v2))
-                ncopy (is-non-copy-ty ty)]
-            (if (and isv ncopy (not (sids-has (b-loopcopy-of bcx) vn)))
+          (let [isv (= (lower/h-tag v2) 3)
+                vn (lower/name-of (clone v2))
+                ncopy (types/is-non-copy-ty ty)]
+            (if (and isv ncopy (not (types/sids-has (b-loopcopy-of bcx) vn)))
               ; a non-Copy Var init moves the buffer: the drop duty
               ; transfers to the new binding (read the source's ownership
               ; before the move clears it). A non-Copy loop variable rides
               ; as Copy: the let aliases the loop's slot, it does not
               ; consume it.
-              (let [src-owns (im-get owns1 vn 0)]
+              (let [src-owns (forms/im-get owns1 vn 0)]
                 (match (move-var vn st1 owns1 cons1 bcx wsc wbs)
                   (MoveRes [st2 owns2 cons2 m2]
                     (if (> (count m2) 0)
                       (BLErr m2)
-                      (b-let-binds next (im-put st2 name 0)
-                                   (im-put owns2 name src-owns) rem1
-                                   (im-remove cons2 name) (te-put tys name ty)
+                      (b-let-binds next (forms/im-put st2 name 0)
+                                   (forms/im-put owns2 name src-owns) rem1
+                                   (im-remove cons2 name) (forms/te-put tys name ty)
                                    bcx wsc wbs (BCons name v2 ty acc))))))
               ; a fresh binding starts unconsumed; a Copy Var alias never
               ; owns; a borrowed (`&T`) call result is a borrow the caller
               ; still owns, so it never owns; anything else owns iff it
               ; allocates
               (let [owns2 (if isv
-                            (im-put owns1 name 0)
-                            (im-put owns1 name (if (b-borrowed-call v2 (b-retb-of bcx))
+                            (forms/im-put owns1 name 0)
+                            (forms/im-put owns1 name (if (b-borrowed-call v2 (b-retb-of bcx))
                                                  0
                                                  (if (b-allocates-of v2 bcx) 1 0))))]
-                (b-let-binds next (im-put st1 name 0) owns2 rem1
-                             (im-remove cons1 name) (te-put tys name ty)
+                (b-let-binds next (forms/im-put st1 name 0) owns2 rem1
+                             (im-remove cons1 name) (forms/te-put tys name ty)
                              bcx wsc wbs (BCons name v2 ty acc))))))))))
 
 (defn b-facts-of [bcx :- &BCtx] :- Facts
@@ -538,12 +545,12 @@
 (defn b-facts-owns-at [bcx :- &BCtx i :- i64] :- i64
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
-      (facts-owns-at facts i))))
+      (forms/facts-owns-at facts i))))
 
 (defn b-facts-boxed-at [bcx :- &BCtx i :- i64] :- i64
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
-      (facts-boxed-at facts i))))
+      (forms/facts-boxed-at facts i))))
 
 (defn b-allocates-of [v :- &HExpr bcx :- &BCtx] :- bool
   (match bcx
@@ -582,11 +589,11 @@
     (BCons [name v ty next]
       (let [rest (b-frees-walk next st owns cons escaped shadowed facts)]
         (if (and (b-heap-owning ty facts)
-                 (= (im-get owns name 0) 1)
-                 (= (im-get st name 0) 0)
-                 (not (sids-has escaped name))
-                 (not (im-has cons name))
-                 (not (sids-has shadowed name)))
+                 (= (forms/im-get owns name 0) 1)
+                 (= (forms/im-get st name 0) 0)
+                 (not (types/sids-has escaped name))
+                 (not (forms/im-has cons name))
+                 (not (types/sids-has shadowed name)))
           (SCons name rest)
           rest)))))
 
@@ -653,7 +660,7 @@
   (match arms
     (HANil [] false)
     (HACons [_ binders body next]
-      (or (sids-has binders name)
+      (or (types/sids-has binders name)
           (b-mentions body name)
           (b-mentions-arms next name)))))
 
@@ -723,10 +730,10 @@
     (BCons [name v ty next]
       (let [rest (b-frees-here-walk next body st owns cons escaped facts)]
         (if (and (b-heap-owning ty facts)
-                 (= (im-get owns name 0) 1)
-                 (= (im-get st name 0) 0)
-                 (not (sids-has escaped name))
-                 (not (im-has cons name))
+                 (= (forms/im-get owns name 0) 1)
+                 (= (forms/im-get st name 0) 0)
+                 (not (types/sids-has escaped name))
+                 (not (forms/im-has cons name))
                  (not (b-rebound body name)))
           (SCons name rest)
           rest)))))
@@ -763,10 +770,10 @@
   (match binders
     (SNil [] acc)
     (SCons [b rest]
-      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (types/t-i64)))
             frest (match fields (TyCons [h t2] t2) (TyNil [] (TyNil)))
             keep (if (or (= (b-facts-alias-of bcx fty) 1)
-                         (= (ty-tag fty) 16))
+                         (= (types/ty-tag fty) 16))
                    (SCons b acc)
                    acc)]
         (aliasing-binders rest frest bcx keep)))))
@@ -778,7 +785,7 @@
 ; return value.
 (defn b-borrowed-scrut-hit [binders :- Sids fields :- TyList st :- IMap
                             escaped :- Sids bcx :- &BCtx scrid :- i64] :- str
-  (if (or (< scrid 0) (not (sids-has (b-nomove-of bcx) scrid)))
+  (if (or (< scrid 0) (not (types/sids-has (b-nomove-of bcx) scrid)))
     ""
     (b-borrowed-scrut-walk binders fields st escaped bcx)))
 
@@ -787,14 +794,14 @@
   (match binders
     (SNil [] "")
     (SCons [b rest]
-      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (types/t-i64)))
             frest (match fields (TyCons [h t2] t2) (TyNil [] (TyNil)))
             aliases (or (= (b-facts-alias-of bcx fty) 1)
-                        (= (ty-tag fty) 16))
-            nm (sym-str (b-tab-of bcx) b)
-            hit (if (and aliases (sids-has escaped b) (not (= (b-currbrb-of bcx) 1)))
+                        (= (types/ty-tag fty) 16))
+            nm (forms/sym-str (b-tab-of bcx) b)
+            hit (if (and aliases (types/sids-has escaped b) (not (= (b-currbrb-of bcx) 1)))
                   (str "cannot return " nm ": it aliases a field of the matched value — clone it first")
-                  (if (and aliases (= (im-get st b 0) 1))
+                  (if (and aliases (= (forms/im-get st b 0) 1))
                     (str "cannot move " nm ": it aliases a field of the matched value — clone it first")
                     ""))]
         (if (> (count hit) 0) hit (b-borrowed-scrut-walk rest frest st escaped bcx))))))
@@ -819,7 +826,7 @@
     (BNil [] acc)
     (BCons [name init ty next]
       (binds-loopcopy next
-        (if (is-non-copy-ty ty) (SCons name acc) acc)))))
+        (if (types/is-non-copy-ty ty) (SCons name acc) acc)))))
 
 (defn b-loop-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
                    tys :- TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids
@@ -830,50 +837,50 @@
       (match (bcheck init st owns rem cons (clone tys) bcx wsc wbs)
         (BErr [msg] (BLoopErr msg))
         (BOk [st1 owns1 rem1 cons1 init2]
-          (let [sval (im-get st1 name 0)
-                soval (im-get owns1 name 0)]
+          (let [sval (forms/im-get st1 name 0)
+                soval (forms/im-get owns1 name 0)]
             ; a non-Copy Var seed moves into the loop: the value rides the
             ; loop slot and no scope ever frees it, so the source's drop
             ; duty ends here (the seed's Loop-init move)
-            (if (and (= (h-tag init2) 3)
-                     (is-non-copy-ty ty)
-                     (not (sids-has (b-loopcopy-of bcx) (name-of (clone init2)))))
+            (if (and (= (lower/h-tag init2) 3)
+                     (types/is-non-copy-ty ty)
+                     (not (types/sids-has (b-loopcopy-of bcx) (lower/name-of (clone init2)))))
               ; the loop slot inherits the source's duty — read the source's
               ; ownership BEFORE the move clears it
-              (let [src (name-of (clone init2))
-                    src-owns (im-get owns1 src 0)]
+              (let [src (lower/name-of (clone init2))
+                    src-owns (forms/im-get owns1 src 0)]
                 (match (move-var src st1 owns1 cons1 bcx wsc wbs)
                   (MoveRes [st2 owns2 cons2 m2]
                     (if (> (count m2) 0)
                       (BLoopErr m2)
-                      (b-loop-binds next (im-put st2 name 0)
-                                    (im-put owns2 name src-owns) rem1 cons2
-                                    (te-put tys name ty)
+                      (b-loop-binds next (forms/im-put st2 name 0)
+                                    (forms/im-put owns2 name src-owns) rem1 cons2
+                                    (forms/te-put tys name ty)
                                     bcx wsc wbs (BCons name init2 ty acc)
-                                    (im-put saved name sval)
-                                    (im-put savedo name soval))))))
-              (let [iown (if (is-non-copy-ty ty)
+                                    (forms/im-put saved name sval)
+                                    (forms/im-put savedo name soval))))))
+              (let [iown (if (types/is-non-copy-ty ty)
                            (if (b-allocates-of init2 bcx) 1 0)
                            0)]
-                (b-loop-binds next (im-put st1 name 0)
-                              (im-put owns1 name iown) rem1 cons1
-                              (te-put tys name ty)
+                (b-loop-binds next (forms/im-put st1 name 0)
+                              (forms/im-put owns1 name iown) rem1 cons1
+                              (forms/te-put tys name ty)
                               bcx wsc wbs (BCons name init2 ty acc)
-                              (im-put saved name sval)
-                              (im-put savedo name soval))))))))))
+                              (forms/im-put saved name sval)
+                              (forms/im-put savedo name soval))))))))))
 
 (defn b-restore-st [saved :- IMap st :- IMap] :- IMap
   (match saved
     (MNil [] st)
-    (MCons [k prev next] (b-restore-st next (im-put st k prev)))))
+    (MCons [k prev next] (b-restore-st next (forms/im-put st k prev)))))
 
 ; The ADT index of a named match scrutinee for the boxed-alias analysis
 ; (the seed's scrutinee_adt); -1 when there is no binding to retire.
 (defn fp-scrut-adt [s :- &HExpr tys :- &TyEnv] :- i64
   (match s
     (HVar [v]
-      (let [t (te-get tys v)]
-        (if (= (ty-tag t) 16) (ty-arg t) -1)))
+      (let [t (forms/te-get tys v)]
+        (if (= (types/ty-tag t) 16) (types/ty-arg t) -1)))
     (HCtor [adt variant args] adt)
     (_ -1)))
 
@@ -881,32 +888,32 @@
 ; box? str/vec/map/set/fn fields and boxed-ADT children do; scalars and
 ; inline-ADT children copy by value.
 (defn fp-binder-alias [fty :- &Ty facts :- &Facts] :- i64
-  (let [t (ty-tag fty)]
+  (let [t (types/ty-tag fty)]
     (cond
       (= t 12) 1
       (= t 13) 1
       (= t 14) 1
       (= t 15) 1
       (= t 17) 1
-      (= t 16) (facts-boxed-at facts (ty-arg fty))
+      (= t 16) (forms/facts-boxed-at facts (types/ty-arg fty))
       0)))
 
 ; Real field type for a binder whose field aliases the scrutinee's heap
 ; (vec/map/set or a boxed ADT child) so a move through it registers; other
 ; fields keep the I64 copy stand-in.
 (defn fp-binder-type [fty :- Ty facts :- &Facts] :- Ty
-  (let [t (ty-tag fty)]
+  (let [t (types/ty-tag fty)]
     (if (and (or (= t 13) (= t 14) (= t 15) (= t 16))
              (= (fp-binder-alias fty facts) 1))
       fty
-      (t-i64))))
+      (types/t-i64))))
 
 ; The variant's field list, read through the borrowed context: returning the
 ; table itself copied every ADT in the program.
 (defn b-varnt-fields-at [bcx :- &BCtx t :- i64 vi :- i64] :- TyList
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb _nm _crb]
-      (varnt-fields-at adts t vi))))
+      (forms/varnt-fields-at adts t vi))))
 
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
 ; so the box's drop duty transfers and the scrutinee's scope free is
@@ -916,14 +923,14 @@
   (match binders
     (SNil [] acc)
     (SCons [b rest]
-      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (types/t-i64)))
             frest (match fields (TyCons [h t2] t2) (TyNil [] (TyNil)))
             ; an inline ADT binder is materialized as the field's address
             ; inside the box, so it aliases too (the seed's `|| Adt`)
             hit (if (and (or (= (fp-binder-alias fty facts) 1)
-                             (= (ty-tag fty) 16))
-                         (or (sids-has escaped b)
-                             (= (im-get st b 0) 1)))
+                             (= (types/ty-tag fty) 16))
+                         (or (types/sids-has escaped b)
+                             (= (forms/im-get st b 0) 1)))
                   1 acc)]
         (b-arm-esc rest frest st escaped facts hit)))))
 
@@ -939,13 +946,13 @@
   (match binders
     (SNil [] (BLRes pst powns (MNil) (MNil) tys (BNil)))
     (SCons [b rest]
-      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (t-i64)))
+      (let [fty (match fields (TyCons [h t2] (clone h)) (TyNil [] (types/t-i64)))
             frest (match fields (TyCons [h t2] t2) (TyNil [] (TyNil)))]
         (match (b-arm-state rest frest pst powns tys facts)
           (BLErr [msg] (BLErr msg))
           (BLRes [st1 owns1 rem1 cons1 tys1 binds1]
-            (BLRes (im-put st1 b 0) (im-put owns1 b 0) rem1 cons1
-                   (te-put tys1 b (fp-binder-type fty facts)) (BNil))))))))
+            (BLRes (forms/im-put st1 b 0) (forms/im-put owns1 b 0) rem1 cons1
+                   (forms/te-put tys1 b (fp-binder-type fty facts)) (BNil))))))))
 
 (defn b-arms [arms :- HArms pst :- IMap powns :- IMap st :- IMap owns :- IMap
              rem :- IMap cons :- IMap tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids
@@ -971,8 +978,8 @@
                                   (b-mentions body scrid))
                            (aliasing-binders (clone binders) (clone fields) bcx (SNil))
                            (SNil))
-                  awsc (if (sids-null armwbs) wsc scrid)
-                  awbs (if (sids-null armwbs) (clone wbs) armwbs)]
+                  awsc (if (types/sids-null armwbs) wsc scrid)
+                  awbs (if (types/sids-null armwbs) (clone wbs) armwbs)]
               (match (bcheck body (clone st1) (clone owns1) rem1 cons1 tys1 bcx awsc awbs)
                 (BErr [msg] (BArmsErr msg))
                 (BOk [st2 owns2 rem2 cons2 body2]
@@ -1011,8 +1018,8 @@
         (UseRes [rem2 msg]
           (if (> (count msg) 0)
             (BCapErr msg)
-            (let [own2 (im-get owns name 0)]
-              (if (is-non-copy-ty ty)
+            (let [own2 (forms/im-get owns name 0)]
+              (if (types/is-non-copy-ty ty)
                 (match (move-var name st owns cons bcx wsc wbs)
                   (MoveRes [st2 owns2 cons2 m2]
                     (if (> (count m2) 0)
@@ -1273,15 +1280,15 @@
     (match (bcheck v st owns rem cons (clone tys) bcx wsc wbs)
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-          (let [vn (name-of (clone c1))
-              isv (= (h-tag c1) 3)
-              t (te-get tys vn)
+          (let [vn (lower/name-of (clone c1))
+              isv (= (lower/h-tag c1) 3)
+              t (forms/te-get tys vn)
               lastq (and isv
-                         (not (ty-noneq t))
-                         (is-non-copy-ty t)
-                         (= (im-get st1 vn 0) 0)
-                         (= (im-get owns1 vn 0) 1)
-                         (= (im-get rem1 vn 0) 0))]
+                         (not (lower/ty-noneq t))
+                         (types/is-non-copy-ty t)
+                         (= (forms/im-get st1 vn 0) 0)
+                         (= (forms/im-get owns1 vn 0) 1)
+                         (= (forms/im-get rem1 vn 0) 0))]
           (if (not lastq)
             (match (bcheck x st1 owns1 rem1 cons1 tys bcx wsc wbs)
               (BErr [msg] (BErr msg))
@@ -1319,7 +1326,7 @@
         (match (bcheck body st1 owns1 rem1 cons1 tys1 bcx wsc wbs)
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
-            (let [binds3 (binds-rev binds2 (BNil))
+            (let [binds3 (hexpr/binds-rev binds2 (BNil))
                   ; scope-aware shadowing (the seed's rebound_in_body): a
                   ; free stays suppressed only when THIS body rebinds the
                   ; name — sibling-branch lets of the same name are distinct
@@ -1333,7 +1340,7 @@
       (BLoopErr [msg] (BErr msg))
       (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved savedo]
         (match (bcheck body st1 owns1 rem1 cons1 tys1
-                       (bcx-with-loopcopy bcx (binds-loopcopy (binds-rev (clone binds2) (BNil)) (SNil)))
+                       (bcx-with-loopcopy bcx (binds-loopcopy (hexpr/binds-rev (clone binds2) (BNil)) (SNil)))
                        -1 (SNil))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
@@ -1341,7 +1348,7 @@
             ; would let a later conj on the shadowed outer binding fire
             ; in-place on a buffer it only aliases
             (BOk (b-restore-st saved st2) (b-restore-st savedo owns2) rem2 cons2
-                 (HLoop (binds-rev binds2 (BNil)) ty body2)))))))
+                 (HLoop (hexpr/binds-rev binds2 (BNil)) ty body2)))))))
 
     (HCtor [adt variant args]
     (match (b-kids args st owns rem cons tys bcx wsc wbs (HENil))
@@ -1363,9 +1370,9 @@
         ; the watch matters only when some binding owns the scrutinee's
         ; box and frees it after the match: a constructor/call temp is
         ; never freed, so its binders need no retirement
-        (let [scrid (if (and (= (h-tag scrut) 3)
-                             (im-has st1 (name-of (clone scrut))))
-                      (name-of (clone scrut))
+        (let [scrid (if (and (= (lower/h-tag scrut) 3)
+                             (forms/im-has st1 (lower/name-of (clone scrut))))
+                      (lower/name-of (clone scrut))
                       -1)]
           (match (b-arms arms (clone st1) (clone owns1) st1 owns1 rem1 cons1 tys bcx wsc wbs (HANil) adtidx boxed 0 scrid)
             (BArmsErr [msg] (BErr msg))
@@ -1376,10 +1383,10 @@
               ; caller — the transfer move would be the borrowed-param
               ; error — and a loop variable never frees anyway. Both skip
               ; the transfer (the seed's `!loop_copy && !scrut_borrowed_param`).
-              (let [sv (if (= (h-tag scrut) 3) (name-of (clone scrut)) -1)]
+              (let [sv (if (= (lower/h-tag scrut) 3) (lower/name-of (clone scrut)) -1)]
                 (if (and (= esc2 1) (>= sv 0)
-                         (not (sids-has (b-nomove-of bcx) sv))
-                         (not (sids-has (b-loopcopy-of bcx) sv)))
+                         (not (types/sids-has (b-nomove-of bcx) sv))
+                         (not (types/sids-has (b-loopcopy-of bcx) sv)))
                   (match (move-var sv st2 owns2 cons2 bcx wsc wbs)
                     (MoveRes [st3 owns3 cons3 m3]
                       (if (> (count m3) 0)
@@ -1391,8 +1398,8 @@
     (match (bcheck x st owns rem cons (clone tys) bcx wsc wbs)
       (BErr [msg] (BErr msg))
       (BOk [st1 owns1 rem1 cons1 c1]
-        (if (= (h-tag c1) 3)
-          (match (move-if-nc (name-of (clone c1)) st1 owns1 rem1 cons1 tys bcx wsc wbs)
+        (if (= (lower/h-tag c1) 3)
+          (match (move-if-nc (lower/name-of (clone c1)) st1 owns1 rem1 cons1 tys bcx wsc wbs)
             (MncErr [msg] (BErr msg))
             (MncRes [st2 owns2 rem2 cons2]
               (BOk st2 owns2 rem2 cons2 (HDrop c1))))
@@ -1437,8 +1444,8 @@
   (match args
     (HENil [] (B4 st owns rem cons))
     (HECons [kid next]
-      (if (= (h-tag kid) 3)
-        (match (move-if-nc (name-of kid) st owns rem cons tys bcx wsc wbs)
+      (if (= (lower/h-tag kid) 3)
+        (match (move-if-nc (lower/name-of kid) st owns rem cons tys bcx wsc wbs)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2]
             (b-ctor-move next st2 owns2 rem2 cons2 tys bcx wsc wbs)))
@@ -1473,9 +1480,9 @@
               (SCons name acc) acc)))))))
 
 (defn b-add-builtins [acc :- Sids] :- Sids
-  (sids-append (sids-append (sids-append (sids-append (sids-append (sids-append
-    (sids-append acc (s-count)) (s-evenq)) (s-printi64)) (s-printf64))
-    (s-getform)) (s-clone)) (s-dropform)))
+  (types/sids-append (types/sids-append (types/sids-append (types/sids-append (types/sids-append (types/sids-append
+    (types/sids-append acc (expand/s-count)) (expand/s-evenq)) (expand/s-printi64)) (expand/s-printf64))
+    (expand/s-getform)) (expand/s-clone)) (expand/s-dropform)))
 
 (deftype BPlan (BPlan [st :- IMap owns :- IMap e :- HExpr frees :- Sids])
               (BPlanErr [msg :- str]))
@@ -1502,7 +1509,7 @@
 ; test is conservative: an unmodelled form returns false (reject).
 (defn b-tail-borrow-ok [e :- &HExpr borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- bool
   (match e
-    (HVar [v] (sids-has borrows v))
+    (HVar [v] (types/sids-has borrows v))
     (HCall [name args]
       (if (= (rb-get retb name) 1)
         (match (dparams-get dparams name)
@@ -1514,7 +1521,7 @@
       (and (b-tail-borrow-ok t borrows dparams retb)
            (b-tail-borrow-ok f borrows dparams retb)))
     (HMatch [scrut arms ty]
-      (let [sc (if (match scrut (HVar [v] (sids-has borrows v)) (_ false))
+      (let [sc (if (match scrut (HVar [v] (types/sids-has borrows v)) (_ false))
                  1
                  (if (b-tail-borrow-ok scrut borrows dparams retb) 1 0))]
         (b-tail-arms-ok arms borrows sc dparams retb)))
@@ -1572,9 +1579,9 @@
         (Param [pname pty pb]
           (if (and (= pb 0)
                    (b-param-moves pty facts)
-                   (= (im-get owns pname 0) 1)
-                   (= (im-get st pname -1) 0)
-                   (not (sids-has esc pname)))
+                   (= (forms/im-get owns pname 0) 1)
+                   (= (forms/im-get st pname -1) 0)
+                   (not (types/sids-has esc pname)))
             (SCons pname (fp-frees rest st owns facts esc))
             (fp-frees rest st owns facts esc)))))))
 
@@ -1582,8 +1589,8 @@
 ; (recursive/owning) ADT. The return index reads the template facts (the
 ; annotation names a template).
 (defn b-borrowed-ret-boxed [ret :- &Ty facts :- &Facts] :- bool
-  (if (= (ty-tag ret) 16)
-    (= (facts-boxed-at facts (ty-arg ret)) 1)
+  (if (= (types/ty-tag ret) 16)
+    (= (forms/facts-boxed-at facts (types/ty-arg ret)) 1)
     false))
 
 ; plan_drops over one body: the pre-passes, the param states, the walk
@@ -1617,8 +1624,8 @@
       ; may not return a value derived from a borrowed parameter (the
       ; caller binds the result as owned and frees it while the caller's
       ; original binding frees the same buffer).
-      (if (and (not (sids-null bn))
-               (is-non-copy-ty ret)
+      (if (and (not (types/sids-null bn))
+               (types/is-non-copy-ty ret)
                (b-tail-borrow-ok body bn dparams retb))
         (BPlanRes (b-plan-ctx facts tab shared adts dparams retb bn rb)
                   (BPlanErr "a function returning a move type may not return a value derived from a `&` parameter: the caller would free a buffer the parameter's owner still frees. Mark the return `&T`, or clone the value before returning it."))
@@ -1650,7 +1657,7 @@
               (match (bcheck body st0 owns0 rem0 cons0 tys0 bcx2 -1 (SNil))
                 (BErr [msg]
                   (BPlanRes bcx2
-                            (BPlanErr (str "ownership check failed in " (sym-str tab name) ": " msg))))
+                            (BPlanErr (str "ownership check failed in " (forms/sym-str tab name) ": " msg))))
                 (BOk [st1 owns1 rem1 cons1 body2]
                   ; read through the context before it is handed back
                   (let [frees (fp-frees-of params st1 owns1 bcx2)]
@@ -1665,11 +1672,11 @@
       (match p
         (Param [pname pty pb]
           (b-init-params rest facts
-                         (im-put st pname 0)
-                         (im-put owns pname (if (and (= pb 0) (b-param-moves pty facts)) 1 0))
+                         (forms/im-put st pname 0)
+                         (forms/im-put owns pname (if (and (= pb 0) (b-param-moves pty facts)) 1 0))
                          rem
                          cons
-                         (te-put tys pname pty)))))))
+                         (forms/te-put tys pname pty)))))))
 
 ; A user fn's returned str is owned by the caller (str results are
 ; caller-freed), so a borrowed-shape tail — a literal, or a str element
@@ -1681,7 +1688,7 @@
   (match e
     (HStrLit [_] (HClone e))
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag ty) 12)
+      (if (= (types/ty-tag ty) 12)
         (HClone e)
         e))
     (HSeq [es] (HSeq (osr-seq es)))
@@ -1722,7 +1729,7 @@
       (match h
         (Defn [name params ret ie body rb]
           (if (= ie 1)
-            (check-defns t (defns-append acc h) facts tab shared adts dparams retb)
+            (check-defns t (forms/defns-append acc h) facts tab shared adts dparams retb)
             (match (b-plan name (clone params) body (clone ret) rb facts tab shared adts dparams retb)
               (BPlanRes [bcx plan]
                 (match bcx
@@ -1730,12 +1737,12 @@
                     (match plan
                       (BPlanErr [msg] (CKErr msg))
                       (BPlan [st owns body2 frees]
-                        (let [body3 (if (sids-null frees)
+                        (let [body3 (if (types/sids-null frees)
                                       body2
                                       (HLet (BNil) body2 frees))]
                           (check-defns t
-                                       (defns-append acc (Defn name params (clone ret) ie
-                                                               (if (ty-eq ret (t-str))
+                                       (forms/defns-append acc (Defn name params (clone ret) ie
+                                                               (if (types/ty-eq ret (types/t-str))
                                                                  (own-str-return body3)
                                                                  body3)
                                                                rb))
@@ -1757,8 +1764,8 @@
                   (match plan
                     (BPlanErr [msg] (LErrL msg))
                     (BPlan [st owns body2 _frees]
-                      (check-lams t (lams-append acc (Lam mangled caps params (clone ret)
-                                                          (if (ty-eq ret (t-str))
+                      (check-lams t (forms/lams-append acc (Lam mangled caps params (clone ret)
+                                                          (if (types/ty-eq ret (types/t-str))
                                                             (own-str-return body2)
                                                             body2)))
                                   facts2 tab2 shared2 adts2 dp2 retb2))))))))))))

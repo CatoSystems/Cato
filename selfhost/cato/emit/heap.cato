@@ -1,99 +1,108 @@
+(ns cato.emit.heap)
+(require ["scalars.cato" :as scalars])
+(require ["state.cato" :as state])
+(require ["../hir/hexpr.cato" :as hexpr])
+(require ["../hir/types.cato" :as types])
+(require ["adt.cato" :as adt])
+(require ["../hir/lower.cato" :as lower])
+(require ["../reader/read.cato" :as read])
+
 ; heap.cato — S7: string/vector value emission, count, get, options,
 ; conj — the port of the seed emitter's exprs_val.rs and heap_vec.rs
 ; for the subset. ADT emission, lets, frees and calls live in adt.cato.
 
 (defn em-malloc [st :- Emit nbytes :- str] :- ETRes
-  (match (em-ins st (str "  ~ = call ptr @malloc(i64 " nbytes ")"))
-    (ETRes [st2 t] (ETRes (em-decl st2 "declare ptr @malloc(i64)") t))))
+  (match (scalars/em-ins st (str "  ~ = call ptr @malloc(i64 " nbytes ")"))
+    (ETRes [st2 t] (ETRes (scalars/em-decl st2 "declare ptr @malloc(i64)") t))))
 
 (defn adt-of [e :- &HExpr st :- &Emit] :- i64
   (match e
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get c v)]
+          (let [rv (state/fc-sc-get c v)]
             (match rv
               (RegVal [r ty]
-                (if (= (ty-tag ty) 16)
-                  (ty-arg ty)
-                  (do (cg-fail-i (str "not an ADT binding name=" (md-sym mdl v) " sctag=" (ty-tag ty))) -1))))))))
+                (if (= (types/ty-tag ty) 16)
+                  (types/ty-arg ty)
+                  (do (state/cg-fail-i (str "not an ADT binding name=" (state/md-sym mdl v) " sctag=" (types/ty-tag ty))) -1))))))))
     (HCtor [adt variant args] adt)
     (HMatch [scrut arms ty]
-      (if (= (ty-tag ty) 16) (ty-arg ty)
-        (do (cg-fail-i "match of non-ADT") -1)))
+      (if (= (types/ty-tag ty) 16) (types/ty-arg ty)
+        (do (state/cg-fail-i "match of non-ADT") -1)))
     (HIf [c t e ty]
-      (if (= (ty-tag ty) 16) (ty-arg ty)
-        (do (cg-fail-i "if of non-ADT") -1)))
+      (if (= (types/ty-tag ty) 16) (types/ty-arg ty)
+        (do (state/cg-fail-i "if of non-ADT") -1)))
     (HClone [x] (adt-of x st))
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup sigs name)]
+          (let [sg (state/sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag ret) 16)
-                  (ty-arg ret)
-                  (do (cg-fail-i "call does not return an ADT") -1))))))))
+                (if (= (types/ty-tag ret) 16)
+                  (types/ty-arg ret)
+                  (do (state/cg-fail-i "call does not return an ADT") -1))))))))
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag res) 16) (ty-arg res)
-        (do (cg-fail-i "get without Option result") -1)))
+      (if (= (types/ty-tag res) 16) (types/ty-arg res)
+        (do (state/cg-fail-i "get without Option result") -1)))
     (HStrNth [s idx res]
-      (if (= (ty-tag res) 16) (ty-arg res)
-        (do (cg-fail-i "nth without Option result") -1)))
-    (HConstI64 [v] (do (cg-fail-i "expected an ADT value") -1))
-    (HConstF64 [v] (do (cg-fail-i "expected an ADT value") -1))
-    (HConstB [v] (do (cg-fail-i "expected an ADT value") -1))
-    (HStrLit [v] (do (cg-fail-i "expected an ADT value") -1))
-    (HVecLit [el vals] (do (cg-fail-i "expected an ADT value") -1))
-    (HBinW [op a b ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HBinF [op a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HCmpW [op a b ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HStrCmp [pol a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HStrOrd [op a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HICast [x from to] (do (cg-fail-i "expected an ADT value") -1))
-    (HCount [x] (do (cg-fail-i "expected an ADT value") -1))
-    (HToStr [x ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HStrCat [args] (do (cg-fail-i "expected an ADT value") -1))
-    (HSubs [s a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HSplit [s sep] (do (cg-fail-i "expected an ADT value") -1))
-    (HJoin [sep xs] (do (cg-fail-i "expected an ADT value") -1))
-    (HCharStr [x] (do (cg-fail-i "expected an ADT value") -1))
-    (HConj [v x el inplace] (do (cg-fail-i "expected an ADT value") -1))
-    (HAnd [a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HOr [a b] (do (cg-fail-i "expected an ADT value") -1))
-    (HNot [x] (do (cg-fail-i "expected an ADT value") -1))
-    (HAbs [x ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HMin [a b ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HMax [a b ty] (do (cg-fail-i "expected an ADT value") -1))
-    (HSeq [es] (do (cg-fail-i "expected an ADT value") -1))
-    (HLet [binds body frees] (do (cg-fail-i "expected an ADT value") -1))
-    (HLoop [binds ty body] (do (cg-fail-i "expected an ADT value") -1))
-    (HRecur [args] (do (cg-fail-i "expected an ADT value") -1))
-    (HDrop [x] (do (cg-fail-i "expected an ADT value") -1))
-    (HClosure [sig mangled params caps body] (do (cg-fail-i "expected an ADT value") -1))
-    (HClosureCall [f args sig] (do (cg-fail-i "expected an ADT value") -1))
-    (HSlurp [p] (do (cg-fail-i "expected an ADT value") -1))
-    (HSpit [path data] (do (cg-fail-i "expected an ADT value") -1))
-    (HArgs [] (do (cg-fail-i "expected an ADT value") -1))
-    (HExit [e] (do (cg-fail-i "expected an ADT value") -1))
+      (if (= (types/ty-tag res) 16) (types/ty-arg res)
+        (do (state/cg-fail-i "nth without Option result") -1)))
+    (HConstI64 [v] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HConstF64 [v] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HConstB [v] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HStrLit [v] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HVecLit [el vals] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HBinW [op a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HBinF [op a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HCmpW [op a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HStrCmp [pol a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HStrOrd [op a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HICast [x from to] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HCount [x] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HToStr [x ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HStrCat [args] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HSubs [s a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HSplit [s sep] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HJoin [sep xs] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HCharStr [x] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HConj [v x el inplace] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HAnd [a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HOr [a b] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HNot [x] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HAbs [x ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HMin [a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HMax [a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HSeq [es] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HLet [binds body frees] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HLoop [binds ty body] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HRecur [args] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HDrop [x] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HClosure [sig mangled params caps body] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HClosureCall [f args sig] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HSlurp [p] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HSpit [path data] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HArgs [] (do (state/cg-fail-i "expected an ADT value") -1))
+    (HExit [e] (do (state/cg-fail-i "expected an ADT value") -1))
     (HParseNum [s int res]
-      (if (= (ty-tag res) 16) (ty-arg res)
-        (do (cg-fail-i "parse-num without Option result") -1)))))
+      (if (= (types/ty-tag res) 16) (types/ty-arg res)
+        (do (state/cg-fail-i "parse-num without Option result") -1)))))
 
 (defn emit-str-val [e :- HExpr st :- Emit] :- ESRes
   (match e
     (HStrLit [s]
       (match st
         (Emit [c mdl sigs]
-          (match (md-mint-str mdl s)
+          (match (state/md-mint-str mdl s)
             (EMRes [m2 label]
-              (match (em-ins (Emit c m2 sigs)
+              (match (scalars/em-ins (Emit c m2 sigs)
                        (str "  ~ = getelementptr inbounds [" (+ (count s) 1) " x i8], ptr " label ", i32 0, i32 0"))
                 (ETRes [st2 t] (ESRes st2 t))))))))
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (let [rv (fc-sc-get c v)]
+          (let [rv (state/fc-sc-get c v)]
             (match rv
               (RegVal [r ty] (ESRes st r)))))))
     (HSubs [s a b] (emit-subs s a b st))
@@ -103,98 +112,98 @@
     (HSlurp [p]
       (match (emit-str-val p st)
         (ESRes [st1 pv]
-          (match (em-ins st1 (str "  ~ = call ptr @cato_slurp(ptr " pv ")"))
+          (match (scalars/em-ins st1 (str "  ~ = call ptr @cato_slurp(ptr " pv ")"))
             (ETRes [st2 t]
-              (ESRes (em-decl st2 "declare ptr @cato_slurp(ptr)") t))))))
+              (ESRes (scalars/em-decl st2 "declare ptr @cato_slurp(ptr)") t))))))
     (HCharStr [x]
-      (match (emit-int x st)
+      (match (scalars/emit-int x st)
         (ESRes [st1 cv]
           (match (em-malloc st1 "2")
             (ETRes [st2 p]
-              (match (em-ins2 st2
+              (match (state/em-ins2 st2
                        (str "  ~ = trunc i64 " cv " to i8")
                        (str "  ~ = getelementptr inbounds i8, ptr " p ", i64 1"))
                 (ET2Res [st3 b np]
-                  (let [st4 (em-line st3 (str "  store i8 " b ", ptr " p))
-                        st5 (em-line st4 (str "  store i8 0, ptr " np))]
+                  (let [st4 (scalars/em-line st3 (str "  store i8 " b ", ptr " p))
+                        st5 (scalars/em-line st4 (str "  store i8 0, ptr " np))]
                     (ESRes st5 p)) )))))))
-    (HIf [c t e ty] (emit-if-node c t e ty st))
-    (HMatch [scrut arms ty] (emit-match-node scrut arms ty st))
-    (HLoop [binds ty body] (emit-loop-node binds ty body st))
+    (HIf [c t e ty] (scalars/emit-if-node c t e ty st))
+    (HMatch [scrut arms ty] (scalars/emit-match-node scrut arms ty st))
+    (HLoop [binds ty body] (scalars/emit-loop-node binds ty body st))
     (HLet [binds body frees]
-      (match (emit-let binds st)
+      (match (adt/emit-let binds st)
         (EURes [st2]
           (match (emit-str-val body st2)
             (ESRes [st3 v]
-              (match (emit-frees frees st3)
+              (match (adt/emit-frees frees st3)
                 (EURes [st4] (ESRes st4 v))))))))
     (HSeq [es]
-      (match (emit-stmts-ex-last es st)
+      (match (scalars/emit-stmts-ex-last es st)
         (ELRes [st2 last] (emit-str-val last st2))))
     (HGet [src idx dflt ty res]
-      (if (= (ty-tag ty) 12)
+      (if (= (types/ty-tag ty) 12)
         (emit-get-str src idx dflt st)
-        (sf st "get returning non-str in str context")))
-    (HCall [name args] (call-user name args st))
+        (scalars/sf st "get returning non-str in str context")))
+    (HCall [name args] (adt/call-user name args st))
     (HClone [x]
       (match (emit-str-val x st)
         (ESRes [st1 p]
-          (match (em-ins st1 (str "  ~ = call ptr @strdup(ptr " p ")"))
-            (ETRes [st2 t] (ESRes (em-decl st2 "declare ptr @strdup(ptr)") t))))))
-    (HConstI64 [v] (sf st "expected a string expression"))
-    (HConstF64 [v] (sf st "expected a string expression"))
-    (HConstB [v] (sf st "expected a string expression"))
-    (HVecLit [el vals] (sf st "vec literal in str context"))
-    (HBinW [op a b ty] (sf st "expected a string expression"))
-    (HBinF [op a b] (sf st "expected a string expression"))
-    (HCmpW [op a b ty] (sf st "expected a string expression"))
-    (HStrCmp [pol a b] (sf st "expected a string expression"))
-    (HStrOrd [op a b] (sf st "expected a string expression"))
-    (HICast [x from to] (sf st "expected a string expression"))
-    (HCount [x] (sf st "expected a string expression"))
-    (HSplit [s sep] (sf st "heap value must be bound with let"))
-    (HStrNth [s idx res] (sf st "expected a string expression"))
-    (HConj [v x el inplace] (sf st "heap vector value must be bound with let"))
-    (HAnd [a b] (sf st "expected a string expression"))
-    (HOr [a b] (sf st "expected a string expression"))
-    (HNot [x] (sf st "expected a string expression"))
-    (HAbs [x ty] (sf st "expected a string expression"))
-    (HMin [a b ty] (sf st "expected a string expression"))
-    (HMax [a b ty] (sf st "expected a string expression"))
-    (HRecur [args] (sf st "recur outside loop"))
-    (HCtor [adt variant args] (sf st "expected a string expression"))
-    (HDrop [x] (sf st "expected a string expression"))
-    (HClosure [sig mangled params caps body] (sf st "closure value must be bound with let"))
-    (HClosureCall [f args sig] (sf st "expected a string expression"))
-    (HSpit [path data] (sf st "expected a string expression"))
-    (HArgs [] (sf st "args must be bound with let"))
-    (HExit [x] (sf st "expected a string expression"))
-    (HParseNum [s int res] (sf st "Option result must be bound with let"))))
+          (match (scalars/em-ins st1 (str "  ~ = call ptr @strdup(ptr " p ")"))
+            (ETRes [st2 t] (ESRes (scalars/em-decl st2 "declare ptr @strdup(ptr)") t))))))
+    (HConstI64 [v] (scalars/sf st "expected a string expression"))
+    (HConstF64 [v] (scalars/sf st "expected a string expression"))
+    (HConstB [v] (scalars/sf st "expected a string expression"))
+    (HVecLit [el vals] (scalars/sf st "vec literal in str context"))
+    (HBinW [op a b ty] (scalars/sf st "expected a string expression"))
+    (HBinF [op a b] (scalars/sf st "expected a string expression"))
+    (HCmpW [op a b ty] (scalars/sf st "expected a string expression"))
+    (HStrCmp [pol a b] (scalars/sf st "expected a string expression"))
+    (HStrOrd [op a b] (scalars/sf st "expected a string expression"))
+    (HICast [x from to] (scalars/sf st "expected a string expression"))
+    (HCount [x] (scalars/sf st "expected a string expression"))
+    (HSplit [s sep] (scalars/sf st "heap value must be bound with let"))
+    (HStrNth [s idx res] (scalars/sf st "expected a string expression"))
+    (HConj [v x el inplace] (scalars/sf st "heap vector value must be bound with let"))
+    (HAnd [a b] (scalars/sf st "expected a string expression"))
+    (HOr [a b] (scalars/sf st "expected a string expression"))
+    (HNot [x] (scalars/sf st "expected a string expression"))
+    (HAbs [x ty] (scalars/sf st "expected a string expression"))
+    (HMin [a b ty] (scalars/sf st "expected a string expression"))
+    (HMax [a b ty] (scalars/sf st "expected a string expression"))
+    (HRecur [args] (scalars/sf st "recur outside loop"))
+    (HCtor [adt variant args] (scalars/sf st "expected a string expression"))
+    (HDrop [x] (scalars/sf st "expected a string expression"))
+    (HClosure [sig mangled params caps body] (scalars/sf st "closure value must be bound with let"))
+    (HClosureCall [f args sig] (scalars/sf st "expected a string expression"))
+    (HSpit [path data] (scalars/sf st "expected a string expression"))
+    (HArgs [] (scalars/sf st "args must be bound with let"))
+    (HExit [x] (scalars/sf st "expected a string expression"))
+    (HParseNum [s int res] (scalars/sf st "Option result must be bound with let"))))
 
 (defn emit-tostr [x :- HExpr ty :- Ty st :- Emit] :- ESRes
-  (let [tag (ty-tag ty)]
+  (let [tag (types/ty-tag ty)]
     (cond
       (= tag 9)
-      (match (emit-float (clone x) st)
+      (match (scalars/emit-float (clone x) st)
         (ESRes [st1 f]
-          (match (em-ins st1 (str "  ~ = call ptr @cato_f64_to_str(double " f ")"))
-            (ETRes [st2 t] (ESRes (em-decl st2 "declare ptr @cato_f64_to_str(double)") t)))))
+          (match (scalars/em-ins st1 (str "  ~ = call ptr @cato_f64_to_str(double " f ")"))
+            (ETRes [st2 t] (ESRes (scalars/em-decl st2 "declare ptr @cato_f64_to_str(double)") t)))))
       (= tag 11)
-      (match (emit-bool (clone x) st)
+      (match (scalars/emit-bool (clone x) st)
         (ESRes [st1 b]
-          (match (em-ins st1 (str "  ~ = zext i1 " b " to i64"))
+          (match (scalars/em-ins st1 (str "  ~ = zext i1 " b " to i64"))
             (ETRes [st2 z]
-              (match (em-ins st2 (str "  ~ = call ptr @cato_num_to_str(i64 " z ")"))
-                (ETRes [st3 t] (ESRes (em-decl st3 "declare ptr @cato_num_to_str(i64)") t)))))))
-      (is-uint-tag tag)
-      (match (emit-int (clone x) st)
+              (match (scalars/em-ins st2 (str "  ~ = call ptr @cato_num_to_str(i64 " z ")"))
+                (ETRes [st3 t] (ESRes (scalars/em-decl st3 "declare ptr @cato_num_to_str(i64)") t)))))))
+      (scalars/is-uint-tag tag)
+      (match (scalars/emit-int (clone x) st)
         (ESRes [st1 i]
-          (match (em-ins st1 (str "  ~ = call ptr @cato_u64_to_str(i64 " i ")"))
-            (ETRes [st2 t] (ESRes (em-decl st2 "declare ptr @cato_u64_to_str(i64)") t)))))
-      (match (emit-int x st)
+          (match (scalars/em-ins st1 (str "  ~ = call ptr @cato_u64_to_str(i64 " i ")"))
+            (ETRes [st2 t] (ESRes (scalars/em-decl st2 "declare ptr @cato_u64_to_str(i64)") t)))))
+      (match (scalars/emit-int x st)
         (ESRes [st1 i]
-          (match (em-ins st1 (str "  ~ = call ptr @cato_num_to_str(i64 " i ")"))
-            (ETRes [st2 t] (ESRes (em-decl st2 "declare ptr @cato_num_to_str(i64)") t))))))))
+          (match (scalars/em-ins st1 (str "  ~ = call ptr @cato_num_to_str(i64 " i ")"))
+            (ETRes [st2 t] (ESRes (scalars/em-decl st2 "declare ptr @cato_num_to_str(i64)") t))))))))
 
 (deftype ESPart (ESPart [p :- str l :- str]))
 (deftype ESPs (SPNil) (SPCons [h :- ESPart t :- ESPs]))
@@ -206,13 +215,13 @@
     (ESPCol [st1 parts]
       (match (strcat-total (clone parts) st1 "")
         (ETRes [st2 tot]
-          (match (em-ins st2 (str "  ~ = add i64 " tot ", 1"))
+          (match (scalars/em-ins st2 (str "  ~ = add i64 " tot ", 1"))
             (ETRes [st3 nb]
               (match (em-malloc st3 nb)
                 (ETRes [st4 dst]
                   (match (strcat-copies parts dst st4 "")
                     (ECPRes [st5 end]
-                      (let [st6 (em-line st5 (str "  store i8 0, ptr " end))]
+                      (let [st6 (scalars/em-line st5 (str "  store i8 0, ptr " end))]
                         (ESRes st6 dst)))))))))))))
 
 (defn strcat-parts [args :- HExprs st :- Emit acc :- ESPs] :- ESPCol
@@ -224,11 +233,11 @@
           (match kid
             (HStrLit [s]
               (let [sl (str (count s))]
-                (strcat-parts (hes-rest args) st1 (SPCons (ESPart p sl) acc))))
+                (strcat-parts (scalars/hes-rest args) st1 (SPCons (ESPart p sl) acc))))
             (_
-              (match (em-ins st1 (str "  ~ = call i64 @strlen(ptr " p ")"))
+              (match (scalars/em-ins st1 (str "  ~ = call i64 @strlen(ptr " p ")"))
                 (ETRes [st2 l]
-                  (strcat-parts (hes-rest args) st2 (SPCons (ESPart p l) acc)))))))))))
+                  (strcat-parts (scalars/hes-rest args) st2 (SPCons (ESPart p l) acc)))))))))))
 
 (defn sps-rev [ps :- ESPs acc :- ESPs] :- ESPs
   (match ps
@@ -239,7 +248,7 @@
   (match parts
     (SPNil []
       (if (= (count acc) 0)
-        (match (em-ins st (str "  ~ = add i64 0, 0"))
+        (match (scalars/em-ins st (str "  ~ = add i64 0, 0"))
           (ETRes [st2 t] (ETRes st2 t)))
         (ETRes st acc)))
     (SPCons [h t]
@@ -247,7 +256,7 @@
         (ESPart [p l]
           (if (= (count acc) 0)
             (strcat-total t st l)
-            (match (em-ins st (str "  ~ = add i64 " acc ", " l))
+            (match (scalars/em-ins st (str "  ~ = add i64 " acc ", " l))
               (ETRes [st2 t2]
                 (strcat-total t st2 t2)))))))))
 
@@ -256,32 +265,32 @@
     (SPNil []
       (if (= (count off) 0)
         (ECPRes st dst)
-        (match (em-ins st (str "  ~ = getelementptr inbounds i8, ptr " dst ", i64 " off))
+        (match (scalars/em-ins st (str "  ~ = getelementptr inbounds i8, ptr " dst ", i64 " off))
           (ETRes [st2 t] (ECPRes st2 t)))))
     (SPCons [h t]
       (match h
         (ESPart [p l]
           (let [at (if (= (count off) 0)
                      (ET2Res st dst off)
-                     (match (em-ins st (str "  ~ = getelementptr inbounds i8, ptr " dst ", i64 " off))
+                     (match (scalars/em-ins st (str "  ~ = getelementptr inbounds i8, ptr " dst ", i64 " off))
                        (ETRes [st2 t2] (ET2Res st2 t2 off))))]
             (match at
               (ET2Res [st3 atp atoff]
-                (let [st4 (em-line st3 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " atp ", ptr " p ", i64 " l ", i1 false, i1 false)"))]
+                (let [st4 (scalars/em-line st3 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " atp ", ptr " p ", i64 " l ", i1 false, i1 false)"))]
                   (if (= (count atoff) 0)
                     (strcat-copies t dst st4 l)
-                    (match (em-ins st4 (str "  ~ = add i64 " atoff ", " l))
+                    (match (scalars/em-ins st4 (str "  ~ = add i64 " atoff ", " l))
                       (ETRes [st5 off2]
                         (strcat-copies t dst st5 off2))))) ))))))))
 
 (defn emit-subs [s :- HExpr a :- HExpr b :- HExpr st :- Emit] :- ESRes
   (match (emit-str-val s st)
     (ESRes [st1 sp]
-      (match (emit-int a st1)
+      (match (scalars/emit-int a st1)
         (ESRes [st2 stv]
-          (match (emit-int b st2)
+          (match (scalars/emit-int b st2)
             (ESRes [st3 env]
-              (match (em-ins4 st3
+              (match (state/em-ins4 st3
                        (str "  ~ = sub i64 " env ", " stv)
                        (str "  ~ = icmp slt i64 ^1, 0")
                        (str "  ~ = select i1 ^1, i64 0, i64 ^2")
@@ -289,12 +298,12 @@
                 (ET4Res [st4 diff neg len one]
                   (match (em-malloc st4 one)
                     (ETRes [st5 np]
-                      (match (em-ins2 st5
+                      (match (state/em-ins2 st5
                                (str "  ~ = getelementptr inbounds i8, ptr " sp ", i64 " stv)
                                (str "  ~ = getelementptr inbounds i8, ptr " np ", i64 " len))
                         (ET2Res [st6 spoff tail]
-                          (let [st7 (em-line st6 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " np ", ptr " spoff ", i64 " len ", i1 false, i1 false)"))
-                                st8 (em-line st7 (str "  store i8 0, ptr " tail ", align 1"))]
+                          (let [st7 (scalars/em-line st6 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " np ", ptr " spoff ", i64 " len ", i1 false, i1 false)"))
+                                st8 (scalars/em-line st7 (str "  store i8 0, ptr " tail ", align 1"))]
                             (ESRes st8 np)) )))))))))))))
 
 (defn emit-split [s :- HExpr sep :- HExpr st :- Emit] :- EVRes
@@ -302,23 +311,23 @@
     (ESRes [st1 sp]
       (match (emit-str-val sep st1)
         (ESRes [st2 sepp]
-          (match (em-temp st2)
+          (match (scalars/em-temp st2)
             (ETRes [st3 out]
-              (let [st4 (em-pre st3 (str out " = alloca i64, align 8"))]
-                (match (em-ins2 st4
+              (let [st4 (scalars/em-pre st3 (str out " = alloca i64, align 8"))]
+                (match (state/em-ins2 st4
                          (str "  ~ = call ptr @cato_str_split(ptr " sp ", ptr " sepp ", ptr " out ")")
                          (str "  ~ = load i64, ptr " out ", align 8"))
                   (ET2Res [st5 arr l]
-                    (EVRes (em-decl st5 "declare ptr @cato_str_split(ptr, ptr, ptr)") arr l 2) ))))))))))
+                    (EVRes (scalars/em-decl st5 "declare ptr @cato_str_split(ptr, ptr, ptr)") arr l 2) ))))))))))
 
 (defn emit-join [sep :- HExpr xs :- HExpr st :- Emit] :- ESRes
   (match (emit-str-val sep st)
     (ESRes [st1 sepp]
       (match (vec-arg xs st1)
         (EVRes [st2 d l el]
-          (match (em-ins st2 (str "  ~ = call ptr @cato_str_join(ptr " d ", i64 " l ", ptr " sepp ")"))
+          (match (scalars/em-ins st2 (str "  ~ = call ptr @cato_str_join(ptr " d ", i64 " l ", ptr " sepp ")"))
             (ETRes [st3 t]
-              (ESRes (em-decl st3 "declare ptr @cato_str_join(ptr, i64, ptr)") t))))))))
+              (ESRes (scalars/em-decl st3 "declare ptr @cato_str_join(ptr, i64, ptr)") t))))))))
 
 (defn emit-count [x :- HExpr st :- Emit] :- ESRes
   (match (clone x)
@@ -326,17 +335,17 @@
       (match (clone st)
         (Emit [c mdl sigs]
           (cond
-            (fc-gr-has c s)
-            (match (fc-gr-get c s)
+            (state/fc-gr-has c s)
+            (match (state/fc-gr-get c s)
               (GroVal [slot el] (gr-slot-len slot st)))
-            (fc-vc-has c s)
-            (match (fc-vc-get c s)
+            (state/fc-vc-has c s)
+            (match (state/fc-vc-get c s)
               (VecVal [p l el] (ESRes st l)))
-            (match (fc-sc-get c s)
+            (match (state/fc-sc-get c s)
               (RegVal [r ty]
-                (if (= (ty-tag ty) 12)
+                (if (= (types/ty-tag ty) 12)
                   (emit-strlen r st)
-                  (sf st "count of non-vector/non-string"))))))))
+                  (scalars/sf st "count of non-vector/non-string"))))))))
     (HStrLit [s]
       (match (emit-str-val x (clone st))
         (ESRes [st1 p] (emit-strlen p st1))))
@@ -351,19 +360,19 @@
           (ESRes [st1 p] (emit-strlen p st1)))))))
 
 (defn emit-strlen [p :- str st :- Emit] :- ESRes
-  (match (em-ins st (str "  ~ = call i64 @strlen(ptr " p ")"))
-    (ETRes [st2 t] (ESRes (em-decl st2 "declare i64 @strlen(ptr)") t))))
+  (match (scalars/em-ins st (str "  ~ = call i64 @strlen(ptr " p ")"))
+    (ETRes [st2 t] (ESRes (scalars/em-decl st2 "declare i64 @strlen(ptr)") t))))
 
 (defn count-expr-is-vec [e :- HExpr st :- Emit] :- bool
   (match e
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup sigs name)]
+          (let [sg (state/sigs-lookup sigs name)]
             (match sg
-              (ESig [params ret] (= (ty-tag ret) 15)))))))
-    (HIf [c t e2 ty] (= (ty-tag ty) 15))
-    (HMatch [scrut arms ty] (= (ty-tag ty) 15))
+              (ESig [params ret] (= (types/ty-tag ret) 15)))))))
+    (HIf [c t e2 ty] (= (types/ty-tag ty) 15))
+    (HMatch [scrut arms ty] (= (types/ty-tag ty) 15))
     (HSplit [s sep] true)
     (HConj [v x el inplace] true)
     (HVecLit [el vals] true)
@@ -371,29 +380,29 @@
       (match body
         (HVar [v] (let-has-vec binds v))
         (_ (count-expr-is-vec (clone body) st))))
-    (HSeq [es] (count-expr-is-vec (hes-last es) st))
+    (HSeq [es] (count-expr-is-vec (scalars/hes-last es) st))
     (HClone [inner] (count-expr-is-vec inner st))
     (HVar [v]
       (match st
-        (Emit [c mdl sigs] (or (fc-vc-has c v) (fc-gr-has c v)))))
+        (Emit [c mdl sigs] (or (state/fc-vc-has c v) (state/fc-gr-has c v)))))
     (_ false)))
 
 (defn let-has-vec [binds :- Binds v :- i64] :- bool
   (match binds
     (BNil [] false)
     (BCons [name val ty next]
-      (if (and (= name v) (= (ty-tag ty) 15))
+      (if (and (= name v) (= (types/ty-tag ty) 15))
         true
         (let-has-vec next v)))))
 
 (defn gr-slot-len [slot :- str st :- Emit] :- ESRes
-  (match (em-ins2 st
+  (match (state/em-ins2 st
            (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 1")
            (str "  ~ = load i64, ptr ^1, align 8"))
     (ET2Res [st1 lf l] (ESRes st1 l) )))
 
 (defn gr-slot-pl [slot :- str st :- Emit] :- ET2Res
-  (match (em-ins4 st
+  (match (state/em-ins4 st
            (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
            (str "  ~ = load ptr, ptr ^1, align 8")
            (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 1")
@@ -405,25 +414,25 @@
     (HVar [v]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has c v)
-            (match (fc-gr-get c v)
+          (if (state/fc-gr-has c v)
+            (match (state/fc-gr-get c v)
               (GroVal [slot el]
                 (match (gr-slot-pl slot st)
                   (ET2Res [st1 p l] (EVRes st1 p l el) ))))
-            (if (fc-vc-has c v)
-              (match (fc-vc-get c v)
+            (if (state/fc-vc-has c v)
+              (match (state/fc-vc-get c v)
                 (VecVal [p l el] (EVRes st p l el)))
-              (vf st "not a vector binding"))))))
+              (scalars/vf st "not a vector binding"))))))
     (HVecLit [el vals]
       (match st
         (Emit [c mdl sigs]
-          (match (md-mint-vec mdl el vals)
+          (match (state/md-mint-vec mdl el vals)
             (MVRes [m2 label len]
-              (match (em-temp (Emit c m2 sigs))
+              (match (scalars/em-temp (Emit c m2 sigs))
                 (ETRes [st1 slot]
-                  (let [st1a (em-pre st1 (str slot " = alloca %VecI64, align 8"))
-                        st2 (em-line st1a (str "  store %VecI64 { ptr " label ", i64 " len ", i64 " len " }, ptr " slot ", align 8"))]
-                    (match (em-ins3 st2
+                  (let [st1a (scalars/em-pre st1 (str slot " = alloca %VecI64, align 8"))
+                        st2 (scalars/em-line st1a (str "  store %VecI64 { ptr " label ", i64 " len ", i64 " len " }, ptr " slot ", align 8"))]
+                    (match (state/em-ins3 st2
                              (str "~ = load %VecI64, ptr " slot ", align 8")
                              (str "~ = extractvalue %VecI64 ^1, 0")
                              (str "~ = extractvalue %VecI64 ^2, 1"))
@@ -431,32 +440,32 @@
     (_ (emit-vec-pair e st))))
 
 (defn vec-elem-of [ty :- Ty] :- i64
-  (if (= (ty-tag ty) 15)
-    (ty-arg ty)
-    (do (cg-fail-i "vector value annotated") -1)))
+  (if (= (types/ty-tag ty) 15)
+    (types/ty-arg ty)
+    (do (state/cg-fail-i "vector value annotated") -1)))
 
 (defn elem-ty-of [el :- i64] :- Ty
-  (if (= el 0) (t-i64)
-    (if (= el 1) (t-f64)
-      (t-str))))
+  (if (= el 0) (types/t-i64)
+    (if (= el 1) (types/t-f64)
+      (types/t-str))))
 
 (defn vec-clone-buf [p :- str l :- str el :- i64 st :- Emit] :- ETRes
   (if (= el 2)
-    (match (em-ins st (str "  ~ = call ptr @cato_str_vec_copy(ptr " p ", i64 " l ", i64 " l ")"))
-      (ETRes [st1 t] (ETRes (em-decl st1 "declare ptr @cato_str_vec_copy(ptr, i64, i64)") t)))
-    (match (em-ins st (str "  ~ = mul i64 " l ", 8"))
+    (match (scalars/em-ins st (str "  ~ = call ptr @cato_str_vec_copy(ptr " p ", i64 " l ", i64 " l ")"))
+      (ETRes [st1 t] (ETRes (scalars/em-decl st1 "declare ptr @cato_str_vec_copy(ptr, i64, i64)") t)))
+    (match (scalars/em-ins st (str "  ~ = mul i64 " l ", 8"))
       (ETRes [st1 nb]
         (match (em-malloc st1 nb)
           (ETRes [st2 npm]
-            (ETRes (em-line st2 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " npm ", ptr " p ", i64 " nb ", i1 false, i1 false)")) npm)))))))
+            (ETRes (scalars/em-line st2 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " npm ", ptr " p ", i64 " nb ", i1 false, i1 false)")) npm)))))))
 
 (defn vec-slot-store [slot :- str v :- str k :- i64 st :- Emit] :- Emit
-  (match (em-temp st)
+  (match (scalars/em-temp st)
     (ETRes [st1 f]
-      (let [st2 (em-line st1 (str f " = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 " k))]
+      (let [st2 (scalars/em-line st1 (str f " = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 " k))]
         (if (= k 0)
-          (em-line st2 (str "  store ptr " v ", ptr " f ", align 8"))
-          (em-line st2 (str "  store i64 " v ", ptr " f ", align 8")))))))
+          (scalars/em-line st2 (str "  store ptr " v ", ptr " f ", align 8"))
+          (scalars/em-line st2 (str "  store i64 " v ", ptr " f ", align 8")))))))
 
 (defn emit-vec-pair [e :- HExpr st :- Emit] :- EVRes
   (match e
@@ -465,17 +474,17 @@
     (HCall [name args]
       (match st
         (Emit [c mdl sigs]
-          (let [sg (sigs-lookup sigs name)]
+          (let [sg (state/sigs-lookup sigs name)]
             (match sg
               (ESig [params ret]
-                (if (= (ty-tag ret) 15)
-                  (match (call-user name (clone args) st)
+                (if (= (types/ty-tag ret) 15)
+                  (match (adt/call-user name (clone args) st)
                     (ESRes [st1 v]
-                      (match (em-ins2 st1
+                      (match (state/em-ins2 st1
                                (str "  ~ = extractvalue %VecI64 " v ", 0")
                                (str "  ~ = extractvalue %VecI64 " v ", 1"))
-                        (ET2Res [st2 p l] (EVRes st2 p l (ty-arg ret)) ))))
-                  (vf st "call does not return a vector"))))))))
+                        (ET2Res [st2 p l] (EVRes st2 p l (types/ty-arg ret)) ))))
+                  (scalars/vf st "call does not return a vector"))))))))
     (HSplit [s sep] (emit-split (clone s) (clone sep) st))
     (HConj [v x el inplace]
       (match (emit-conj (clone v) (clone x) el inplace st)
@@ -487,118 +496,118 @@
         (EVRes [st1 p l el]
           (match (vec-clone-buf p l el st1)
             (ETRes [st4 npm]
-              (match (em-temp st4)
+              (match (scalars/em-temp st4)
                 (ETRes [st5 slot]
-                  (let [st6 (em-pre st5 (str slot " = alloca %VecI64, align 8"))
+                  (let [st6 (scalars/em-pre st5 (str slot " = alloca %VecI64, align 8"))
                         st7 (vec-slot-store slot npm 0 st6)
                         st8 (vec-slot-store slot l 1 st7)
                         st9 (vec-slot-store slot l 2 st8)]
                     (EVRes st9 npm l el)))))))))
     (HIf [c t e2 ty]
-      (let [env0 (em-env-get st)]
-      (match (emit-bool (clone c) st)
+      (let [env0 (state/em-env-get st)]
+      (match (scalars/emit-bool (clone c) st)
         (ESRes [st1 lc]
-          (match (em-blk3 st1)
+          (match (scalars/em-blk3 st1)
             (ET3Res [st2 bt be bm]
-              (let [st3 (em-line st2 (str "  br i1 " lc ", label %" bt ", label %" be))
-                    st4 (em-open st3 bt)]
+              (let [st3 (scalars/em-line st2 (str "  br i1 " lc ", label %" bt ", label %" be))
+                    st4 (scalars/em-open st3 bt)]
                 (match (emit-vec-pair (clone t) st4)
                   (EVRes [st5 tp tl t-el]
-                    (let [tbr (em-cur st5)
-                          st6 (em-line st5 (str "  br label %" bm))
-                          st7 (em-open (em-env-put st6 env0) be)]
+                    (let [tbr (scalars/em-cur st5)
+                          st6 (scalars/em-line st5 (str "  br label %" bm))
+                          st7 (scalars/em-open (state/em-env-put st6 env0) be)]
                       (match (emit-vec-pair (clone e2) st7)
                         (EVRes [st8 ep el2 el3]
-                          (let [ebr (em-cur st8)
-                                st9 (em-line st8 (str "  br label %" bm))
-                                st10 (em-open st9 bm)]
-                            (match (em-ins2 st10
+                          (let [ebr (scalars/em-cur st8)
+                                st9 (scalars/em-line st8 (str "  br label %" bm))
+                                st10 (scalars/em-open st9 bm)]
+                            (match (state/em-ins2 st10
                                      (str "  ~ = phi ptr [ " tp ", %" tbr " ], [ " ep ", %" ebr " ]")
                                      (str "  ~ = phi i64 [ " tl ", %" tbr " ], [ " el2 ", %" ebr " ]"))
                               (ET2Res [st11 mp ml] (EVRes st11 mp ml (vec-elem-of ty)) )))))))))))))))
     (HMatch [scrut arms ty]
       (match-vec-pair scrut (clone arms) (vec-elem-of ty) st))
     (HLet [binds body frees]
-      (match (emit-let (clone binds) st)
+      (match (adt/emit-let (clone binds) st)
         (EURes [st2]
           (match (emit-vec-pair (clone body) st2)
             (EVRes [st3 p l el]
-              (match (emit-frees (clone frees) st3)
+              (match (adt/emit-frees (clone frees) st3)
                 (EURes [st4] (EVRes st4 p l el))))))))
 
     (HSeq [es]
-      (match (emit-stmts-ex-last (clone es) st)
+      (match (scalars/emit-stmts-ex-last (clone es) st)
         (ELRes [st2 last] (emit-vec-pair last st2))))
 
-    (HConstI64 [v] (vf st (str "unsupported vector value site1 tag " (h-tag e))))
-    (HConstF64 [v] (vf st (str "unsupported vector value site2 tag " (h-tag e))))
-    (HConstB [v] (vf st (str "unsupported vector value site3 tag " (h-tag e))))
-    (HStrLit [v] (vf st (str "unsupported vector value site4 tag " (h-tag e))))
-    (HBinW [op a b ty] (vf st (str "unsupported vector value site5 tag " (h-tag e))))
-    (HBinF [op a b] (vf st (str "unsupported vector value site6 tag " (h-tag e))))
-    (HCmpW [op a b ty] (vf st (str "unsupported vector value site7 tag " (h-tag e))))
-    (HStrCmp [pol a b] (vf st (str "unsupported vector value site8 tag " (h-tag e))))
-    (HStrOrd [op a b] (vf st (str "unsupported vector value site9 tag " (h-tag e))))
-    (HICast [x from to] (vf st (str "unsupported vector value site10 tag " (h-tag e))))
-    (HCount [x] (vf st (str "unsupported vector value site11 tag " (h-tag e))))
-    (HToStr [x ty] (vf st (str "unsupported vector value site12 tag " (h-tag e))))
-    (HStrCat [args] (vf st (str "unsupported vector value site13 tag " (h-tag e))))
-    (HSubs [s a b] (vf st (str "unsupported vector value site14 tag " (h-tag e))))
-    (HJoin [sep xs] (vf st (str "unsupported vector value site15 tag " (h-tag e))))
-    (HStrNth [s idx res] (vf st (str "unsupported vector value site16 tag " (h-tag e))))
-    (HCharStr [x] (vf st (str "unsupported vector value site17 tag " (h-tag e))))
-    (HGet [src idx dflt ty res] (vf st (str "unsupported vector value site18 tag " (h-tag e))))
-    (HAnd [a b] (vf st (str "unsupported vector value site19 tag " (h-tag e))))
-    (HOr [a b] (vf st (str "unsupported vector value site20 tag " (h-tag e))))
-    (HNot [x] (vf st (str "unsupported vector value site21 tag " (h-tag e))))
-    (HAbs [x ty] (vf st (str "unsupported vector value site22 tag " (h-tag e))))
-    (HMin [a b ty] (vf st (str "unsupported vector value site23 tag " (h-tag e))))
-    (HMax [a b ty] (vf st (str "unsupported vector value site24 tag " (h-tag e))))
+    (HConstI64 [v] (scalars/vf st (str "unsupported vector value site1 tag " (lower/h-tag e))))
+    (HConstF64 [v] (scalars/vf st (str "unsupported vector value site2 tag " (lower/h-tag e))))
+    (HConstB [v] (scalars/vf st (str "unsupported vector value site3 tag " (lower/h-tag e))))
+    (HStrLit [v] (scalars/vf st (str "unsupported vector value site4 tag " (lower/h-tag e))))
+    (HBinW [op a b ty] (scalars/vf st (str "unsupported vector value site5 tag " (lower/h-tag e))))
+    (HBinF [op a b] (scalars/vf st (str "unsupported vector value site6 tag " (lower/h-tag e))))
+    (HCmpW [op a b ty] (scalars/vf st (str "unsupported vector value site7 tag " (lower/h-tag e))))
+    (HStrCmp [pol a b] (scalars/vf st (str "unsupported vector value site8 tag " (lower/h-tag e))))
+    (HStrOrd [op a b] (scalars/vf st (str "unsupported vector value site9 tag " (lower/h-tag e))))
+    (HICast [x from to] (scalars/vf st (str "unsupported vector value site10 tag " (lower/h-tag e))))
+    (HCount [x] (scalars/vf st (str "unsupported vector value site11 tag " (lower/h-tag e))))
+    (HToStr [x ty] (scalars/vf st (str "unsupported vector value site12 tag " (lower/h-tag e))))
+    (HStrCat [args] (scalars/vf st (str "unsupported vector value site13 tag " (lower/h-tag e))))
+    (HSubs [s a b] (scalars/vf st (str "unsupported vector value site14 tag " (lower/h-tag e))))
+    (HJoin [sep xs] (scalars/vf st (str "unsupported vector value site15 tag " (lower/h-tag e))))
+    (HStrNth [s idx res] (scalars/vf st (str "unsupported vector value site16 tag " (lower/h-tag e))))
+    (HCharStr [x] (scalars/vf st (str "unsupported vector value site17 tag " (lower/h-tag e))))
+    (HGet [src idx dflt ty res] (scalars/vf st (str "unsupported vector value site18 tag " (lower/h-tag e))))
+    (HAnd [a b] (scalars/vf st (str "unsupported vector value site19 tag " (lower/h-tag e))))
+    (HOr [a b] (scalars/vf st (str "unsupported vector value site20 tag " (lower/h-tag e))))
+    (HNot [x] (scalars/vf st (str "unsupported vector value site21 tag " (lower/h-tag e))))
+    (HAbs [x ty] (scalars/vf st (str "unsupported vector value site22 tag " (lower/h-tag e))))
+    (HMin [a b ty] (scalars/vf st (str "unsupported vector value site23 tag " (lower/h-tag e))))
+    (HMax [a b ty] (scalars/vf st (str "unsupported vector value site24 tag " (lower/h-tag e))))
     (HLoop [binds lty body]
-      (match (emit-loop-node (clone binds) (clone lty) (clone body) st)
+      (match (scalars/emit-loop-node (clone binds) (clone lty) (clone body) st)
         (ESRes [st1 v]
-          (match (em-ins2 st1
+          (match (state/em-ins2 st1
                    (str "  ~ = extractvalue %VecI64 " v ", 0")
                    (str "  ~ = extractvalue %VecI64 " v ", 1"))
             (ET2Res [st2 p l] (EVRes st2 p l (vec-elem-of lty)))))))
-    (HRecur [args] (vf st (str "unsupported vector value site26 tag " (h-tag e))))
-    (HCtor [adt variant args] (vf st (str "unsupported vector value site27 tag " (h-tag e))))
-    (HDrop [x] (vf st (str "unsupported vector value site28 tag " (h-tag e))))
-    (HClosure [sig mangled params caps body] (vf st (str "unsupported vector value site29 tag " (h-tag e))))
-    (HClosureCall [f args sig] (vf st (str "unsupported vector value site30 tag " (h-tag e))))
-    (HSlurp [p] (vf st (str "unsupported vector value site31 tag " (h-tag e))))
-    (HSpit [path data] (vf st (str "unsupported vector value site32 tag " (h-tag e))))
-    (HArgs [] (vf st (str "unsupported vector value site33 tag " (h-tag e))))
-    (HExit [x] (vf st (str "unsupported vector value site34 tag " (h-tag e))))
-    (HParseNum [s int res] (vf st (str "unsupported vector value site35 tag " (h-tag e))))))
+    (HRecur [args] (scalars/vf st (str "unsupported vector value site26 tag " (lower/h-tag e))))
+    (HCtor [adt variant args] (scalars/vf st (str "unsupported vector value site27 tag " (lower/h-tag e))))
+    (HDrop [x] (scalars/vf st (str "unsupported vector value site28 tag " (lower/h-tag e))))
+    (HClosure [sig mangled params caps body] (scalars/vf st (str "unsupported vector value site29 tag " (lower/h-tag e))))
+    (HClosureCall [f args sig] (scalars/vf st (str "unsupported vector value site30 tag " (lower/h-tag e))))
+    (HSlurp [p] (scalars/vf st (str "unsupported vector value site31 tag " (lower/h-tag e))))
+    (HSpit [path data] (scalars/vf st (str "unsupported vector value site32 tag " (lower/h-tag e))))
+    (HArgs [] (scalars/vf st (str "unsupported vector value site33 tag " (lower/h-tag e))))
+    (HExit [x] (scalars/vf st (str "unsupported vector value site34 tag " (lower/h-tag e))))
+    (HParseNum [s int res] (scalars/vf st (str "unsupported vector value site35 tag " (lower/h-tag e))))))
 
 (deftype EVPRes (EVPRes [st :- Emit ps :- EMPS ls :- EMPS]))
 
 (defn match-vec-pair [scrut :- &HExpr arms :- HArms el :- i64 st :- Emit] :- EVRes
-  (match (emit-adt (clone scrut) st)
+  (match (adt/emit-adt (clone scrut) st)
     (ESRes [st1 sptr]
       (let [ai (adt-of scrut st1)
-            name (em-adt-name st1 ai)]
-        (match (em-ins2 st1
+            name (state/em-adt-name st1 ai)]
+        (match (state/em-ins2 st1
                  (str "~ = getelementptr inbounds %" name ", ptr " sptr ", i32 0, i32 0")
                  (str "~ = load i64, ptr ^1, align 8"))
           (ET2Res [st2 tg ttag]
-            (match (em-blk2 st2)
+            (match (scalars/em-blk2 st2)
               (ET2Res [st3 merged fail]
-                (match (arm-labels-mint (arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
+                (match (scalars/arm-labels-mint (hexpr/arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
                   (ARes [st4 labels]
-                    (let [dflt (mls-default (clone labels) fail)
-                          st5 (em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
-                          st6 (mls-switch (clone labels) st5)
-                          st7 (em-line st6 "]")
-                            st8 (em-open st7 fail)
-                            st9 (em-line st8 "  unreachable")]
-                        (match (arm-vec-bodies arms labels st9 merged sptr ai name (em-env-get st9) (MPSNil) (MPSNil))
+                    (let [dflt (scalars/mls-default (clone labels) fail)
+                          st5 (scalars/em-line st4 (str "  switch i64 " ttag ", label %" dflt " ["))
+                          st6 (scalars/mls-switch (clone labels) st5)
+                          st7 (scalars/em-line st6 "]")
+                            st8 (scalars/em-open st7 fail)
+                            st9 (scalars/em-line st8 "  unreachable")]
+                        (match (arm-vec-bodies arms labels st9 merged sptr ai name (state/em-env-get st9) (MPSNil) (MPSNil))
                           (EVPRes [st11 ps ls]
-                            (let [st12 (em-open st11 merged)]
-                            (match (em-ins2 st12
-                                     (str "  ~ = phi ptr" (mps-items (mps-rev ps (MPSNil)) true))
-                                     (str "  ~ = phi i64" (mps-items (mps-rev ls (MPSNil)) true)))
+                            (let [st12 (scalars/em-open st11 merged)]
+                            (match (state/em-ins2 st12
+                                     (str "  ~ = phi ptr" (scalars/mps-items (scalars/mps-rev ps (MPSNil)) true))
+                                     (str "  ~ = phi i64" (scalars/mps-items (scalars/mps-rev ls (MPSNil)) true)))
                               (ET2Res [st13 mp ml] (EVRes st13 mp ml el) )))))))) )) ))))))
 
 ; Vector-typed match arms: open the arm block, load fields, emit the
@@ -622,88 +631,88 @@
 (defn arm-vec-one [variant :- i64 binders :- Sids body :- HExpr next :- HArms
                    lrest :- EMLS lbl :- str st :- Emit merged :- str scrut :- str
                    ai :- i64 name :- str env :- EEnv acc-p :- EMPS acc-l :- EMPS] :- EVPRes
-  (let [st0 (em-env-put st (clone env))
-        st1 (em-open st0 lbl)
+  (let [st0 (state/em-env-put st (clone env))
+        st1 (scalars/em-open st0 lbl)
         st2 (if (= variant -1)
               st1
-              (arm-field-loads binders ai variant 0 st1 scrut name))]
+              (scalars/arm-field-loads binders ai variant 0 st1 scrut name))]
     (match (emit-vec-pair body st2)
       (EVRes [st3 p l el]
-        (let [pred (em-cur st3)
-              st4 (em-line st3 (str "  br label %" merged))]
+        (let [pred (scalars/em-cur st3)
+              st4 (scalars/em-line st3 (str "  br label %" merged))]
           (match (arm-vec-bodies next lrest st4 merged scrut ai name env
                                   (MPSCons p pred acc-p) (MPSCons l pred acc-l))
             (EVPRes [st5 ps ls] (EVPRes st5 ps ls))))))))
 (defn emit-get [src :- HExpr idx :- HExpr dflt :- HExprs ty :- Ty st :- Emit] :- ESRes
   (match (vec-arg src st)
     (EVRes [st1 d l el]
-      (match (emit-int idx st1)
+      (match (scalars/emit-int idx st1)
         (ESRes [st2 iv]
-          (match (em-ins4 st2
+          (match (state/em-ins4 st2
                    (str "  ~ = icmp ult i64 " iv ", " l)
                    (str "  ~ = select i1 ^1, i64 " iv ", i64 0")
-                   (str "  ~ = getelementptr inbounds " (elem-ll el) ", ptr " d ", i64 ^1")
-                   (str "  ~ = load " (elem-ll el) ", ptr ^1, align 8"))
+                   (str "  ~ = getelementptr inbounds " (state/elem-ll el) ", ptr " d ", i64 ^1")
+                   (str "  ~ = load " (state/elem-ll el) ", ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null dflt)
-                (if (= (ty-tag ty) 0)
-                  (match (em-ins st3 (str "  ~ = select i1 " inb ", " (elem-ll el) " " v ", " (elem-ll el) " 0"))
+              (if (hexpr/hes-null dflt)
+                (if (= (types/ty-tag ty) 0)
+                  (match (scalars/em-ins st3 (str "  ~ = select i1 " inb ", " (state/elem-ll el) " " v ", " (state/elem-ll el) " 0"))
                     (ETRes [st4 r] (ESRes st4 r)))
                   (ESRes st3 v))
-                (match (emit-typed (hes-first dflt) ty st3)
+                (match (scalars/emit-typed (scalars/hes-first dflt) ty st3)
                   (ESRes [st4 dv]
-                    (match (em-ins st4 (str "  ~ = select i1 " inb ", " (elem-ll el) " " v ", " (elem-ll el) " " dv))
+                    (match (scalars/em-ins st4 (str "  ~ = select i1 " inb ", " (state/elem-ll el) " " v ", " (state/elem-ll el) " " dv))
                       (ETRes [st5 r] (ESRes st5 r)))))))))))))
 
 (defn emit-get-str [src :- HExpr idx :- HExpr dflt :- HExprs st :- Emit] :- ESRes
   (match (vec-arg src st)
     (EVRes [st1 d l el]
-      (match (emit-int idx st1)
+      (match (scalars/emit-int idx st1)
         (ESRes [st2 iv]
-          (match (em-ins4 st2
+          (match (state/em-ins4 st2
                    (str "  ~ = icmp ult i64 " iv ", " l)
                    (str "  ~ = select i1 ^1, i64 " iv ", i64 0")
                    (str "  ~ = getelementptr inbounds ptr, ptr " d ", i64 ^1")
                    (str "  ~ = load ptr, ptr ^1, align 8"))
             (ET4Res [st3 inb safe p v]
-              (if (hes-null dflt)
-                (match (em-ins st3 (str "  ~ = select i1 " inb ", ptr " v ", ptr null"))
+              (if (hexpr/hes-null dflt)
+                (match (scalars/em-ins st3 (str "  ~ = select i1 " inb ", ptr " v ", ptr null"))
                   (ETRes [st4 r] (ESRes st4 r)))
-                (match (emit-str-val (hes-first dflt) st3)
+                (match (emit-str-val (scalars/hes-first dflt) st3)
                   (ESRes [st4 dv]
-                    (match (em-ins st4 (str "  ~ = select i1 " inb ", ptr " v ", ptr " dv))
+                    (match (scalars/em-ins st4 (str "  ~ = select i1 " inb ", ptr " v ", ptr " dv))
                       (ETRes [st5 r] (ESRes st5 r)))))))))))))
 
 (defn emit-get-opt [src :- HExpr idx :- HExpr adt :- i64 st :- Emit] :- ESRes
   (match (vec-arg src st)
     (EVRes [st1 d l el]
-      (match (emit-int idx st1)
+      (match (scalars/emit-int idx st1)
         (ESRes [st2 iv]
-          (match (em-ins4 st2
+          (match (state/em-ins4 st2
                    (str "  ~ = icmp ult i64 " iv ", " l)
                    (str "  ~ = select i1 ^1, i64 " iv ", i64 0")
-                   (str "  ~ = getelementptr inbounds " (elem-ll el) ", ptr " d ", i64 ^1")
-                   (str "  ~ = load " (elem-ll el) ", ptr ^1, align 8"))
+                   (str "  ~ = getelementptr inbounds " (state/elem-ll el) ", ptr " d ", i64 ^1")
+                   (str "  ~ = load " (state/elem-ll el) ", ptr ^1, align 8"))
             (ET4Res [st3 inb safe p payload]
               (materialize-option inb payload adt st3))))))))
 
 (defn materialize-option [found :- str payload :- str adt :- i64 st :- Emit] :- ESRes
   (match st
     (Emit [c mdl sigs]
-      (let [name (md-adt-name mdl adt)]
-        (match (em-temp st)
+      (let [name (state/md-adt-name mdl adt)]
+        (match (scalars/em-temp st)
           (ETRes [st1 slot]
-            (let [st2 (em-pre st1 (str slot " = alloca %" name ", align 8"))]
-              (match (em-ins2 st2
+            (let [st2 (scalars/em-pre st1 (str slot " = alloca %" name ", align 8"))]
+              (match (state/em-ins2 st2
                        (str "~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 0")
                        (str "~ = select i1 " found ", i64 0, i64 1"))
                 (ET2Res [st3 tf tag]
-                  (let [st4 (em-line st3 (str "  store i64 " tag ", ptr " tf ", align 8"))]
-                    (match (em-ins2 st4
+                  (let [st4 (scalars/em-line st3 (str "  store i64 " tag ", ptr " tf ", align 8"))]
+                    (match (state/em-ins2 st4
                              (str "~ = getelementptr inbounds %" name ", ptr " slot ", i32 0, i32 1, i32 0")
                              (str "~ = select i1 " found ", i64 " payload ", i64 0"))
                       (ET2Res [st5 pf pv]
-                        (let [st6 (em-line st5 (str "  store i64 " pv ", ptr " pf ", align 8"))]
+                        (let [st6 (scalars/em-line st5 (str "  store i64 " pv ", ptr " pf ", align 8"))]
                           (ESRes st6 slot)) ))) )))))))))
 
 (defn emit-strnth-raw [s :- HExpr idx :- HExpr st :- Emit] :- ESRes
@@ -711,15 +720,15 @@
     (ESRes [st1 sp]
       (match (emit-strlen sp st1)
         (ESRes [st2 len]
-          (match (emit-int idx st2)
+          (match (scalars/emit-int idx st2)
             (ESRes [st3 iv]
-              (match (em-ins4 st3
+              (match (state/em-ins4 st3
                        (str "  ~ = icmp ult i64 " iv ", " len)
                        (str "  ~ = select i1 ^1, i64 " iv ", i64 0")
                        (str "  ~ = getelementptr inbounds i8, ptr " sp ", i64 ^1")
                        (str "  ~ = load i8, ptr ^1, align 1"))
                 (ET4Res [st4 inb safe p b]
-                  (match (em-ins2 st4
+                  (match (state/em-ins2 st4
                            (str "  ~ = zext i8 " b " to i64")
                            (str "  ~ = select i1 " inb ", i64 ^2, i64 0"))
                     (ET2Res [st5 z r] (ESRes st5 r) )))))))))))
@@ -729,15 +738,15 @@
     (ESRes [st1 sp]
       (match (emit-strlen sp st1)
         (ESRes [st2 len]
-          (match (emit-int idx st2)
+          (match (scalars/emit-int idx st2)
             (ESRes [st3 iv]
-              (match (em-ins4 st3
+              (match (state/em-ins4 st3
                        (str "  ~ = icmp ult i64 " iv ", " len)
                        (str "  ~ = select i1 ^1, i64 " iv ", i64 0")
                        (str "  ~ = getelementptr inbounds i8, ptr " sp ", i64 ^1")
                        (str "  ~ = load i8, ptr ^1, align 1"))
                 (ET4Res [st4 inb safe p b]
-                  (match (em-ins st4 (str "  ~ = zext i8 " b " to i64"))
+                  (match (scalars/em-ins st4 (str "  ~ = zext i8 " b " to i64"))
                     (ETRes [st5 z]
                       (materialize-option inb z adt st5))))))))))))
 
@@ -748,47 +757,47 @@
     (HVar [name]
       (match st
         (Emit [c mdl sigs]
-          (if (fc-gr-has c name)
-            (match (fc-gr-get c name)
+          (if (state/fc-gr-has c name)
+            (match (state/fc-gr-get c name)
               (GroVal [slot gel]
-                (match (em-ins4 st
+                (match (state/em-ins4 st
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 0")
                          (str "  ~ = load ptr, ptr ^1, align 8")
                          (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 1")
                          (str "  ~ = load i64, ptr ^1, align 8"))
                   (ET4Res [st1 pf p lf l]
-                    (match (em-ins2 st1
+                    (match (state/em-ins2 st1
                              (str "  ~ = getelementptr inbounds %VecI64, ptr " slot ", i32 0, i32 2")
                              (str "  ~ = load i64, ptr ^1, align 8"))
                       (ET2Res [st2 cf cp] (ECJRes st2 p l cp 1) ))))))
             (match (vec-arg v st)
               (EVRes [st1 p l gel]
-                (match (em-ins st1 (str "  ~ = add i64 " l ", 0"))
+                (match (scalars/em-ins st1 (str "  ~ = add i64 " l ", 0"))
                   (ETRes [st2 cp] (ECJRes st2 p l cp 0)))))))))
     (_
       (match (vec-arg v st)
         (EVRes [st1 p l gel]
-          (match (em-ins st1 (str "  ~ = add i64 " l ", 0"))
+          (match (scalars/em-ins st1 (str "  ~ = add i64 " l ", 0"))
             (ETRes [st2 cp] (ECJRes st2 p l cp 0))))))))
 
 (defn emit-conj [v :- HExpr x :- HExpr el :- i64 inplace :- i64 st :- Emit] :- ETRes
-  (let [ll (elem-ll el)]
+  (let [ll (state/elem-ll el)]
     (match (conj-source v st)
       (ECJRes [st1 p l cp freeable]
         (let [xr (if (= el 2)
                    (match (emit-str-val x st1)
                      (ESRes [st2 sv]
-                       (match (em-ins st2 (str "  ~ = call ptr @strdup(ptr " sv ")"))
-                         (ETRes [st3 t] (ETRes (em-decl st3 "declare ptr @strdup(ptr)") t)))))
-                   (match (emit-typed x (elem-ty-of el) st1)
+                       (match (scalars/em-ins st2 (str "  ~ = call ptr @strdup(ptr " sv ")"))
+                         (ETRes [st3 t] (ETRes (scalars/em-decl st3 "declare ptr @strdup(ptr)") t)))))
+                   (match (scalars/emit-typed x (elem-ty-of el) st1)
                      (ESRes [st2 xv] (ETRes st2 xv))))]
           (match xr
             (ETRes [st4 xv]
-              (match (em-ins st4 (str "  ~ = add i64 " l ", 1"))
+              (match (scalars/em-ins st4 (str "  ~ = add i64 " l ", 1"))
                 (ETRes [st5 one]
-                  (match (em-temp st5)
+                  (match (scalars/em-temp st5)
                     (ETRes [st6 slot]
-                      (let [st7 (em-pre st6 (str slot " = alloca %VecI64, align 8"))]
+                      (let [st7 (scalars/em-pre st6 (str slot " = alloca %VecI64, align 8"))]
                         (match (conj-branch inplace l cp st7)
                           (EH3Res [st8 bf bg bm]
                             (match (conj-fast st8 slot ll p l cp one xv bm el bf)
@@ -796,71 +805,71 @@
                                 (match (conj-grow st9 slot ll p l cp one xv el
                                                   (if (= inplace 1) freeable 0) bm bg)
                                   (EURes [st10]
-                                    (ETRes (em-open st10 bm) slot)))))))))))))))))))
+                                    (ETRes (scalars/em-open st10 bm) slot)))))))))))))))))))
 
 (deftype EH3Res (EH3Res [st :- Emit b1 :- str b2 :- str b3 :- str]))
 
 (defn conj-branch [inplace :- i64 l :- str cp :- str st :- Emit] :- EH3Res
-  (match (em-blk3 st)
+  (match (scalars/em-blk3 st)
     (ET3Res [st1 bf bg bm]
       (if (= inplace 1)
-        (match (em-temp st1)
+        (match (scalars/em-temp st1)
           (ETRes [st2 hr]
-            (let [st3 (em-line st2 (str hr " = icmp ult i64 " l ", " cp))
-                  st4 (em-line st3 (str "  br i1 " hr ", label %" bf ", label %" bg))]
+            (let [st3 (scalars/em-line st2 (str hr " = icmp ult i64 " l ", " cp))
+                  st4 (scalars/em-line st3 (str "  br i1 " hr ", label %" bf ", label %" bg))]
               (EH3Res st4 bf bg bm)))) 
-        (let [st2 (em-line st1 (str "  br i1 0, label %" bf ", label %" bg))]
+        (let [st2 (scalars/em-line st1 (str "  br i1 0, label %" bf ", label %" bg))]
           (EH3Res st2 bf bg bm))))))
 
 (defn conj-fast [st :- Emit slot :- str ll :- str p :- str l :- str cp :- str
                  one :- str xv :- str bm :- str el :- i64 bf :- str] :- EURes
-  (let [st0 (em-open st bf)]
-  (match (em-ins st0 (str "  ~ = getelementptr inbounds " ll ", ptr " p ", i64 " l))
+  (let [st0 (scalars/em-open st bf)]
+  (match (scalars/em-ins st0 (str "  ~ = getelementptr inbounds " ll ", ptr " p ", i64 " l))
     (ETRes [st1 tail]
       (let [st2 (if (= el 2)
-                  (em-line st1 (str "  store ptr " xv ", ptr " tail ", align 8"))
-                  (em-line st1 (str "  store " ll " " xv ", ptr " tail ", align 8")))
+                  (scalars/em-line st1 (str "  store ptr " xv ", ptr " tail ", align 8"))
+                  (scalars/em-line st1 (str "  store " ll " " xv ", ptr " tail ", align 8")))
             st3 (vec-slot-store slot p 0 st2)
             st4 (vec-slot-store slot one 1 st3)
             st5 (vec-slot-store slot cp 2 st4)
-            st6 (em-line st5 (str "  br label %" bm))]
+            st6 (scalars/em-line st5 (str "  br label %" bm))]
         (EURes st6))))))
 
 (defn conj-grow [st :- Emit slot :- str ll :- str p :- str l :- str cp :- str
                  one :- str xv :- str el :- i64 freeable :- i64 bm :- str bg :- str] :- EURes
-  (let [st0 (em-open st bg)]
-  (match (em-ins3 st0
+  (let [st0 (scalars/em-open st bg)]
+  (match (state/em-ins3 st0
            (str "  ~ = mul i64 " cp ", 2")
            (str "  ~ = icmp uge i64 ^1, " one)
            (str "  ~ = select i1 ^1, i64 ^2, i64 " one))
     (ET3Res [st1 dbl ge newcap]
       (let [npr (if (and (= el 2) (= freeable 0))
-                  (match (em-ins st1 (str "  ~ = call ptr @cato_str_vec_copy(ptr " p ", i64 " l ", i64 " newcap ")"))
-                    (ETRes [st2 t] (ETRes (em-decl st2 "declare ptr @cato_str_vec_copy(ptr, i64, i64)") t)))
-                  (match (em-ins st1 (str "  ~ = mul i64 " newcap ", 8"))
+                  (match (scalars/em-ins st1 (str "  ~ = call ptr @cato_str_vec_copy(ptr " p ", i64 " l ", i64 " newcap ")"))
+                    (ETRes [st2 t] (ETRes (scalars/em-decl st2 "declare ptr @cato_str_vec_copy(ptr, i64, i64)") t)))
+                  (match (scalars/em-ins st1 (str "  ~ = mul i64 " newcap ", 8"))
                     (ETRes [st2 nb]
                       (match (em-malloc st2 nb)
                         (ETRes [st3 npm]
-                          (match (em-ins st3 (str "  ~ = mul i64 " l ", 8"))
+                          (match (scalars/em-ins st3 (str "  ~ = mul i64 " l ", 8"))
                             (ETRes [st4 cb]
-                              (ETRes (em-line st4 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " npm ", ptr " p ", i64 " cb ", i1 false, i1 false)")) npm))))))))]
+                              (ETRes (scalars/em-line st4 (str "  call void @llvm.memcpy.p0.p0.i64(ptr " npm ", ptr " p ", i64 " cb ", i1 false, i1 false)")) npm))))))))]
         (match npr
           (ETRes [st5 npm]
-            (match (em-ins st5 (str "  ~ = getelementptr inbounds " ll ", ptr " npm ", i64 " l))
+            (match (scalars/em-ins st5 (str "  ~ = getelementptr inbounds " ll ", ptr " npm ", i64 " l))
               (ETRes [st6 gp]
                 (let [st7 (if (= el 2)
-                            (em-line st6 (str "  store ptr " xv ", ptr " gp ", align 8"))
-                            (em-line st6 (str "  store " ll " " xv ", ptr " gp ", align 8")))
+                            (scalars/em-line st6 (str "  store ptr " xv ", ptr " gp ", align 8"))
+                            (scalars/em-line st6 (str "  store " ll " " xv ", ptr " gp ", align 8")))
                       ; a static global (a `[]`-literal seed) is never heap:
                       ; never free it, whatever the planner verdicts say —
                       ; a literal-seeded accumulator grows on its first
                       ; append and would free read-only data here
                       st8 (if (and (= freeable 1)
                                    (not (= 64 (cato-str-byte (clone p) 0))))
-                            (em-line st7 (str "  call void @free(ptr " p ")"))
+                            (scalars/em-line st7 (str "  call void @free(ptr " p ")"))
                             st7)
                       st9 (vec-slot-store slot npm 0 st8)
                       st10 (vec-slot-store slot one 1 st9)
                       st11 (vec-slot-store slot newcap 2 st10)
-                      st12 (em-line st11 (str "  br label %" bm))]
+                      st12 (scalars/em-line st11 (str "  br label %" bm))]
               (EURes st12)))))))))))

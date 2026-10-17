@@ -1,3 +1,5 @@
+(ns cato.lib.span)
+
 ; span.cato — S4: source positions.
 ;
 ; A Span is a value type (unboxed: i64 fields only, no heap). File

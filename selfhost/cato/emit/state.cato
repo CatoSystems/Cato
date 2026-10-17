@@ -1,3 +1,13 @@
+(ns cato.emit.state)
+(require ["../hir/types.cato" :as types])
+(require ["../lib/strbuf.cato" :as strbuf])
+(require ["scalars.cato" :as scalars])
+(require ["../lib/sym.cato" :as sym])
+(require ["closures.cato" :as closures])
+(require ["../hir/forms.cato" :as forms])
+(require ["../reader/read.cato" :as read])
+(require ["../hir/hexpr.cato" :as hexpr])
+
 ; state.cato — S7: emitter state, module state, layout math, LLVM text
 ; helpers.
 ;
@@ -44,7 +54,7 @@
 (defn esc-get [t :- &EScTab k :- i64] :- RegVal
   (match t
     (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get next k)))
-    (EScNil [] (RegVal "" (t-none)))))
+    (EScNil [] (RegVal "" (types/t-none)))))
 
 (defn esc-has [t :- &EScTab k :- i64] :- bool
   (match t
@@ -72,7 +82,7 @@
     (EGrNil [] false)))
 
 (defn fn-new [] :- FnCtx
-  (FnCtx 0 0 "entry" (sb-new) (sb-new)
+  (FnCtx 0 0 "entry" (strbuf/sb-new) (strbuf/sb-new)
          (EScNil) (EVcNil) (EGrNil) (LoopFr (ESlotsNil) "")))
 
 ; --- per-node results ---------------------------------------------------------
@@ -99,14 +109,14 @@
                    csigs :- Sigs]))
 
 (defn md-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
-  (Mdl (clone tab) 0 (sb-new) (StrsNil) adts owns csigs))
+  (Mdl (clone tab) 0 (strbuf/sb-new) (StrsNil) adts owns csigs))
 
 (defn md-tab [m :- &Mdl] :- i64
   (match m (Mdl [tab g globals decls adts owns csigs] tab)))
 
 ; The interned string for a sid, read straight off the borrowed module.
 (defn md-sym [m :- &Mdl sid :- i64] :- str
-  (match m (Mdl [tab g globals decls adts owns csigs] (stab-get tab sid))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (sym/stab-get tab sid))))
 
 (defn md-adts [m :- &Mdl] :- AdtTab
   (match m (Mdl [tab g globals decls adts owns csigs] (clone adts))))
@@ -117,7 +127,7 @@
 ; Index the borrowed field directly: `(md-owns m)` clones the whole
 ; ownership list (one cons per ADT in the program) just to read slot i.
 (defn md-owns-at [m :- &Mdl i :- i64] :- i64
-  (match m (Mdl [tab g globals decls adts owns csigs] (sids-idx owns i))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (types/sids-idx owns i))))
 
 ; `md-adts`/`md-owns`/`md-csigs` hand back an owned table (a deep copy),
 ; which is pure waste when the consumer only borrows it. These read the
@@ -132,7 +142,7 @@
   (match m (Mdl [tab g globals decls adts owns csigs] (fs-field-ty adts ai vi k))))
 
 (defn md-esigs-at [m :- &Mdl i :- i64] :- ESig
-  (match m (Mdl [tab g globals decls adts owns csigs] (esigs-at csigs i))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (closures/esigs-at csigs i))))
 
 (defn md-csigs [m :- &Mdl] :- Sigs
   (match m (Mdl [tab g globals decls adts owns csigs] (clone csigs))))
@@ -142,9 +152,9 @@
 (defn md-adt-name [m :- &Mdl i :- i64] :- str
   (match m
     (Mdl [tab g globals decls adts owns csigs]
-      (match (adts-at adts i)
+      (match (forms/adts-at adts i)
         (AdtInfo [name tps variants tpl tplargs]
-          (stab-get tab name))))))
+          (sym/stab-get tab name))))))
 
 ; --- declarations & globals -----------------------------------------------------
 
@@ -164,7 +174,7 @@
 
 (defn md-decls-lines-1 [ss :- Strs b :- StrBuf] :- StrBuf
   (match ss
-    (StrsCons [h t] (md-decls-lines-1 t (sb-add-line b h)))
+    (StrsCons [h t] (md-decls-lines-1 t (strbuf/sb-add-line b h)))
     (StrsNil [] b)))
 
 (defn md-ensure [m :- Mdl line :- str] :- Mdl
@@ -180,11 +190,11 @@
     (Mdl [tab g globals decls adts owns csigs]
       (let [label (str "@g_str_" (clone g))
             n (count (clone s))
-            bytes (md-str-bytes (clone s) 0 n (sb-new) true)
+            bytes (md-str-bytes (clone s) 0 n (strbuf/sb-new) true)
             line (str label " = private unnamed_addr constant [" (+ n 1) " x i8] ["
-                      (sb-str bytes) "]")]
+                      (strbuf/sb-str bytes) "]")]
         (EMRes (Mdl tab (+ g 1)
-                   (sb-add-line globals line)
+                   (strbuf/sb-add-line globals line)
                    decls adts owns csigs)
               label)))))
 
@@ -192,10 +202,10 @@
 (defn md-str-bytes [s :- str i :- i64 n :- i64 b :- StrBuf first :- bool] :- StrBuf
   (if (> i n)
     b
-    (let [byte (if (= i n) 0 (str-byte s i))
+    (let [byte (if (= i n) 0 (read/str-byte s i))
           b2 (if first
-               (sb-add b (str "i8 " byte))
-               (sb-add b (str ", i8 " byte)))]
+               (strbuf/sb-add b (str "i8 " byte))
+               (strbuf/sb-add b (str ", i8 " byte)))]
       (md-str-bytes (clone s) (+ i 1) n b2 false))))
 
 ; A private [N x i64/double] global for a vector literal; returns
@@ -206,13 +216,13 @@
   (match m
     (Mdl [tab g globals decls adts owns csigs]
       (let [label (str "@g_vec_" (clone g))
-            n (vvals-depth vals)
-            parts (md-vec-items vals (clone el) (sb-new) true)
+            n (hexpr/vvals-depth vals)
+            parts (md-vec-items vals (clone el) (strbuf/sb-new) true)
             ty (if (= el 1) "double" "i64")
             line (str label " = private constant [" n " x " ty "] ["
-                      (sb-str parts) "]")]
+                      (strbuf/sb-str parts) "]")]
         (MVRes (Mdl tab (+ g 1)
-                    (sb-add-line globals line)
+                    (strbuf/sb-add-line globals line)
                     decls adts owns csigs)
                label (str n))))))
 
@@ -221,13 +231,13 @@
     (VVNil [] b)
     (VVI64 [v next]
       (let [b2 (if first
-                 (sb-add b (str "i64 " v))
-                 (sb-add b (str ", i64 " v)))]
+                 (strbuf/sb-add b (str "i64 " v))
+                 (strbuf/sb-add b (str ", i64 " v)))]
         (md-vec-items next (clone el) b2 false)))
     (VVF64 [v next]
       (let [b2 (if first
-                 (sb-add b (str "double " (llvm-f64 v)))
-                 (sb-add b (str ", double " (llvm-f64 v))))]
+                 (strbuf/sb-add b (str "double " (llvm-f64 v)))
+                 (strbuf/sb-add b (str ", double " (llvm-f64 v))))]
         (md-vec-items next (clone el) b2 false)))))
 
 ; --- FnCtx primitives ------------------------------------------------------------
@@ -251,18 +261,18 @@
 (defn fc-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (sb-add-line body s) pre sc ve gr lfr))))
+      (FnCtx tmpc blkc cur (strbuf/sb-add-line body s) pre sc ve gr lfr))))
 
 (defn fc-pre-line [c :- FnCtx s :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body (sb-add-line pre s) sc ve gr lfr))))
+      (FnCtx tmpc blkc cur body (strbuf/sb-add-line pre s) sc ve gr lfr))))
 
 (defn fc-open [c :- FnCtx label :- str] :- FnCtx
   (match c
     (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
       (FnCtx tmpc blkc label
-             (sb-add-line body (str label ":"))
+             (strbuf/sb-add-line body (str label ":"))
              pre sc ve gr lfr))))
 
 (defn fc-sc-put [c :- FnCtx k :- i64 r :- str ty :- Ty] :- FnCtx
@@ -382,7 +392,7 @@
       (clone m))))
 
 (defn ll-scalar [t :- Ty] :- str
-  (let [tag (ty-tag t)]
+  (let [tag (types/ty-tag t)]
     (cond
       (= tag 0) "i64"
       (= tag 1) "i32"
@@ -398,7 +408,7 @@
       (cg-fail-s "ll-scalar on non-scalar type"))))
 
 (defn ll-ty [t :- Ty] :- str
-  (let [tag (ty-tag t)]
+  (let [tag (types/ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -415,7 +425,7 @@
   (if (= el 1) "double" "i64"))
 
 (defn ll-loop-slot-ty [t :- Ty mdl :- &Mdl] :- str
-  (let [tag (ty-tag t)]
+  (let [tag (types/ty-tag t)]
     (cond
       (= tag 9) "double"
       (= tag 10) "float"
@@ -424,26 +434,26 @@
       (< tag 12) (ll-scalar (clone t))
       ; S8: a boxed ADT loop variable's slot is the owning pointer; a
       ; vector's slot is the {ptr,len,cap} header
-      (and (= tag 16) (= (md-owns-at mdl (ty-arg t)) 1)) "ptr"
+      (and (= tag 16) (= (md-owns-at mdl (types/ty-arg t)) 1)) "ptr"
       (= tag 15) "%VecI64"
       (cg-fail-s "loop variable of unsupported type"))))
 
 ; a vector loop variable's slot kind (the scalar path handles everything
 ; whose value is one machine word, including boxed ADT pointers)
 (defn loop-slot-vec [t :- Ty] :- bool
-  (= (ty-tag t) 15))
+  (= (types/ty-tag t) 15))
 
 ; --- ADT layout (the seed's field_slot_count / payload / offsets) ----------------
 
 ; Payload slots one field occupies: vectors 3; boxed (owning) ADT 1;
 ; inline ADT child its whole struct (1 + its payload); everything else 1.
 (defn fs-count [f :- Ty owns :- &Sids adts :- &AdtTab] :- i64
-  (let [tag (ty-tag f)]
+  (let [tag (types/ty-tag f)]
     (cond
       (= tag 15) 3
       (= tag 16)
-      (let [j (ty-arg f)]
-        (if (= (sids-idx owns j) 1)
+      (let [j (types/ty-arg f)]
+        (if (= (types/sids-idx owns j) 1)
           1
           (+ 1 (fs-pay adts owns j))))
       1)))
@@ -452,9 +462,9 @@
   (fs-pay-vi adts owns i 0 0))
 
 (defn fs-pay-vi [adts :- &AdtTab owns :- &Sids i :- i64 vi :- i64 best :- i64] :- i64
-  (if (>= vi (vlist-depth (adts-variants-at adts i)))
+  (if (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
     best
-    (let [sum (fs-sum (varnt-fields-at adts i vi) owns adts 0)]
+    (let [sum (fs-sum (forms/varnt-fields-at adts i vi) owns adts 0)]
       (fs-pay-vi adts owns i (+ vi 1)
                  (if (> sum best) sum best)))))
 
@@ -470,7 +480,7 @@
 
 ; Slot offset of field k in variant vi of ADT ai.
 (defn fs-off [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-off-1 (varnt-fields-at adts ai vi) owns adts 0 k))
+  (fs-off-1 (forms/varnt-fields-at adts ai vi) owns adts 0 k))
 
 (defn fs-off-1 [fs :- TyList owns :- &Sids adts :- &AdtTab at :- i64 k :- i64] :- i64
   (if (= k 0)
@@ -484,10 +494,10 @@
 
 ; Slot count of field k in variant vi of ADT ai.
 (defn fs-count-at [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
-  (fs-count (tys-idx (varnt-fields-at adts ai vi) k) owns adts))
+  (fs-count (types/tys-idx (forms/varnt-fields-at adts ai vi) k) owns adts))
 
 (defn fs-field-ty [adts :- &AdtTab ai :- i64 vi :- i64 k :- i64] :- Ty
-  (tys-idx (varnt-fields-at adts ai vi) k))
+  (types/tys-idx (forms/varnt-fields-at adts ai vi) k))
 
 ; --- f64 literals: shortest round-trip decimal ------------------------------------
 ;
@@ -652,12 +662,12 @@
     (PCons [h t]
       (match h
         (Param [name ty _pb] (pl-tylist t (TyCons ty acc)))))
-    (PNil [] (tys-rev acc (TyNil)))))
+    (PNil [] (types/tys-rev acc (TyNil)))))
 
 (defn sigs-lookup [ss :- &ESigTab k :- i64] :- ESig
   (match ss
     (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup next k)))
-    (ESTNil [] (ESig (TyNil) (t-none)))))
+    (ESTNil [] (ESig (TyNil) (types/t-none)))))
 
 ; --- the emission bundle ---------------------------------------------------------
 
@@ -713,25 +723,25 @@
         (str (char->str c) (sub-place (subs s 1 (count s)) own p1 p2 p3))))))
 
 (defn em-ins2 [st :- Emit b1 :- str b2 :- str] :- ET2Res
-  (match (em-ins st b1)
+  (match (scalars/em-ins st b1)
     (ETRes [st1 t1]
-      (match (em-ins st1 (sub-place b2 "" t1 "" ""))
+      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
         (ETRes [st2 t2] (ET2Res st2 t1 t2))))))
 
 (defn em-ins3 [st :- Emit b1 :- str b2 :- str b3 :- str] :- ET3Res
-  (match (em-ins st b1)
+  (match (scalars/em-ins st b1)
     (ETRes [st1 t1]
-      (match (em-ins st1 (sub-place b2 "" t1 "" ""))
+      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
         (ETRes [st2 t2]
-          (match (em-ins st2 (sub-place b3 "" t2 t1 ""))
+          (match (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
             (ETRes [st3 t3] (ET3Res st3 t1 t2 t3))))))))
 
 (defn em-ins4 [st :- Emit b1 :- str b2 :- str b3 :- str b4 :- str] :- ET4Res
-  (match (em-ins st b1)
+  (match (scalars/em-ins st b1)
     (ETRes [st1 t1]
-      (match (em-ins st1 (sub-place b2 "" t1 "" ""))
+      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
         (ETRes [st2 t2]
-          (match (em-ins st2 (sub-place b3 "" t2 t1 ""))
+          (match (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
             (ETRes [st3 t3]
-              (match (em-ins st3 (sub-place b4 "" t3 t2 t1))
+              (match (scalars/em-ins st3 (sub-place b4 "" t3 t2 t1))
                 (ETRes [st4 t4] (ET4Res st4 t1 t2 t3 t4))))))))))

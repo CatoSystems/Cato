@@ -1,3 +1,8 @@
+(ns cato.reader.reader_ref)
+(require ["read.cato" :as read])
+(require ["../lib/strbuf.cato" :as strbuf])
+(require ["dump.cato" :as rdump])
+
 ; reader_ref.cato — S5 reference driver.
 ;
 ; Concatenated after the lib and reader files by the test harness (one
@@ -14,12 +19,12 @@
   (let [a (args)
         path (get a 0 "")
         src (slurp path)
-        r (read-all src)]
+        r (read/read-all src)]
     ; Extraction clones: the RRes box's drop glue frees the originals at
     ; scope exit, so the arm works on deep copies.
     (match r
       (ROk [forms tab]
-        (let [s (sb-str (dump-forms (clone tab) (clone forms) (sb-new)))
+        (let [s (strbuf/sb-str (rdump/dump-forms (clone tab) (clone forms) (strbuf/sb-new)))
               ; dump-forms ends every line with \n; print-string appends
               ; the final one, so the body sheds its trailing newline.
               body (subs s 0 (- (count s) 1))]
@@ -27,4 +32,4 @@
             (print-string body)
             0)))
       (RErr [msg at]
-        (print-string (str "err " (spat at) " " msg))))))
+        (print-string (str "err " (rdump/spat at) " " msg))))))

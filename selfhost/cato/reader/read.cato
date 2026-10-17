@@ -1,3 +1,8 @@
+(ns cato.reader.read)
+(require ["../lib/ast.cato" :as ast])
+(require ["../lib/sym.cato" :as sym])
+(require ["../lib/span.cato" :as span])
+
 ; read.cato — S5: the kernel reader.
 ;
 ; A port of crates/cato-core/src/reader.rs: one fused scan over the bytes,
@@ -45,7 +50,7 @@
   (RErr [msg :- str at :- Span]))
 
 (defn read-all [src :- str] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) (stab-new)))
+  (scan src 0 1 0 0 1 0 (RSNil) (KNil) (sym/stab-new)))
 
 ; The reader entry the S6/S7 drivers and the kernel CLI share: the scan is
 ; seeded with an already-populated intern table (the driver's magic table),
@@ -226,7 +231,7 @@
 ; through `get` (shared borrow) and threads the table by move, so the
 ; lookup clones nothing on its own.
 (defn intern-sid [tab :- i64 s :- str] :- i64
-  (stab-find tab s))
+  (sym/stab-find tab s))
 
 ; ---------------------------------------------------------------------------
 ; the scan
@@ -300,7 +305,7 @@
                     (Span line col 1)))
             (RSFrame [kind open oline ocol kidsF rest]
               (if (kind-accepts kind c)
-                (if (and (= kind 2) (not (even? (asts-depth kids))))
+                (if (and (= kind 2) (not (even? (ast/asts-depth kids))))
                   (RErr "map literal must have key/value pairs"
                         (Span oline ocol (+ (- i open) 1)))
                   (let [k (asts-rev kids (KNil))
@@ -349,7 +354,7 @@
           (let [e (tok-end src i n)
                 tok (subs src i e)
                 lcv (advance src i e line col)
-                sid (let [s0 (intern-sid tab tok)] (if (< s0 0) (stab-conj tab tok) s0))
+                sid (let [s0 (intern-sid tab tok)] (if (< s0 0) (sym/stab-conj tab tok) s0))
                 node (atom-node tok sid line col (- e i))]
             (match lcv
               (LC [l2 c2]

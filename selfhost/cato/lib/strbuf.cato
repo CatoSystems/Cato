@@ -1,3 +1,5 @@
+(ns cato.lib.strbuf)
+
 ; strbuf.cato — S4: string builder.
 ;
 ; Emitter output and diagnostics accumulate pieces and join exactly once;

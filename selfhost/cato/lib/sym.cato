@@ -1,3 +1,5 @@
+(ns cato.lib.sym)
+
 ; sym.cato — S4: symbol interning.
 ;
 ; str -> i64 sid over an append-only table behind an opaque i64 handle.

@@ -1,3 +1,10 @@
+(ns cato.hir.expand)
+(require ["../lib/sym.cato" :as sym])
+(require ["../lib/ast.cato" :as ast])
+(require ["../lib/span.cato" :as span])
+(require ["../reader/dump.cato" :as rdump])
+(require ["../reader/read.cato" :as read])
+
 ; expand.cato — S6: the kernel expander.
 ;
 ; A port of crates/cato-core/src/expand.rs over the S5 AST: bottom-up
@@ -120,7 +127,7 @@
 ; through an annotated helper — the same bootstrap as the reader's `[]`
 ; seed tab.
 (defn mt-add [acc :- i64 s :- str] :- i64
-  (stab-add acc s))
+  (sym/stab-add acc s))
 
 (defn magic-table [] :- i64 (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
@@ -131,7 +138,7 @@
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add (mt-add
    (mt-add
-   (mt-add (mt-add (mt-add (mt-add (mt-add (stab-new) "->") "->>") "when") "when-not") "cond")
+   (mt-add (mt-add (mt-add (mt-add (mt-add (sym/stab-new) "->") "->>") "when") "when-not") "cond")
    "if-let") "when-let") "if-not") "and") "or") "do") "let") "fn") "if") "not") "=") "/=")
    "<") ">") "<=") ">=") "+") "-") "*") "/") "abs") "min") "max") "match") "loop") "recur")
    "get") "conj") "count") "str") "subs") "split") "join") "nth") "char->str") "clone")
@@ -236,12 +243,12 @@
   ; remaining chain per form and makes self-compilation quadratic (S8).
   (match forms
     (KCons [f rest]
-      (let [sp (ast-at (clone f))
+      (let [sp (rdump/ast-at (clone f))
             r (expand-form f)]
         (match r
           (EOk1 [a] (expand-all rest (KCons a acc)))
           (EErr1 [msg at] (EErr msg sp)))))
-    (KNil [] (EOk (asts-rev acc (KNil))))))
+    (KNil [] (EOk (read/asts-rev acc (KNil))))))
 
 (defn expand-kids [ks :- Asts acc :- Asts] :- EResk
   (match ks
@@ -250,7 +257,7 @@
         (match r
           (EOk1 [a] (expand-kids rest (KCons a acc)))
           (EErr1 [msg at] (EErrk msg at)))))
-    (KNil [] (EOkk (asts-rev acc (KNil))))))
+    (KNil [] (EOkk (read/asts-rev acc (KNil))))))
 
 (defn expand-form [a :- Ast] :- ERes1
   (match a
@@ -285,9 +292,9 @@
   (match a
     (AList [kids at]
       (let [h (asts-head-sid kids)
-            al (sp-line at)
-            ac (sp-col at)
-            an (sp-len at)]
+            al (span/sp-line at)
+            ac (span/sp-col at)
+            an (span/sp-len at)]
         (cond
           (= h (s-arrow))
           (expand-thread (asts-tail kids) 0 al ac an)
@@ -396,7 +403,7 @@
 (defn expand-when [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
   ; The depth query borrows; the match then consumes the chain and the
   ; binders move into the desugaring — no idx/drop clones (S8).
-  (if (< (asts-depth kids) 3)
+  (if (< (ast/asts-depth kids) 3)
     (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))
     (match kids
       (KCons [_h r1]
@@ -408,7 +415,7 @@
       (KNil [] (EErr1 "when expects (when <cond> <body>...)" (Span sl sc sn))))))
 
 (defn expand-whennot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth kids) 3)
+  (if (< (ast/asts-depth kids) 3)
     (EErr1 "when-not expects (when-not <cond> <body>...)" (Span sl sc sn))
     (match kids
       (KCons [_h r1]
@@ -440,11 +447,11 @@
 (defn cond-nest [arms :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
   (if (asts-null arms)
     (EErr1 "cond expects at least one test/body pair" (Span sl sc sn))
-    (if (even? (asts-depth arms))
-    (cond-fold (asts-rev arms (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
+    (if (even? (ast/asts-depth arms))
+    (cond-fold (read/asts-rev arms (KNil)) (AInt 0 (Span sl sc sn)) sl sc sn)
     (match (asts-split-last arms)
       (LSplit [pairs dflt]
-        (cond-fold (asts-rev pairs (KNil)) dflt sl sc sn))))))
+        (cond-fold (read/asts-rev pairs (KNil)) dflt sl sc sn))))))
 
 ; Fold the reversed pairs two at a time: each step wraps the accumulator
 ; in (if test body acc).
@@ -470,7 +477,7 @@
 (defn bind2-of [b :- Ast msg :- str] :- Bind2
   (match b
     (AVec [ks sp]
-      (if (= (asts-depth ks) 2)
+      (if (= (ast/asts-depth ks) 2)
         (match ks
           (KCons [x r1]
             (match r1
@@ -489,7 +496,7 @@
     (ASet [ks sp] (B2Err msg))))
 
 (defn expand-iflet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (let [n (asts-depth kids)]
+  (let [n (ast/asts-depth kids)]
     (if (and (not (= n 4)) (not (= n 5)))
       (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn))
       (match kids
@@ -517,7 +524,7 @@
         (KNil [] (EErr1 "if-let expects (if-let [x e] <then> [<else>])" (Span sl sc sn)))))))
 
 (defn expand-whenlet [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (< (asts-depth kids) 3)
+  (if (< (ast/asts-depth kids) 3)
     (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))
     (match kids
       (KCons [_h r1]
@@ -536,7 +543,7 @@
       (KNil [] (EErr1 "when-let expects (when-let [x e] <body>...)" (Span sl sc sn))))))
 
 (defn expand-ifnot [kids :- Asts sl :- i64 sc :- i64 sn :- i64] :- ERes1
-  (if (not (= (asts-depth kids) 4))
+  (if (not (= (ast/asts-depth kids) 4))
     (EErr1 "if-not expects (if-not <cond> <then> <else>)" (Span sl sc sn))
     (match kids
       (KCons [_h r1]
@@ -565,7 +572,7 @@
         (KCons [first rest]
           (if (asts-null rest)
             (EOk1 first)
-            (andor-fold (asts-rev (KCons first rest) (KNil))
+            (andor-fold (read/asts-rev (KCons first rest) (KNil))
                         op sl sc sn)))))))
 
 ; The reversed operand chain folds right-associatively: acc starts at the

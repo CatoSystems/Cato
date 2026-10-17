@@ -1,3 +1,13 @@
+(ns cato.emit.emit_ref)
+(require ["../hir/lower.cato" :as lower])
+(require ["../hir/forms.cato" :as forms])
+(require ["../hir/moveck.cato" :as moveck])
+(require ["emit.cato" :as emit])
+(require ["../reader/read.cato" :as read])
+(require ["../hir/expand.cato" :as expand])
+(require ["../lib/ast.cato" :as ast])
+(require ["../reader/dump.cato" :as rdump])
+
 ; emit_ref.cato — S7 reference driver.
 ;
 ; Concatenated after the lib, reader, hir and emit files by the test
@@ -18,14 +28,14 @@
     0))
 
 (defn emit-build [tab :- i64 forms :- Asts]
-  (match (build-program forms tab)
+  (match (lower/build-program forms tab)
     (PErr [msg] (print-string (str "err " msg)))
     (POk [tab2 adts defs lams sigs]
-      (let [facts (facts-compute (adts-templates (clone adts)))]
-        (match (check-program defs lams facts (clone tab2) (clone adts))
+      (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
+        (match (moveck/check-program defs lams facts (clone tab2) (clone adts))
           (CKErr [msg] (print-string (str "err " msg)))
           (CKOk [defs2 lams2]
-            (emit-print-lines (emit-program adts defs2 lams2 sigs tab2))))))))
+            (emit-print-lines (emit/emit-program adts defs2 lams2 sigs tab2))))))))
 
 ; read-all-with lives in reader/read.cato (this concat includes it).
 
@@ -33,12 +43,12 @@
   (let [a (args)
         path (get a 0 "")
         src (slurp path)
-        r (read-all-with src (magic-table))]
+        r (read/read-all-with src (expand/magic-table))]
     (match r
       (ROk [forms tab]
-        (match (expand-all (clone forms) (KNil))
+        (match (expand/expand-all (clone forms) (KNil))
           (EOk [xforms] (emit-build (clone tab) xforms))
           (EErr [msg at]
-            (print-string (str "err " (spat (clone at)) " " (clone msg))))))
+            (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
       (RErr [msg at]
-        (print-string (str "err " (spat (clone at)) " " (clone msg)))))))
+        (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))))

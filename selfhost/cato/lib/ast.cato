@@ -1,3 +1,6 @@
+(ns cato.lib.ast)
+(require ["span.cato" :as span])
+
 ; ast.cato — S4: the reader's target AST (recursive ADTs).
 ;
 ; Ast -> Asts mutual recursion makes every node heap-boxed with

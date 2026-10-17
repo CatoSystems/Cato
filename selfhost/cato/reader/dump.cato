@@ -1,3 +1,9 @@
+(ns cato.reader.dump)
+(require ["../lib/span.cato" :as span])
+(require ["../lib/ast.cato" :as ast])
+(require ["../lib/sym.cato" :as sym])
+(require ["../lib/strbuf.cato" :as strbuf])
+
 ; dump.cato — S5: the differential serialization.
 ;
 ; One line per top-level form — the byte-compare target the differential
@@ -78,7 +84,7 @@
 (defn dump-node [tab :- i64 a :- Ast] :- str
   (match a
     (ANil [at] "(nil)")
-    (ASym [sid at] (str "(sym " (stab-get tab sid) ")"))
+    (ASym [sid at] (str "(sym " (sym/stab-get tab sid) ")"))
     (AInt [v at] (str "(int " v ")"))
     (AF64 [v at] (str "(f64 " v ")"))
     (ABool [v at] (str "(bool " v ")"))
@@ -99,5 +105,5 @@
   (match forms
     (KCons [f rest]
       (dump-forms tab rest
-                  (sb-add-line acc (dump-top (clone tab) f))))
+                  (strbuf/sb-add-line acc (dump-top (clone tab) f))))
     (KNil [] acc)))

@@ -1,3 +1,5 @@
+(ns cato.hir.types)
+
 ; types.cato — S6: kernel types.
 ;
 ; A type is one flat word `(Ty tag a)` — unboxed, so types thread by copy

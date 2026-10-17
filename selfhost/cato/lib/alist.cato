@@ -1,3 +1,6 @@
+(ns cato.lib.alist)
+(require ["ast.cato" :as ast])
+
 ; alist.cato — S4: sid-keyed environments.
 ;
 ; The kernel's scope tables map sid -> arbitrary value. Maps are i64->i64
