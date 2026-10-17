@@ -16,30 +16,9 @@ use cato_core::ast::Expr;
 use cato_core::reader::read_all_spanned;
 use std::process::Command;
 
-/// Canonical concatenation order: the S4 lib, the S5 reader (+ its dump
-/// serializers), then the S6 files, then the driver that defines `main`.
-const CONCAT_FILES: &[&str] = &[
-    "lib/sym",
-    "lib/strbuf",
-    "lib/span",
-    "lib/ast",
-    "lib/alist",
-    "lib/result",
-    "reader/read",
-    "reader/dump",
-    "hir/types",
-    "hir/expand",
-    "hir/forms",
-    "hir/hexpr",
-    "hir/lower",
-    "hir/moveck",
-    "hir/dump",
-    "hir/hir_ref",
-];
-
 struct Paths {
     root: std::path::PathBuf,
-    concat: std::path::PathBuf,
+    entry: std::path::PathBuf,
     exe: std::path::PathBuf,
 }
 
@@ -48,21 +27,16 @@ fn setup() -> Paths {
     let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
     let cato = root.join("target/debug/cato");
 
-    let mut src = String::new();
-    for name in CONCAT_FILES {
-        let p = root.join("selfhost/cato").join(format!("{}.cato", name));
-        let body = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {}", name, e));
-        src.push_str(&body);
-    }
-    let concat = root.join("target/selfhost_hir.cato");
-    std::fs::write(&concat, &src).expect("write concat");
+    // The S6 driver (`hir_ref.cato`) `require`s the lib, reader and hir
+    // modules; its `main` defines the only entry point.
+    let entry = root.join("selfhost/cato/hir/hir_ref.cato");
 
     // Compile check only: the S6 driver runs through the seed interpreter
     // (native codegen of the full kernel hits a seed emitter bug recorded
     // in the S6 spec notes; revisit with S7).
     let ll = root.join("target/selfhost_hir.ll");
     let status = Command::new(&cato)
-        .arg(&concat)
+        .arg(&entry)
         .arg("--emit-ir")
         .arg("-o")
         .arg(&ll)
@@ -70,7 +44,7 @@ fn setup() -> Paths {
         .expect("cato emit");
     assert!(status.success(), "seed failed to compile the kernel hir");
 
-    Paths { root, concat, exe: cato }
+    Paths { root, entry, exe: cato }
 }
 
 impl Paths {
@@ -97,7 +71,7 @@ impl Paths {
     fn run_kernel(&self, file: &std::path::Path, mode: &str) -> String {
         let out = Command::new(&self.exe)
             .arg("run")
-            .arg(&self.concat)
+            .arg(&self.entry)
             .arg(file)
             .arg(mode)
             .output()

@@ -13,7 +13,7 @@
 // Link:   clang -O2 -Wl,-undefined,dynamic_lookup /tmp/instr.ll \
 //           runtime/runtime.c -o /tmp/ki
 // Run:    DYLD_INSERT_LIBRARIES=/tmp/dbg_hit.dylib DBG_MAP=/tmp/map.tsv \
-//           /tmp/ki build selfhost/cato.cato /tmp/k3 2>/tmp/sites.txt
+//           /tmp/ki build selfhost/cato/cli.cato /tmp/k3 2>/tmp/sites.txt
 #include <malloc/malloc.h>
 #include <stdint.h>
 #include <stdio.h>

@@ -376,12 +376,12 @@ injected, because interposition does not work from the main executable
 allocation to the outermost bracketed call. One run ranks "how much churn
 does this call site start", with no modelling guesswork:
 ```bash
-./target/release/cato selfhost/cato.cato --emit-ir -o /tmp/k.ll
+./target/release/cato selfhost/cato/cli.cato --emit-ir -o /tmp/k.ll
 python3 tools/instr_clones.py /tmp/k.ll /tmp/i.ll /tmp/map.tsv
 clang -dynamiclib -O2 -o /tmp/dbg_hit.dylib tools/dbg_hit.c
 clang -O2 -Wl,-undefined,dynamic_lookup /tmp/i.ll runtime/runtime.c -o /tmp/ki
 DYLD_INSERT_LIBRARIES=/tmp/dbg_hit.dylib DBG_MAP=/tmp/map.tsv \
-  /tmp/ki build selfhost/cato.cato /tmp/k3 2>/tmp/sites.txt
+  /tmp/ki build selfhost/cato/cli.cato /tmp/k3 2>/tmp/sites.txt
 sort -t$'\t' -k4 -rn /tmp/sites.txt | head -20   # SITE id calls bytes fn callee
 ```
 What it found (each step verified by the gate and by byte-identical IR from
@@ -543,14 +543,14 @@ watch pair — see both churn accountings). Last measured leaders:
 
 ## Quick commands
 ```bash
-python3 tools/concat_kernel.py && ./tools/kernel_gate.sh | tail -14
-DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 build selfhost/cato.cato /tmp/k2 2>&1 | grep ALLOC
+./tools/kernel_gate.sh | tail -14
+DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 build selfhost/cato/cli.cato /tmp/k2 2>&1 | grep ALLOC
 # exact per-call-site clone counts:
-./target/release/cato selfhost/cato.cato --emit-ir -o /tmp/k.ll
+./target/release/cato selfhost/cato/cli.cato --emit-ir -o /tmp/k.ll
 python3 tools/instr_clones.py /tmp/k.ll /tmp/i.ll /tmp/map.tsv
 clang -O2 -c -o /tmp/dbg_hit.o tools/dbg_hit.c
 clang -O2 /tmp/i.ll runtime/runtime.c /tmp/dbg_hit.o -o /tmp/ki
-DBG_MAP=/tmp/map.tsv /tmp/ki build selfhost/cato.cato /tmp/k3 2>/tmp/hits.txt
+DBG_MAP=/tmp/map.tsv /tmp/ki build selfhost/cato/cli.cato /tmp/k3 2>/tmp/hits.txt
 python3 -m unittest discover -s tools/tests && cargo test
 cargo build && cargo build --release   # the gate uses target/debug/cato: rebuild BOTH
 # (stale target/debug/cato emits different IR than release — a wasted

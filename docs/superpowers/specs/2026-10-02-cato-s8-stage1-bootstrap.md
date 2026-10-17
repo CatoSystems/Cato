@@ -1,4 +1,4 @@
-# S8 — Stage 1: the kernel builds itself (`selfhost/cato.cato`)
+# S8 — Stage 1: the kernel builds itself (`selfhost/cato/cli.cato`)
 
 Date: 2026-10-02
 Goal: the kernel gets a CLI and the bootstrap chain stands up — seed
@@ -10,15 +10,16 @@ binary, with real exit codes), and the cato1 → cato2 link closing.
 Status at the end of this phase: **the CLI skeleton and the bootstrap
 harness are complete and green through the seed interpreter; the
 cato1 → cato2 leg is built and blocked by one remaining seed-emitter
-use-after-free on the full kernel concat** (details below). Everything
+use-after-free on the full kernel** (details below). Everything
 else the phase needed — including six seed compiler bugs that stood
 between the seed's LLVM backend and the kernel's own source — is fixed
 and guarded.
 
 ## The kernel CLI (`selfhost/cato/cli.cato`)
 
-Concatenated after the lib, reader, hir and emit files; defines the
-only `main` of the cato1 concat. The skeleton:
+The kernel entry: it `require`s the lib, reader, hir and emit modules
+(merged and canonicalized by the loader in `hir/modules.cato`) and
+defines the only `main`. The skeleton:
 
 ```
 cato1 build <file.cato> [out] [runtime.c]
@@ -35,32 +36,32 @@ output path defaults to the input's stem, the runtime to
 `system` with the same convention (crates/cato-backend-interp), so the
 driver behaves identically under `cato run` and, once built, natively.
 
-## The canonical concat (`selfhost/cato.cato`)
+## Module layout (`selfhost/cato/cli.cato`)
 
-The kernel subset has no `require`, so the compiler's own source is one
-namespace. `tools/concat_kernel.py` writes `selfhost/cato.cato`: the
-lib, reader, hir and emit files in the S7 harness's canonical order,
-closed by `cli.cato` (the `_ref` drivers stay test-only). The committed
-file is the distribution form; `kernel_concat_is_fresh` regenerates and
-byte-compares on every test run so it cannot rot.
+The kernel source is `require`-connected modules: `cli.cato` is the
+entry, and each file carries `(ns cato.<path>)` plus `(require
+["<relative>" :as <alias>])` forms. `hir/modules.cato` implements the
+loader (resolve, dedup by lexically-normalized path, canonical-per-file
+rename); the seed implements the same semantics in `cato-core`. The
+`_ref` drivers (`lib/stdlib_ref.cato`, `reader/reader_ref.cato`,
+`hir/hir_ref.cato`, `emit/emit_ref.cato`) are test-only entries.
 
 ## The bootstrap test (`crates/cato-backend-interp/tests/kernel_bootstrap.rs`)
 
-Three layers:
+Two layers:
 
-1. **Freshness** — the committed concat matches the generator.
-2. **CLI parity through the interp** — for every non-error fixture,
-   `cato run selfhost/cato.cato build <fixture> <out> runtime/runtime.c`
+1. **CLI parity through the interp** — for every non-error fixture,
+   `cato run selfhost/cato/cli.cato build <fixture> <out> runtime/runtime.c`
    exits 0; the produced binary runs and byte-matches `cato run` of the
    same fixture (`host` exempt on stdout for argv[0]; dump-mode
    fixtures without a `main` get a `clang -c` validity check instead of
    link/run, as in S7).
-3. **The cato1 → cato2 chain** (`#[ignore]`) — `cato build
-   selfhost/cato.cato -o target/cato1` succeeds today (the seed's
+2. **The cato1 → cato2 chain** (`#[ignore]`) — `cato build
+   selfhost/cato/cli.cato -o target/cato1` succeeds today (the seed's
    emission clangs); the ignored test runs the whole chain and is
    flagged back on once the blocker below is fixed.
 
-## Bootstrap prerequisite: seed bugs surfaced by the kernel concat
+## Bootstrap prerequisite: seed bugs surfaced by the kernel
 
 Making the seed compile the kernel's own source (S7's recorded
 prerequisite) turned into the phase's main event. Fixed in the seed:
@@ -116,7 +117,7 @@ against the checker's spans — every flagged use wrapped with `(clone
 `_ref` drivers — and the sweep is guarded by the S5/S6/S7
 differentials staying byte-identical (232 tests).
 
-## Remaining blocker: one UAF on the full concat
+## Remaining blocker: one UAF on the full kernel
 
 *(Updated 2026-10-06 after the first root-cause pass.)*
 
@@ -191,14 +192,13 @@ limitation in `fnctx.rs` is the prime suspect. The `kernel_emit` test
 cannot catch this class: it drives the kernel's emitter through `cato run`
 (interp), so the emitted natively-executing kernel code is only ever
 exercised by cato1 itself. A native-driver differential (run the seed-
-compiled S7 concat on the fixture corpus and compare against the interp)
+compiled S7 kernel on the fixture corpus and compare against the interp)
 would guard this layer.
 
 ## Non-goals
 
-- Byte-matching the seed's `--emit-ir` on the concat (S7's stance).
+- Byte-matching the seed's `--emit-ir` on the kernel (S7's stance).
 - Kernel-CLI conveniences beyond the skeleton: diagnostics with spans,
   `--cc`/`-O` flags, incremental compilation, `run` subcommand (the
   parity harness runs the produced binaries directly).
-- The middle end for the kernel (S9+); multi-file `require` (post-
-  fixpoint).
+- The middle end for the kernel (S9+).

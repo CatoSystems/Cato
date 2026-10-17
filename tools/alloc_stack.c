@@ -7,7 +7,7 @@
 //
 // Build:  clang -dynamiclib -O2 -o /tmp/alloc_stack.dylib tools/alloc_stack.c
 // Run:    DYLD_INSERT_LIBRARIES=/tmp/alloc_stack.dylib \
-//           ALLOC_STACK=/tmp/stack.txt /tmp/k1 build selfhost/cato.cato /tmp/k2
+//           ALLOC_STACK=/tmp/stack.txt /tmp/k1 build selfhost/cato/cli.cato /tmp/k2
 // Output: /tmp/stack.txt — "samples<TAB>approx_bytes<TAB>site <- caller <- ..."
 #include <dlfcn.h>
 #include <execinfo.h>

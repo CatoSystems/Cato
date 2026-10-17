@@ -11,48 +11,14 @@
 
 use std::process::Command;
 
-/// Canonical concatenation order (one namespace). `hir_ref.cato` is NOT
-/// included — `emit_ref.cato` defines the only `main`.
-const CONCAT_FILES: &[&str] = &[
-    "lib/sym",
-    "lib/strbuf",
-    "lib/span",
-    "lib/ast",
-    "lib/alist",
-    "lib/result",
-    "reader/read",
-    "reader/dump",
-    "hir/types",
-    "hir/expand",
-    "hir/forms",
-    "hir/hexpr",
-    "hir/lower",
-    "hir/moveck",
-    "hir/dump",
-    "emit/state",
-    "emit/scalars",
-    "emit/heap",
-    "emit/adt",
-    "emit/closures",
-    "emit/emit",
-    "emit/emit_ref",
-];
-
 fn setup() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
     let cato = root.join("target/debug/cato");
 
-    let mut src = String::new();
-    for name in CONCAT_FILES {
-        let p = root.join("selfhost/cato").join(format!("{}.cato", name));
-        let body = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {}", name, e));
-        src.push_str(&body);
-    }
-    let concat = root.join("target/selfhost_emit.cato");
-    std::fs::write(&concat, &src).expect("write concat");
+    let entry = root.join("selfhost/cato/emit/emit_ref.cato");
 
-    (root, concat, cato)
+    (root, entry, cato)
 }
 
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -73,7 +39,7 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[test]
 fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
-    let (root, concat, cato) = setup();
+    let (root, entry, cato) = setup();
     let rt = root.join("runtime/runtime.c");
     let fixtures = walk(&root.join("selfhost/cato/hir/fixtures"));
     let mut ran = 0;
@@ -87,7 +53,7 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         // 1. The kernel emits IR for the fixture.
         let out = Command::new(&cato)
             .arg("run")
-            .arg(&concat)
+            .arg(&entry)
             .arg(file)
             .arg("emit")
             .output()

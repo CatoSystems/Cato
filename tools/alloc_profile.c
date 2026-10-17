@@ -6,7 +6,7 @@
 //
 // Build:  clang -dynamiclib -O2 -o /tmp/alloc_profile.dylib tools/alloc_profile.c
 // Run:    DYLD_INSERT_LIBRARIES=/tmp/alloc_profile.dylib \
-//           ALLOC_PROFILE=/tmp/prof.txt /tmp/k1 build selfhost/cato.cato /tmp/k2
+//           ALLOC_PROFILE=/tmp/prof.txt /tmp/k1 build selfhost/cato/cli.cato /tmp/k2
 // Output: /tmp/prof.txt, one line per site, sorted by bytes:
 //           bytes<TAB>count<TAB>symbol
 //
