@@ -5,6 +5,7 @@ members = [
     "crates/cato-backend-llvm",
     "crates/cato-cli",
     "crates/cato-backend-interp",
+    "crates/cato-fmt",
 ]
 
 [workspace.package]
