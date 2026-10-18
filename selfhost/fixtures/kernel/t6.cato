@@ -1,8 +1,17 @@
-(deftype HEX (HLit [v :- str]) (HOther [n :- str]))
+(deftype HEX
+  (HLit [v :- str])
+  (HOther [n :- str]))
 (deftype E (E [p :- str l :- str]))
 (defn f [e :- HEX] :- E
   (match e
     (HLit [v] (E "p" (str (count v))))
     (_ (E "p" "0"))))
 (defn main [] :- i32
-  (do (print-string (match (f (HLit "la=")) (E [p l] l))) 0))
+  (do
+    (
+      print-string
+      (match
+        (f (HLit "la="))
+        (E [p l] l))
+    )
+    0))

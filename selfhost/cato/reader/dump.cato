@@ -28,9 +28,7 @@
 ; fields are cloned out for the same reason.
 
 ; The `@line:col+len` prefix.
-(defn spat [at :- Span] :- str
-  (match at
-    (Span [l c n] (str "@" l ":" c "+" n))))
+(defn spat [at :- Span] :- str (match at (Span [l c n] (str "@" l ":" c "+" n))))
 
 ; The span of an Ast node. Consuming (S8): the binders move out and the
 ; walked box leaks instead of freeing under the caller, so the span needs
@@ -50,10 +48,12 @@
 
 ; Next byte that needs escaping (backslash, quote, newline, tab) or EOF.
 (defn next-esc [s :- str i :- i64 n :- i64] :- i64
-  (if (>= i n)
+  (if
+    (>= i n)
     n
     (let [c (nth s i 0)]
-      (if (or (= c 92) (= c 34) (= c 10) (= c 9))
+      (if
+        (or (= c 92) (= c 34) (= c 10) (= c 9))
         i
         (next-esc s (+ i 1) n)))))
 
@@ -61,21 +61,24 @@
 ; bytes through literals, recurse. `\x` in the source below is the two
 ; characters backslash-x — the wire format, not a control byte.
 (defn esc-str [s :- str i :- i64 n :- i64 acc :- str] :- str
-  (if (>= i n)
+  (if
+    (>= i n)
     acc
     (let [c (nth s i 0)]
       (cond
-        (= c 92) (esc-str s (+ i 1) n (str acc "\\\\"))
-        (= c 34) (esc-str s (+ i 1) n (str acc "\\\""))
-        (= c 10) (esc-str s (+ i 1) n (str acc "\\n"))
-        (= c 9)  (esc-str s (+ i 1) n (str acc "\\t"))
-        (let [j (next-esc s i n)]
-          (esc-str s j n (str acc (subs s i j))))))))
+        (= c 92)
+        (esc-str s (+ i 1) n (str acc "\\\\"))
+        (= c 34)
+        (esc-str s (+ i 1) n (str acc "\\\""))
+        (= c 10)
+        (esc-str s (+ i 1) n (str acc "\\n"))
+        (= c 9)
+        (esc-str s (+ i 1) n (str acc "\\t"))
+        (let [j (next-esc s i n)] (esc-str s j n (str acc (subs s i j))))))))
 
 (defn dump-kids [tab :- i64 ks :- Asts] :- str
   (match ks
-    (KCons [kid rest]
-      (str " " (dump-node (clone tab) kid) (dump-kids tab rest)))
+    (KCons [kid rest] (str " " (dump-node (clone tab) kid) (dump-kids tab rest)))
     (KNil [] "")))
 
 ; The node body — no position prefix. Inner nodes carry spans in the
@@ -95,15 +98,12 @@
     (ASet [ks at] (str "(set" (dump-kids tab ks) ")"))))
 
 ; A top-level form: its span prefixes the node body.
-(defn dump-top [tab :- i64 a :- Ast] :- str
-  (str (spat (ast-at (clone a))) (dump-node tab a)))
+(defn dump-top [tab :- i64 a :- Ast] :- str (str (spat (ast-at (clone a))) (dump-node tab a)))
 
 ; One output line per form, accumulated in the string builder and joined
 ; once by the driver. The table and the form chain are consumed; the
 ; accumulator moves through.
 (defn dump-forms [tab :- i64 forms :- Asts acc :- StrBuf] :- StrBuf
   (match forms
-    (KCons [f rest]
-      (dump-forms tab rest
-                  (strbuf/sb-add-line acc (dump-top (clone tab) f))))
+    (KCons [f rest] (dump-forms tab rest (strbuf/sb-add-line acc (dump-top (clone tab) f))))
     (KNil [] acc)))

@@ -30,45 +30,56 @@
 ; read-all-with lives in reader/read.cato (this concat includes it).
 
 (defn print-lines [s :- str]
-  (if (> (count s) 0)
+  (if
+    (> (count s) 0)
     ; dump lines end with \n; print-string appends the final one, so the
     ; body sheds its trailing newline.
     (print-string (subs s 0 (- (count s) 1)))
     0))
 
 (defn dump-ast-mode [tab :- i64 forms :- Asts]
-  (match (expand/expand-all (clone forms) (KNil))
-    (EOk [xforms]
-      (print-lines (strbuf/sb-str (rdump/dump-forms (clone tab) (clone xforms) (strbuf/sb-new)))))
-    (EErr [msg at]
-      (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
+  (match
+    (expand/expand-all (clone forms) (KNil))
+    (
+      EOk
+      [xforms]
+      (print-lines (strbuf/sb-str (rdump/dump-forms (clone tab) (clone xforms) (strbuf/sb-new))))
+    )
+    (EErr [msg at] (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
 
 (defn dump-hir-mode [tab :- i64 forms :- Asts]
-  (match (expand/expand-all (clone forms) (KNil))
+  (match
+    (expand/expand-all (clone forms) (KNil))
     (EOk [xforms] (build-and-dump tab xforms))
-    (EErr [msg at]
-      (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
+    (EErr [msg at] (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
 
 (defn build-and-dump [tab :- i64 forms :- Asts]
-  (match (lower/build-program forms tab)
+  (match
+    (lower/build-program forms tab)
     (PErr [msg] (print-string (str "err " msg)))
-    (POk [tab2 adts defs lams sigs]
+    (
+      POk
+      [tab2 adts defs lams sigs]
       (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
-        (match (moveck/check-program defs lams facts (clone tab2) (clone adts))
+        (match
+          (moveck/check-program defs lams facts (clone tab2) (clone adts))
           (CKErr [msg] (print-string (str "err " msg)))
-          (CKOk [defs2 lams2]
-            (print-lines (hdump/dump-program adts defs2 lams2 sigs tab2))))))))
+          (CKOk [defs2 lams2] (print-lines (hdump/dump-program adts defs2 lams2 sigs tab2)))))
+    )))
 
 (defn main []
   (let [a (args)
-        path (get a 0 "")
-        mode (get a 1 "")
-        src (slurp path)
-        r (read/read-all-with src (expand/magic-table))]
+    path (get a 0 "")
+    mode (get a 1 "")
+    src (slurp path)
+    r (read/read-all-with src (expand/magic-table))]
     (match r
-      (ROk [forms tab]
-        (if (= mode "ast")
+      (
+        ROk
+        [forms tab]
+        (if
+          (= mode "ast")
           (dump-ast-mode (clone tab) (clone forms))
-          (dump-hir-mode (clone tab) (clone forms))))
-      (RErr [msg at]
-        (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))))
+          (dump-hir-mode (clone tab) (clone forms)))
+      )
+      (RErr [msg at] (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))))

@@ -40,8 +40,7 @@
 ; once); next is the enclosing frame.
 (deftype RStack
   (RSNil)
-  (RSFrame [kind :- i64 open :- i64 oline :- i64 ocol :- i64 kids :- Asts
-            next :- RStack]))
+  (RSFrame [kind :- i64 open :- i64 oline :- i64 ocol :- i64 kids :- Asts next :- RStack]))
 
 ; Reader outcome: the top-level forms in source order with the intern
 ; table (sids are table indices), or the first error with its span.
@@ -49,14 +48,12 @@
   (ROk [forms :- Asts tab :- i64])
   (RErr [msg :- str at :- Span]))
 
-(defn read-all [src :- str] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) (sym/stab-new)))
+(defn read-all [src :- str] :- RRes (scan src 0 1 0 0 1 0 (RSNil) (KNil) (sym/stab-new)))
 
 ; The reader entry the S6/S7 drivers and the kernel CLI share: the scan is
 ; seeded with an already-populated intern table (the driver's magic table),
 ; so special-form dispatch downstream is a sid compare. One copy, here.
-(defn read-all-with [src :- str tab :- i64] :- RRes
-  (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
+(defn read-all-with [src :- str tab :- i64] :- RRes (scan src 0 1 0 0 1 0 (RSNil) (KNil) tab))
 
 ; ---------------------------------------------------------------------------
 ; byte access
@@ -70,27 +67,27 @@
 ; `(nth s i 0)` default; nothing here indexes further than that.
 (extern cato-str-byte [s :- str i :- i64] :- i64)
 
-(defn str-byte [s :- str i :- i64] :- i64
-  (cato-str-byte s i))
+(defn str-byte [s :- str i :- i64] :- i64 (cato-str-byte s i))
 
 ; ---------------------------------------------------------------------------
 ; byte predicates (ASCII byte values)
 ; ---------------------------------------------------------------------------
 
-(defn is-ws [c :- i64] :- bool
-  (or (= c 32) (= c 9) (= c 10) (= c 13)))
+(defn is-ws [c :- i64] :- bool (or (= c 32) (= c 9) (= c 10) (= c 13)))
 
-(defn is-close [c :- i64] :- bool
-  (or (= c 41) (= c 93) (= c 125)))
+(defn is-close [c :- i64] :- bool (or (= c 41) (= c 93) (= c 125)))
 
 ; A `}` closes a map or a set (`#{...}` carries its own kind but shares the
 ; closer); everything else must match its own opener, as in the seed.
 (defn kind-accepts [kind :- i64 c :- i64] :- bool
-  (if (= c 41)
+  (if
+    (= c 41)
     (= kind 0)
-    (if (= c 93)
+    (if
+      (= c 93)
       (= kind 1)
-      (if (= c 125)
+      (if
+        (= c 125)
         (or (= kind 2) (= kind 3))
         false))))
 
@@ -101,20 +98,23 @@
 ; First byte at/after i that is not part of an atom: whitespace, a
 ; delimiter, `;` or `"`. EOF ends the token.
 (defn tok-end [src :- str i :- i64 n :- i64] :- i64
-  (if (>= i n)
+  (if
+    (>= i n)
     i
     (let [c (str-byte src i)]
-      (if (or (is-ws c) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123)
-              (= c 125) (= c 59) (= c 34))
+      (if
+        (or (is-ws c) (= c 40) (= c 41) (= c 91) (= c 93) (= c 123) (= c 125) (= c 59) (= c 34))
         i
         (tok-end src (+ i 1) n)))))
 
 ; End of a `;` comment: the newline itself (the whitespace step consumes
 ; it) or EOF.
 (defn skip-line [src :- str i :- i64 n :- i64] :- i64
-  (if (>= i n)
+  (if
+    (>= i n)
     i
-    (if (= (str-byte src i) 10)
+    (if
+      (= (str-byte src i) 10)
       i
       (skip-line src (+ i 1) n))))
 
@@ -122,12 +122,15 @@
 ; after every backslash (so `\"` does not end the string). -1 if the run
 ; reaches EOF, matching the seed's "unterminated string".
 (defn str-end [src :- str j :- i64 n :- i64] :- i64
-  (if (>= j n)
+  (if
+    (>= j n)
     -1
     (let [c (str-byte src j)]
-      (if (= c 34)
+      (if
+        (= c 34)
         j
-        (if (= c 92)
+        (if
+          (= c 92)
           (str-end src (+ j 2) n)
           (str-end src (+ j 1) n))))))
 
@@ -138,9 +141,11 @@
 (deftype LC (LC [line :- i64 col :- i64]))
 
 (defn advance [src :- str i :- i64 end :- i64 line :- i64 col :- i64] :- LC
-  (if (>= i end)
+  (if
+    (>= i end)
     (LC line col)
-    (if (= (str-byte src i) 10)
+    (if
+      (= (str-byte src i) 10)
       (advance src (+ i 1) end (+ 1 line) 0)
       (advance src (+ i 1) end line (+ 1 col)))))
 
@@ -150,9 +155,11 @@
 
 ; First byte at/after i that is a backslash (the unescape run boundary).
 (defn next-bs [raw :- str i :- i64 n :- i64] :- i64
-  (if (>= i n)
+  (if
+    (>= i n)
     n
-    (if (= (str-byte raw i) 92)
+    (if
+      (= (str-byte raw i) 92)
       i
       (next-bs raw (+ i 1) n))))
 
@@ -160,23 +167,29 @@
 ; (lenient, as in the seed); a trailing lone `\` is kept. Runs between
 ; escapes copy with `subs`, so nothing builds strings byte by byte.
 (defn unesc [raw :- str i :- i64 n :- i64 acc :- str] :- str
-  (if (>= i n)
+  (if
+    (>= i n)
     acc
-    (if (= (str-byte raw i) 92)
-      (if (>= (+ i 1) n)
+    (if
+      (= (str-byte raw i) 92)
+      (if
+        (>= (+ i 1) n)
         (str acc "\\")
         (let [e (str-byte raw (+ i 1))]
-          (if (= e 110)
+          (if
+            (= e 110)
             (unesc raw (+ i 2) n (str acc "\n"))
-            (if (= e 116)
+            (if
+              (= e 116)
               (unesc raw (+ i 2) n (str acc "\t"))
-              (if (= e 92)
+              (if
+                (= e 92)
                 (unesc raw (+ i 2) n (str acc "\\"))
-                (if (= e 34)
+                (if
+                  (= e 34)
                   (unesc raw (+ i 2) n (str acc "\""))
                   (unesc raw (+ i 2) n (str acc (subs raw i (+ i 2))))))))))
-      (let [stop (next-bs raw i n)]
-        (unesc raw stop n (str acc (subs raw i stop)))))))
+      (let [stop (next-bs raw i n)] (unesc raw stop n (str acc (subs raw i stop)))))))
 
 ; ---------------------------------------------------------------------------
 ; the tree: children accumulate reversed; close reverses once
@@ -195,9 +208,11 @@
 ; ---------------------------------------------------------------------------
 
 (defn has-dot [tok :- str i :- i64 n :- i64] :- bool
-  (if (>= i n)
+  (if
+    (>= i n)
     false
-    (if (= (str-byte tok i) 46)
+    (if
+      (= (str-byte tok i) 46)
       true
       (has-dot tok (+ i 1) n))))
 
@@ -211,17 +226,23 @@
   (let [ni (parse-i64 tok)]
     (match ni
       (Some [v] (AInt v (Span line col len)))
-      (None []
-        (if (= tok "true")
+      (
+        None
+        []
+        (if
+          (= tok "true")
           (ABool 1 (Span line col len))
-          (if (= tok "false")
+          (if
+            (= tok "false")
             (ABool 0 (Span line col len))
-            (if (has-dot tok 0 (count tok))
+            (if
+              (has-dot tok 0 (count tok))
               (let [nf (parse-f64 tok)]
                 (match nf
                   (Some [v] (AF64 v (Span line col len)))
                   (None [] (ASym sid (Span line col len)))))
-              (ASym sid (Span line col len)))))))))
+              (ASym sid (Span line col len)))))
+      ))))
 
 ; ---------------------------------------------------------------------------
 ; interning
@@ -230,8 +251,7 @@
 ; Back-to-front scan over the table; misses report -1. Reads elements
 ; through `get` (shared borrow) and threads the table by move, so the
 ; lookup clones nothing on its own.
-(defn intern-sid [tab :- i64 s :- str] :- i64
-  (sym/stab-find tab s))
+(defn intern-sid [tab :- i64 s :- str] :- i64 (sym/stab-find tab s))
 
 ; ---------------------------------------------------------------------------
 ; the scan
@@ -244,119 +264,248 @@
 ; never-freed, never-moved values. Every helper call here returns a value
 ; (an index, a node, a classification) — no helper is on the scan's
 ; control path, so the loop is the only frame that persists across events.
-(defn scan [src :- str i0 :- i64 line0 :- i64 col0 :- i64 depth0 :- i64
-            bline0 :- i64 bcol0 :- i64 stack0 :- RStack kids0 :- Asts
-            tab0 :- i64] :- RRes
+(defn scan [src
+  :-
+  str
+  i0
+  :-
+  i64
+  line0
+  :-
+  i64
+  col0
+  :-
+  i64
+  depth0
+  :-
+  i64
+  bline0
+  :-
+  i64
+  bcol0
+  :-
+  i64
+  stack0
+  :-
+  RStack
+  kids0
+  :-
+  Asts
+  tab0
+  :-
+  i64
+] :- RRes
   ; The source length rides as a loop variable: `count` on a str is a
   ; strlen, and re-strlens per event would make the whole scan quadratic.
-  (loop [i :- i64 i0 line :- i64 line0 col :- i64 col0 depth :- i64 depth0
-         bline :- i64 bline0 bcol :- i64 bcol0 stack :- RStack stack0
-         kids :- Asts kids0 tab :- i64 tab0 n :- i64 (count src)]
-    (if (>= i n)
+  (
+    loop
+    [
+      i
+      :-
+      i64
+      i0
+      line
+      :-
+      i64
+      line0
+      col
+      :-
+      i64
+      col0
+      depth
+      :-
+      i64
+      depth0
+      bline
+      :-
+      i64
+      bline0
+      bcol
+      :-
+      i64
+      bcol0
+      stack
+      :-
+      RStack
+      stack0
+      kids
+      :-
+      Asts
+      kids0
+      tab
+      :-
+      i64
+      tab0
+      n
+      :-
+      i64
+      (count src)
+    ]
+    (if
+      (>= i n)
       ; EOF: forms are the children accumulated at depth 0, reversed into
       ; source order; anything still open is the seed's "unclosed
       ; delimiter" at the outermost opening byte.
-      (if (> depth 0)
+      (if
+        (> depth 0)
         (RErr "unclosed delimiter" (Span bline bcol 1))
         (ROk (asts-rev kids (KNil)) tab))
       (let [c (str-byte src i)]
         (cond
           (is-ws c)
-          (if (= c 10)
+          (if
+            (= c 10)
             (recur (+ i 1) (+ line 1) 0 depth bline bcol stack kids tab n)
             (recur (+ i 1) line (+ col 1) depth bline bcol stack kids tab n))
-
           (= c 59)
-          (let [j (skip-line src i n)
-                lcv (advance src i j line col)]
-            (match lcv
-              (LC [l2 c2]
-                (recur j l2 c2 depth bline bcol stack kids tab n))))
-
+          (let [j (skip-line src i n) lcv (advance src i j line col)]
+            (match lcv (LC [l2 c2] (recur j l2 c2 depth bline bcol stack kids tab n))))
           (or (= c 40) (= c 91) (= c 123))
-          (let [kind (if (= c 40) 0 (if (= c 91) 1 2))
-                lcv (advance src i (+ i 1) line col)]
+          (let [kind
+            (if
+              (= c 40)
+              0
+              (if
+                (= c 91)
+                1
+                2))
+            lcv (advance src i (+ i 1) line col)]
             (match lcv
-              (LC [l2 c2]
-                (recur (+ i 1) l2 c2 (+ depth 1)
-                       (if (= depth 0) line bline)
-                       (if (= depth 0) col bcol)
-                       (RSFrame kind i line col kids stack)
-                       (KNil)
-                       tab
-                       n))))
-
-          (if (= c 35) (= (str-byte src (+ i 1)) 123) false)
+              (
+                LC
+                [l2 c2]
+                (
+                  recur
+                  (+ i 1)
+                  l2
+                  c2
+                  (+ depth 1)
+                  (if
+                    (= depth 0)
+                    line
+                    bline)
+                  (if
+                    (= depth 0)
+                    col
+                    bcol)
+                  (RSFrame kind i line col kids stack)
+                  (KNil)
+                  tab
+                  n
+                )
+              )))
+          (if
+            (= c 35)
+            (= (str-byte src (+ i 1)) 123)
+            false)
           (let [lcv (advance src i (+ i 2) line col)]
             (match lcv
-              (LC [l2 c2]
-                (recur (+ i 2) l2 c2 (+ depth 1)
-                       (if (= depth 0) line bline)
-                       (if (= depth 0) col bcol)
-                       (RSFrame 3 i line col kids stack)
-                       (KNil)
-                       tab
-                       n))))
-
+              (
+                LC
+                [l2 c2]
+                (
+                  recur
+                  (+ i 2)
+                  l2
+                  c2
+                  (+ depth 1)
+                  (if
+                    (= depth 0)
+                    line
+                    bline)
+                  (if
+                    (= depth 0)
+                    col
+                    bcol)
+                  (RSFrame 3 i line col kids stack)
+                  (KNil)
+                  tab
+                  n
+                )
+              )))
           (is-close c)
           (match stack
-            (RSNil []
-              (RErr (str "unbalanced delimiter '" (char->str c) "'")
-                    (Span line col 1)))
-            (RSFrame [kind open oline ocol kidsF rest]
-              (if (kind-accepts kind c)
-                (if (and (= kind 2) (not (even? (ast/asts-depth kids))))
-                  (RErr "map literal must have key/value pairs"
-                        (Span oline ocol (+ (- i open) 1)))
+            (RSNil [] (RErr (str "unbalanced delimiter '" (char->str c) "'") (Span line col 1)))
+            (
+              RSFrame
+              [kind open oline ocol kidsF rest]
+              (if
+                (kind-accepts kind c)
+                (if
+                  (and (= kind 2) (not (even? (ast/asts-depth kids))))
+                  (RErr "map literal must have key/value pairs" (Span oline ocol (+ (- i open) 1)))
                   (let [k (asts-rev kids (KNil))
-                        sp (Span oline ocol (+ (- i open) 1))
-                        node (cond
-                               (= kind 0) (AList k sp)
-                               (= kind 1) (AVec k sp)
-                               (= kind 2) (AMap k sp)
-                               (ASet k sp))
-                        lcv (advance src i (+ i 1) line col)]
+                    sp (Span oline ocol (+ (- i open) 1))
+                    node
+                    (cond
+                      (= kind 0)
+                      (AList k sp)
+                      (= kind 1)
+                      (AVec k sp)
+                      (= kind 2)
+                      (AMap k sp)
+                      (ASet k sp))
+                    lcv (advance src i (+ i 1) line col)]
                     (match lcv
-                      (LC [l2 c2]
+                      (
+                        LC
+                        [l2 c2]
                         ; The frame binders alias the popped frame's box, but
                         ; that box lives in a never-freed loop variable — the
                         ; S8 loop discipline — so the loop carries the fields
                         ; out directly and the consumed frame simply leaks,
                         ; like every intermediate the loop abandons.
-                        (recur (+ i 1) l2 c2 (- depth 1) bline bcol
-                               rest (KCons node kidsF) tab
-                               n)))))
-                (RErr (str "unbalanced delimiter '" (char->str c) "'")
-                      (Span line col 1)))))
-
+                        (recur (+ i 1) l2 c2 (- depth 1) bline bcol rest (KCons node kidsF) tab n)
+                      ))))
+                (RErr (str "unbalanced delimiter '" (char->str c) "'") (Span line col 1)))
+            ))
           (= c 34)
           ; A string literal: find the closing quote, unescape the raw
           ; slice, store the value; the span includes both quotes.
           (let [j (str-end src (+ i 1) n)]
-            (if (< j 0)
+            (if
+              (< j 0)
               (RErr "unterminated string" (Span line col (- n i)))
-              (let [raw (subs src (+ i 1) j)
-                    ; The accumulator seeds with a heap-empty string, not
-                    ; the static `""` literal: an empty literal would flow
-                    ; through untouched as static data.
-                    val (unesc raw 0 (count raw) (subs raw 0 0))
-                    lcv (advance src i (+ j 1) line col)]
+              (let [raw
+                (subs src (+ i 1) j)
+                ; The accumulator seeds with a heap-empty string, not
+                ; the static `""` literal: an empty literal would flow
+                ; through untouched as static data.
+                val
+                (unesc raw 0 (count raw) (subs raw 0 0))
+                lcv
+                (advance src i (+ j 1) line col)
+              ]
                 (match lcv
-                  (LC [l2 c2]
-                    (recur (+ j 1) l2 c2 depth bline bcol
-                           stack (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
-                           tab
-                           n))))))
-
+                  (
+                    LC
+                    [l2 c2]
+                    (
+                      recur
+                      (+ j 1)
+                      l2
+                      c2
+                      depth
+                      bline
+                      bcol
+                      stack
+                      (KCons (AStr val (Span line col (+ (- j i) 1))) kids)
+                      tab
+                      n
+                    )
+                  )))))
           ; An atom token: slice it, classify, intern, push. The table is
           ; shared with the lookup (no clone per atom — loop variables are
           ; not consumed); a miss conj-appends a fresh copy.
           (let [e (tok-end src i n)
-                tok (subs src i e)
-                lcv (advance src i e line col)
-                sid (let [s0 (intern-sid tab tok)] (if (< s0 0) (sym/stab-conj tab tok) s0))
-                node (atom-node tok sid line col (- e i))]
-            (match lcv
-              (LC [l2 c2]
-                (recur e l2 c2 depth bline bcol stack (KCons node kids) tab
-                       n)))))))))
+            tok (subs src i e)
+            lcv (advance src i e line col)
+            sid
+            (let [s0 (intern-sid tab tok)]
+              (if
+                (< s0 0)
+                (sym/stab-conj tab tok)
+                s0))
+            node (atom-node tok sid line col (- e i))]
+            (match lcv (LC [l2 c2] (recur e l2 c2 depth bline bcol stack (KCons node kids) tab n)))))))
+  ))

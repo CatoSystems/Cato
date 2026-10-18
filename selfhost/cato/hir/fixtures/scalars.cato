@@ -1,38 +1,18 @@
 ; S6 fixture: scalars — arithmetic, closed widths, casts, comparisons,
 ; bool ops, abs/min/max, f64/f32 arithmetic.
 
-(defn scal [x :- i64 y :- i64] :- i64
-  (let [s (+ x (* y 2))
-        d (- s y)
-        q (/ d 2)]
-    q))
+(defn scal [x :- i64 y :- i64] :- i64 (let [s (+ x (* y 2)) d (- s y) q (/ d 2)] q))
 
 (defn widths [x :- i64] :- i64
-  (let [a (i8 x)
-        b (i32 x)
-        c (+ (i64 a) 1)
-        e (+ (i64 b) 1)
-        u (i64 (u8 a))]
-    (+ c (+ e u))))
+  (let [a (i8 x) b (i32 x) c (+ (i64 a) 1) e (+ (i64 b) 1) u (i64 (u8 a))] (+ c (+ e u))))
 
-(defn floats [x :- f64] :- f64
-  (let [y (* x 2.0)
-        z (+ y 0.5)
-        w (/ z 2.0)
-        f (f32 z)]
-    (+ w (f64 f))))
+(defn floats [x :- f64] :- f64 (let [y (* x 2.0) z (+ y 0.5) w (/ z 2.0) f (f32 z)] (+ w (f64 f))))
 
 (defn cmps [x :- i64 y :- i64] :- i64
-  (let [c1 (< x y)
-        c2 (>= x y)
-        c3 (= x y)
-        c4 (/= x y)
-        m (max x y)
-        n (min x y)
-        a (abs (- x y))]
-    (if (and c1 (or c2 c3) c4)
+  (let [c1 (< x y) c2 (>= x y) c3 (= x y) c4 (/= x y) m (max x y) n (min x y) a (abs (- x y))]
+    (if
+      (and c1 (or c2 c3) c4)
       (+ m (+ n a))
       0)))
 
-(defn main [] :- i64
-  (+ (scal 3 4) (+ (widths 100) (cmps 5 9))))
+(defn main [] :- i64 (+ (scal 3 4) (+ (widths 100) (cmps 5 9))))

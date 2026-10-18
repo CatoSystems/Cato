@@ -1,5 +1,5 @@
 ; whole line comment
 form ; trailing comment
 ; comment with (parens) and "quotes" and \ backslash
-   ; indented comment
+; indented comment
 last ; at end

@@ -38,52 +38,137 @@
 ; EMLSlots); recur zips positionally.
 (deftype LoopFr (LoopFr [slots :- EMLSlots head :- str]))
 
-(deftype EScTab (EScNil) (EScCons [k :- i64 v :- RegVal t :- EScTab]))
-(deftype EVcTab (EVcNil) (EVcCons [k :- i64 v :- VecVal t :- EVcTab]))
-(deftype EGrTab (EGrNil) (EGrCons [k :- i64 v :- GroVal t :- EGrTab]))
+(deftype EScTab
+  (EScNil)
+  (EScCons [k :- i64 v :- RegVal t :- EScTab]))
+(deftype EVcTab
+  (EVcNil)
+  (EVcCons [k :- i64 v :- VecVal t :- EVcTab]))
+(deftype EGrTab
+  (EGrNil)
+  (EGrCons [k :- i64 v :- GroVal t :- EGrTab]))
 
-(deftype FnCtx (FnCtx [tmpc :- i64 blkc :- i64 cur :- str
-                       body :- StrBuf pre :- StrBuf
-                       scalar :- EScTab
-                       vecs :- EVcTab
-                       grow :- EGrTab
-                       lfr :- LoopFr]))
+(deftype FnCtx
+  (
+    FnCtx
+    [
+      tmpc
+      :-
+      i64
+      blkc
+      :-
+      i64
+      cur
+      :-
+      str
+      body
+      :-
+      StrBuf
+      pre
+      :-
+      StrBuf
+      scalar
+      :-
+      EScTab
+      vecs
+      :-
+      EVcTab
+      grow
+      :-
+      EGrTab
+      lfr
+      :-
+      LoopFr
+    ]
+  ))
 
 ; Keyed chains: first match wins (prepend-on-bind = the seed's
 ; map-overwrite-under-shadowing).
 (defn esc-get [t :- &EScTab k :- i64] :- RegVal
   (match t
-    (EScCons [ek ev next] (if (= ek k) (clone ev) (esc-get next k)))
+    (
+      EScCons
+      [ek ev next]
+      (if
+        (= ek k)
+        (clone ev)
+        (esc-get next k))
+    )
     (EScNil [] (RegVal "" (types/t-none)))))
 
 (defn esc-has [t :- &EScTab k :- i64] :- bool
   (match t
-    (EScCons [ek ev next] (if (= ek k) true (esc-has next k)))
+    (
+      EScCons
+      [ek ev next]
+      (if
+        (= ek k)
+        true
+        (esc-has next k))
+    )
     (EScNil [] false)))
 
 (defn evc-get [t :- &EVcTab k :- i64] :- VecVal
   (match t
-    (EVcCons [ek ev next] (if (= ek k) (clone ev) (evc-get next k)))
+    (
+      EVcCons
+      [ek ev next]
+      (if
+        (= ek k)
+        (clone ev)
+        (evc-get next k))
+    )
     (EVcNil [] (VecVal "" "" -1))))
 
 (defn evc-has [t :- &EVcTab k :- i64] :- bool
   (match t
-    (EVcCons [ek ev next] (if (= ek k) true (evc-has next k)))
+    (
+      EVcCons
+      [ek ev next]
+      (if
+        (= ek k)
+        true
+        (evc-has next k))
+    )
     (EVcNil [] false)))
 
 (defn egr-get [t :- &EGrTab k :- i64] :- GroVal
   (match t
-    (EGrCons [ek ev next] (if (= ek k) (clone ev) (egr-get next k)))
+    (
+      EGrCons
+      [ek ev next]
+      (if
+        (= ek k)
+        (clone ev)
+        (egr-get next k))
+    )
     (EGrNil [] (GroVal "" -1))))
 
 (defn egr-has [t :- &EGrTab k :- i64] :- bool
   (match t
-    (EGrCons [ek ev next] (if (= ek k) true (egr-has next k)))
+    (
+      EGrCons
+      [ek ev next]
+      (if
+        (= ek k)
+        true
+        (egr-has next k))
+    )
     (EGrNil [] false)))
 
 (defn fn-new [] :- FnCtx
-  (FnCtx 0 0 "entry" (strbuf/sb-new) (strbuf/sb-new)
-         (EScNil) (EVcNil) (EGrNil) (LoopFr (ESlotsNil) "")))
+  (
+    FnCtx
+    0
+    0
+    "entry"
+    (strbuf/sb-new)
+    (strbuf/sb-new)
+    (EScNil)
+    (EVcNil)
+    (EGrNil)
+    (LoopFr (ESlotsNil) "")
+  ))
 
 ; --- per-node results ---------------------------------------------------------
 
@@ -91,28 +176,60 @@
 (deftype EVRes (EVRes [st :- Emit p :- str l :- str el :- i64]))
 (deftype HRes (HRes [st :- Emit p :- str l :- str cap :- str]))
 (deftype EURes (EURes [st :- Emit]))
-(deftype ETRes (ETRes [st :- Emit v :- str]))      ; minted temp
-(deftype EBRes (EBRes [st :- Emit v :- str]))      ; minted block label
-(deftype EMRes (EMRes [mdl :- Mdl v :- str]))      ; mdl-threading mint
+(deftype ETRes (ETRes [st :- Emit v :- str])) ; minted temp
+(deftype EBRes (EBRes [st :- Emit v :- str])) ; minted block label
+(deftype EMRes (EMRes [mdl :- Mdl v :- str])) ; mdl-threading mint
 
 ; --- module state --------------------------------------------------------------
 
-(deftype Strs (StrsNil) (StrsCons [h :- str t :- Strs]))
+(deftype Strs
+  (StrsNil)
+  (StrsCons [h :- str t :- Strs]))
 
 (defn strs-has [ss :- &Strs s :- str] :- bool
   (match ss
-    (StrsCons [h t] (if (= h s) true (strs-has t (clone s))))
+    (
+      StrsCons
+      [h t]
+      (if
+        (= h s)
+        true
+        (strs-has t (clone s)))
+    )
     (StrsNil [] false)))
 
-(deftype Mdl (Mdl [tab :- i64 gctr :- i64 globals :- StrBuf
-                   decls :- Strs adts :- AdtTab owns :- Sids
-                   csigs :- Sigs]))
+(deftype Mdl
+  (
+    Mdl
+    [
+      tab
+      :-
+      i64
+      gctr
+      :-
+      i64
+      globals
+      :-
+      StrBuf
+      decls
+      :-
+      Strs
+      adts
+      :-
+      AdtTab
+      owns
+      :-
+      Sids
+      csigs
+      :-
+      Sigs
+    ]
+  ))
 
 (defn md-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs] :- Mdl
   (Mdl (clone tab) 0 (strbuf/sb-new) (StrsNil) adts owns csigs))
 
-(defn md-tab [m :- &Mdl] :- i64
-  (match m (Mdl [tab g globals decls adts owns csigs] tab)))
+(defn md-tab [m :- &Mdl] :- i64 (match m (Mdl [tab g globals decls adts owns csigs] tab)))
 
 ; The interned string for a sid, read straight off the borrowed module.
 (defn md-sym [m :- &Mdl sid :- i64] :- str
@@ -154,26 +271,39 @@
 ; (their variants and field lists included) just to index one of them.
 (defn md-adt-name [m :- &Mdl i :- i64] :- str
   (match m
-    (Mdl [tab g globals decls adts owns csigs]
-      (match (forms/adts-at adts i)
-        (AdtInfo [name tps variants tpl tplargs]
-          (sym/stab-get tab name))))))
+    (
+      Mdl
+      [tab g globals decls adts owns csigs]
+      (match
+        (forms/adts-at adts i)
+        (AdtInfo [name tps variants tpl tplargs] (sym/stab-get tab name)))
+    )))
 
 ; --- declarations & globals -----------------------------------------------------
 
 ; Declare once per symbol (the seed's `declare` dedup by line).
 (defn md-decl [m :- Mdl line :- str] :- Mdl
   (match m
-    (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has decls (clone line))
+    (
+      Mdl
+      [tab g globals decls adts owns csigs]
+      (if
+        (strs-has decls (clone line))
         (clone m)
-        (Mdl (clone tab) (clone g) (clone globals)
-             (StrsCons (clone line) (clone decls))
-             (clone adts) (clone owns) (clone csigs))))))
+        (
+          Mdl
+          (clone tab)
+          (clone g)
+          (clone globals)
+          (StrsCons (clone line) (clone decls))
+          (clone adts)
+          (clone owns)
+          (clone csigs)
+        ))
+    )))
 
 (defn md-decls-lines [m :- &Mdl b :- StrBuf] :- StrBuf
-  (match m
-    (Mdl [tab g globals decls adts owns csigs] (md-decls-lines-1 (clone decls) b))))
+  (match m (Mdl [tab g globals decls adts owns csigs] (md-decls-lines-1 (clone decls) b))))
 
 (defn md-decls-lines-1 [ss :- Strs b :- StrBuf] :- StrBuf
   (match ss
@@ -182,33 +312,51 @@
 
 (defn md-ensure [m :- Mdl line :- str] :- Mdl
   (match m
-    (Mdl [tab g globals decls adts owns csigs]
-      (if (strs-has decls (clone line))
+    (
+      Mdl
+      [tab g globals decls adts owns csigs]
+      (if
+        (strs-has decls (clone line))
         m
-        (md-decl (clone m) (clone line))))))
+        (md-decl (clone m) (clone line)))
+    )))
 
 ; A private NUL-terminated [N x i8] global for a string literal.
 (defn md-mint-str [m :- Mdl s :- str] :- EMRes
   (match m
-    (Mdl [tab g globals decls adts owns csigs]
+    (
+      Mdl
+      [tab g globals decls adts owns csigs]
       (let [label (str "@g_str_" (clone g))
-            n (count (clone s))
-            bytes (md-str-bytes (clone s) 0 n (strbuf/sb-new) true)
-            line (str label " = private unnamed_addr constant [" (+ n 1) " x i8] ["
-                      (strbuf/sb-str bytes) "]")]
-        (EMRes (Mdl tab (+ g 1)
-                   (strbuf/sb-add-line globals line)
-                   decls adts owns csigs)
-              label)))))
+        n (count (clone s))
+        bytes (md-str-bytes (clone s) 0 n (strbuf/sb-new) true)
+        line
+        (
+          str
+          label
+          " = private unnamed_addr constant ["
+          (+ n 1)
+          " x i8] ["
+          (strbuf/sb-str bytes)
+          "]"
+        )]
+        (EMRes (Mdl tab (+ g 1) (strbuf/sb-add-line globals line) decls adts owns csigs) label))
+    )))
 
 ; The byte list of a global: `i8 b` per byte, then the NUL terminator.
 (defn md-str-bytes [s :- str i :- i64 n :- i64 b :- StrBuf first :- bool] :- StrBuf
-  (if (> i n)
+  (if
+    (> i n)
     b
-    (let [byte (if (= i n) 0 (read/str-byte s i))
-          b2 (if first
-               (strbuf/sb-add b (str "i8 " byte))
-               (strbuf/sb-add b (str ", i8 " byte)))]
+    (let [byte
+      (if
+        (= i n)
+        0
+        (read/str-byte s i))
+      b2
+      (if first
+        (strbuf/sb-add b (str "i8 " byte))
+        (strbuf/sb-add b (str ", i8 " byte)))]
       (md-str-bytes (clone s) (+ i 1) n b2 false))))
 
 ; A private [N x i64/double] global for a vector literal; returns
@@ -217,31 +365,47 @@
 
 (defn md-mint-vec [m :- Mdl el :- i64 vals :- VVals] :- MVRes
   (match m
-    (Mdl [tab g globals decls adts owns csigs]
+    (
+      Mdl
+      [tab g globals decls adts owns csigs]
       (let [label (str "@g_vec_" (clone g))
-            n (hexpr/vvals-depth vals)
-            parts (md-vec-items vals (clone el) (strbuf/sb-new) true)
-            ty (if (= el 1) "double" "i64")
-            line (str label " = private constant [" n " x " ty "] ["
-                      (strbuf/sb-str parts) "]")]
-        (MVRes (Mdl tab (+ g 1)
-                    (strbuf/sb-add-line globals line)
-                    decls adts owns csigs)
-               label (str n))))))
+        n (hexpr/vvals-depth vals)
+        parts (md-vec-items vals (clone el) (strbuf/sb-new) true)
+        ty
+        (if
+          (= el 1)
+          "double"
+          "i64")
+        line (str label " = private constant [" n " x " ty "] [" (strbuf/sb-str parts) "]")]
+        (
+          MVRes
+          (Mdl tab (+ g 1) (strbuf/sb-add-line globals line) decls adts owns csigs)
+          label
+          (str n)
+        ))
+    )))
 
 (defn md-vec-items [vals :- VVals el :- i64 b :- StrBuf first :- bool] :- StrBuf
   (match vals
     (VVNil [] b)
-    (VVI64 [v next]
-      (let [b2 (if first
-                 (strbuf/sb-add b (str "i64 " v))
-                 (strbuf/sb-add b (str ", i64 " v)))]
-        (md-vec-items next (clone el) b2 false)))
-    (VVF64 [v next]
-      (let [b2 (if first
-                 (strbuf/sb-add b (str "double " (llvm-f64 v)))
-                 (strbuf/sb-add b (str ", double " (llvm-f64 v))))]
-        (md-vec-items next (clone el) b2 false)))))
+    (
+      VVI64
+      [v next]
+      (let [b2
+        (if first
+          (strbuf/sb-add b (str "i64 " v))
+          (strbuf/sb-add b (str ", i64 " v)))]
+        (md-vec-items next (clone el) b2 false))
+    )
+    (
+      VVF64
+      [v next]
+      (let [b2
+        (if first
+          (strbuf/sb-add b (str "double " (llvm-f64 v)))
+          (strbuf/sb-add b (str ", double " (llvm-f64 v))))]
+        (md-vec-items next (clone el) b2 false))
+    )))
 
 ; --- FnCtx primitives ------------------------------------------------------------
 
@@ -249,85 +413,93 @@
 
 (defn fc-temp [c :- FnCtx] :- EFcT
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcT (FnCtx (+ tmpc 1) blkc cur body pre sc ve gr lfr)
-            (str "%t" tmpc)))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (EFcT (FnCtx (+ tmpc 1) blkc cur body pre sc ve gr lfr) (str "%t" tmpc))
+    )))
 
 (deftype EFcB (EFcB [c :- FnCtx v :- str]))
 
 (defn fc-block [c :- FnCtx] :- EFcB
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (EFcB (FnCtx tmpc (+ blkc 1) cur body pre sc ve gr lfr)
-            (str "b" blkc)))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (EFcB (FnCtx tmpc (+ blkc 1) cur body pre sc ve gr lfr) (str "b" blkc))
+    )))
 
 (defn fc-line [c :- FnCtx s :- str] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur (strbuf/sb-add-line body s) pre sc ve gr lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc cur (strbuf/sb-add-line body s) pre sc ve gr lfr)
+    )))
 
 (defn fc-pre-line [c :- FnCtx s :- str] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body (strbuf/sb-add-line pre s) sc ve gr lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc cur body (strbuf/sb-add-line pre s) sc ve gr lfr)
+    )))
 
 (defn fc-open [c :- FnCtx label :- str] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc label
-             (strbuf/sb-add-line body (str label ":"))
-             pre sc ve gr lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc label (strbuf/sb-add-line body (str label ":")) pre sc ve gr lfr)
+    )))
 
 (defn fc-sc-put [c :- FnCtx k :- i64 r :- str ty :- Ty] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc cur body pre (EScCons k (RegVal r ty) sc) ve gr lfr)
+    )))
 
 (defn fc-sc-get [c :- &FnCtx k :- i64] :- RegVal
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (esc-get sc k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-get sc k))))
 
 (defn fc-sc-has [c :- &FnCtx k :- i64] :- bool
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (esc-has sc k))))
 
 (defn fc-vc-put [c :- FnCtx k :- i64 p :- str l :- str el :- i64] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc cur body pre sc (EVcCons k (VecVal p l el) ve) gr lfr)
+    )))
 
 (defn fc-vc-get [c :- &FnCtx k :- i64] :- VecVal
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (evc-get ve k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-get ve k))))
 
 (defn fc-vc-has [c :- &FnCtx k :- i64] :- bool
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (evc-has ve k))))
 
 (defn fc-gr-put [c :- FnCtx k :- i64 slot :- str el :- i64] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (FnCtx tmpc blkc cur body pre sc ve (EGrCons k (GroVal slot el) gr) lfr)
+    )))
 
 (defn fc-gr-get [c :- &FnCtx k :- i64] :- GroVal
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (egr-get gr k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-get gr k))))
 
 (defn fc-gr-has [c :- &FnCtx k :- i64] :- bool
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (egr-has gr k))))
 
 (defn fc-lfr [c :- &FnCtx] :- LoopFr
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone lfr))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone lfr))))
 
 (defn fc-with-lfr [c :- FnCtx lfr :- LoopFr] :- FnCtx
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr l]
-      (FnCtx tmpc blkc cur body pre sc ve gr lfr))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr l] (FnCtx tmpc blkc cur body pre sc ve gr lfr))))
 
 ; A snapshot of the three binding chains only (not the output state):
 ; `let` bodies, match arms and loop bodies must not leak their bindings
@@ -337,114 +509,155 @@
 (deftype EEnv (EEnv [sc :- EScTab ve :- EVcTab gr :- EGrTab]))
 
 (defn fc-env-get [c :- &FnCtx] :- EEnv
-  (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (EEnv (clone sc) (clone ve) (clone gr)))))
+  (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (EEnv (clone sc) (clone ve) (clone gr)))))
 
 (defn fc-env-put [c :- FnCtx e :- EEnv] :- FnCtx
   (match c
-    (FnCtx [tmpc blkc cur body pre sc ve gr lfr]
-      (match e
-        (EEnv [sc2 ve2 gr2] (FnCtx tmpc blkc cur body pre sc2 ve2 gr2 lfr))))))
+    (
+      FnCtx
+      [tmpc blkc cur body pre sc ve gr lfr]
+      (match e (EEnv [sc2 ve2 gr2] (FnCtx tmpc blkc cur body pre sc2 ve2 gr2 lfr)))
+    )))
 
 ; --- LLVM text helpers -----------------------------------------------------------
 
 (defn mangle-raw [name :- str] :- str
-  (if (= (count name) 0)
+  (if
+    (= (count name) 0)
     ""
     (let [c (nth name 0 0)]
-      (if (= c 45)
+      (if
+        (= c 45)
         (str "_" (mangle-raw (subs name 1 (count name))))
         (str (char->str c) (mangle-raw (subs name 1 (count name))))))))
 
 ; Number of leading ascii digits of s.
 (defn digit-prefix-len [s :- str] :- i64
-  (if (= (count s) 0)
+  (if
+    (= (count s) 0)
     0
     (let [c (nth s 0 0)]
-      (if (and (>= c 48) (<= c 57))
+      (if
+        (and (>= c 48) (<= c 57))
         (+ 1 (digit-prefix-len (subs s 1 (count s))))
         0))))
 
 ; True when tail is zero or more "_u" pairs then empty.
 (defn reserved-u-tail [tail :- str] :- bool
-  (if (= (count tail) 0)
+  (if
+    (= (count tail) 0)
     true
-    (if (and (>= (count tail) 2) (= (nth tail 0 0) 95) (= (nth tail 1 0) 117))
+    (if
+      (and (>= (count tail) 2) (= (nth tail 0 0) 95) (= (nth tail 1 0) 117))
       (reserved-u-tail (subs tail 2 (count tail)))
       false)))
 
 ; Does the - -> _ folded name collide with an emitter-minted local?
 ; Temps are t<n>, block labels are b<n>, the entry label is entry.
 (defn reserved-local-shape [s :- str] :- bool
-  (if (= s "entry")
+  (if
+    (= s "entry")
     true
-    (if (= (count s) 0)
+    (if
+      (= (count s) 0)
       false
       (let [c (nth s 0 0)]
-        (if (or (= c 116) (= c 98))
+        (if
+          (or (= c 116) (= c 98))
           (let [d (digit-prefix-len (subs s 1 (count s)))]
-            (if (= d 0)
+            (if
+              (= d 0)
               false
               (reserved-u-tail (subs s (+ d 1) (count s)))))
           false)))))
 
 (defn mangle [name :- str] :- str
   (let [m (mangle-raw (clone name))]
-    (if (reserved-local-shape (clone m))
+    (if
+      (reserved-local-shape (clone m))
       (str (clone m) "_u")
       (clone m))))
 
 (defn ll-scalar [t :- Ty] :- str
   (let [tag (types/ty-tag t)]
     (cond
-      (= tag 0) "i64"
-      (= tag 1) "i32"
-      (= tag 2) "i8"
-      (= tag 3) "i16"
-      (= tag 4) "i8"
-      (= tag 5) "i16"
-      (= tag 6) "i32"
-      (= tag 7) "i64"
-      (= tag 8) "i64"
-      (= tag 9) "double"
-      (= tag 10) "float"
+      (= tag 0)
+      "i64"
+      (= tag 1)
+      "i32"
+      (= tag 2)
+      "i8"
+      (= tag 3)
+      "i16"
+      (= tag 4)
+      "i8"
+      (= tag 5)
+      "i16"
+      (= tag 6)
+      "i32"
+      (= tag 7)
+      "i64"
+      (= tag 8)
+      "i64"
+      (= tag 9)
+      "double"
+      (= tag 10)
+      "float"
       (cg-fail-s "ll-scalar on non-scalar type"))))
 
 (defn ll-ty [t :- Ty] :- str
   (let [tag (types/ty-tag t)]
     (cond
-      (= tag 9) "double"
-      (= tag 10) "float"
-      (= tag 11) "i1"
-      (= tag 12) "ptr"
-      (= tag 15) (cg-fail-s "aggregate type in scalar position")
-      (= tag 16) "ptr"
-      (= tag 17) "ptr"
-      (= tag 18) (cg-fail-s "unresolved type parameter")
-      (< tag 12) (ll-scalar t)
+      (= tag 9)
+      "double"
+      (= tag 10)
+      "float"
+      (= tag 11)
+      "i1"
+      (= tag 12)
+      "ptr"
+      (= tag 15)
+      (cg-fail-s "aggregate type in scalar position")
+      (= tag 16)
+      "ptr"
+      (= tag 17)
+      "ptr"
+      (= tag 18)
+      (cg-fail-s "unresolved type parameter")
+      (< tag 12)
+      (ll-scalar t)
       (cg-fail-s "ll-ty on map/set"))))
 
 (defn elem-ll [el :- i64] :- str
-  (if (= el 1) "double" "i64"))
+  (if
+    (= el 1)
+    "double"
+    "i64"))
 
 (defn ll-loop-slot-ty [t :- Ty mdl :- &Mdl] :- str
   (let [tag (types/ty-tag t)]
     (cond
-      (= tag 9) "double"
-      (= tag 10) "float"
-      (= tag 11) "i1"
-      (= tag 12) "ptr"
-      (< tag 12) (ll-scalar (clone t))
+      (= tag 9)
+      "double"
+      (= tag 10)
+      "float"
+      (= tag 11)
+      "i1"
+      (= tag 12)
+      "ptr"
+      (< tag 12)
+      (ll-scalar (clone t))
       ; S8: a boxed ADT loop variable's slot is the owning pointer; a
       ; vector's slot is the {ptr,len,cap} header
-      (and (= tag 16) (= (md-owns-at mdl (types/ty-arg t)) 1)) "ptr"
-      (= tag 15) "%VecI64"
+      (and (= tag 16) (= (md-owns-at mdl (types/ty-arg t)) 1))
+      "ptr"
+      (= tag 15)
+      "%VecI64"
       (cg-fail-s "loop variable of unsupported type"))))
 
 ; a vector loop variable's slot kind (the scalar path handles everything
 ; whose value is one machine word, including boxed ADT pointers)
-(defn loop-slot-vec [t :- Ty] :- bool
-  (= (types/ty-tag t) 15))
+(defn loop-slot-vec [t :- Ty] :- bool (= (types/ty-tag t) 15))
 
 ; --- ADT layout (the seed's field_slot_count / payload / offsets) ----------------
 
@@ -453,46 +666,58 @@
 (defn fs-count [f :- Ty owns :- &Sids adts :- &AdtTab] :- i64
   (let [tag (types/ty-tag f)]
     (cond
-      (= tag 15) 3
+      (= tag 15)
+      3
       (= tag 16)
       (let [j (types/ty-arg f)]
-        (if (= (types/sids-idx owns j) 1)
+        (if
+          (= (types/sids-idx owns j) 1)
           1
           (+ 1 (fs-pay adts owns j))))
       1)))
 
-(defn fs-pay [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
-  (fs-pay-vi adts owns i 0 0))
+(defn fs-pay [adts :- &AdtTab owns :- &Sids i :- i64] :- i64 (fs-pay-vi adts owns i 0 0))
 
 (defn fs-pay-vi [adts :- &AdtTab owns :- &Sids i :- i64 vi :- i64 best :- i64] :- i64
-  (if (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
+  (if
+    (>= vi (forms/vlist-depth (forms/adts-variants-at adts i)))
     best
     (let [sum (fs-sum (forms/varnt-fields-at adts i vi) owns adts 0)]
-      (fs-pay-vi adts owns i (+ vi 1)
-                 (if (> sum best) sum best)))))
+      (
+        fs-pay-vi
+        adts
+        owns
+        i
+        (+ vi 1)
+        (if
+          (> sum best)
+          sum
+          best)
+      ))))
 
 (defn fs-sum [fs :- TyList owns :- &Sids adts :- &AdtTab acc :- i64] :- i64
   (match fs
-    (TyCons [h rest]
-      (fs-sum rest owns adts (+ acc (fs-count h owns adts))))
+    (TyCons [h rest] (fs-sum rest owns adts (+ acc (fs-count h owns adts))))
     (TyNil [] acc)))
 
 ; Total payload slots of ADT i (the [N x i64] of its struct).
-(defn fs-total [adts :- &AdtTab owns :- &Sids i :- i64] :- i64
-  (fs-pay adts owns i))
+(defn fs-total [adts :- &AdtTab owns :- &Sids i :- i64] :- i64 (fs-pay adts owns i))
 
 ; Slot offset of field k in variant vi of ADT ai.
 (defn fs-off [adts :- &AdtTab owns :- &Sids ai :- i64 vi :- i64 k :- i64] :- i64
   (fs-off-1 (forms/varnt-fields-at adts ai vi) owns adts 0 k))
 
 (defn fs-off-1 [fs :- TyList owns :- &Sids adts :- &AdtTab at :- i64 k :- i64] :- i64
-  (if (= k 0)
+  (if
+    (= k 0)
     at
     (match fs
-      (TyCons [h rest]
+      (
+        TyCons
+        [h rest]
         ; k counts down the fields consumed; at accumulates their widths
-        (fs-off-1 rest owns adts
-                  (+ at (fs-count h owns adts)) (- k 1)))
+        (fs-off-1 rest owns adts (+ at (fs-count h owns adts)) (- k 1))
+      )
       (TyNil [] at))))
 
 ; Slot count of field k in variant vi of ADT ai.
@@ -511,22 +736,39 @@
 ; integer).
 
 (defn llvm-f64 [v :- f64] :- str
-  (if (= v 0.0)
+  (if
+    (= v 0.0)
     "0.0"
-    (let [a (abs v)
-          fixed (f64-fixed a 0)]
-      (if (> (count (clone fixed)) 0)
-        (str (if (< v 0.0) "-" "") (clone fixed))
-        (str (if (< v 0.0) "-" "") (f64-sci a))))))
+    (let [a (abs v) fixed (f64-fixed a 0)]
+      (if
+        (> (count (clone fixed)) 0)
+        (
+          str
+          (if
+            (< v 0.0)
+            "-"
+            "")
+          (clone fixed)
+        )
+        (
+          str
+          (if
+            (< v 0.0)
+            "-"
+            "")
+          (f64-sci a)
+        )))))
 
 ; pow10 for small p (exact up to 10^22).
 (defn f64-pow10 [p :- i64] :- f64
-  (if (= p 0)
+  (if
+    (= p 0)
     1.0
     (* 10.0 (f64-pow10 (- p 1)))))
 
 (defn f64-pow-i64 [p :- i64] :- i64
-  (if (= p 0)
+  (if
+    (= p 0)
     1
     (* 10 (f64-pow-i64 (- p 1)))))
 
@@ -534,53 +776,66 @@
 ; first that parses back equal wins. Empty string = no hit before the
 ; i64 bound — fall through to scientific.
 (defn f64-fixed [a :- f64 p :- i64] :- str
-  (if (> p 17)
+  (if
+    (> p 17)
     ""
     (let [prod (* a (f64-pow10 p))]
-      (if (> prod 9000000000000000000.0)
+      (if
+        (> prod 9000000000000000000.0)
         ""
-        (let [fl (i64 prod)
-              lo (f64-fixed-try a p fl)
-              hi (f64-fixed-try a p (+ fl 1))]
-          (if (> (count (clone lo)) 0)
+        (let [fl (i64 prod) lo (f64-fixed-try a p fl) hi (f64-fixed-try a p (+ fl 1))]
+          (if
+            (> (count (clone lo)) 0)
             (clone lo)
-            (if (> (count (clone hi)) 0)
+            (if
+              (> (count (clone hi)) 0)
               (clone hi)
               (f64-fixed a (+ p 1)))))))))
 
 (defn f64-fixed-try [a :- f64 p :- i64 m :- i64] :- str
   (let [text (f64-fixed-render m p)]
-    (match (parse-f64 (clone text))
-      (Some [back] (if (= back a) (clone text) ""))
+    (match
+      (parse-f64 (clone text))
+      (
+        Some
+        [back]
+        (if
+          (= back a)
+          (clone text)
+          "")
+      )
       (None [] ""))))
 
 ; m with p decimal places, point placed p digits from the right; the
 ; digit run is padded so the integer part is never empty.
 (defn f64-fixed-render [m :- i64 p :- i64] :- str
-  (if (= p 0)
+  (if
+    (= p 0)
     (str m ".0")
     (let [digits (f64-digits m)
-          padded (f64-pad (clone digits) (+ p 1))
-          r (f64-rev (clone padded))
-          n (count (clone r))]
+      padded (f64-pad (clone digits) (+ p 1))
+      r (f64-rev (clone padded))
+      n (count (clone r))]
       (str (subs (clone r) 0 (- n p)) "." (subs (clone r) (- n p) n)))))
 
 ; Decimal digits of m, low digit first ("0" renders "0").
 (defn f64-digits [m :- i64] :- str
-  (if (= m 0)
+  (if
+    (= m 0)
     "0"
-    (str (char->str (+ 48 (- m (* 10 (/ m 10)))))
-         (f64-digits (/ m 10)))))
+    (str (char->str (+ 48 (- m (* 10 (/ m 10))))) (f64-digits (/ m 10)))))
 
 ; Right-extend a low-first digit run with zeros to at least width w
 ; (padding on the high end in reading order).
 (defn f64-pad [digits :- str w :- i64] :- str
-  (if (< (count (clone digits)) w)
+  (if
+    (< (count (clone digits)) w)
     (f64-pad (str (clone digits) "0") w)
     (clone digits)))
 
 (defn f64-rev [s :- str] :- str
-  (if (= (count s) 0)
+  (if
+    (= (count s) 0)
     ""
     (str (f64-rev (subs s 1 (count s))) (char->str (nth s 0 0)))))
 
@@ -588,60 +843,81 @@
 ; Normalize by powers of ten, peel 17 significant digits, try
 ; truncation and round-up prefixes until one parses back equal.
 (defn f64-sci [a :- f64] :- str
-  (match (f64-norm a 0)
+  (match
+    (f64-norm a 0)
     (N2Res [m e] (f64-sci-try a m e 1 (f64-sci-digits m 0 17)))))
 
 (deftype N2Res (N2Res [m :- f64 e :- i64]))
 
 (defn f64-norm [a :- f64 e :- i64] :- N2Res
-  (if (>= a 10.0)
+  (if
+    (>= a 10.0)
     (f64-norm (/ a 10.0) (+ e 1))
-    (if (< a 1.0)
+    (if
+      (< a 1.0)
       (f64-norm (* a 10.0) (- e 1))
       (N2Res a e))))
 
 ; The first `left` significant digits of m as an integer.
 (defn f64-sci-digits [m :- f64 k :- i64 left :- i64] :- i64
-  (if (= left 0)
+  (if
+    (= left 0)
     k
-    (let [d (i64 m)
-          frac (* (- m (f64 d)) 10.0)]
-      (f64-sci-digits frac (+ (* k 10) d) (- left 1)))))
+    (let [d (i64 m) frac (* (- m (f64 d)) 10.0)] (f64-sci-digits frac (+ (* k 10) d) (- left 1)))))
 
 (defn f64-sci-try [a :- f64 m :- f64 e :- i64 n :- i64 all :- i64] :- str
-  (if (> n 17)
+  (if
+    (> n 17)
     ; Best effort: the full 17-digit truncation.
     (f64-sci-render all e 17)
     (let [dv (f64-pow-i64 (- 17 n))
-          pre (/ all dv)
-          t1 (f64-sci-check a (f64-sci-render pre e n))
-          t2 (f64-sci-check a (f64-sci-render (+ pre 1) e n))]
-      (if (> (count (clone t1)) 0)
+      pre (/ all dv)
+      t1 (f64-sci-check a (f64-sci-render pre e n))
+      t2 (f64-sci-check a (f64-sci-render (+ pre 1) e n))]
+      (if
+        (> (count (clone t1)) 0)
         (clone t1)
-        (if (> (count (clone t2)) 0)
+        (if
+          (> (count (clone t2)) 0)
           (clone t2)
           (f64-sci-try a m e (+ n 1) all))))))
 
 (defn f64-sci-check [a :- f64 text :- str] :- str
-  (match (parse-f64 (clone text))
-    (Some [back] (if (= back a) (clone text) ""))
+  (match
+    (parse-f64 (clone text))
+    (
+      Some
+      [back]
+      (if
+        (= back a)
+        (clone text)
+        "")
+    )
     (None [] "")))
 
 ; digits = d1 d2 ... dn as an integer; value = d1.d2...dn e exponent.
 (defn f64-sci-render [digits :- i64 e :- i64 n :- i64] :- str
   (let [s (f64-digits digits)
-        head (char->str (nth (clone s) 0 0))
-        rest (subs (clone s) 1 (count (clone s)))
-        rest2 (if (= (count (clone rest)) 0) "0" rest)]
+    head (char->str (nth (clone s) 0 0))
+    rest (subs (clone s) 1 (count (clone s)))
+    rest2
+    (if
+      (= (count (clone rest)) 0)
+      "0"
+      rest)]
     (str head "." rest2 "e" e)))
 
 ; --- failure (the seed's panic, as a loud exit) -----------------------------------
 
 (defn cg-fail-i [msg :- str] :- i64
-  (do (print-string (str "cato1: codegen " msg)) (exit 70)))
+  (do
+    (print-string (str "cato1: codegen " msg))
+    (exit 70)))
 
 (defn cg-fail-s [msg :- str] :- str
-  (do (cg-fail-i (clone msg)) ""))
+  (do
+    (cg-fail-i (clone msg))
+    ""))
 
 ; --- call signature table -----------------------------------------------------------
 
@@ -649,27 +925,39 @@
 ; mono instances. Prepending puts give last-defn-wins, the seed's map
 ; insert order.
 (deftype ESig (ESig [params :- TyList ret :- Ty]))
-(deftype ESigTab (ESTNil) (ESTCons [k :- i64 v :- ESig t :- ESigTab]))
+(deftype ESigTab
+  (ESTNil)
+  (ESTCons [k :- i64 v :- ESig t :- ESigTab]))
 
 (defn sigs-build [ds :- Defns acc :- ESigTab] :- ESigTab
   (match ds
-    (DCons [h t]
+    (
+      DCons
+      [h t]
       (match h
-        (Defn [name params ret isextern body rb]
-          (sigs-build t
-                      (ESTCons name (ESig (pl-tylist params (TyNil)) ret) acc)))))
+        (
+          Defn
+          [name params ret isextern body rb]
+          (sigs-build t (ESTCons name (ESig (pl-tylist params (TyNil)) ret) acc))
+        ))
+    )
     (DNil [] (clone acc))))
 
 (defn pl-tylist [ps :- PList acc :- TyList] :- TyList
   (match ps
-    (PCons [h t]
-      (match h
-        (Param [name ty _pb] (pl-tylist t (TyCons ty acc)))))
+    (PCons [h t] (match h (Param [name ty _pb] (pl-tylist t (TyCons ty acc)))))
     (PNil [] (types/tys-rev acc (TyNil)))))
 
 (defn sigs-lookup [ss :- &ESigTab k :- i64] :- ESig
   (match ss
-    (ESTCons [ek ev next] (if (= ek k) (clone ev) (sigs-lookup next k)))
+    (
+      ESTCons
+      [ek ev next]
+      (if
+        (= ek k)
+        (clone ev)
+        (sigs-lookup next k))
+    )
     (ESTNil [] (ESig (TyNil) (types/t-none)))))
 
 ; --- the emission bundle ---------------------------------------------------------
@@ -678,26 +966,20 @@
 ; emitter call; results carry the bundle back out.
 (deftype Emit (Emit [c :- FnCtx mdl :- Mdl sigs :- ESigTab]))
 
-(defn em-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs
-              sigs :- ESigTab] :- Emit
+(defn em-new [tab :- i64 adts :- AdtTab owns :- Sids csigs :- Sigs sigs :- ESigTab] :- Emit
   (Emit (fn-new) (md-new tab adts owns csigs) sigs))
 
-(defn em-env-get [st :- &Emit] :- EEnv
-  (match st (Emit [c mdl sigs] (fc-env-get c))))
+(defn em-env-get [st :- &Emit] :- EEnv (match st (Emit [c mdl sigs] (fc-env-get c))))
 
 ; Read through the emission bundle without copying the module. Matching an
 ; `Emit` and cloning its `Mdl` deep-copies the globals string buffer, the ADT
 ; table and the signature table to answer one name or one ownership bit.
-(defn em-boxed-at [st :- &Emit adt :- i64] :- i64
-  (match st (Emit [c m s] (md-owns-at m adt))))
+(defn em-boxed-at [st :- &Emit adt :- i64] :- i64 (match st (Emit [c m s] (md-owns-at m adt))))
 
-(defn em-adt-name [st :- &Emit adt :- i64] :- str
-  (match st (Emit [c m s] (md-adt-name m adt))))
+(defn em-adt-name [st :- &Emit adt :- i64] :- str (match st (Emit [c m s] (md-adt-name m adt))))
 
 (defn em-env-put [st :- Emit e :- EEnv] :- Emit
   (match st (Emit [c mdl sigs] (Emit (fc-env-put c e) mdl sigs))))
-
-
 
 ; --- multi-instruction minting ----------------------------------------------------
 ;
@@ -711,40 +993,72 @@
 (deftype ET4Res (ET4Res [st :- Emit a :- str b :- str c :- str d :- str]))
 
 (defn sub-place [s :- str own :- str p1 :- str p2 :- str p3 :- str] :- str
-  (if (= (count s) 0)
+  (if
+    (= (count s) 0)
     ""
     (let [c (nth s 0 0)]
       (cond
-        (= c 126) (str (char->str c) (sub-place (subs s 1 (count s)) own p1 p2 p3))
+        (= c 126)
+        (str (char->str c) (sub-place (subs s 1 (count s)) own p1 p2 p3))
         (= c 94)
         (let [d (nth s 1 0)]
           (cond
-            (= d 49) (str p1 (sub-place (subs s 2 (count s)) own p1 p2 p3))
-            (= d 50) (str p2 (sub-place (subs s 2 (count s)) own p1 p2 p3))
-            (= d 51) (str p3 (sub-place (subs s 2 (count s)) own p1 p2 p3))
+            (= d 49)
+            (str p1 (sub-place (subs s 2 (count s)) own p1 p2 p3))
+            (= d 50)
+            (str p2 (sub-place (subs s 2 (count s)) own p1 p2 p3))
+            (= d 51)
+            (str p3 (sub-place (subs s 2 (count s)) own p1 p2 p3))
             (str (char->str c) (sub-place (subs s 1 (count s)) own p1 p2 p3))))
         (str (char->str c) (sub-place (subs s 1 (count s)) own p1 p2 p3))))))
 
 (defn em-ins2 [st :- Emit b1 :- str b2 :- str] :- ET2Res
-  (match (scalars/em-ins st b1)
-    (ETRes [st1 t1]
-      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
-        (ETRes [st2 t2] (ET2Res st2 t1 t2))))))
+  (match
+    (scalars/em-ins st b1)
+    (
+      ETRes
+      [st1 t1]
+      (match
+        (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
+        (ETRes [st2 t2] (ET2Res st2 t1 t2)))
+    )))
 
 (defn em-ins3 [st :- Emit b1 :- str b2 :- str b3 :- str] :- ET3Res
-  (match (scalars/em-ins st b1)
-    (ETRes [st1 t1]
-      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
-        (ETRes [st2 t2]
-          (match (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
-            (ETRes [st3 t3] (ET3Res st3 t1 t2 t3))))))))
+  (match
+    (scalars/em-ins st b1)
+    (
+      ETRes
+      [st1 t1]
+      (match
+        (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
+        (
+          ETRes
+          [st2 t2]
+          (match
+            (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
+            (ETRes [st3 t3] (ET3Res st3 t1 t2 t3)))
+        ))
+    )))
 
 (defn em-ins4 [st :- Emit b1 :- str b2 :- str b3 :- str b4 :- str] :- ET4Res
-  (match (scalars/em-ins st b1)
-    (ETRes [st1 t1]
-      (match (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
-        (ETRes [st2 t2]
-          (match (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
-            (ETRes [st3 t3]
-              (match (scalars/em-ins st3 (sub-place b4 "" t3 t2 t1))
-                (ETRes [st4 t4] (ET4Res st4 t1 t2 t3 t4))))))))))
+  (match
+    (scalars/em-ins st b1)
+    (
+      ETRes
+      [st1 t1]
+      (match
+        (scalars/em-ins st1 (sub-place b2 "" t1 "" ""))
+        (
+          ETRes
+          [st2 t2]
+          (match
+            (scalars/em-ins st2 (sub-place b3 "" t2 t1 ""))
+            (
+              ETRes
+              [st3 t3]
+              (match
+                (scalars/em-ins st3 (sub-place b4 "" t3 t2 t1))
+                (ETRes [st4 t4] (ET4Res st4 t1 t2 t3 t4)))
+            ))
+        ))
+    )))

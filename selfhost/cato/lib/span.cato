@@ -10,18 +10,10 @@
 
 (defn sp-new [l :- i64 c :- i64 n :- i64] :- Span (Span l c n))
 
-(defn sp-line [s :- Span] :- i64
-  (match s
-    (Span [l c n] l)))
+(defn sp-line [s :- Span] :- i64 (match s (Span [l c n] l)))
 
-(defn sp-col [s :- Span] :- i64
-  (match s
-    (Span [l c n] c)))
+(defn sp-col [s :- Span] :- i64 (match s (Span [l c n] c)))
 
-(defn sp-len [s :- Span] :- i64
-  (match s
-    (Span [l c n] n)))
+(defn sp-len [s :- Span] :- i64 (match s (Span [l c n] n)))
 
-(defn sp-str [s :- Span] :- str
-  (match s
-    (Span [l c n] (str l ":" c "+" n))))
+(defn sp-str [s :- Span] :- str (match s (Span [l c n] (str l ":" c "+" n))))

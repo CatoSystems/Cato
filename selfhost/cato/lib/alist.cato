@@ -9,24 +9,37 @@
 ; a later put for the same key shadows (first-match-wins reads), matching
 ; how lexical scopes nest.
 
-(deftype (AList V) (ALNil) (ALCons [k :- i64 v :- V next :- (AList V)]))
+(deftype
+  (AList V)
+  (ALNil)
+  (ALCons [k :- i64 v :- V next :- (AList V)]))
 
-(defn al-put [e :- (AList T) k :- i64 v :- T] :- (AList T)
-  (ALCons k v e))
+(defn al-put [e :- (AList T) k :- i64 v :- T] :- (AList T) (ALCons k v e))
 
 ; First match wins; misses report the explicit default. `ev` moves out of
 ; the cell, so the recursive step clones the tail.
 (defn al-get [e :- (AList T) k :- i64 d :- T] :- T
   (match e
-    (ALCons [ek ev next]
-      (if (= ek k)
+    (
+      ALCons
+      [ek ev next]
+      (if
+        (= ek k)
         ev
-        (al-get next k d)))
+        (al-get next k d))
+    )
     (ALNil [] d)))
 
 (defn al-has [e :- (AList T) k :- i64] :- bool
   (match e
-    (ALCons [ek ev next] (if (= ek k) true (al-has next k)))
+    (
+      ALCons
+      [ek ev next]
+      (if
+        (= ek k)
+        true
+        (al-has next k))
+    )
     (ALNil [] false)))
 
 (defn al-depth [e :- (AList T)] :- i64

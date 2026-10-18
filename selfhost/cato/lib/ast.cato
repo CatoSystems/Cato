@@ -18,7 +18,9 @@
 ; passes walk them with match recursion, exactly the shape the kernel's own
 ; passes will use.
 
-(deftype Asts (KNil) (KCons [kid :- Ast next :- Asts]))
+(deftype Asts
+  (KNil)
+  (KCons [kid :- Ast next :- Asts]))
 
 ; ABool is the S5 amendment: the seed reader reads `true`/`false` to
 ; LitBool (distinct from LitI64), so the kernel AST needs the variant. The

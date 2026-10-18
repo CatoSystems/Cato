@@ -1,4 +1,8 @@
 (ns mod.main)
 (require ["mod_geom.cato" :as m])
 (defn main [] :- i32
-  (do (print-i64 (m/square 7)) (print-i64 (m/hypot-sq 3 4)) (print-i64 (m/square (m/square 2))) 0))
+  (do
+    (print-i64 (m/square 7))
+    (print-i64 (m/hypot-sq 3 4))
+    (print-i64 (m/square (m/square 2)))
+    0))

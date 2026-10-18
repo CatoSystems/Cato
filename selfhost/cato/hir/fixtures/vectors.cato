@@ -1,18 +1,20 @@
 ; S6 fixture: vectors — i64/f64 literals, conj literal folds, conj as a
 ; runtime op, two- and three-argument get, Option unwrap.
 
-(defn sum3 [v :- (Vector i64)] :- i64
-  (+ (+ (get v 0 -1) (get v 1 -1)) (get v 2 -1)))
+(defn sum3 [v :- (Vector i64)] :- i64 (+ (+ (get v 0 -1) (get v 1 -1)) (get v 2 -1)))
 
 (defn main [] :- i64
   (let [v [1 2 3]
-        w (conj v 4)
-        x (get v 0 -1)
-        o (get v 9)
-        d (match o (Some [n] n) (None [] -7))
-        f [1.5 2.5]
-        g (conj f 3.5)
-        h (get g 2 0.0)
-        folded (conj [1 2] 3)
-        ff (get folded 2 -1)]
+    w (conj v 4)
+    x (get v 0 -1)
+    o (get v 9)
+    d
+    (match o
+      (Some [n] n)
+      (None [] -7))
+    f [1.5 2.5]
+    g (conj f 3.5)
+    h (get g 2 0.0)
+    folded (conj [1 2] 3)
+    ff (get folded 2 -1)]
     (+ (+ (sum3 w) (+ x d)) (+ (i64 h) ff))))

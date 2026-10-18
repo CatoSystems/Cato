@@ -21,34 +21,38 @@
 ; impossible states exit loudly (the seed's panic path).
 
 (defn emit-print-lines [s :- str]
-  (if (> (count s) 0)
+  (if
+    (> (count s) 0)
     ; the module text ends with \n; print-string appends the final one,
     ; so the body sheds its trailing newline.
     (print-string (subs s 0 (- (count s) 1)))
     0))
 
 (defn emit-build [tab :- i64 forms :- Asts]
-  (match (lower/build-program forms tab)
+  (match
+    (lower/build-program forms tab)
     (PErr [msg] (print-string (str "err " msg)))
-    (POk [tab2 adts defs lams sigs]
+    (
+      POk
+      [tab2 adts defs lams sigs]
       (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
-        (match (moveck/check-program defs lams facts (clone tab2) (clone adts))
+        (match
+          (moveck/check-program defs lams facts (clone tab2) (clone adts))
           (CKErr [msg] (print-string (str "err " msg)))
-          (CKOk [defs2 lams2]
-            (emit-print-lines (emit/emit-program adts defs2 lams2 sigs tab2))))))))
+          (CKOk [defs2 lams2] (emit-print-lines (emit/emit-program adts defs2 lams2 sigs tab2)))))
+    )))
 
 ; read-all-with lives in reader/read.cato (this concat includes it).
 
 (defn main []
-  (let [a (args)
-        path (get a 0 "")
-        src (slurp path)
-        r (read/read-all-with src (expand/magic-table))]
+  (let [a (args) path (get a 0 "") src (slurp path) r (read/read-all-with src (expand/magic-table))]
     (match r
-      (ROk [forms tab]
-        (match (expand/expand-all (clone forms) (KNil))
+      (
+        ROk
+        [forms tab]
+        (match
+          (expand/expand-all (clone forms) (KNil))
           (EOk [xforms] (emit-build (clone tab) xforms))
-          (EErr [msg at]
-            (print-string (str "err " (rdump/spat (clone at)) " " (clone msg))))))
-      (RErr [msg at]
-        (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))))
+          (EErr [msg at] (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))
+      )
+      (RErr [msg at] (print-string (str "err " (rdump/spat (clone at)) " " (clone msg)))))))

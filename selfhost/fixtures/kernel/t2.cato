@@ -1,2 +1,5 @@
 (defn f [l :- str] :- str (str l "\n"))
-(defn main [] :- i32 (do (print-string (f "X")) 0))
+(defn main [] :- i32
+  (do
+    (print-string (f "X"))
+    0))

@@ -1,3 +1,8 @@
-(deftype N (Leaf) (Node [l :- N r :- N]))
-(defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
+(deftype N
+  (Leaf)
+  (Node [l :- N r :- N]))
+(defn get-l [n :- &N] :- &N
+  (match n
+    (Node [l r] l)
+    (_ n)))
 (defn main [] :- i64 0)

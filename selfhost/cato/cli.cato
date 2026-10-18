@@ -33,7 +33,10 @@
 ; The exit code of a libc system() wait status (-1 means the shell did
 ; not run at all, which must not decode to success).
 (defn exit-of [status :- i64] :- i64
-  (if (= status -1) -1 (/ status 256)))
+  (if
+    (= status -1)
+    -1
+    (/ status 256)))
 
 ; The reader entry (read-all-with in reader/read.cato) is seeded with the
 ; pre-interned table; the S6/S7 drivers share it.
@@ -45,59 +48,113 @@
 
 ; "slice.cato" -> "slice" (the seed's default_stem for the .cato suffix).
 (defn stem-of [p :- str] :- str
-  (if (and (> (count p) 5)
-           (= (subs p (- (count p) 5) (count p)) ".cato"))
+  (if
+    (and (> (count p) 5) (= (subs p (- (count p) 5) (count p)) ".cato"))
     (subs p 0 (- (count p) 5))
     p))
 
 ; The compile pipeline through the emitted LLVM IR text: an empty result
 ; means the pipeline failed and the message is on stdout already.
 (defn compile-to-ir [path :- str] :- str
-  (let [src (slurp path)
-        r (read/read-all-with src (expand/magic-table))]
+  (let [src (slurp path) r (read/read-all-with src (expand/magic-table))]
     (match r
-      (ROk [forms tab]
-        (match (modules/resolve-modules path forms tab (modules/mod-empty))
-          (OROk [forms2 tab2 st]
-            (match (expand/expand-all forms2 (KNil))
+      (
+        ROk
+        [forms tab]
+        (match
+          (modules/resolve-modules path forms tab (modules/mod-empty))
+          (
+            OROk
+            [forms2 tab2 st]
+            (match
+              (expand/expand-all forms2 (KNil))
               (EOk [xforms] (compile-build tab2 xforms))
-              (EErr [msg at]
-                (do (print-string (str "err " (rdump/spat at) " " msg)) ""))))
-          (ORErr [msg at]
-            (do (print-string (str "err " (rdump/spat at) " " msg)) ""))))
-      (RErr [msg at]
-        (do (print-string (str "err " (rdump/spat at) " " msg)) "")))))
+              (
+                EErr
+                [msg at]
+                (do
+                  (print-string (str "err " (rdump/spat at) " " msg))
+                  "")
+              ))
+          )
+          (
+            ORErr
+            [msg at]
+            (do
+              (print-string (str "err " (rdump/spat at) " " msg))
+              "")
+          ))
+      )
+      (
+        RErr
+        [msg at]
+        (do
+          (print-string (str "err " (rdump/spat at) " " msg))
+          "")
+      ))))
 
 (defn compile-build [tab :- i64 forms :- Asts] :- str
-  (match (lower/build-program forms tab)
-    (PErr [msg] (do (print-string (str "err " msg)) ""))
-    (POk [tab2 adts defs lams sigs]
+  (match
+    (lower/build-program forms tab)
+    (
+      PErr
+      [msg]
+      (do
+        (print-string (str "err " msg))
+        "")
+    )
+    (
+      POk
+      [tab2 adts defs lams sigs]
       (let [facts (do (forms/facts-compute (forms/adts-templates (clone adts))))]
-        (match (moveck/check-program defs lams facts (clone tab2) (clone adts))
-          (CKErr [msg] (do (print-string (str "err " msg)) ""))
-          (CKOk [defs2 lams2]
-            (emit/emit-program adts defs2 lams2 sigs tab2)))))))
+        (match
+          (moveck/check-program defs lams facts (clone tab2) (clone adts))
+          (
+            CKErr
+            [msg]
+            (do
+              (print-string (str "err " msg))
+              "")
+          )
+          (CKOk [defs2 lams2] (emit/emit-program adts defs2 lams2 sigs tab2))))
+    )))
 
 (defn build-cmd [a :- (Vector str)] :- i64
-  (if (< (count a) 2)
+  (if
+    (< (count a) 2)
     (usage)
     (let [path (get a 1 "")
-          out (if (> (count a) 2) (get a 2 "") (stem-of path))
-          rt (if (> (count a) 3) (get a 3 "") "runtime/runtime.c")
-          ir (compile-to-ir path)]
-      (if (= (count ir) 0)
+      out
+      (if
+        (> (count a) 2)
+        (get a 2 "")
+        (stem-of path))
+      rt
+      (if
+        (> (count a) 3)
+        (get a 3 "")
+        "runtime/runtime.c")
+      ir (compile-to-ir path)]
+      (if
+        (= (count ir) 0)
         1
         (let [ll (str out ".ll")]
           (do
             (spit ll ir)
             (let [status (system (str "clang -O2 " ll " " rt " -o " out))]
-              (if (= (exit-of status) 0)
+              (if
+                (= (exit-of status) 0)
                 0
-                (do (print-string (str "cato1: cc failed (exit " (exit-of status) ")")) 1)))))))))
+                (do
+                  (print-string (str "cato1: cc failed (exit " (exit-of status) ")"))
+                  1)))))))))
 
 (defn main []
-  (let [a (args)
-        cmd (get a 0 "")]
-    (exit (if (= cmd "build")
-      (build-cmd a)
-      (usage)))))
+  (let [a (args) cmd (get a 0 "")]
+    (
+      exit
+      (if
+        (= cmd "build")
+        (build-cmd a)
+        (usage))
+    )))

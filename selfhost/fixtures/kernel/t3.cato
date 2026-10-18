@@ -1,2 +1,5 @@
 (defn f [n :- i64] :- str (str n))
-(defn main [] :- i32 (do (print-string (f 7)) 0))
+(defn main [] :- i32
+  (do
+    (print-string (f 7))
+    0))

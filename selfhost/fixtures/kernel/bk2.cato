@@ -1,3 +1,5 @@
-(deftype N (Leaf) (Node [l :- N r :- N]))
+(deftype N
+  (Leaf)
+  (Node [l :- N r :- N]))
 (defn bad [n :- &N] :- &N (Node n n))
 (defn main [] :- i64 0)

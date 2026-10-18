@@ -18,18 +18,19 @@
     (Circle [r] 0)))
 
 (defn maybe [v :- (Vector i64)] :- i64
-  (match (get v 5)
+  (match
+    (get v 5)
     (Some [x] x)
     (None [] 0)))
 
 (defn main [] :- i64
   (let [c (Circle 7)
-        a (area (clone c))
-        b (area (clone c))
-        r (Rect 3 4)
-        w (wide (clone r))
-        big (Rect 20 1)
-        wb (wide big)
-        m (maybe (vec-i64 1 2))
-        s2 (clone c)]
+    a (area (clone c))
+    b (area (clone c))
+    r (Rect 3 4)
+    w (wide (clone r))
+    big (Rect 20 1)
+    wb (wide big)
+    m (maybe (vec-i64 1 2))
+    s2 (clone c)]
     (+ a (+ b (+ w (+ wb (+ m (area s2))))))))

@@ -4,8 +4,15 @@
 ; long before n=300000. The gate bounds this run so the regression fails
 ; fast instead of hanging.
 (defn main [] :- i32
-  (let [v (loop [i :- i64 0 acc :- (Vector i64) (vec-i64)]
-            (if (< i 300000) (recur (+ i 1) (conj acc i)) acc))]
+  (let [v
+    (
+      loop
+      [i :- i64 0 acc :- (Vector i64) (vec-i64)]
+      (if
+        (< i 300000)
+        (recur (+ i 1) (conj acc i))
+        acc)
+    )]
     (do
       (print-i64 (count v))
       (print-i64 (get v 299999 0))

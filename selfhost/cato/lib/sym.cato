@@ -37,36 +37,25 @@
 
 (defn intern-new [] :- Intern (I (stab-new) 0))
 
-(defn intern-tab [st :- Intern] :- i64
-  (match st
-    (I [tab next] tab)))
+(defn intern-tab [st :- Intern] :- i64 (match st (I [tab next] tab)))
 
-(defn intern-count [st :- Intern] :- i64
-  (match st
-    (I [tab next] (stab-count tab))))
+(defn intern-count [st :- Intern] :- i64 (match st (I [tab next] (stab-count tab))))
 
 ; Back-to-front scan; misses report -1.
-(defn intern-find [tab :- i64 s :- str] :- i64
-  (stab-find tab s))
+(defn intern-find [tab :- i64 s :- str] :- i64 (stab-find tab s))
 
 (defn intern2 [st :- Intern s :- str] :- IRes
-  (let [tab (intern-tab (clone st))
-        sid (intern-find tab s)]
-    (if (< sid 0)
+  (let [tab (intern-tab (clone st)) sid (intern-find tab s)]
+    (if
+      (< sid 0)
       (IRes st (stab-conj tab s))
       (IRes st sid))))
 
 ; Str results are caller-freed, so return an owned copy of the element.
-(defn sym-name [st :- Intern sid :- i64] :- str
-  (match st
-    (I [tab next] (stab-get tab sid))))
+(defn sym-name [st :- Intern sid :- i64] :- str (match st (I [tab next] (stab-get tab sid))))
 
 ; IRes accessors: callers clone the result they still hold — a match
 ; consumes its scrutinee, so reading both fields means two clones.
-(defn ires-st [r :- IRes] :- Intern
-  (match r
-    (IRes [st sid] st)))
+(defn ires-st [r :- IRes] :- Intern (match r (IRes [st sid] st)))
 
-(defn ires-sid [r :- IRes] :- i64
-  (match r
-    (IRes [st sid] sid)))
+(defn ires-sid [r :- IRes] :- i64 (match r (IRes [st sid] sid)))

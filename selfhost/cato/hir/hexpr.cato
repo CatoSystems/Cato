@@ -17,20 +17,31 @@
 ; seed's post-`plan_drops` annotations: `HLet` frees, `HConj` in_place,
 ; `HClosure` capture own-bits.
 
-(deftype HExprs (HENil) (HECons [kid :- HExpr next :- HExprs]))
+(deftype HExprs
+  (HENil)
+  (HECons [kid :- HExpr next :- HExprs]))
 
-(deftype Binds (BNil) (BCons [name :- i64 v :- HExpr ty :- Ty next :- Binds]))
+(deftype Binds
+  (BNil)
+  (BCons [name :- i64 v :- HExpr ty :- Ty next :- Binds]))
 
 ; The drop planner's per-arm decision: no free here, or free the
 ; scrutinee's box at arm exit with these binders' field slots nulled
 ; (their objects moved out, or are the arm's own value).
-(deftype ArmFree (AFNone) (AFSkip [skip :- Sids]))
+(deftype ArmFree
+  (AFNone)
+  (AFSkip [skip :- Sids]))
 
-(deftype HArms (HANil) (HACons [variant :- i64 binders :- Sids body :- HExpr fr :- ArmFree next :- HArms]))
+(deftype HArms
+  (HANil)
+  (HACons [variant :- i64 binders :- Sids body :- HExpr fr :- ArmFree next :- HArms]))
 
-(deftype Caps (CNil) (CCons [name :- i64 ty :- Ty own :- i64 next :- Caps]))
+(deftype Caps
+  (CNil)
+  (CCons [name :- i64 ty :- Ty own :- i64 next :- Caps]))
 
-(deftype VVals (VVNil)
+(deftype VVals
+  (VVNil)
   (VVI64 [v :- i64 next :- VVals])
   (VVF64 [v :- f64 next :- VVals]))
 
@@ -178,8 +189,7 @@
     (HExit [_] (HENil))
     (HParseNum [_ _ _] (HENil))))
 
-(defn o-hgd [] :- HExprs
-  (HENil))
+(defn o-hgd [] :- HExprs (HENil))
 
 ; Recur's argument chain (the args field; empty elsewhere)
 (defn recur-args [e :- HExpr] :- HExprs

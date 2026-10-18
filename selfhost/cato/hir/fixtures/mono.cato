@@ -3,27 +3,32 @@
 ; generic ADT instantiated concretely. Scalar/vector-parameter generics
 ; only: ADT-typed parameters are a documented kernel restriction.
 
-(defn glen [x :- T] :- i64
-  (count x))
+(defn glen [x :- T] :- i64 (count x))
 
 (defn first-or-none [xs :- (Vector T)] :- (Option T)
-  (match (get xs 0)
+  (match
+    (get xs 0)
     (Some [v] (Some v))
     (None [] (None))))
 
 (defn head-or [xs :- (Vector T) d :- T] :- T
-  (match (get xs 0)
+  (match
+    (get xs 0)
     (Some [v] v)
     (None [] d)))
 
-(deftype (Pair a b)
+(deftype
+  (Pair a b)
   (MkPair [fst :- a snd :- b]))
 
 (defn main [] :- i64
   (let [c (glen "hello")
-        d (glen (vec-i64 1 2))
-        o (first-or-none (vec-i64 7 8))
-        e (match o (Some [v] v) (None [] 0))
-        h (head-or [1 2] 9)
-        p (MkPair 1 "x")]
+    d (glen (vec-i64 1 2))
+    o (first-or-none (vec-i64 7 8))
+    e
+    (match o
+      (Some [v] v)
+      (None [] 0))
+    h (head-or [1 2] 9)
+    p (MkPair 1 "x")]
     (+ c (+ e (+ h (match p (MkPair [f s] f)))))))

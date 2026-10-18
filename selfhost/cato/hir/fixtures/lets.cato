@@ -2,14 +2,7 @@
 ; move/clone/drop of a non-Copy value, frees on scope exit.
 
 (defn main [] :- i64
-  (let [v [10 20]
-        [a b] v
-        x :- i64 7
-        x (+ x a)
-        y x
-        s "hi"
-        t (clone s)
-        n (count t)]
+  (let [v [10 20] [a b] v x :- i64 7 x (+ x a) y x s "hi" t (clone s) n (count t)]
     (do
       (drop s)
       (+ x (+ b (+ y n))))))

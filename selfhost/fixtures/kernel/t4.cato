@@ -1,2 +1,5 @@
 (defn f [s :- str] :- str (str (count s)))
-(defn main [] :- i32 (do (print-string (f "la=")) 0))
+(defn main [] :- i32
+  (do
+    (print-string (f "la="))
+    0))

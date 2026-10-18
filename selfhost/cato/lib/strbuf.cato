@@ -14,17 +14,17 @@
 ; `(Vector str)` loop variable — growable bindings conj in place with a
 ; doubling grow, so the drain is O(n) — and joins exactly once.
 
-(deftype StrCell (SLNil) (SLCons [h :- str t :- StrCell]))
+(deftype StrCell
+  (SLNil)
+  (SLCons [h :- str t :- StrCell]))
 (deftype StrBuf (SB [parts :- StrCell n :- i64]))
 
 (defn sb-new [] :- StrBuf (SB (SLNil) 0))
 
 (defn sb-add [b :- StrBuf s :- str] :- StrBuf
-  (match b
-    (SB [parts n] (SB (SLCons s parts) (+ n 1)))))
+  (match b (SB [parts n] (SB (SLCons s parts) (+ n 1)))))
 
-(defn sb-add-line [b :- StrBuf s :- str] :- StrBuf
-  (sb-add (sb-add b s) "\n"))
+(defn sb-add-line [b :- StrBuf s :- str] :- StrBuf (sb-add (sb-add b s) "\n"))
 
 (defn sb-null [l :- &StrCell] :- bool
   (match l
@@ -34,36 +34,44 @@
 ; `sb-add` prepends, so `parts` is newest-first; reverse it into add-order
 ; (O(n), one fresh cons per piece) before draining.
 (defn sb-rev [l :- StrCell] :- StrCell
-  (loop [a :- StrCell (SLNil) l2 :- StrCell l]
-    (if (sb-null l2)
+  (
+    loop
+    [a :- StrCell (SLNil) l2 :- StrCell l]
+    (if
+      (sb-null l2)
       a
       (match l2
         (SLCons [h t] (recur (SLCons h a) t))
-        (_ a)))))
+        (_ a)))
+  ))
 
 ; Drain the list head-first into a growable vector. The accumulator is a
 ; loop variable of vector type, so every conj rides the loop's growable
 ; slot: in-place append under a doubling grow, O(n) over the walk.
 (defn sb-str [b :- StrBuf] :- str
   (match b
-    (SB [parts n]
+    (
+      SB
+      [parts n]
       ; The accumulator seeds with a fresh one-element vector (`split` of
       ; the empty string), not the static `[]` literal: a loop result is
       ; owned (and freed after the join) only when every path leaves a
       ; heap buffer in the slot, and an empty buffer would hand the
       ; literal back. The leading "" is invisible to the join.
-      (let [v (loop [acc :- (Vector str) (split "" "") l :- StrCell (sb-rev parts) i :- i64 0]
-                (if (or (>= i n) (sb-null l))
-                  acc
-                  (match l
-                    (SLCons [h t] (recur (conj acc h) t (+ i 1)))
-                    (_ acc))))]
-        (join "" v)))))
+      (let [v
+        (
+          loop
+          [acc :- (Vector str) (split "" "") l :- StrCell (sb-rev parts) i :- i64 0]
+          (if
+            (or (>= i n) (sb-null l))
+            acc
+            (match l
+              (SLCons [h t] (recur (conj acc h) t (+ i 1)))
+              (_ acc)))
+        )]
+        (join "" v))
+    )))
 
-(defn sb-count [b :- StrBuf] :- i64
-  (match b
-    (SB [parts n] n)))
+(defn sb-count [b :- StrBuf] :- i64 (match b (SB [parts n] n)))
 
-(defn sb-len [b :- StrBuf] :- i64
-  (match b
-    (SB [parts n] (count (sb-str b)))))
+(defn sb-len [b :- StrBuf] :- i64 (match b (SB [parts n] (count (sb-str b)))))

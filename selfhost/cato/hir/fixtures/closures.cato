@@ -2,17 +2,16 @@
 ; locals, higher-order defn params annotated (Fn [i64] i64) (move-only
 ; per the subset contract: no & borrows), direct closure calls.
 
-(defn call1 [f :- (Fn [i64] i64) x :- i64] :- i64
-  (f x))
+(defn call1 [f :- (Fn [i64] i64) x :- i64] :- i64 (f x))
 
 (defn main [] :- i64
   (let [inc (fn [x :- i64] (+ x 1))
-        n 10
-        addn (fn [y :- i64] (+ y n))
-        v [3 4]
-        getv (fn [i :- i64] (get v i -1))
-        sq (inc 5)
-        r1 (call1 inc 41)
-        r2 (call1 addn 5)
-        r3 (call1 getv 1)]
+    n 10
+    addn (fn [y :- i64] (+ y n))
+    v [3 4]
+    getv (fn [i :- i64] (get v i -1))
+    sq (inc 5)
+    r1 (call1 inc 41)
+    r2 (call1 addn 5)
+    r3 (call1 getv 1)]
     (+ sq (+ r1 (+ r2 r3)))))
