@@ -69,8 +69,7 @@ impl Paths {
     }
 
     fn run_kernel_interp(&self, file: &std::path::Path) -> String {
-        let out = Command::new(self.root.join("target/debug/cato"))
-            .arg("run")
+        let out = Command::new(self.root.join("target/debug/cato-interp-run"))
             .arg(&self.entry)
             .arg(file)
             .output()

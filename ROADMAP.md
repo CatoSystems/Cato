@@ -169,7 +169,7 @@ programs — none of which the language can do today.
   hardcoded `ret i32 0` in `cato-backend-llvm`).
 - Spawning the C compiler via `(extern ...)` (`system`/`popen`). The
   interpreter must model every new builtin/extern natively (it currently knows
-  only `fabs` and `strlen`) so parity stays meaningful and `cato run` works on
+  only `fabs` and `strlen`) so parity stays meaningful and the interpreter driver works on
   compiler code.
 - Reference: `examples/host.cato` — reads a file, writes a file, prints its
   args, exits nonzero.
@@ -238,13 +238,13 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
   native binary, with real exit codes.
   *(Shipped: `selfhost/cato/cli.cato` — `cato1 build <file> [out]
   [runtime.c]`, exit 0/1/2, the `system` extern modeled by the seed
-  interp so the driver runs identically under `cato run`; the kernel is
+  interp so the driver runs identically under the interpreter; the kernel is
   `require`-connected modules and `cli.cato` is the entry.)*
 - `cato compile selfhost/cato/cli.cato` (seed) → **cato1**; `cato1 build
   selfhost/cato/cli.cato` → **cato2**; cato2-produced binaries run all reference
-  programs and agree with `cato run` parity output.
+  programs and agree with the interpreter parity output.
   *(The seed builds cato1; cato1's CLI builds every fixture and the
-  binaries match `cato run` byte-for-byte — all through the seed
+  binaries match the interpreter byte-for-byte — all through the seed
   interpreter. The native chain is blocked by one seed-emitter
   use-after-free on the full kernel, tracked with evidence in the S8
   spec; the ignored `bootstrap_chain_cato1_builds_cato2` test flags

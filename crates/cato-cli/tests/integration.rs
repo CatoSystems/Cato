@@ -42,17 +42,26 @@ fn compile_produces_running_binary() {
     let _ = std::fs::remove_file(&bin);
 }
 
-// `cato run --native` executes the compiled binary in one step and agrees
-// with the interpreter.
+// The interpreter driver bin agrees with the natively compiled binary.
 #[test]
 fn run_native_matches_interpreter() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent().unwrap().parent().unwrap();
     let src = manifest.join("../../examples/slice.cato");
     let cato = env!("CARGO_BIN_EXE_cato");
 
-    let interp = Command::new(cato).arg("run").arg(&src).output().expect("interp");
+    let interp = Command::new(root.join("target/debug/cato-interp-run"))
+        .arg(&src)
+        .output()
+        .expect("interp");
     assert!(interp.status.success(), "interp failed");
-    let native = Command::new(cato).args(["run", "--native"]).arg(&src).output().expect("native");
+
+    let bin = manifest.join("../../target/cli_runparity_bin");
+    let status = Command::new(cato)
+        .arg("compile").arg(&src).arg("-o").arg(&bin)
+        .status().expect("cato compile");
+    assert!(status.success(), "compile failed");
+    let native = Command::new(&bin).output().expect("native run");
     assert!(native.status.success(), "native run failed: {}",
         String::from_utf8_lossy(&native.stderr));
 
@@ -60,6 +69,7 @@ fn run_native_matches_interpreter() {
         String::from_utf8_lossy(&interp.stdout),
         String::from_utf8_lossy(&native.stdout),
     );
+    let _ = std::fs::remove_file(&bin);
 }
 
 // `--emit-ll` keeps the intermediate IR next to the native build.
@@ -103,15 +113,16 @@ fn compile_honors_opt_level_and_asan_flags() {
     let _ = std::fs::remove_file(&bin);
 }
 
-// The interpreter stays the default for `cato run` (used by parity suites).
+// The interpreter driver bin never touches a C compiler.
 #[test]
-fn run_without_native_uses_interpreter() {
+fn interp_driver_needs_no_c_compiler() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.parent().unwrap().parent().unwrap();
     let src = manifest.join("../../examples/slice.cato");
     // The interpreter needs no C compiler: point CC at a missing binary and
-    // `cato run` must still succeed.
-    let out = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("run").arg(&src)
+    // the driver bin must still succeed.
+    let out = Command::new(root.join("target/debug/cato-interp-run"))
+        .arg(&src)
         .env("CC", "/no/such/compiler")
         .output()
         .expect("interp run");
@@ -362,7 +373,7 @@ fn compiles_sets_to_expected_output() {
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
         .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato run");
+        .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
@@ -411,7 +422,7 @@ fn compiles_widths2_to_expected_output() {
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
         .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato run");
+        .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
@@ -442,7 +453,7 @@ fn scope_exit_frees_are_sanitizer_clean() {
 
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
             .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-            .status().expect("cato run");
+            .status().expect("cato compile");
         assert!(status.success(), "{}: cato compile failed", name);
 
         let cc = Command::new("clang")

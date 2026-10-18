@@ -15,7 +15,6 @@ const FLAGS: &[&str] = &[
     "--cc",
     "--asan",
     "--opt-level",
-    "--backend",
     "--runtime",
     "--rtlib",
     "--explain",
@@ -24,31 +23,15 @@ const FLAGS: &[&str] = &[
 ];
 
 /// Known commands for did-you-mean suggestions (live commands only).
-const COMMANDS: &[&str] = &["compile", "run", "repl", "lsp", "help"];
-
-/// What the binary should do after compiling.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// Compile to an executable in the current toolchain, or stop after
-    /// IR emission with `--emit-ir`.
-    Compile,
-    /// Execute with the tree-walking interpreter (`cato run`).
-    RunInterp,
-    /// Build and execute a native binary (`cato run --native`).
-    RunNative,
-}
+const COMMANDS: &[&str] = &["compile", "repl", "lsp", "help"];
 
 pub struct Cli {
-    pub mode: Mode,
     pub file: String,
     pub out: Option<String>,
-    /// Arguments after the file in `cato run file args...` (S3).
-    pub interp_args: Vec<String>,
     /// Emit LLVM IR text (`--emit-ir`): stop before linking.
     pub emit_ir: bool,
     pub target: &'static crate::driver::TargetSpec,
     pub fast: bool,
-    pub backend: String,
     /// Worker threads for `(parallel ...)` loops.
     pub threads: usize,
     /// Skip the middle-end optimization pipeline (pre-optimization HIR).
@@ -77,14 +60,11 @@ pub struct Cli {
 impl Default for Cli {
     fn default() -> Self {
         Cli {
-            mode: Mode::Compile,
             file: String::new(),
             out: None,
-            interp_args: Vec::new(),
             emit_ir: false,
             target: crate::driver::lookup("native").unwrap(),
             fast: false,
-            backend: "llvm".to_string(),
             threads: 1,
             no_opt: false,
             dump_hir: false,
@@ -105,7 +85,6 @@ pub fn parse_args(args: &[String]) -> Cli {
     let mut file: Option<String> = None;
     let mut explain = None;
     let mut saw_command = false;
-    let mut command = "";
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -151,10 +130,6 @@ pub fn parse_args(args: &[String]) -> Cli {
             }
             "--asan" => {
                 cli.asan = true;
-                i += 1;
-            }
-            "--native" => {
-                cli.mode = Mode::RunNative;
                 i += 1;
             }
             "--cc" => match args.get(i + 1) {
@@ -237,16 +212,6 @@ pub fn parse_args(args: &[String]) -> Cli {
                     std::process::exit(2);
                 }
             },
-            "--backend" => match args.get(i + 1) {
-                Some(b) => {
-                    cli.backend = b.clone();
-                    i += 2;
-                }
-                None => {
-                    eprintln!("cato: --backend requires a name");
-                    std::process::exit(2);
-                }
-            },
             "--" => {
                 cli.passthrough.extend(args[i + 1..].iter().cloned());
                 i = args.len();
@@ -276,27 +241,19 @@ pub fn parse_args(args: &[String]) -> Cli {
                 eprintln!("cato: 'build' was renamed to 'compile' (cato compile <file> [-o out])");
                 std::process::exit(2);
             }
-            "compile" if file.is_none() => {
-                cli.mode = Mode::Compile;
-                saw_command = true;
-                command = "compile";
-                i += 1;
-            }
             "run" if file.is_none() => {
-                cli.mode = Mode::RunInterp;
+                eprintln!(
+                    "cato: 'run' was removed — 'cato compile' produces a binary; \
+                     the interpreter lives in 'cato repl'"
+                );
+                std::process::exit(2);
+            }
+            "compile" if file.is_none() => {
                 saw_command = true;
-                command = "run";
                 i += 1;
             }
             s => {
                 if file.is_some() {
-                    // `cato run file args...`: trailing positionals are the
-                    // interpreted program's arguments (S3).
-                    if cli.mode == Mode::RunInterp {
-                        cli.interp_args.push(s.to_string());
-                        i += 1;
-                        continue;
-                    }
                     // Two positionals: if the first one looked like a
                     // mistyped command, say so instead of "unexpected arg".
                     let first = file.as_deref().unwrap_or(s);
@@ -339,24 +296,9 @@ pub fn parse_args(args: &[String]) -> Cli {
         }
     }
     // Flag-combination validation before touching any files.
-    if cli.emit_ir && cli.mode != Mode::Compile {
-        eprintln!("cato: --emit-ir is only valid in compile mode");
-        std::process::exit(2);
-    }
-    if cli.emit_ll.is_some() && cli.mode != Mode::Compile {
-        eprintln!("cato: --emit-ll is only valid when linking (cato compile)");
-        std::process::exit(2);
-    }
     if cli.emit_ir && cli.emit_ll.is_some() {
         eprintln!(
             "cato: --emit-ir stops before linking; --emit-ll only applies when linking"
-        );
-        std::process::exit(2);
-    }
-    if cli.target.flavor == crate::driver::Flavor::Wasm && cli.mode == Mode::RunNative {
-        eprintln!(
-            "cato: wasm binaries cannot be executed directly — compile them with \
-             'cato compile --target wasm32' and run them in a wasm runtime"
         );
         std::process::exit(2);
     }
@@ -376,7 +318,7 @@ pub fn parse_args(args: &[String]) -> Cli {
             std::process::exit(2);
         }
         None if saw_command => {
-            eprintln!("cato: {} requires an input file (.cato)", command);
+            eprintln!("cato: compile requires an input file (.cato)");
             std::process::exit(2);
         }
         None => {

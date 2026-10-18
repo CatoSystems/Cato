@@ -19,7 +19,6 @@ use std::process::Command;
 struct Paths {
     root: std::path::PathBuf,
     entry: std::path::PathBuf,
-    exe: std::path::PathBuf,
 }
 
 fn setup() -> Paths {
@@ -45,7 +44,7 @@ fn setup() -> Paths {
         .expect("cato emit");
     assert!(status.success(), "seed failed to compile the kernel hir");
 
-    Paths { root, entry, exe: cato }
+    Paths { root, entry }
 }
 
 impl Paths {
@@ -70,8 +69,7 @@ impl Paths {
     }
 
     fn run_kernel(&self, file: &std::path::Path, mode: &str) -> String {
-        let out = Command::new(&self.exe)
-            .arg("run")
+        let out = Command::new(self.root.join("target/debug/cato-interp-run"))
             .arg(&self.entry)
             .arg(file)
             .arg(mode)

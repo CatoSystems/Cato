@@ -8,9 +8,8 @@ mod native;
 mod repl;
 mod ui;
 
-use cli::{Cli, Mode};
+use cli::Cli;
 use cato_core::Backend;
-use cato_interp::InterpBackend;
 use cato_llvm::LlvmBackend;
 use std::time::Instant;
 
@@ -39,97 +38,40 @@ fn main() {
         eprintln!("{:#?}", program);
     }
 
-    // `--backend interp` executes instead of compiling.
-    let mode = match cli.mode {
-        Mode::Compile if cli.backend == "interp" => Mode::RunInterp,
-        other => other,
-    };
-    let result = match mode {
-        // `cato compile`: link a native/wasm artifact, or stop after IR
-        // emission on explicit `--emit-ir`.
-        Mode::Compile => {
-            if cli.emit_ir {
-                let backend = llvm_backend(&cli);
-                let ir = backend
-                    .emit(&program)
-                    .unwrap_or_else(|e| {
-                        eprintln!("{} backend error: {}", ui::error_lead(), e);
-                        std::process::exit(1);
-                    });
-                match &cli.out {
-                    Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
-                        eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);
-                        std::process::exit(1);
-                    }),
-                    None => print!("{}", ir),
-                }
-                return;
-            }
-            let default = driver::default_out(cli.target, &default_stem(&cli.file));
-            let out = cli.out.clone().unwrap_or(default);
-            match native::build_native(&program, &cli, std::path::Path::new(&out)) {
-                Ok(bin) => {
-                    eprintln!(
-                        "{} compiled {} in {}ms",
-                        ui::check_mark(),
-                        bin.display(),
-                        started.elapsed().as_millis()
-                    );
-                }
-                Err(e) => {
-                    eprintln!("{} {}", ui::error_lead(), e);
-                    std::process::exit(1);
-                }
-            }
-            return;
-        }
-        Mode::RunNative => {
-            let bin = std::env::temp_dir().join(format!(
-                "cato_run_{}{}",
-                std::process::id(),
-                std::env::consts::EXE_SUFFIX
-            ));
-            let bin = native::build_native(&program, &cli, &bin).unwrap_or_else(|e| {
-                eprintln!("{} {}", ui::error_lead(), e);
+    // `--emit-ir` stops after IR emission (stdout or `-o`).
+    if cli.emit_ir {
+        let backend = llvm_backend(&cli);
+        let ir = backend.emit(&program).unwrap_or_else(|e| {
+            eprintln!("{} backend error: {}", ui::error_lead(), e);
+            std::process::exit(1);
+        });
+        match &cli.out {
+            Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
+                eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);
                 std::process::exit(1);
-            });
-            let code = native::run_binary(&bin).unwrap_or_else(|e| {
-                eprintln!("{} {}", ui::error_lead(), e);
-                std::process::exit(1);
-            });
-            let _ = std::fs::remove_file(&bin);
-            std::process::exit(code);
+            }),
+            None => print!("{}", ir),
         }
-        Mode::RunInterp => {
-            // The interpreter's artifact is the program output. Runtime
-            // panics (malformed programs reaching interp invariants) are
-            // reported as errors, not raw backtraces.
-            //
-            // The tree-walking interpreter recurses once per Cato call
-            // frame, and debug-build eval frames are large — the 8MB main
-            // stack dies around ~100 nested Cato calls. Run it on a thread
-            // with a real stack (the same fix rustc applies for itself);
-            // the reservation is virtual, so untouched pages cost nothing
-            // and shallow programs behave exactly as before.
-            let program_args = cli.interp_args.clone();
-            let result = std::thread::Builder::new()
-                .stack_size(512 * 1024 * 1024)
-                .spawn(move || {
-                    crate::ui::guard(|| InterpBackend { program_args }.emit(&program))
-                })
-                .expect("spawn interp thread")
-                .join()
-                .unwrap_or_else(|_| {
-                    eprintln!("{} interp thread panicked", ui::error_lead());
-                    std::process::exit(1);
-                });
-            result.unwrap_or_else(|e| {
-                eprintln!("{} {}", ui::error_lead(), e);
-                std::process::exit(1);
-            })
+        return;
+    }
+
+    // Full compile: link a native/wasm artifact.
+    let default = driver::default_out(cli.target, &default_stem(&cli.file));
+    let out = cli.out.clone().unwrap_or(default);
+    match native::build_native(&program, &cli, std::path::Path::new(&out)) {
+        Ok(bin) => {
+            eprintln!(
+                "{} compiled {} in {}ms",
+                ui::check_mark(),
+                bin.display(),
+                started.elapsed().as_millis()
+            );
         }
-    };
-    print!("{}", result);
+        Err(e) => {
+            eprintln!("{} {}", ui::error_lead(), e);
+            std::process::exit(1);
+        }
+    }
 }
 
 /// The LLVM backend configured from CLI flags.

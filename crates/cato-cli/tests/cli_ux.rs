@@ -90,6 +90,17 @@ fn build_command_is_retired() {
     assert!(stderr.contains("renamed to 'compile'"), "got: {}", stderr);
 }
 
+// The removed run command points at compile + repl.
+#[test]
+fn run_command_is_retired() {
+    let src = demo_source();
+    let out = cato().arg("run").arg(&src).output().expect("run cato");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cato repl"), "got: {}", stderr);
+    assert!(stderr.contains("removed"), "got: {}", stderr);
+}
+
 #[test]
 fn compile_without_file_is_usage_error() {
     let out = cato().arg("compile").output().expect("run cato");

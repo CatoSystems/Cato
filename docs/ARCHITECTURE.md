@@ -45,12 +45,9 @@ opt-off vs opt-on interpreter differential (`opt_parity.rs`);
 ## Compile modes
 
 ```
-cato <file.cato>              compile check: full pipeline, no output
-cato <file.cato> --emit-ir    emit LLVM IR (stdout, or -o path)   [opt-in]
-cato compile <file.cato>        IR + runtime/runtime.c -> native binary (-o, default: input stem)
-cato compile --target wasm32    -> WebAssembly binary (wasm32-unknown-unknown)
-cato run <file.cato>          execute with the tree-walking interpreter
-cato run --native <file.cato>   build and execute a native binary in one step
+cato compile <file.cato>      IR + runtime/runtime.c -> native binary (-o, default: input stem)
+cato compile <file.cato> --emit-ir   emit LLVM IR (stdout, or -o path)
+cato compile --target wasm32  -> WebAssembly binary (wasm32-unknown-unknown)
 cato repl                     Clojure-style REPL: ns prompt (user=>), multi-line
                               forms until parens balance (#_=>), history, colors
 ```
@@ -71,9 +68,9 @@ data layout (`cato_llvm::Target`); freestanding runtime C helpers become
 host imports (`--no-entry --allow-undefined`). Linking `.wasm` files needs
 a wasm-capable clang with lld (`brew install llvm lld`, then `--cc`);
 without one, `--emit-ir --target wasm32` still produces IR that LLVM's
-wasm backend accepts (asserted via `llc` in the tests). `cato run`
-(interpreter) and native execution produce identical output; both parity
-suites assert it.
+wasm backend accepts (asserted via `llc` in the tests). The interpreter
+driver (`cato-interp-run`, a dev bin used by the parity harnesses) and
+native execution produce identical output; both parity suites assert it.
 
 ## Adding a backend
 

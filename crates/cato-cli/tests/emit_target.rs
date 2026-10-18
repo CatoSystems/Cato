@@ -140,17 +140,6 @@ fn wasm_build_links_or_explains() {
     }
 }
 
-// A wasm target cannot be directly executed.
-#[test]
-fn wasm_run_is_rejected() {
-    let src = write_demo();
-    let out = cato().args(["run", "--native", "--target", "wasm32"])
-        .arg(&src).output().expect("run cato");
-    assert!(!out.status.success());
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("wasm"), "got: {}", stderr);
-}
-
 /// Homebrew LLVM, if installed (the only wasm32-capable toolchain on a
 /// typical macOS dev box without wasi-sdk).
 fn wasm_llvm_bin() -> Option<PathBuf> {

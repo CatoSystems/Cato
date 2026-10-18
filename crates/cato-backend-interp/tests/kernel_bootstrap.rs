@@ -69,8 +69,7 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
         let out = out_dir.join(&name);
 
         // 1. The kernel CLI (through the seed interp) builds the fixture.
-        let build = Command::new(&cato)
-            .arg("run")
+        let build = Command::new(root.join("target/debug/cato-interp-run"))
             .arg(&entry)
             .arg("build")
             .arg(file)
@@ -125,8 +124,7 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
         );
 
         // 3. Output parity with the seed interpreter over the fixture.
-        let interp = Command::new(&cato)
-            .arg("run")
+        let interp = Command::new(root.join("target/debug/cato-interp-run"))
             .arg(file)
             .current_dir(&root)
             .output()

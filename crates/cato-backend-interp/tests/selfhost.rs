@@ -17,8 +17,7 @@ fn seed_builds_the_kernel_stdlib_and_both_backends_agree() {
     let entry = root.join("selfhost/cato/lib/stdlib_ref.cato");
 
     // The seed must compile it outright (interpreter).
-    let out = Command::new(&cato)
-        .arg("run")
+    let out = Command::new(root.join("target/debug/cato-interp-run"))
         .arg(&entry)
         .output()
         .expect("interp run");

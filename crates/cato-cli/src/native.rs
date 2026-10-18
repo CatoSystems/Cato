@@ -180,11 +180,3 @@ fn link_wasm(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
     let _ = std::fs::remove_file(&rt_o);
     linked
 }
-
-/// Execute a built binary with inherited stdio; returns its exit code.
-pub fn run_binary(bin: &Path) -> Result<i32, String> {
-    let status = Command::new(bin)
-        .status()
-        .map_err(|e| format!("cannot run {}: {}", bin.display(), e))?;
-    Ok(status.code().unwrap_or(1))
-}

@@ -146,7 +146,7 @@ before its fix; all are fixed and everything is verified honestly now.
   `tab :- (Vector str)` and passed the i64 result of `(magic-table)`
   into it. The seed's LLVM backend marshals a Call in a vec-typed
   position through `emit_vec_call`, which panics on the i64 signature
-  (`call magic-table does not return a vector`). `cato run` (interp)
+  (`call magic-table does not return a vector`). the interpreter
   never noticed — values are untyped. Drivers now say `tab :- i64`.
 - **The S6 wire dump carried the param-free wrapper.** The spec's
   oracle is `build_program_located` = `plan_drops(false)`: let-level

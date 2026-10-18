@@ -51,8 +51,7 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         }
 
         // 1. The kernel emits IR for the fixture.
-        let out = Command::new(&cato)
-            .arg("run")
+        let out = Command::new(root.join("target/debug/cato-interp-run"))
             .arg(&entry)
             .arg(file)
             .arg("emit")
@@ -110,8 +109,7 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         );
 
         // 4. Output parity with the seed interpreter over the fixture.
-        let interp = Command::new(&cato)
-            .arg("run")
+        let interp = Command::new(root.join("target/debug/cato-interp-run"))
             .arg(file)
             .output()
             .expect("interp run");

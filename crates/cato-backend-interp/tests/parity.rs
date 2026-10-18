@@ -41,7 +41,7 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
     for name in EXAMPLES {
         let src = root.join("examples").join(format!("{}.cato", name));
         // Interpreter output.
-        let out = Command::new(&cato).arg("run").arg(&src).output().expect("interp run");
+        let out = Command::new(root.join("target/debug/cato-interp-run")).arg(&src).output().expect("interp run");
         assert!(out.status.success(), "{}: interp failed: {}", name, String::from_utf8_lossy(&out.stderr));
         let interp = String::from_utf8_lossy(&out.stdout).to_string();
 
@@ -335,7 +335,7 @@ fn modules_agree_between_backends() {
     let rt = root.join("runtime/runtime.c");
     let src = root.join("examples/modules/main.cato");
 
-    let out = Command::new(&cato).arg("run").arg(&src).output().expect("interp run");
+    let out = Command::new(root.join("target/debug/cato-interp-run")).arg(&src).output().expect("interp run");
     assert!(out.status.success(), "interp: {}", String::from_utf8_lossy(&out.stderr));
     let interp = String::from_utf8_lossy(&out.stdout).to_string();
 
