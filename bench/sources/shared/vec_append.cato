@@ -1,0 +1,7 @@
+; Vector growth — append 20,000 elements with conj (kernel-friendly size).
+(defn main [] :- i32
+  (let [v (loop [i :- i64 0 acc :- (Vector i64) (vec-i64)]
+            (if (< i 20000)
+              (recur (+ i 1) (conj acc i))
+              acc))]
+    (do (print-i64 (count v)) 0)))

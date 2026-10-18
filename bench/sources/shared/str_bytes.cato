@@ -1,0 +1,16 @@
+; String byte scan — sum the bytes of a string repeatedly.
+(defn sum-once [s :- str] :- i64
+  (loop [i :- i64 0 acc :- i64 0]
+    (if (< i (count s))
+      (recur (+ i 1) (+ acc (nth s i 0)))
+      acc)))
+
+(defn main [] :- i32
+  (let [s "the quick brown fox jumps over the lazy dog 0123456789 abcdefghijklmnopqrstuvwxyz"]
+    (do
+      (print-i64
+        (loop [k :- i64 0 acc :- i64 0]
+          (if (< k 2000000)
+            (recur (+ k 1) (+ acc (sum-once s)))
+            acc)))
+      0)))

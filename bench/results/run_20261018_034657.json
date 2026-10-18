@@ -1,0 +1,482 @@
+{
+  "env": {
+    "os": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "arch": "arm64",
+    "cpu": "Apple M1",
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "go": "go version go1.27.2 darwin/arm64",
+    "zig": "0.17.0",
+    "seed_sha256_12": "a02e9ee4e963",
+    "kernel_sha256_12": "a19b85d81bd3",
+    "git_rev": "30db590"
+  },
+  "config": {
+    "runs": 3,
+    "builds": 1
+  },
+  "benchmarks": {
+    "fib_rec": {
+      "tier": "shared",
+      "expected": "3524578",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 258.0193750327453,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 27.659500017762184,
+          "min_ms": 27.419375022873282,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 241.756749979686,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 28.421166993211955,
+          "min_ms": 28.208542033098638,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 680.2328749909066,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 28.485917020589113,
+          "min_ms": 28.12095795525238,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 266.53091597836465,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 29.295874992385507,
+          "min_ms": 28.63183297449723,
+          "rss_mib": 1.4375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 727.0429580239579,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 31.837958027608693,
+          "min_ms": 31.73749998677522,
+          "rss_mib": 3.890625,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 15402.417749981396,
+          "stdout": "3524578",
+          "match": true,
+          "median_ms": 29.293667001184076,
+          "min_ms": 28.905750019475818,
+          "rss_mib": 1.421875,
+          "runs": 3
+        }
+      }
+    },
+    "fib_iter": {
+      "tier": "shared",
+      "expected": "945351196",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 270.0089169666171,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 209.0332910302095,
+          "min_ms": 208.37354200193658,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 244.21274999622256,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 206.20708301430568,
+          "min_ms": 203.93449999392033,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 251.4814999885857,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 252.25612503709272,
+          "min_ms": 249.52729203505442,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 276.4373749960214,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 202.60024996241555,
+          "min_ms": 201.96395798120648,
+          "rss_mib": 1.4375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 591.0893330001272,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 233.383875049185,
+          "min_ms": 231.91791697172448,
+          "rss_mib": 4.03125,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 15038.493250031024,
+          "stdout": "945351196",
+          "match": true,
+          "median_ms": 196.93937501870096,
+          "min_ms": 188.56883299304172,
+          "rss_mib": 1.421875,
+          "runs": 3
+        }
+      }
+    },
+    "str_bytes": {
+      "tier": "shared",
+      "expected": "15050000000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 290.69187497952953,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 5.228249996434897,
+          "min_ms": 4.667958011850715,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 251.22691702563316,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 5.265499989036471,
+          "min_ms": 4.4712499948218465,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 263.9216670067981,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 37.99612500006333,
+          "min_ms": 37.55045804427937,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 295.33004097174853,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 5.070250015705824,
+          "min_ms": 4.868999996688217,
+          "rss_mib": 1.453125,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 600.304082967341,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 170.47483305213973,
+          "min_ms": 170.29266600729898,
+          "rss_mib": 3.90625,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14787.714958947618,
+          "stdout": "15050000000",
+          "match": true,
+          "median_ms": 5.880167009308934,
+          "min_ms": 5.351833999156952,
+          "rss_mib": 1.4375,
+          "runs": 3
+        }
+      }
+    },
+    "vec_append": {
+      "tier": "shared",
+      "expected": "20000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 270.62787499744445,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 5.661500035785139,
+          "min_ms": 5.097291024867445,
+          "rss_mib": 1.703125,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 272.94412499759346,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 5.296124960295856,
+          "min_ms": 4.689750028774142,
+          "rss_mib": 1.703125,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 260.15291595831513,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 5.082375020720065,
+          "min_ms": 4.461292002815753,
+          "rss_mib": 1.703125,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 336.7590000270866,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 5.43970795115456,
+          "min_ms": 4.807666002307087,
+          "rss_mib": 1.703125,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 593.8531669671647,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 6.774208042770624,
+          "min_ms": 6.10233296174556,
+          "rss_mib": 4.65625,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14955.936125013977,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 5.5382499704137444,
+          "min_ms": 5.131041049025953,
+          "rss_mib": 1.703125,
+          "runs": 3
+        }
+      }
+    },
+    "tree": {
+      "tier": "shared",
+      "expected": "5000050000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 276.3020829879679,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 18.262207973748446,
+          "min_ms": 17.894292017444968,
+          "rss_mib": 7.46875,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 244.27954200655222,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 18.134042038582265,
+          "min_ms": 17.90866703959182,
+          "rss_mib": 7.4375,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 253.94620798761025,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 12.152583978604525,
+          "min_ms": 11.978625028859824,
+          "rss_mib": 7.4375,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 328.35270796203986,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 19.435708003584296,
+          "min_ms": 19.174582965206355,
+          "rss_mib": 7.609375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 726.9007500144653,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 15.811040997505188,
+          "min_ms": 14.797999989241362,
+          "rss_mib": 11.1875,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14668.182292021811,
+          "stdout": "5000050000",
+          "match": true,
+          "median_ms": 12.984125001821667,
+          "min_ms": 12.644708040170372,
+          "rss_mib": 7.59375,
+          "runs": 3
+        }
+      }
+    },
+    "mandelbrot": {
+      "tier": "shared",
+      "expected": "5274934",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 271.0966670420021,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 33.35608396446332,
+          "min_ms": 32.96045900788158,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 237.86187497898936,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 38.26854197541252,
+          "min_ms": 37.92237502057105,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 256.94683397887275,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 34.44595797918737,
+          "min_ms": 32.59949997300282,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 273.783375043422,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 37.053875043056905,
+          "min_ms": 36.99354099808261,
+          "rss_mib": 1.4375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 497.5394579814747,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 38.69279095670208,
+          "min_ms": 38.66604098584503,
+          "rss_mib": 3.875,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14688.769500004128,
+          "stdout": "5274934",
+          "match": true,
+          "median_ms": 32.83266699872911,
+          "min_ms": 32.82795799896121,
+          "rss_mib": 1.4375,
+          "runs": 3
+        }
+      }
+    },
+    "fused_sum": {
+      "tier": "full",
+      "expected": "19999999900000000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 267.4342920072377,
+          "stdout": "19999999900000000",
+          "match": true,
+          "median_ms": 5.128541961312294,
+          "min_ms": 4.433249996509403,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 239.35725004412234,
+          "stdout": "19999999900000000",
+          "match": true,
+          "median_ms": 4.800207971129566,
+          "min_ms": 4.563499998766929,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 309.2782919993624,
+          "stdout": "19999999900000000",
+          "match": true,
+          "median_ms": 6.554582971148193,
+          "min_ms": 6.315915961749852,
+          "rss_mib": 1.4375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 633.2660839543678,
+          "stdout": "19999999900000000",
+          "match": true,
+          "median_ms": 149.64620798127726,
+          "min_ms": 147.7057909942232,
+          "rss_mib": 3.890625,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14819.462165993173,
+          "stdout": "19999999900000000",
+          "match": true,
+          "median_ms": 5.448583979159594,
+          "min_ms": 5.420750007033348,
+          "rss_mib": 1.4375,
+          "runs": 3
+        }
+      }
+    },
+    "pipe": {
+      "tier": "full",
+      "expected": "4499995500001000000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 269.456917012576,
+          "stdout": "4499995500001000000",
+          "match": true,
+          "median_ms": 5.812167015392333,
+          "min_ms": 5.583457998000085,
+          "rss_mib": 1.296875,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 240.30554201453924,
+          "stdout": "4499995500001000000",
+          "match": true,
+          "median_ms": 6.379833037499338,
+          "min_ms": 5.2353329956531525,
+          "rss_mib": 1.28125,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 295.90937501052395,
+          "stdout": "4499995500001000000",
+          "match": true,
+          "median_ms": 6.800708011724055,
+          "min_ms": 5.87058300152421,
+          "rss_mib": 1.4375,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 591.534250008408,
+          "stdout": "4499995500001000000",
+          "match": true,
+          "median_ms": 14.81304201297462,
+          "min_ms": 14.747457986231893,
+          "rss_mib": 3.859375,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 14973.878957971465,
+          "stdout": "4499995500001000000",
+          "match": true,
+          "median_ms": 6.908084033057094,
+          "min_ms": 6.408250017557293,
+          "rss_mib": 1.453125,
+          "runs": 3
+        }
+      }
+    }
+  }
+}

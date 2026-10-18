@@ -1,0 +1,8 @@
+; Naive recursive Fibonacci — function-call / recursion bound.
+(defn fib [n :- i64] :- i64
+  (if (<= n 1)
+    n
+    (+ (fib (- n 1)) (fib (- n 2)))))
+
+(defn main [] :- i32
+  (do (print-i64 (fib 33)) 0))

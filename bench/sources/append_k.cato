@@ -1,0 +1,6 @@
+(defn main [] :- i32
+  (let [v (vec-i64)]
+    (loop [i :- i64 0]
+      (if (< i 2000)
+        (recur (conj v i) (+ i 1))
+        (do (print-i64 (len v)) 0)))))

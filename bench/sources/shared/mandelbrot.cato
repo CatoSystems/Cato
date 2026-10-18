@@ -1,0 +1,24 @@
+; Mandelbrot — floating-point iteration count over a 400x400 grid.
+(defn iter [x0 :- f64 y0 :- f64] :- i64
+  (loop [x :- f64 0.0 y :- f64 0.0 i :- i64 0]
+    (if (>= i 100)
+      i
+      (if (> (+ (* x x) (* y y)) 4.0)
+        i
+        (recur (+ (- (* x x) (* y y)) x0) (+ (* 2.0 (* x y)) y0) (+ i 1))))))
+
+(defn main [] :- i32
+  (do
+    (print-i64
+      (loop [py :- i64 0 total :- i64 0]
+        (if (>= py 400)
+          total
+          (recur (+ py 1)
+            (+ total
+              (loop [px :- i64 0 row :- i64 0]
+                (if (>= px 400)
+                  row
+                  (recur (+ px 1)
+                    (+ row (iter (- (/ (f64 px) 200.0) 2.0)
+                                 (- (/ (f64 py) 200.0) 1.0)))))))))))
+    0))

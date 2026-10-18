@@ -1,0 +1,9 @@
+; Byte-at-a-time string read (strlen-per-byte arena — HANDOFF fix)
+(defn read-at [s :- str i :- i64] :- i64
+  (if (< i (len s)) (get s i 0) -1))
+(defn main []
+  (let [s "hello world benchmark string"]
+    (loop [i :- i64 0 sum :- i64 0]
+      (if (< i (len s))
+        (recur (+ i 1) (+ sum (read-at s i)))
+        (print sum)))))

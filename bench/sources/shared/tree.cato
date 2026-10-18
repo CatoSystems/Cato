@@ -1,0 +1,16 @@
+; Binary search tree — recursive ADT allocation, construction and traversal.
+(deftype Tree (Node [v :- i64 l :- Tree r :- Tree]) (Leaf))
+
+(defn build [lo :- i64 hi :- i64] :- Tree
+  (if (> lo hi)
+    (Leaf)
+    (let [mid (/ (+ lo hi) 2)]
+      (Node mid (build lo (- mid 1)) (build (+ mid 1) hi)))))
+
+(defn sum [t :- Tree] :- i64
+  (match t
+    (Node [v l r] (+ v (+ (sum l) (sum r))))
+    (Leaf [] 0)))
+
+(defn main [] :- i32
+  (do (print-i64 (sum (build 0 100000))) 0))

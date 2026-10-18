@@ -1,0 +1,10 @@
+(defn fib [n :- i64] :- i64
+  (if (<= n 1)
+    n
+    (loop [a :- i64 0 b :- i64 1 i :- i64 2]
+      (if (> i n)
+        b
+        (recur b (+ a b) (+ i 1))))))
+
+(defn main [] :- i32
+  (do (print-i64 (fib 30)) 0))

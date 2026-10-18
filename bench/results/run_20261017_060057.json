@@ -1,0 +1,80 @@
+{
+  "env": {
+    "os": "macOS-26.6.2-arm64-arm-64bit",
+    "arch": "arm64",
+    "cpu": "Apple M1",
+    "clang": "Apple clang version 21.0.0 (clang-2100.1.1.101)",
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28)",
+    "go": "go version go1.27.2 darwin/arm64",
+    "zig": "0.17.0",
+    "seed_sha256_12": "58e90e172d20",
+    "kernel_sha256_12": "5b8c56c42dfc",
+    "git_rev": "30db590"
+  },
+  "config": {
+    "runs": 3,
+    "builds": 1
+  },
+  "benchmarks": {
+    "vec_append": {
+      "tier": "shared",
+      "expected": "20000",
+      "modes": {
+        "cato-seed-o3": {
+          "compile_ms": 162.12329200000002,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 2.2836250000000113,
+          "min_ms": 2.2343750000000107,
+          "rss_mib": 1.71875,
+          "runs": 3
+        },
+        "cato-seed-o2": {
+          "compile_ms": 162.75779099999988,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 2.27949999999999,
+          "min_ms": 2.1127499999999966,
+          "rss_mib": 1.71875,
+          "runs": 3
+        },
+        "cato-kernel": {
+          "compile_ms": 524.6908750000001,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 196.1334170000004,
+          "min_ms": 195.9096250000001,
+          "rss_mib": 1697.25,
+          "runs": 3
+        },
+        "rust": {
+          "compile_ms": 146.8861669999999,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 2.4842500000001877,
+          "min_ms": 2.44979100000009,
+          "rss_mib": 1.71875,
+          "runs": 3
+        },
+        "go": {
+          "compile_ms": 528.0445829999998,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 3.706666000000247,
+          "min_ms": 3.1957079999997973,
+          "rss_mib": 4.671875,
+          "runs": 3
+        },
+        "zig": {
+          "compile_ms": 6717.594333,
+          "stdout": "20000",
+          "match": true,
+          "median_ms": 3.368375000000867,
+          "min_ms": 2.684957999999682,
+          "rss_mib": 1.71875,
+          "runs": 3
+        }
+      }
+    }
+  }
+}

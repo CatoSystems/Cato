@@ -1,0 +1,7 @@
+; 2000-loop append (loop accumulator fix)
+(defn main []
+  (let [v (vec-i64)]
+    (loop [i :- i64 0]
+      (if (< i 2000)
+        (recur (conj v i) (+ i 1))
+        (print (len v))))))

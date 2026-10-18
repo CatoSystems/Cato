@@ -1,0 +1,7 @@
+; append kernel-compatible (loop/recur only)
+(defn main [] :- i32
+  (let [v (vec-i64)]
+    (loop [i :- i64 0 v2 :- vec v]
+      (if (< i 2000)
+        (recur (+ i 1) (conj v2 i))
+        (do (print (len v2)) 0)))))
