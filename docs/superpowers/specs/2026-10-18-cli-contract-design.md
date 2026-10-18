@@ -72,7 +72,12 @@ Rules:
 - Bare `cato <file>` → usage error, exit 2, message suggests
   `cato compile <file>`.
 - Unknown command → usage + did-you-mean suggestion (seed:
-  edit-distance; kernel: prefix match — cheap in Cato).
+  edit-distance; kernel: prefix match — cheap in Cato), over **live**
+  commands only.
+- The retired commands `build` and `run` are recognized and answered
+  with explicit migration messages (exit 2): `build` → "renamed to
+  `compile`"; `run` → "removed — `cato compile` produces a binary; the
+  interpreter lives in `cato repl`". No silent rename.
 - Commands the kernel contract knows but does not yet implement
   (`format`, `repl`) → exit 2 with "not yet available in cato1", so
   both CLIs share the contract vocabulary.
@@ -153,7 +158,11 @@ the honest definition of "supported".
 
 **Phase B is a table extension:** `--target x86_64-windows` etc.
 resolve to clang triple flags (e.g. `--target=x86_64-w64-mingw32`)
-through the driver's table, validated against `clang --print-targets`.
+through the driver's table. Unknown names are usage errors (exit 2)
+listing the known targets; table membership is validated by a clang
+probe (an empty C compile against the triple) so a toolchain missing
+the triple also fails as usage, not as a late link error. (`--print-targets`
+lists codegen backends, not triples — it cannot answer this question.)
 
 ## 3. Seed CST formatter (`cato format`)
 
