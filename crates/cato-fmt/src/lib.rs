@@ -3,6 +3,7 @@
 //! policy. The compiler's reader (`cato-core`) is untouched — this crate
 //! must never regress it for the sake of a formatter (spec §3).
 
+pub mod cst;
 pub mod lexer;
 
 /// A formatting failure with the byte offset of the offending spot.
