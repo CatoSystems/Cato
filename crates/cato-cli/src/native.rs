@@ -12,46 +12,6 @@ use cato_llvm::{LlvmBackend, Target as LlvmTarget};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The C compiler to link with: `--cc` > `CATO_CC` > `CC` > "clang".
-fn resolve_cc(cli: &Cli) -> String {
-    cli.cc
-        .clone()
-        .or_else(|| std::env::var("CATO_CC").ok())
-        .or_else(|| std::env::var("CC").ok())
-        .unwrap_or_else(|| "clang".to_string())
-}
-
-fn resolve_runtime() -> Result<PathBuf, String> {
-    if let Ok(p) = std::env::var("CATO_RUNTIME") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Ok(p);
-        }
-        return Err(format!("CATO_RUNTIME={} does not exist", p.display()));
-    }
-    // Dev/install layouts: walk up from the compiler binary looking for a
-    // `runtime/runtime.c` sibling (target/debug/cato -> repo root).
-    if let Ok(exe) = std::env::current_exe() {
-        let mut dir = exe.parent();
-        while let Some(d) = dir {
-            let cand = d.join("runtime").join("runtime.c");
-            if cand.exists() {
-                return Ok(cand);
-            }
-            dir = d.parent();
-        }
-    }
-    let cand = Path::new("runtime").join("runtime.c");
-    if cand.exists() {
-        return Ok(cand);
-    }
-    Err(
-        "cannot locate runtime/runtime.c (tried $CATO_RUNTIME, the compiler's \
-         install layout, and ./runtime) — set CATO_RUNTIME to the file's path"
-            .to_string(),
-    )
-}
-
 fn unique_temp(tag: &str, ext: &str) -> PathBuf {
     static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -169,8 +129,8 @@ fn run_cc(mut cmd: Command, what: &str) -> Result<(), String> {
 }
 
 fn link_native(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
-    let rt = resolve_runtime()?;
-    let cc = resolve_cc(cli);
+    let rt = crate::driver::resolve_runtime()?;
+    let cc = crate::driver::resolve_cc(cli.cc.as_deref());
     let mut cmd = Command::new(&cc);
     cmd.arg(format!("-O{}", cli.opt_level));
     if cli.asan {
@@ -185,7 +145,7 @@ fn link_native(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
 /// host imports thanks to `--allow-undefined`).
 fn link_wasm(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
     let cc = resolve_wasm_cc(cli)?;
-    let rt = resolve_runtime()?;
+    let rt = crate::driver::resolve_runtime()?;
 
     let rt_o = unique_temp("runtime", ".o");
     let mut compile = Command::new(&cc);

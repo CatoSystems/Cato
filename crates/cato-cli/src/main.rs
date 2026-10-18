@@ -2,6 +2,7 @@
 //! backend selected on the command line.
 
 mod cli;
+mod driver;
 mod lsp;
 mod native;
 mod repl;
