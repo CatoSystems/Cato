@@ -49,6 +49,9 @@
     (HStrNth [s idx res]
       (if (= (types/ty-tag res) 16) (types/ty-arg res)
         (do (state/cg-fail-i "nth without Option result") -1)))
+    ; The planner's own `let` around a scrutinee call (hoisted argument
+    ; temps, freed before the arms): the value is the body's.
+    (HLet [binds body frees] (adt-of body st))
     (HConstI64 [v] (do (state/cg-fail-i "expected an ADT value") -1))
     (HConstF64 [v] (do (state/cg-fail-i "expected an ADT value") -1))
     (HConstB [v] (do (state/cg-fail-i "expected an ADT value") -1))
@@ -75,7 +78,6 @@
     (HMin [a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
     (HMax [a b ty] (do (state/cg-fail-i "expected an ADT value") -1))
     (HSeq [es] (do (state/cg-fail-i "expected an ADT value") -1))
-    (HLet [binds body frees] (do (state/cg-fail-i "expected an ADT value") -1))
     (HLoop [binds ty body] (do (state/cg-fail-i "expected an ADT value") -1))
     (HRecur [args] (do (state/cg-fail-i "expected an ADT value") -1))
     (HDrop [x] (do (state/cg-fail-i "expected an ADT value") -1))
@@ -618,28 +620,31 @@
                       scrut :- str ai :- i64 name :- str env :- EEnv acc-p :- EMPS acc-l :- EMPS] :- EVPRes
   (match arms
     (HANil [] (EVPRes st acc-p acc-l))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (match labels
         (EMLSCons [lvar lbl lrest]
-          (match (arm-vec-one variant binders body next
+          (match (arm-vec-one variant binders body ef next
                               lrest lbl st merged scrut ai name env acc-p acc-l)
             (EVPRes [st2 ps ls] (EVPRes st2 ps ls))))
         (_ (EVPRes st acc-p acc-l))))))
 
 ; One arm: opens its block, loads fields (non-wildcard only), emits the
 ; pair, branches, recurses.
-(defn arm-vec-one [variant :- i64 binders :- Sids body :- HExpr next :- HArms
+(defn arm-vec-one [variant :- i64 binders :- Sids body :- HExpr ef :- ArmFree
+                   next :- HArms
                    lrest :- EMLS lbl :- str st :- Emit merged :- str scrut :- str
                    ai :- i64 name :- str env :- EEnv acc-p :- EMPS acc-l :- EMPS] :- EVPRes
-  (let [st0 (state/em-env-put st (clone env))
+  (let [binders2 (clone binders)
+        st0 (state/em-env-put st (clone env))
         st1 (scalars/em-open st0 lbl)
         st2 (if (= variant -1)
               st1
               (scalars/arm-field-loads binders ai variant 0 st1 scrut name))]
     (match (emit-vec-pair body st2)
       (EVRes [st3 p l el]
-        (let [pred (scalars/em-cur st3)
-              st4 (scalars/em-line st3 (str "  br label %" merged))]
+        (let [st3b (scalars/arm-exit-free ef variant binders2 st3 scrut name ai)
+              pred (scalars/em-cur st3b)
+              st4 (scalars/em-line st3b (str "  br label %" merged))]
           (match (arm-vec-bodies next lrest st4 merged scrut ai name env
                                   (MPSCons p pred acc-p) (MPSCons l pred acc-l))
             (EVPRes [st5 ps ls] (EVPRes st5 ps ls))))))))
@@ -860,15 +865,13 @@
                 (let [st7 (if (= el 2)
                             (scalars/em-line st6 (str "  store ptr " xv ", ptr " gp ", align 8"))
                             (scalars/em-line st6 (str "  store " ll " " xv ", ptr " gp ", align 8")))
-                      ; a static global (a `[]`-literal seed) is never heap:
-                      ; never free it, whatever the planner verdicts say —
-                      ; a literal-seeded accumulator grows on its first
-                      ; append and would free read-only data here
-                      st8 (if (and (= freeable 1)
-                                   (not (= 64 (cato-str-byte (clone p) 0))))
-                            (scalars/em-line st7 (str "  call void @free(ptr " p ")"))
-                            st7)
-                      st9 (vec-slot-store slot npm 0 st8)
+                      ; The seed never frees the old buffer here, and neither
+                      ; do we: a grow slot's buffer may be a read-only
+                      ; literal global (via a register, so its name cannot
+                      ; be tested) or a field/parameter we do not own, so
+                      ; freeing it is not provably safe. Doubling bounds
+                      ; the retained memory to O(n).
+                      st9 (vec-slot-store slot npm 0 st7)
                       st10 (vec-slot-store slot one 1 st9)
                       st11 (vec-slot-store slot newcap 2 st10)
                       st12 (scalars/em-line st11 (str "  br label %" bm))]

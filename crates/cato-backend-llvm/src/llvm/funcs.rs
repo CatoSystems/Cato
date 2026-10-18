@@ -2,6 +2,7 @@ use super::*;
 
 pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
     let mut c = FnCtx::new();
+    c.fname = defn.name.clone();
     let mut params = Vec::new();
     for (pname, pty) in &defn.params {
         match pty {
@@ -611,6 +612,7 @@ pub(crate) fn emit_vec_pair(
                     }
                 }
                 let (p, l2, _) = emit_vec_pair(&arm.body, c, mdl, sigs);
+                emit_arm_exit_free(arm, &scrut_ptr, ai, &name, c, mdl);
                 ps.push(p);
                 ls.push(l2);
                 preds.push(c.cur.clone());

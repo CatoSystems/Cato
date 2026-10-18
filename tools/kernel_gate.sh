@@ -53,10 +53,36 @@ check_out t1 "la=X"; check_out t2 "X"; check_out t3 "7"
 check_out t4 "3";    check_out t5 "3"; check_out t6 "3"
 check_out mod "$(printf '49\n25\n16')"
 check_out xd "$(printf '9\n16')"
+check_out cycle "5"
+
+# vec_loop also guards the loop-conj capacity fix: correctness alone would
+# pass a quadratic kernel, so bound the run. A kernel that re-grows from
+# len each recur needs ~2n^2*8 bytes here and is killed long before the
+# bound; the fixed one finishes in milliseconds.
+check_out_bounded() { # file expected maxsec
+  kb "$FX/$1.cato" "/tmp/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
+  "/tmp/run_$1" >/tmp/run_$1.out 2>/dev/null &
+  pid=$!
+  waited=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 0.2; waited=$((waited + 1))
+    if [ "$waited" -gt $(($3 * 5)) ]; then
+      kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+      echo "TIMEOUT FAIL $1 (>${3}s)"; fail=1; return
+    fi
+  done
+  wait "$pid"
+  got="$(cat /tmp/run_$1.out)"
+  [ "$got" = "$2" ] && echo "OK $1" || { echo "OUTPUT FAIL $1: '$got' != '$2'"; fail=1; }
+}
+check_out_bounded vec_loop "$(printf '300000\n299999\n0')" 20
 
 check_ok()  { kb "$FX/$1.cato" "/tmp/run_$1" && echo "OK $1" || { echo "ACCEPT FAIL $1"; fail=1; }; }
 check_bad() { kb "$FX/$1.cato" "/tmp/run_$1" && { echo "REJECT FAIL $1"; fail=1; } || echo "OK $1(rejected)"; }
 check_ok bk1; check_bad bk2; check_ok bk3; check_bad bk4
+# Loader contract (parity with the seed): duplicate ns, an unbound alias,
+# and a malformed require spec are all build errors in the kernel too.
+check_bad dupns; check_bad badalias; check_bad malreq
 
 echo "ALLOC_BYTES: $ALLOC"
 echo "ALLOC_CALLS: $CALLS"

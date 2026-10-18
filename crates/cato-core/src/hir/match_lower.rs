@@ -232,6 +232,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
             variant,
             binders,
             body,
+            exit_free: None,
         });
     }
     Ok(HExpr::Match {

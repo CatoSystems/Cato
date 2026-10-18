@@ -137,7 +137,7 @@ fn cycle_terminates() {
         &[
             (
                 "main.cato",
-                "(ns m) (require [\"a.cato\" :as a])\n(defn main [] :- i64 (a/one 0))\n",
+                "(ns m) (require [\"a.cato\" :as a])\n(defn main [] :- i64 (do (print (a/one 5)) 0))\n",
             ),
             (
                 "a.cato",
@@ -149,11 +149,9 @@ fn cycle_terminates() {
             ),
         ],
     );
-    // Must terminate; whether it compiles is secondary, a hang/crash is not.
-    let _ = cato_core::compile_named(
-        &entry.to_string_lossy(),
-        &std::fs::read_to_string(&entry).unwrap(),
-    );
+    // The back-edge to `a` is already seen, so the cycle terminates and the
+    // graph still resolves: `main` runs through a → b and prints 5.
+    assert_eq!(run(&entry), "5\n");
 }
 
 #[test]
@@ -168,11 +166,20 @@ fn unknown_alias_is_a_build_error() {
             ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
         ],
     );
-    assert!(cato_core::compile_named(
-        &entry.to_string_lossy(),
-        &std::fs::read_to_string(&entry).unwrap()
-    )
-    .is_err());
+    // `z` is never required, so `z/sq` stays unrewritten and fails to resolve.
+    assert!(compile_err(&entry).contains("unknown function z/sq"));
+}
+
+#[test]
+fn malformed_require_is_an_error() {
+    let entry = project(
+        "malreq",
+        &[(
+            "main.cato",
+            "(ns m) (require \"lib.cato\")\n(defn main [] :- i64 0)\n",
+        )],
+    );
+    assert!(compile_err(&entry).contains("require expects [path :as alias]"));
 }
 
 #[test]

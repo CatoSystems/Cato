@@ -1,0 +1,13 @@
+; Loop conj must carry vector capacity across recur. If the kernel resets
+; capacity to len each iteration it re-grows from scratch every step — the
+; count/values stay correct but the run is quadratic and exhausts memory
+; long before n=300000. The gate bounds this run so the regression fails
+; fast instead of hanging.
+(defn main [] :- i32
+  (let [v (loop [i :- i64 0 acc :- (Vector i64) (vec-i64)]
+            (if (< i 300000) (recur (+ i 1) (conj acc i)) acc))]
+    (do
+      (print-i64 (count v))
+      (print-i64 (get v 299999 0))
+      (print-i64 (get v 0 0))
+      0)))

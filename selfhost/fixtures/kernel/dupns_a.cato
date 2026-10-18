@@ -1,0 +1,2 @@
+(ns dup.main)
+(defn sq [x :- i64] :- i64 x)

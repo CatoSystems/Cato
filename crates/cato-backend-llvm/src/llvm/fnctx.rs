@@ -10,6 +10,10 @@ pub(crate) struct BindScope {
 }
 
 pub(crate) struct FnCtx {
+    /// Debug aids for `CATO_TRACE_ARMFREE`: the defn being emitted and a
+    /// per-function site counter.
+    pub(crate) fname: String,
+    pub(crate) trace_site: usize,
     pub(crate) counter: usize,
     pub(crate) blk: usize,
     pub(crate) cur: String,
@@ -40,6 +44,8 @@ pub(crate) struct FnCtx {
 impl FnCtx {
     pub(crate) fn new() -> Self {
         FnCtx {
+            fname: String::new(),
+            trace_site: 0,
             counter: 0,
             blk: 0,
             cur: String::new(),
@@ -133,6 +139,8 @@ impl FnCtx {
     }
     pub(crate) fn clone_with_lines(&self, lines: Vec<String>) -> Self {
         FnCtx {
+            fname: self.fname.clone(),
+            trace_site: self.trace_site,
             counter: self.counter,
             blk: self.blk,
             cur: self.cur.clone(),

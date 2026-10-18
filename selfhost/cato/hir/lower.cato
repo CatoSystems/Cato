@@ -884,7 +884,7 @@
 (defn arms-all-recur [arms :- HArms] :- bool
   (match arms
     (HANil [] true)
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (and (all-paths-recur body) (arms-all-recur next)))))
 
 (defn lower-if [items :- Asts env :- TyEnv tab :- i64 adts :- AdtTab
@@ -1647,7 +1647,7 @@
 (defn cap-arms [arms :- HArms caps :- Caps seen :- Sids env :- &TyEnv params :- Sids] :- CapsRes
   (match arms
     (HANil [] (CapsRes caps seen))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [r (collect-caps body env (clone params) seen caps)]
         (match r
           (CapsRes [c2 s2] (cap-arms next c2 s2 env params)))))))
@@ -1734,7 +1734,7 @@
 (defn cap-arms-2 [arms :- HArms env :- &TyEnv params :- Sids caps :- Caps seen :- Sids] :- CapsRes
   (match arms
     (HANil [] (CapsRes caps seen))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [r (collect-caps body env (clone params) seen caps)]
         (match r
           (CapsRes [c2 s2] (cap-arms-2 next env params c2 s2)))))))
@@ -2025,7 +2025,7 @@
 (defn validate-arms [arms :- HArms arity :- i64 inloop :- bool crossed :- bool] :- VRes
   (match arms
     (HANil [] (LOk2))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [r (validate-recurs-2 body arity inloop crossed)]
         (match r
           (VErr [msg] (VErr msg))
@@ -2060,7 +2060,7 @@
 (defn arms-contains-recur [arms :- HArms depth :- i64] :- bool
   (match arms
     (HANil [] false)
-    (HACons [variant binders body next] (or (contains-recur body depth) (arms-contains-recur next depth)))))
+    (HACons [variant binders body ef next] (or (contains-recur body depth) (arms-contains-recur next depth)))))
 
 (defn kids-contains-recur [es :- HExprs depth :- i64] :- bool
   (seq-contains-recur es depth))
@@ -2290,7 +2290,7 @@
 (defn rms-rev [arms :- HArms acc :- HArms] :- HArms
   (match arms
     (HANil [] acc)
-    (HACons [variant binders body next] (hexpr/arms-rev next (HACons variant binders body acc)))))
+    (HACons [variant binders body ef next] (hexpr/arms-rev next (HACons variant binders body (AFNone) acc)))))
 
 (defn match-arms [arms :- Asts vdef :- AdtInfo adt :- i64 env :- TyEnv pt :- Ty
                  tab :- i64 adts :- AdtTab insts :- IMap sigs :- Sigs
@@ -2315,7 +2315,7 @@
                       ; same as the variant arm: the body's lowering hands the
                       ; definition list back, so it is threaded, not copied
                       (match-arms rest vdef adt (clone env) pt (clone tab) adts insts sigs lams rets ncached d2
-                                  (HACons -1 (SNil) (clone body2) acc) (TyCons bt tys) true (+ 1 narms) raws)))))))
+                                  (HACons -1 (SNil) (clone body2) (AFNone) acc) (TyCons bt tys) true (+ 1 narms) raws)))))))
           ; variant arm: (V [b1 b2] body)
           (let [vi (variant-index (clone vdef) head 0)]
             (if (< vi 0)
@@ -2374,7 +2374,7 @@
                             ; program's definition list, bodies included)
                             ; accounted for a third of the kernel's churn.
                             (match-arms rest vdef adt env pt (clone tab) a4 i4 sigs lams rets ncached d4
-                                        (HACons vi binders3 (clone body2) acc) (TyCons bt tys) wildcard (+ 1 narms) raws))
+                                        (HACons vi binders3 (clone body2) (AFNone) acc) (TyCons bt tys) wildcard (+ 1 narms) raws))
 )))))))))))))
 
 ; The table and instance map were threaded through this walk and returned
@@ -2435,12 +2435,12 @@
 (defn arms-coerce [arms :- HArms tys :- TyList merged :- Ty] :- HArms
   (match arms
     (HANil [] (HANil))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (match tys
         (TyNil [] (HANil))
         (TyCons [t trest]
           (HACons variant binders
-                  (coerce-f64 body t (types/ty-eq (clone merged) (types/t-f64)))
+                  (coerce-f64 body t (types/ty-eq (clone merged) (types/t-f64))) (AFNone)
                   (arms-coerce next trest merged)))))))
 
 ; --- constructor resolution ------------------------------------------------------
@@ -3188,8 +3188,8 @@
                                   (LOk [t4 a4 i4 s4 l4 r4 n4 d4 dval]
                                     (lok t4 a4 i4 s4 l4 r4 n4 d4
                                          (HMatch (HStrNth (clone sval) (clone idxval) (types/t-adt opt))
-                                                 (HACons 0 (SCons (expand/s-binder) (SNil)) (HVar (expand/s-binder))
-                                                         (HACons -1 (SNil) dval (HANil)))
+                                                 (HACons 0 (SCons (expand/s-binder) (SNil)) (HVar (expand/s-binder)) (AFNone)
+                                                         (HACons -1 (SNil) dval (AFNone) (HANil)))
                                                  (types/t-i64)))))))))))))))))))))
 
 ; shared child-lowering shapes

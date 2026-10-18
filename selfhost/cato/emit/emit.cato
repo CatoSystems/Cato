@@ -191,9 +191,19 @@
          (adt-clone-words nm off (- cnt 1) u))))
 
 (defn adt-drop-text [adts :- AdtTab owns :- Sids i :- i64 tab :- i64] :- str
-  (let [nm (adt-name-at (clone adts) i (clone tab))]
+  (let [nm (adt-name-at (clone adts) i (clone tab))
+        ; A nulled slot (an arm-exit free skipping a transferred child, or
+        ; a child that was never set) is simply not ours to free: the
+        ; boxed glue guards the entry. Inline storage is never null.
+        head (if (= (types/sids-idx owns i) 1)
+               (str "entry:\n"
+                    "  %nz = icmp ne ptr %src, null\n"
+                    "  br i1 %nz, label %live, label %nul\n"
+                    "nul:\n  ret void\n\n"
+                    "live:\n")
+               "entry:\n")]
     (str "define void @drop__" nm "(ptr %src) {\n"
-         "entry:\n"
+         head
          "  %tag = load i64, ptr %src\n"
          (glue-switch (clone adts) i 0 "bad")
          "bad:\n  unreachable\n\n"

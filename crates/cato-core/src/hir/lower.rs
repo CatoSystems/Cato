@@ -341,11 +341,13 @@ pub(crate) fn lower_expect(
                                 variant: Some(0),
                                 binders: vec!["$b".to_string()],
                                 body: HExpr::Var("$b".to_string()),
+                                exit_free: None,
                             },
                             crate::hir::HArm {
                                 variant: None,
                                 binders: vec![],
                                 body: dflt,
+                                exit_free: None,
                             },
                         ],
                     })

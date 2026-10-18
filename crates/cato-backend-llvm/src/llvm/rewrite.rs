@@ -350,6 +350,7 @@ pub(crate) fn rewrite_body(
                         variant: arm.variant,
                         binders: arm.binders.clone(),
                         body: rewrite_body(&arm.body, fnprefix, params, idmap, loops, sigs)?,
+                        exit_free: arm.exit_free.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?,
@@ -406,6 +407,7 @@ pub(crate) fn own_str_return(e: &HExpr) -> HExpr {
                     variant: arm.variant,
                     binders: arm.binders.clone(),
                     body: own_str_return(&arm.body),
+                    exit_free: arm.exit_free.clone(),
                 })
                 .collect(),
             ty: *ty,

@@ -9,10 +9,11 @@
 (require ["hir/moveck.cato" :as moveck])
 (require ["emit/emit.cato" :as emit])
 
-; cli.cato — S8 kernel CLI.
+; cli.cato — S8 kernel CLI, the kernel entry point (the only `main`).
 ;
-; Concatenated after the lib, reader, hir and emit files (one namespace;
-; this file defines the only `main`). The skeleton per the roadmap:
+; Its `require`s pull the lib, reader, hir and emit modules by relative
+; path; the loader (hir/modules.cato) wires them into one program. The
+; skeleton per the roadmap:
 ;
 ;   cato1 build <file.cato> [out] [runtime.c]
 ;

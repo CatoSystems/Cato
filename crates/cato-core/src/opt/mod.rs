@@ -68,6 +68,7 @@ fn recompute_frees(program: &mut Program) {
         .filter(|d| d.ret_borrowed)
         .map(|d| d.name.clone())
         .collect();
+    let alias_ret = crate::hir::compute_alias_ret(&program.defns);
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
@@ -86,6 +87,7 @@ fn recompute_frees(program: &mut Program) {
             &facts,
             &program.adts,
             false,
+            &alias_ret,
         );
     }
     for lam in program.lambdas.iter_mut() {
@@ -104,6 +106,7 @@ fn recompute_frees(program: &mut Program) {
             &facts,
             &program.adts,
             false,
+            &alias_ret,
         );
     }
 }
@@ -112,6 +115,12 @@ fn clear_frees(body: &mut HExpr) {
     let taken = std::mem::replace(body, HExpr::ConstI64(0));
     *body = walk::rewrite(taken, &mut |e| match e {
         HExpr::Let(binds, body, _) => HExpr::Let(binds, body, Vec::new()),
+        HExpr::Match { scrut, mut arms, ty } => {
+            for a in arms.iter_mut() {
+                a.exit_free = None;
+            }
+            HExpr::Match { scrut, arms, ty }
+        }
         other => other,
     });
 }
@@ -145,6 +154,7 @@ fn verify_ownership(program: &Program) -> Result<(), String> {
         .filter(|d| d.ret_borrowed)
         .map(|d| d.name.clone())
         .collect();
+    let alias_ret = crate::hir::compute_alias_ret(&program.defns);
     for d in program.defns.iter_mut() {
         if d.is_extern {
             continue;
@@ -162,6 +172,7 @@ fn verify_ownership(program: &Program) -> Result<(), String> {
             &facts,
             &program.adts,
             false,
+            &alias_ret,
         )?;
     }
     Ok(())

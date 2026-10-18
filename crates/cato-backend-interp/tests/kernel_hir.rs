@@ -451,11 +451,19 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
                     Some(v) => v.to_string(),
                     None => "_".into(),
                 };
+                // The planner's arm-exit free rides the dump too: `-` when
+                // the arm leaves the box to its owner, `[skip...]` when it
+                // frees the box with those binders' slots nulled.
+                let ef = match &arm.exit_free {
+                    None => "-".to_string(),
+                    Some(skip) => format!("[{}]", skip.join(" ")),
+                };
                 out.push_str(&format!(
-                    " (arm {} [{}] {})",
+                    " (arm {} [{}] {} {})",
                     v,
                     arm.binders.join(" "),
-                    ser_hir(&arm.body)
+                    ser_hir(&arm.body),
+                    ef
                 ));
             }
             out.push(')');

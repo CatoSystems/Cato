@@ -933,6 +933,7 @@ fn build_tree(
             variant: Some(v),
             binders: vec![format!("__b{}_{}", depth, v)],
             body,
+            exit_free: None,
         });
     }
     Ok(HExpr::Match {
@@ -1019,6 +1020,7 @@ fn resolve_method_instance(
                 variant: Some(*variant),
                 binders: binders.clone(),
                 body: body.clone(),
+                exit_free: None,
             }],
             ty: ret,
         };

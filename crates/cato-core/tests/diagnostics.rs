@@ -97,6 +97,39 @@ fn reader_errors_carry_exact_spans() {
     assert!(err.contains("--> t.cato:1:1"), "got: {}", err);
 }
 
+/// Required files are separate sources: their spans must render against the
+/// required file's name and text, never the entry file's.
+#[test]
+fn required_file_errors_render_against_the_required_file() {
+    let dir = std::env::temp_dir().join(format!("cato-diag-mod-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("root.cato");
+    let child = dir.join("child.cato");
+    std::fs::write(&root, "(ns t.main)\n(require [\"child.cato\" :as c])\n(defn main [] :- i64 (c/f 1))\n").unwrap();
+    // Padding pushes the defn past the entry file's length: a span rendered
+    // against the entry file would land on a phantom line past its EOF.
+    let pad = "; padding\n".repeat(80);
+    std::fs::write(&child, format!("(ns t.child)\n{}\n(defn f [x :- i64] :- i64 (mystery-fn x))\n", pad)).unwrap();
+    let src = std::fs::read_to_string(&root).unwrap();
+    let err = compile_named(root.to_str().unwrap(), &src)
+        .err()
+        .unwrap_or_else(|| panic!("child error should fail the compile"));
+    let child_path = child.to_str().unwrap();
+    assert!(err.contains("E207"), "got: {}", err);
+    assert!(err.contains("mystery-fn"), "got: {}", err);
+    assert!(
+        err.contains(&format!("--> {}:83:1", child_path)),
+        "expected the error in the required file at line 82, got:\n{}",
+        err
+    );
+    assert!(
+        err.contains("(defn f [x :- i64] :- i64 (mystery-fn x))"),
+        "expected the child's source line echoed, got:\n{}",
+        err
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn explain_docs_exist_for_all_codes() {
     for code in cato_core::diagnostics::all_codes() {

@@ -141,6 +141,9 @@
 (defn md-fs-field-ty [m :- &Mdl ai :- i64 vi :- i64 k :- i64] :- Ty
   (match m (Mdl [tab g globals decls adts owns csigs] (fs-field-ty adts ai vi k))))
 
+(defn md-fs-count-at [m :- &Mdl ai :- i64 vi :- i64 k :- i64] :- i64
+  (match m (Mdl [tab g globals decls adts owns csigs] (fs-count-at adts owns ai vi k))))
+
 (defn md-esigs-at [m :- &Mdl i :- i64] :- ESig
   (match m (Mdl [tab g globals decls adts owns csigs] (closures/esigs-at csigs i))))
 

@@ -1,5 +1,23 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
+use std::sync::OnceLock;
+
+/// Debug toggles (bisection aids for planner changes): CATO_NO_HOIST,
+/// CATO_NO_ARMFREE, CATO_NO_BRANCHFREE, CATO_NO_ESCTRANSFER, CATO_NO_LOOPOWN
+/// disable one rule each; CATO_PLAN_LOG/ARMFREE trace decisions.
+fn flag(name: &str) -> bool {
+    static CACHE: OnceLock<std::collections::HashMap<String, bool>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            ["CATO_NO_HOIST", "CATO_NO_ARMFREE", "CATO_NO_BRANCHFREE", "CATO_NO_ESCTRANSFER", "CATO_NO_LOOPOWN"]
+                .iter()
+                .map(|n| (n.to_string(), std::env::var_os(n).is_some()))
+                .collect()
+        })
+        .get(name)
+        .copied()
+        .unwrap_or(false)
+}
 
 pub(crate) fn is_non_copy(ty: Ty) -> bool {
     // Closures are move-only owning values (M3): the header uniquely names
@@ -39,6 +57,9 @@ fn scrutinee_adt(
         HExpr::Match { ty: Ty::Adt(i), .. } => Some(*i),
         HExpr::If(_, _, _, Ty::Adt(i)) => Some(*i),
         HExpr::Clone(inner) => scrutinee_adt(inner, tys, rets),
+        // The planner's own `let` around a scrutinee call (hoisted argument
+        // temps, freed before the arms run) has the call's type.
+        HExpr::Let(_, body, _) => scrutinee_adt(body, tys, rets),
         // Let/Seq scrutinees are rejected in `check` (their owning box frees
         // inside a scope the binder-escape suppression cannot reach), so
         // they never reach the alias analysis here. A loop's recorded
@@ -123,6 +144,12 @@ pub(crate) struct BCheck<'a> {
     /// scrutinee is a fresh temp (a call, a nested match, a clone — anything
     /// but a named var, whose type lives in the binding map).
     pub(crate) rets: &'a HashMap<String, Ty>,
+    /// Callees whose string/collection result may alias a parameter
+    /// (`compute_alias_ret`): such results are never fresh.
+    pub(crate) alias_ret: &'a HashSet<String>,
+    /// `ret_borrowed_names` ∪ `alias_ret`: the callees through which a
+    /// value can alias an argument.
+    alias_calls: HashSet<String>,
     /// Params whose buffers free at body exit (result, when requested).
     pub(crate) param_frees: Vec<String>,
     /// Boxed-scrutinee arms on the check path (innermost last); see `Watch`.
@@ -139,6 +166,15 @@ pub(crate) struct BCheck<'a> {
     /// binding slot, and the backend keeps those copying — `loop_alias`).
     loop_seed_fresh: HashSet<String>,
     pub(crate) errs: Vec<String>,
+    /// The definition under check (diagnostics only).
+    dname: String,
+    /// Aliasing binders of the innermost enclosing match arms whose box is
+    /// freed at arm exit (name -> is the box freeable). A move of such a
+    /// binder on one branch leaves its field for the glue to skip; the
+    /// other branches must then free it themselves (`branch_frees`).
+    freeable_alias: HashMap<String, bool>,
+    /// Names minted for hoisted call-argument temps (`~a0`, `~a1`, …).
+    tmp_counter: usize,
 }
 
 /// Check move semantics and plan drops for one body. With
@@ -158,6 +194,7 @@ pub(crate) fn plan_drops(
     facts: &AdtFacts,
     adts: &[AdtDef],
     with_param_frees: bool,
+    alias_ret: &HashSet<String>,
 ) -> Result<(), String> {
     let mut escaped = HashSet::new();
     tail_escape(body, &mut escaped);
@@ -237,11 +274,16 @@ pub(crate) fn plan_drops(
         consumed: HashSet::new(),
         remaining: var_counts,
         rets,
+        alias_ret,
+        alias_calls: ret_borrowed_names.union(alias_ret).cloned().collect(),
         param_frees: Vec::new(),
         watches: Vec::new(),
         recur_ok: None,
         loop_seed_fresh: HashSet::new(),
         errs: Vec::new(),
+        dname: name.to_string(),
+        freeable_alias: HashMap::new(),
+        tmp_counter: 0,
     };
     let mut tys: HashMap<String, Ty> = HashMap::new();
     let mut st: HashMap<String, VState> = HashMap::new();
@@ -428,6 +470,216 @@ fn tail_borrow_ok(
     }
 }
 
+/// May the value of `e` be a string/collection buffer the caller must not
+/// free — a result of a function in `nonfresh` (an extern hands back
+/// runtime-owned memory; a wrapper hands it on), a `let` alias of one, a
+/// loop variable seeded with one or with a literal (static data)?
+fn tail_nonfresh(e: &HExpr, nonfresh: &HashSet<String>, vars: &HashSet<String>) -> bool {
+    match e {
+        HExpr::Call(c, _) => nonfresh.contains(c),
+        HExpr::Var(v) => vars.contains(v),
+        // A string-returning function's literal tails are materialized as
+        // owned copies by the backend (`own_str_return`), so a literal is
+        // fresh there. A vector literal has no such copy: it is static.
+        HExpr::VecLit(_) => true,
+        HExpr::Let(binds, body, _) => {
+            let mut inner = vars.clone();
+            for (n, value, _) in binds {
+                if tail_nonfresh(value, nonfresh, &inner) {
+                    inner.insert(n.clone());
+                }
+            }
+            tail_nonfresh(body, nonfresh, &inner)
+        }
+        HExpr::Seq(vs) => vs
+            .last()
+            .map(|l| tail_nonfresh(l, nonfresh, vars))
+            .unwrap_or(false),
+        HExpr::If(_, t, f, _) => tail_nonfresh(t, nonfresh, vars) || tail_nonfresh(f, nonfresh, vars),
+        HExpr::Match { arms, .. } => arms.iter().any(|a| tail_nonfresh(&a.body, nonfresh, vars)),
+        HExpr::Loop { binds, body, .. } => {
+            let mut inner = vars.clone();
+            for (n, _, init) in binds {
+                if tail_nonfresh(init, nonfresh, &inner) {
+                    inner.insert(n.clone());
+                }
+            }
+            let mut leaves = Vec::new();
+            tail_leaves(body, &mut leaves);
+            leaves
+                .iter()
+                .any(|l| !matches!(l, HExpr::Recur(_)) && tail_nonfresh(l, nonfresh, &inner))
+        }
+        _ => false,
+    }
+}
+
+/// Functions whose string or collection result is not the caller's to free:
+/// it may be one of their own parameters' buffers (`(defn id [s :- str] :-
+/// str s)`), runtime-owned memory from an extern, or static data — directly
+/// or through another such function. Computed to a fixpoint over the
+/// program; callers neither own nor free these results.
+pub fn compute_alias_ret(defns: &[Defn]) -> HashSet<String> {
+    let coll = |t: Ty| matches!(t, Ty::Str | Ty::Vec(_) | Ty::Map | Ty::Set);
+    let mut calls: HashSet<String> = defns
+        .iter()
+        .filter(|d| d.ret_borrowed)
+        .map(|d| d.name.clone())
+        .collect();
+    let mut out: HashSet<String> = defns
+        .iter()
+        .filter(|d| d.is_extern && coll(d.ret))
+        .map(|d| d.name.clone())
+        .collect();
+    loop {
+        let mut changed = false;
+        for d in defns {
+            if d.is_extern || out.contains(&d.name) || !coll(d.ret) {
+                continue;
+            }
+            let params: HashSet<String> = d
+                .params
+                .iter()
+                .filter(|(_, t)| coll(*t))
+                .map(|(n, _)| n.clone())
+                .collect();
+            if tail_may_alias(&d.body, &params, &calls)
+                || tail_nonfresh(&d.body, &out, &HashSet::new())
+            {
+                out.insert(d.name.clone());
+                calls.insert(d.name.clone());
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    out
+}
+
+/// Is this match scrutinee a fresh heap box nobody else holds — a call
+/// result (an owned return; a `&T` call hands back its origin's box), a
+/// boxed constructor, a deep clone? Merges (`if`/`match`) may yield an
+/// alias and Option materializations (`get`/`nth`/`parse-*`) live on the
+/// stack, so they do not count.
+fn fresh_box(e: &HExpr, ret_borrowed_names: &HashSet<String>) -> bool {
+    match e {
+        HExpr::Call(name, _) => !ret_borrowed_names.contains(name),
+        HExpr::Ctor { .. } | HExpr::Clone(_) => true,
+        // A planner-made `let` around a call (hoisted argument temps).
+        HExpr::Let(_, body, _) => fresh_box(body, ret_borrowed_names),
+        _ => false,
+    }
+}
+
+/// Does the tail of `e` jump back to a loop head? Such an arm has no exit
+/// of its own to free at.
+fn tail_has_recur(e: &HExpr) -> bool {
+    match e {
+        HExpr::Recur(_) => true,
+        HExpr::Let(_, body, _) => tail_has_recur(body),
+        HExpr::Seq(vs) => vs.last().map(tail_has_recur).unwrap_or(false),
+        HExpr::If(_, t, f, _) => tail_has_recur(t) || tail_has_recur(f),
+        HExpr::Match { arms, .. } => arms.iter().any(|a| tail_has_recur(&a.body)),
+        _ => false,
+    }
+}
+
+/// The expressions that can be the value of `e`: one per path through its
+/// tail-position `let`/`do`/`if`/`match` structure.
+fn tail_leaves<'e>(e: &'e HExpr, out: &mut Vec<&'e HExpr>) {
+    match e {
+        HExpr::Let(_, body, _) => tail_leaves(body, out),
+        HExpr::Seq(vs) => {
+            if let Some(last) = vs.last() {
+                tail_leaves(last, out);
+            }
+        }
+        HExpr::If(_, t, f, _) => {
+            tail_leaves(t, out);
+            tail_leaves(f, out);
+        }
+        HExpr::Match { arms, .. } => {
+            for a in arms {
+                tail_leaves(&a.body, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+/// May the value of `e` point into memory reachable from the names in
+/// `alias` (a match's aliasing binders, a function's parameters)? The
+/// any-path dual of `tail_borrow_ok`: a bare alias, a call over one to a
+/// function in `alias_calls` (a `&T` callee, or one whose string/collection
+/// result may be a parameter — see `compute_alias_ret`), a `let` alias of
+/// one, an element load from an aliased collection, a loop seeded from
+/// one. Fresh values (constructors, clones, owned calls, literals) do not.
+pub fn tail_may_alias(
+    e: &HExpr,
+    alias: &HashSet<String>,
+    alias_calls: &HashSet<String>,
+) -> bool {
+    let ret_borrowed_names = alias_calls;
+    match e {
+        HExpr::Var(v) => alias.contains(v),
+        HExpr::Call(name, args) => {
+            ret_borrowed_names.contains(name)
+                && args.iter().any(|a| tail_may_alias(a, alias, ret_borrowed_names))
+        }
+        HExpr::Let(binds, body, _) => {
+            let mut inner = alias.clone();
+            for (n, value, _) in binds {
+                if tail_may_alias(value, &inner, ret_borrowed_names) {
+                    inner.insert(n.clone());
+                }
+            }
+            tail_may_alias(body, &inner, ret_borrowed_names)
+        }
+        HExpr::Seq(vs) => vs
+            .last()
+            .map(|last| tail_may_alias(last, alias, ret_borrowed_names))
+            .unwrap_or(false),
+        HExpr::If(_, t, f, _) => {
+            tail_may_alias(t, alias, ret_borrowed_names)
+                || tail_may_alias(f, alias, ret_borrowed_names)
+        }
+        HExpr::Match { scrut, arms, .. } => {
+            let scrut_alias = tail_may_alias(scrut, alias, ret_borrowed_names);
+            arms.iter().any(|arm| {
+                let mut inner = alias.clone();
+                if scrut_alias {
+                    inner.extend(arm.binders.iter().cloned());
+                }
+                tail_may_alias(&arm.body, &inner, ret_borrowed_names)
+            })
+        }
+        // A string element points into its vector's buffer; an Option
+        // result carries that same pointer; an out-of-range read hands the
+        // default back as is.
+        HExpr::Get { src, default, ty, res, .. } => {
+            ((*ty == Ty::Str || res.is_some()) && tail_may_alias(src, alias, ret_borrowed_names))
+                || default
+                    .as_ref()
+                    .is_some_and(|d| tail_may_alias(d, alias, ret_borrowed_names))
+        }
+        HExpr::MapGet { src, default, .. } => {
+            tail_may_alias(src, alias, ret_borrowed_names)
+                || default
+                    .as_ref()
+                    .is_some_and(|d| tail_may_alias(d, alias, ret_borrowed_names))
+        }
+        HExpr::Loop { binds, body, .. } => {
+            binds
+                .iter()
+                .any(|(_, _, init)| tail_may_alias(init, alias, ret_borrowed_names))
+                || tail_may_alias(body, alias, ret_borrowed_names)
+        }
+        _ => false,
+    }
+}
+
 impl<'a> BCheck<'a> {
     /// Borrow kinds of a callee; builtins never consume.
     pub(crate) fn kinds_of(&self, name: &str, arity: usize) -> Vec<Borrow> {
@@ -526,6 +778,12 @@ impl<'a> BCheck<'a> {
         st: &mut HashMap<String, VState>,
         owns: &mut HashMap<String, bool>,
     ) {
+        // A fresh boxed value handed to a borrowed parameter has no owner:
+        // the callee only reads it and the caller never named it. Bind it
+        // first, so the binding's scope free releases it after the call.
+        if !flag("CATO_NO_HOIST") {
+            self.hoist_arg_temps(e, tys);
+        }
         match e {
             HExpr::Var(v) => self.use_var(v, tys, st),
             HExpr::StrLit(_) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::ConstB(..)
@@ -890,7 +1148,12 @@ impl<'a> BCheck<'a> {
                 // — where every existing rule composes. (Seq scrutinees
                 // share the shape; their tail var is owned by an enclosing
                 // binding the match cannot suppress either.)
-                if matches!(&**scrut, HExpr::Let(..) | HExpr::Seq(..)) {
+                let user_let = match &**scrut {
+                    HExpr::Let(binds, _, _) => binds.iter().any(|(n, _, _)| !n.starts_with('~')),
+                    HExpr::Seq(_) => true,
+                    _ => false,
+                };
+                if user_let {
                     self.errs.push(
                         "match scrutinee must not be a `let`/`do` form: bind it to a name first (its buffer would be freed before the arms run)".to_string(),
                     );
@@ -939,13 +1202,42 @@ impl<'a> BCheck<'a> {
                     HExpr::Var(sv) => self.no_move.contains(sv),
                     _ => false,
                 };
+                // Which boxes can this match itself free, at each arm's
+                // exit? Until now a boxed scrutinee was freed only by its
+                // owner's scope: a call/ctor/clone temp has no owner and was
+                // never freed, and a named box whose arm transferred an alias
+                // out lost its scope free wholesale — every sibling field
+                // leaked with the box. Both shapes are the kernel's own
+                // self-build footprint (85% of its allocations never freed).
+                // The arm-exit free releases the box once its value is
+                // computed, with the transferred binders' slots nulled so
+                // the glue skips exactly the objects somebody else now holds.
+                let sv_name: Option<String> = match &**scrut {
+                    HExpr::Var(sv) => Some(sv.clone()),
+                    _ => None,
+                };
+                let temp_fresh = scrut_boxed
+                    && sv_name.is_none()
+                    && fresh_box(scrut, self.ret_borrowed_names);
+                let var_owned = scrut_boxed
+                    && sv_name.as_ref().is_some_and(|sv| {
+                        owns.get(sv).copied().unwrap_or(false)
+                            && st.get(sv) == Some(&VState::Owned)
+                            && !self.loop_copy.contains(sv)
+                            && !self.no_move.contains(sv)
+                    });
+                let mut arm_plans: Vec<Option<Vec<String>>> = Vec::with_capacity(arms.len());
+                let mut arm_sts: Vec<HashMap<String, VState>> = Vec::with_capacity(arms.len());
+                let mut arm_escapeds: Vec<HashSet<String>> = Vec::with_capacity(arms.len());
+                let mut any_arm_escape = false;
                 for arm in arms.iter_mut() {
                     let mut arm_tys = post_tys.clone();
                     let mut arm_st = post_scrut.clone();
                     let mut arm_owns = post_owns.clone();
-                    let arm_fields: Option<&(String, Vec<Ty>)> = scrut_adt
+                    let arm_field_tys: Option<Vec<Ty>> = scrut_adt
                         .and_then(|i| self.adts.get(i as usize))
-                        .and_then(|def| arm.variant.and_then(|v| def.variants.get(v as usize)));
+                        .and_then(|def| arm.variant.and_then(|v| def.variants.get(v as usize)))
+                        .map(|f| f.1.clone());
                     for (k, b) in arm.binders.iter().enumerate() {
                         // Boxed-scrutinee binders carry their real field
                         // type so moves through them register (they alias
@@ -959,9 +1251,9 @@ impl<'a> BCheck<'a> {
                         // children copy whole, so their binders keep the
                         // unrestricted I64 stand-in.
                         let fty = match scrut_boxed
-                            .then_some(arm_fields)
+                            .then_some(arm_field_tys.as_ref())
                             .flatten()
-                            .and_then(|f| f.1.get(k).copied())
+                            .and_then(|f| f.get(k).copied())
                         {
                             Some(t @ (Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Adt(_)))
                                 if binder_field_aliases(Some(t), &self.boxed_full) =>
@@ -984,10 +1276,10 @@ impl<'a> BCheck<'a> {
                     let mut watched = false;
                     if scrut_boxed {
                         if let HExpr::Var(sv) = &**scrut {
-                            if let Some(fields) = arm_fields {
+                            if let Some(fields) = arm_field_tys.as_ref() {
                                 let mut binders = HashSet::new();
                                 for (k, b) in arm.binders.iter().enumerate() {
-                                    let fty = fields.1.get(k).copied();
+                                    let fty = fields.get(k).copied();
                                     let aliases = binder_field_aliases(fty, &self.boxed_full)
                                         || matches!(fty, Some(Ty::Adt(_)));
                                     if aliases {
@@ -1007,61 +1299,73 @@ impl<'a> BCheck<'a> {
                     // arm binder types: recover field types are not carried;
                     // binders alias the scrutinee's fields, so they never
                     // own (I64 is the historical state-tracking stand-in).
+                    // While the body runs, its move-trackable binders are
+                    // known as aliases of a box this match frees (or not),
+                    // for the branch-local frees of inner `if`/`match`.
+                    let freeable = temp_fresh || var_owned;
+                    let mut saved_alias: Vec<(String, Option<bool>)> = Vec::new();
+                    for b in arm.binders.iter() {
+                        if arm_tys.get(b).map(|t| is_non_copy(*t)).unwrap_or(false) {
+                            saved_alias.push((b.clone(), self.freeable_alias.get(b).copied()));
+                            self.freeable_alias.insert(b.clone(), freeable);
+                        }
+                    }
                     self.check(&mut arm.body, &mut arm_tys, &mut arm_st, &mut arm_owns);
+                    for (b, prev) in saved_alias.into_iter().rev() {
+                        match prev {
+                            Some(v) => {
+                                self.freeable_alias.insert(b, v);
+                            }
+                            None => {
+                                self.freeable_alias.remove(&b);
+                            }
+                        }
+                    }
                     if watched {
                         self.watches.pop();
                     }
+                    // Per-arm escape set: binder names repeat across arms
+                    // with different field types, so the defn-wide set
+                    // would blame an alias arm for a copy arm's return.
+                    let mut arm_escaped = HashSet::new();
+                    tail_escape(&arm.body, &mut arm_escaped);
+                    let mut any_alias_escape = false;
                     if scrut_boxed {
-                        let mut any_alias_escape = false;
-                        if let Some(ai) = scrut_adt {
-                            if let Some(def) = self.adts.get(ai as usize) {
-                                if let Some(fields) =
-                                    arm.variant.and_then(|v| def.variants.get(v as usize))
+                        if let Some(fields) = arm_field_tys.as_ref() {
+                            for (k, b) in arm.binders.iter().enumerate() {
+                                let fty = fields.get(k).copied();
+                                // Boxed-ADT children, vec/map/set and str
+                                // fields alias the box's heap. An inline-ADT
+                                // binder does not copy the value either: the
+                                // backend materializes it as the field's
+                                // address inside the box, so a binder that
+                                // escapes (a bare-Var return) aliases too
+                                // (S8 — the UAF behind ast-at's zeroed spans).
+                                let aliases = binder_field_aliases(fty, &self.boxed_full)
+                                    || matches!(fty, Some(Ty::Adt(_)));
+                                if !aliases {
+                                    continue;
+                                }
+                                if arm_escaped.contains(b)
+                                    || arm_st.get(b) == Some(&VState::Moved)
                                 {
-                                    // Per-arm escape set: binder names repeat
-                                    // across arms with different field types,
-                                    // so the defn-wide set would blame an
-                                    // alias arm for a copy arm's return.
-                                    let mut arm_escaped = HashSet::new();
-                                    tail_escape(&arm.body, &mut arm_escaped);
-                                    for (k, b) in arm.binders.iter().enumerate() {
-                                        let fty = fields.1.get(k).copied();
-                                        // Boxed-ADT children, vec/map/set and
-                                        // str fields alias the box's heap. An
-                                        // inline-ADT binder does not copy the
-                                        // value either: the backend
-                                        // materializes it as the field's
-                                        // address inside the box, so a binder
-                                        // that escapes (a bare-Var return)
-                                        // aliases too (S8 — the UAF behind
-                                        // ast-at's zeroed spans).
-                                        let aliases = binder_field_aliases(fty, &self.boxed_full)
-                                            || matches!(fty, Some(Ty::Adt(_)));
-                                        if !aliases {
-                                            continue;
+                                    any_alias_escape = true;
+                                    if scrut_borrowed_param {
+                                        // A borrowed-returning (`&T`) defn
+                                        // legitimately hands the aliasing
+                                        // binder back to the caller: that is
+                                        // the borrow.
+                                        if arm_escaped.contains(b) && !self.ret_borrowed {
+                                            self.errs.push(format!(
+                                                "cannot return {}: it aliases a field of the matched value — clone it first",
+                                                b
+                                            ));
                                         }
-                                        if arm_escaped.contains(b)
-                                            || arm_st.get(b) == Some(&VState::Moved)
-                                        {
-                                            any_alias_escape = true;
-                                            if scrut_borrowed_param {
-                                                // A borrowed-returning (`&T`)
-                                                // defn legitimately hands the
-                                                // aliasing binder back to the
-                                                // caller: that is the borrow.
-                                                if arm_escaped.contains(b) && !self.ret_borrowed {
-                                                    self.errs.push(format!(
-                                                        "cannot return {}: it aliases a field of the matched value — clone it first",
-                                                        b
-                                                    ));
-                                                }
-                                                if arm_st.get(b) == Some(&VState::Moved) {
-                                                    self.errs.push(format!(
-                                                        "cannot move {}: it aliases a field of the matched value — clone it first",
-                                                        b
-                                                    ));
-                                                }
-                                            }
+                                        if arm_st.get(b) == Some(&VState::Moved) {
+                                            self.errs.push(format!(
+                                                "cannot move {}: it aliases a field of the matched value — clone it first",
+                                                b
+                                            ));
                                         }
                                     }
                                 }
@@ -1070,7 +1374,9 @@ impl<'a> BCheck<'a> {
                         // An alias left the arm: the box's drop duty
                         // transfers to its new holder, so the scrutinee's
                         // own scope free (let drop or param free) is
-                        // suppressed. Loop variables never free anyway.
+                        // suppressed — the arm-exit free below takes over
+                        // for the fields that stayed. Loop variables never
+                        // free anyway.
                         if any_alias_escape {
                             if let HExpr::Var(sv) = &**scrut {
                                 if !self.loop_copy.contains(sv) && !scrut_borrowed_param {
@@ -1079,6 +1385,23 @@ impl<'a> BCheck<'a> {
                             }
                         }
                     }
+                    any_arm_escape |= any_alias_escape;
+                    let plan = if temp_fresh || var_owned {
+                        self.arm_exit_plan(
+                            arm,
+                            sv_name.as_deref(),
+                            arm_field_tys.as_deref(),
+                            &arm_st,
+                            &arm_escaped,
+                        )
+                    } else if !scrut_boxed {
+                        Err("not-boxed")
+                    } else if sv_name.is_some() {
+                        Err("var-not-owned")
+                    } else {
+                        Err("temp-not-fresh")
+                    };
+                    arm_plans.push(plan.ok());
                     // A value moved or consumed in any arm counts as moved
                     // and unconsumed-eligible afterwards.
                     for (k, v) in arm_st.iter() {
@@ -1089,6 +1412,40 @@ impl<'a> BCheck<'a> {
                     for (k, v) in arm_owns.iter() {
                         if !*v {
                             owns.insert(k.clone(), false);
+                        }
+                    }
+                    arm_sts.push(arm_st);
+                    arm_escapeds.push(arm_escaped);
+                }
+                // Arms are branches too: a pre-match binding moved in one
+                // arm is freed by the arms that kept it.
+                {
+                    let sts: Vec<&HashMap<String, VState>> = arm_sts.iter().collect();
+                    let shadow_owned: Vec<Vec<String>> = arms.iter().map(|a| a.binders.clone()).collect();
+                    let shadow: Vec<&[String]> = shadow_owned.iter().map(|v| v.as_slice()).collect();
+                    let mut bodies: Vec<&mut HExpr> = arms.iter_mut().map(|a| &mut a.body).collect();
+                    self.branch_frees(&post_scrut, &post_owns, tys, &mut bodies, &sts, &shadow, sv_name.as_deref());
+                }
+                // A fresh temp frees here, always. A named box frees here
+                // only when some arm transferred an alias out (its scope
+                // free was just suppressed); otherwise it keeps that scope
+                // free and stays readable after the match.
+                let free_here = (temp_fresh || (var_owned && any_arm_escape))
+                    && !flag("CATO_NO_ARMFREE");
+                for ((arm, plan), esc) in arms.iter_mut().zip(arm_plans).zip(arm_escapeds.iter()) {
+                    arm.exit_free = if free_here { plan } else { None };
+                    // A binder that is the arm's value, with its slot skipped
+                    // by the arm-exit free, hands its object to whoever
+                    // receives the match: it counts as moved, so a `let`
+                    // bound to this match owns the merge (and frees it).
+                    // Not when the name also belongs to an outer binding
+                    // the mark would poison.
+                    if let Some(skip) = &arm.exit_free {
+                        for b in skip {
+                            if flag("CATO_NO_ESCTRANSFER") { break; }
+                            if esc.contains(b) && !post_scrut.contains_key(b) {
+                                st.insert(b.clone(), VState::Moved);
+                            }
                         }
                     }
                 }
@@ -1102,6 +1459,8 @@ impl<'a> BCheck<'a> {
             }
             HExpr::If(c, t, e2, _) => {
                 self.check(c, tys, st, owns);
+                let pre_st = st.clone();
+                let pre_owns = owns.clone();
                 let mut t_tys = tys.clone();
                 let mut t_st = st.clone();
                 let mut t_owns = owns.clone();
@@ -1110,6 +1469,11 @@ impl<'a> BCheck<'a> {
                 let mut e_st = st.clone();
                 let mut e_owns = owns.clone();
                 self.check(e2, &mut e_tys, &mut e_st, &mut e_owns);
+                {
+                    let sts = [&t_st, &e_st];
+                    let mut bodies: Vec<&mut HExpr> = vec![&mut **t, &mut **e2];
+                    self.branch_frees(&pre_st, &pre_owns, tys, &mut bodies, &sts, &[], None);
+                }
                 for (k, v) in t_st.iter().chain(e_st.iter()) {
                     if *v == VState::Moved {
                         st.insert(k.clone(), *v);
@@ -1171,7 +1535,7 @@ impl<'a> BCheck<'a> {
                             // owned duty: the binding owns the winning
                             // arm's buffer and frees it at scope exit.
                             None if merge_owns => true,
-                            None => allocates(value, self.facts),
+                            None => self.allocates_fresh(value),
                         },
                     );
                     tys.insert(name.clone(), *ty);
@@ -1421,8 +1785,411 @@ impl<'a> BCheck<'a> {
             HExpr::Match { arms, .. } => arms
                 .iter()
                 .all(|arm| self.tail_yields_owned(&arm.body, st)),
+            // A loop yields owned duty when every completing value is a
+            // fresh allocation or a loop variable whose seed allocated:
+            // such a slot always holds a heap buffer (fresh, or regrown).
+            HExpr::Loop { binds, body, .. } => {
+                if flag("CATO_NO_LOOPOWN") {
+                    return false;
+                }
+                let mut leaves = Vec::new();
+                tail_leaves(body, &mut leaves);
+                leaves.iter().all(|l| match l {
+                    HExpr::Recur(_) => true,
+                    HExpr::Var(v) => binds
+                        .iter()
+                        .any(|(n, _, init)| n == v && self.allocates_fresh(init)),
+                    other => self.allocates_fresh(other),
+                })
+            }
+            other => self.allocates_fresh(other),
+        }
+    }
+
+    /// `allocates`, minus the calls whose string/collection result may be
+    /// a parameter's own buffer (never fresh for the caller).
+    fn allocates_fresh(&self, e: &HExpr) -> bool {
+        match e {
+            HExpr::Call(c, _) => !self.alias_ret.contains(c) && !self.ret_borrowed_names.contains(c),
+            HExpr::Let(_, body, _) => self.allocates_fresh(body),
             other => allocates(other, self.facts),
         }
+    }
+
+    /// The static type of a fresh heap value, if `e` is one the caller would
+    /// otherwise lose: a boxed box (`boxed_only`), or any string/collection
+    /// temp — an owned call result, a boxed constructor, a clone, a string
+    /// or collection builder. Calls through `alias_calls` are not fresh.
+    fn fresh_temp_ty(&self, e: &HExpr, tys: &HashMap<String, Ty>, boxed_only: bool) -> Option<Ty> {
+        let boxed = |t: Ty| matches!(t, Ty::Adt(i) if self.boxed_full.get(i as usize).copied().unwrap_or(false));
+        let coll = |t: Ty| matches!(t, Ty::Str | Ty::Vec(_) | Ty::Map | Ty::Set);
+        let want = |t: Ty| if boxed_only { boxed(t) } else { coll(t) };
+        match e {
+            HExpr::Call(c, _) if !self.alias_calls.contains(c) => {
+                self.rets.get(c).copied().filter(|t| want(*t))
+            }
+            HExpr::Ctor { adt, .. } if boxed_only && boxed(Ty::Adt(*adt)) => Some(Ty::Adt(*adt)),
+            HExpr::Clone(inner) => match &**inner {
+                HExpr::Var(v) => tys.get(v).copied().filter(|t| want(*t)),
+                other => self.fresh_temp_ty(other, tys, boxed_only),
+            },
+            HExpr::Subs { .. }
+            | HExpr::StrCat(_)
+            | HExpr::Join { .. }
+            | HExpr::ToStr(..)
+            | HExpr::CharStr(_)
+            | HExpr::Slurp(_)
+                if !boxed_only =>
+            {
+                Some(Ty::Str)
+            }
+            HExpr::Split { .. } if !boxed_only => Some(Ty::Vec(Elem::Str)),
+            HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } if !boxed_only => Some(Ty::Vec(*elem)),
+            HExpr::MapLit(_) | HExpr::MapAssoc { .. } if !boxed_only => Some(Ty::Map),
+            HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } if !boxed_only => Some(Ty::Set),
+            _ => None,
+        }
+    }
+
+    /// Can this argument stay in place when a later argument is hoisted
+    /// before it? Reads of bindings, literals and arithmetic over them have
+    /// no effects to reorder.
+    fn order_free(e: &HExpr) -> bool {
+        match e {
+            HExpr::Var(_)
+            | HExpr::StrLit(_)
+            | HExpr::ConstI64(_)
+            | HExpr::ConstF64(_)
+            | HExpr::ConstB(_)
+            | HExpr::VecLit(_)
+            | HExpr::Args => true,
+            HExpr::BinW(_, a, b, _) | HExpr::CmpW(_, a, b, _) | HExpr::BinF(_, a, b) => {
+                Self::order_free(a) && Self::order_free(b)
+            }
+            HExpr::And(a, b) | HExpr::Or(a, b) | HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
+                Self::order_free(a) && Self::order_free(b)
+            }
+            HExpr::Not(a) | HExpr::Abs(a, _) | HExpr::ICast(a, _, _) | HExpr::Count(a) => {
+                Self::order_free(a)
+            }
+            HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => Self::order_free(a) && Self::order_free(b),
+            HExpr::StrNth { s, idx, res: None } => Self::order_free(s) && Self::order_free(idx),
+            _ => false,
+        }
+    }
+
+    /// The static type to bind a hoisted argument under, when known.
+    fn hoist_ty(&self, e: &HExpr, tys: &HashMap<String, Ty>) -> Option<Ty> {
+        match e {
+            HExpr::Call(c, _) => self.rets.get(c).copied(),
+            HExpr::Ctor { adt, .. } => Some(Ty::Adt(*adt)),
+            HExpr::Clone(inner) => match &**inner {
+                HExpr::Var(v) => tys.get(v).copied(),
+                other => self.hoist_ty(other, tys),
+            },
+            HExpr::Subs { .. }
+            | HExpr::StrCat(_)
+            | HExpr::Join { .. }
+            | HExpr::ToStr(..)
+            | HExpr::CharStr(_)
+            | HExpr::Slurp(_) => Some(Ty::Str),
+            HExpr::Split { .. } => Some(Ty::Vec(Elem::Str)),
+            HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } => Some(Ty::Vec(*elem)),
+            HExpr::MapLit(_) | HExpr::MapAssoc { .. } => Some(Ty::Map),
+            HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } => Some(Ty::Set),
+            HExpr::If(_, _, _, ty) | HExpr::Match { ty, .. } | HExpr::Loop { ty, .. } => Some(*ty),
+            HExpr::Get { ty, res: None, .. } => Some(*ty),
+            HExpr::Get { res: Some(t), .. } | HExpr::StrNth { res: Some(t), .. } => Some(*t),
+            HExpr::ParseNum { res, .. } => Some(*res),
+            _ => None,
+        }
+    }
+
+    /// Hoist the argument temps a node would otherwise leak into a `let`
+    /// around it — `(f … <temp> …)` becomes `(let [~aN <temp>] (f … ~aN …))`
+    /// and the ordinary `let` planning frees `~aN` after the node. Two
+    /// kinds leak: a fresh box on a borrowed parameter (the callee only
+    /// reads it, nobody owns it), and any fresh string/collection temp
+    /// (callees never free those; constructors, `str`, `conj` and `spit`
+    /// copy or consume the bytes). Not under a `&T` or alias-returning
+    /// callee, whose result may be the temp itself. Evaluation order is
+    /// kept: every effectful argument before a hoisted one is hoisted as
+    /// well (under its own type), and the hoist stops at an argument it
+    /// cannot bind.
+    fn hoist_arg_temps(&mut self, e: &mut HExpr, tys: &HashMap<String, Ty>) {
+        let (args_view, kinds): (Vec<&HExpr>, Vec<Borrow>) = match e {
+            HExpr::Call(name, args) => {
+                if self.alias_calls.contains(name) {
+                    return;
+                }
+                let kinds = self.kinds_of(name, args.len());
+                (args.iter().collect(), kinds)
+            }
+            HExpr::StrCat(args) | HExpr::Ctor { args, .. } => {
+                (args.iter().collect(), vec![Borrow::Owned; args.len()])
+            }
+            HExpr::Conj { x, .. } => (vec![&**x], vec![Borrow::Owned]),
+            HExpr::Spit { path, data } => (vec![&**path, &**data], vec![Borrow::Owned; 2]),
+            _ => return,
+        };
+        let mut plan: Vec<(usize, Ty)> = Vec::new();
+        let mut worth = false;
+        for (i, (a, k)) in args_view.iter().zip(kinds.iter()).enumerate() {
+            if Self::order_free(a) {
+                continue;
+            }
+            let leaks = self.fresh_temp_ty(a, tys, false).is_some()
+                || (*k != Borrow::Owned && self.fresh_temp_ty(a, tys, true).is_some());
+            match self.hoist_ty(a, tys) {
+                Some(t) => {
+                    plan.push((i, t));
+                    worth |= leaks;
+                }
+                None => break,
+            }
+        }
+        // Trailing hoists that free nothing only add noise: keep the plan
+        // up to the last leaking argument.
+        while let Some((i, _)) = plan.last() {
+            let a = args_view[*i];
+            let k = kinds[*i];
+            let leaks = self.fresh_temp_ty(a, tys, false).is_some()
+                || (k != Borrow::Owned && self.fresh_temp_ty(a, tys, true).is_some());
+            if leaks {
+                break;
+            }
+            plan.pop();
+        }
+        if !worth || plan.is_empty() {
+            return;
+        }
+        let mut binds = Vec::new();
+        {
+            let counter = &mut self.tmp_counter;
+            let mut slot = |child: &mut HExpr, ty: Ty| {
+                let tmp = format!("~a{}", *counter);
+                *counter += 1;
+                let value = std::mem::replace(child, HExpr::Var(tmp.clone()));
+                binds.push((tmp, value, ty));
+            };
+            match e {
+                HExpr::Call(_, args) | HExpr::StrCat(args) | HExpr::Ctor { args, .. } => {
+                    for (i, t) in plan {
+                        slot(&mut args[i], t);
+                    }
+                }
+                HExpr::Conj { x, .. } => {
+                    for (_, t) in plan {
+                        slot(x, t);
+                    }
+                }
+                HExpr::Spit { path, data } => {
+                    for (i, t) in plan {
+                        slot(if i == 0 { path } else { data }, t);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let taken = std::mem::replace(e, HExpr::ConstI64(0));
+        *e = HExpr::Let(binds, Box::new(taken), Vec::new());
+    }
+
+    /// Branch-local frees. A binding moved on some branches of an `if` or
+    /// `match` and not on others would be consumed as a whole (no scope
+    /// free anywhere) and leak on every path that kept it. Instead each
+    /// non-moving branch frees it itself, through the empty-binds `Let`
+    /// wrapper the backends already emit. Eligible: a binding that owned
+    /// its buffer before the branch, or an aliasing binder of a box the
+    /// enclosing arm frees at exit (its slot is skipped there). A branch
+    /// whose value is the binding, or that recurs, is left alone; so is a
+    /// name the branch rebinds (`shadow`: that branch's own binders).
+    fn branch_frees(
+        &mut self,
+        pre_st: &HashMap<String, VState>,
+        pre_owns: &HashMap<String, bool>,
+        tys: &HashMap<String, Ty>,
+        bodies: &mut [&mut HExpr],
+        sts: &[&HashMap<String, VState>],
+        shadow: &[&[String]],
+        exclude: Option<&str>,
+    ) {
+        if flag("CATO_NO_BRANCHFREE") {
+            return;
+        }
+        let moved_in: Vec<HashSet<String>> = sts
+            .iter()
+            .map(|st_i| {
+                st_i.iter()
+                    .filter(|(n, v)| {
+                        **v == VState::Moved && pre_st.get(*n) == Some(&VState::Owned)
+                    })
+                    .map(|(n, _)| n.clone())
+                    .collect()
+            })
+            .collect();
+        let mut union: Vec<String> = moved_in.iter().flatten().cloned().collect();
+        union.sort();
+        union.dedup();
+        if union.is_empty() {
+            return;
+        }
+        for (i, body) in bodies.iter_mut().enumerate() {
+            if tail_has_recur(body) {
+                continue;
+            }
+            let mut frees = Vec::new();
+            for n in &union {
+                if moved_in[i].contains(n) {
+                    continue;
+                }
+                if shadow.get(i).is_some_and(|names| names.contains(n)) {
+                    continue;
+                }
+                // A matched box belongs to its arms' exit frees: its binders
+                // alias it, so a free here would dangle them (and double
+                // the arm-exit free).
+                if exclude == Some(n.as_str()) || self.watches.iter().any(|w| &w.scrutinee == n) {
+                    continue;
+                }
+                // The branch's value may still reach into the binding.
+                let mut one = HashSet::new();
+                one.insert(n.clone());
+                if tail_may_alias(body, &one, &self.alias_calls) {
+                    continue;
+                }
+                let non_copy = tys.get(n).map(|t| is_non_copy(*t)).unwrap_or(false);
+                let eligible = non_copy
+                    && !self.loop_copy.contains(n)
+                    && !self.no_move.contains(n)
+                    && (pre_owns.get(n).copied().unwrap_or(false)
+                        || self.freeable_alias.get(n).copied().unwrap_or(false));
+                if eligible {
+                    frees.push(n.clone());
+                }
+            }
+            if !frees.is_empty() {
+                let taken = std::mem::replace(*body, HExpr::ConstI64(0));
+                **body = HExpr::Let(Vec::new(), Box::new(taken), frees);
+            }
+        }
+    }
+
+    /// One arm's exit free of a boxed scrutinee this match may release:
+    /// the binders whose field slots are nulled before the glue runs, or
+    /// `None` when the box cannot be freed at this arm's exit at all.
+    fn arm_exit_plan(
+        &self,
+        arm: &HArm,
+        sv: Option<&str>,
+        fields: Option<&[Ty]>,
+        arm_st: &HashMap<String, VState>,
+        arm_escaped: &HashSet<String>,
+    ) -> Result<Vec<String>, &'static str> {
+        // The arm hands the box itself on (moves or returns it): its new
+        // holder frees it.
+        if let Some(sv) = sv {
+            if arm_st.get(sv) == Some(&VState::Moved) || arm_escaped.contains(sv) {
+                return Err("scrutinee-moved");
+            }
+        }
+        // A recurring arm has no exit of its own: the loop head is next.
+        if tail_has_recur(&arm.body) {
+            return Err("recur");
+        }
+        let fields = match fields {
+            Some(f) => f,
+            // The wildcard arm binds nothing: the whole box goes.
+            None => return Ok(Vec::new()),
+        };
+        // Binders that alias the box's heap. Boxed children, closures,
+        // strings and collections point at separately allocated objects;
+        // an inline child is the field's own address inside the box.
+        let mut alias: HashSet<String> = HashSet::new();
+        for (k, b) in arm.binders.iter().enumerate() {
+            let fty = fields.get(k).copied();
+            if binder_field_aliases(fty, &self.boxed_full) || matches!(fty, Some(Ty::Adt(_))) {
+                alias.insert(b.clone());
+            }
+        }
+        // May the arm's value point into the box's objects? Only the bare
+        // alias-binder shape is precise enough to skip; a `&T` call over a
+        // binder, a `let` alias, an element load keep the box alive instead.
+        if tail_may_alias(&arm.body, &alias, &self.alias_calls) {
+            let mut leaves = Vec::new();
+            tail_leaves(&arm.body, &mut leaves);
+            if !leaves
+                .iter()
+                .all(|l| matches!(l, HExpr::Var(v) if alias.contains(v)))
+            {
+                return Err("value-may-alias");
+            }
+        }
+        let mut skip = Vec::new();
+        // A string or collection handed to a callee that returns the same
+        // kind may come straight back (`(defn f [s :- str] :- str s)`): the
+        // caller then binds that result as owned and frees it, so the box
+        // must not free the same buffer. Constructors copy, and a callee
+        // returning anything else can only keep a copy.
+        let mut through_call: HashSet<String> = HashSet::new();
+        crate::opt::walk::visit_nodes(&arm.body, &mut |n| match n {
+            HExpr::Call(name, args)
+                if matches!(
+                    self.rets.get(name),
+                    Some(Ty::Str) | Some(Ty::Vec(_)) | Some(Ty::Map) | Some(Ty::Set)
+                ) =>
+            {
+                for a in args {
+                    if let HExpr::Var(v) = a {
+                        through_call.insert(v.clone());
+                    }
+                }
+            }
+            HExpr::ClosureCall { args, .. } => {
+                for a in args {
+                    if let HExpr::Var(v) = a {
+                        through_call.insert(v.clone());
+                    }
+                }
+            }
+            _ => {}
+        });
+        for (k, b) in arm.binders.iter().enumerate() {
+            let fty = fields.get(k).copied();
+            let escapes = arm_escaped.contains(b);
+            let moved = arm_st.get(b) == Some(&VState::Moved);
+            match fty {
+                // A boxed child moved into a callee or constructor (which
+                // now owns it) or returned: its slot must not be freed.
+                Some(Ty::Adt(j)) if self.boxed_full.get(j as usize).copied().unwrap_or(false) => {
+                    if moved || escapes {
+                        skip.push(b.clone());
+                    }
+                }
+                Some(Ty::Fn(_)) => {
+                    if moved || escapes {
+                        skip.push(b.clone());
+                    }
+                }
+                // An inline child returned is the box's own memory.
+                Some(Ty::Adt(_)) => {
+                    if moved || escapes {
+                        return Err("inline-escape");
+                    }
+                }
+                // Strings and collections: callees never free them and
+                // constructors copy them, so the box keeps its buffer
+                // unless the binder itself is the arm's value or may come
+                // back out of a call.
+                Some(Ty::Str) | Some(Ty::Vec(_)) | Some(Ty::Map) | Some(Ty::Set) => {
+                    if escapes || through_call.contains(b) {
+                        skip.push(b.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(skip)
     }
 }
 
@@ -1628,6 +2395,9 @@ fn allocates(value: &HExpr, facts: &AdtFacts) -> bool {
         // A closure mints its owning env allocation.
         HExpr::Closure { .. } => true,
         HExpr::Call(_, _) | HExpr::Clone(_) | HExpr::Slurp(_) => true,
+        // A `let`'s value is its body's (the planner's hoisted-temp lets
+        // wrap allocating calls).
+        HExpr::Let(_, body, _) => allocates(body, facts),
         _ => false,
     }
 }

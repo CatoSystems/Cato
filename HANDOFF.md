@@ -1,5 +1,99 @@
 # HANDOFF: Kernel Clone Elimination & Memory Churn Optimization
 
+## Round 14 results (2026-10-18): the retention fix — peak live 2.93 GB → 0.17 GB
+
+**First: the question.** The kernel self-build used ~18× the seed's memory
+(1178 MiB vs 64 MiB RSS compiling cli.cato). Hypothesis: allocation
+alignment. **Answer: no.** Alignment/quantum rounding is 15% in the kernel
+and 18% in the seed; the real cause is **retention**: 85% of the kernel's
+89M allocations were never freed (peak live 2927 MiB ≈ cumulative churn).
+The tools that showed this are `/tmp/alloc_live.c` (peak-live + quantum
+waste interposer) and `/tmp/dbl_free.c` (double-free catcher with stacks);
+`/tmp/alloc_leak.c` + `/tmp/dbg_leak.c` attribute never-freed bytes to
+call sites (with tools/instr_clones.py bracketing). Consider promoting
+alloc_live into tools/.
+
+**The planner rules that leaked (all fixed in the seed first).**
+
+- **R1 — call-scrutinee temps were never freed.** `(match (f x) (R [a b] …))`
+  leaked the result box and every unmoved field, every execution. 653 of
+  the kernel's 1585 `match` forms are this shape. Fix: `HArm.exit_free`
+  (planner output, `Some(skip)`/`None`) — the backend nulls the skipped
+  binders' field slots at arm exit and calls the box's drop glue, which is
+  now null-tolerant (a nulled slot is "not ours to free"). A named box
+  frees at arm exit only when some arm transferred an alias out; otherwise
+  it keeps its scope free and stays readable after the match.
+- **R2 — moved-binder boxes leaked wholesale.** Moving one binder out of a
+  matched box suppressed the box's scope free entirely, stranding every
+  sibling field. Fixed by the arm-exit free (skip the moved field, free the
+  rest).
+- **R3 — path-insensitive moves.** A binding moved in one branch of an
+  `if`/`match` and not another was consumed everywhere and leaked on every
+  path that kept it (`find-variant-2`-shaped scans leaked per step —
+  897 MiB of `clone__TyEnv` alone). Fix: **branch-local frees** — each
+  non-moving branch frees the binding itself through the existing
+  empty-binds `Let` wrapper (`branch_frees` in ownership.rs). Scrutinee
+  vars are excluded (their arms' exit frees own them); a branch whose value
+  may alias the binding (`tail_may_alias`, new any-path analysis) is left
+  alone.
+- **R4 — escaped binders did not transfer ownership.** `(let [x (match (f)
+  (R [a b] a))] …)` left `a` unowned forever. The arm-exit free skips `a`'s
+  slot and marks it Moved, so the receiving let owns (and frees) the merge.
+- **R5 — fresh temps as arguments leaked.** `(f (str …))`, `(str … (g x))`,
+  `(match (f (g x)) …)` — constructors, `str`, `conj` and `spit` copy or
+  consume; nothing freed the temps (~450 MiB: `str-rep`, `sb-str`,
+  `md-mint-str`, `em-ins`). Fix: **hoisting** — such arguments are rewritten
+  into `(let [~aN <temp>] (f … ~aN …))`, and the ordinary let planning
+  frees `~aN` after the call. Guarded by `compute_alias_ret` (functions
+  whose string/collection result may be a parameter's buffer or
+  runtime-owned memory — externs included — are never treated as fresh).
+  Order is preserved: every effectful argument before a hoisted one is
+  hoisted too, under its own type. Planner-made `let`s may wrap match
+  scrutinees (names minted `~aN` cannot appear in source); the backends'
+  `adt_of` looks through them.
+- **R6 — loop results and call-returned vectors never freed.** A loop whose
+  completing value is a fresh-seeded accumulator now yields owned duty
+  (`tail_yields_owned`'s `Loop` arm), and `free_binding_storage` releases
+  read-only `c.vecs` bindings the planner owns (L-c, unblocked by the
+  alias-return guard). `sb-str` seeds its accumulator with `(split "" "")`
+  — a fresh heap vector — so the final buffer is always owned and freed
+  after the join (−325 MiB).
+- **Kernel-source fixes** (in the WIP tree, not mine but found on the way):
+  `b-recur-kids` passed `args` as both the owned list and the borrowed
+  sibling-read source — one value in two parameter positions is an alias,
+  and the sibling walk read already-consumed elements (ASAN-confirmed UAF;
+  any layout perturbation crashed the self-build). The borrowed position
+  now takes `(clone args)`. Also fixed two latent seed emitter bugs the
+  hoisting exposed: `emit_let`'s map/set-from-call header fills went into
+  the entry prelude (dominance violation) — allocas hoist, fills stay in
+  the current block.
+
+**Numbers** (seed compiling `selfhost/cato/cli.cato`, clang excluded):
+peak live 2927 → 178 MiB; RSS 1178 → 201 MiB; never-freed 85% → 5.5%;
+allocations 89M → 81M (hoisting removed redundant copies). Wall time for
+the self-compile is unchanged (~9 s; the WIP recur-ok port set that
+baseline); user CPU +~25% for the frees, sys time down (fewer page faults).
+Byte-identity held through every planner step: k1's IR for cli.cato was
+byte-identical to the pre-change k1 until the deliberate strbuf/str-rep
+source rewrites. Gate: PASS; parity suite: PASS (it caught the prelude
+bug); probes in /tmp/probe (a–f: call-scrutinee, let-bound, clone-to-param,
+moved-binder, conditional-move, hoist) all at 183 never-freed = pre-main
+allocations only.
+
+**Remaining (the port):** `kernel_hir` now fails on exactly the hoisting
+diff — the kernel's `moveck.cato` must mirror the seed planner: `RBTable`
+needs return types; `fp-scrut-adt` needs HCall/HClone/HMatch/HIf/HLet;
+then fresh-box/hoist (order-free, hoist-ty, fresh-temp-ty), the arm-exit
+plan in `b-arms` (skip sets, freeable-alias threading, escaped transfer),
+`branch_frees` for HIf and across arms, `allocates-fresh` with the
+alias-return guard, and loop-result ownership in the let merge. The HIR
+shape is already ported (`ArmFree`/`HACons` 5 fields, dump format
+`(arm v [binds] body -|[skip])`, emitter `arm-exit-free` + null-tolerant
+boxed glue + `adt-of` HLet) — only the decision logic is missing.
+`kernel_bootstrap`/`kernel_emit` closures-fixture failures are pre-existing
+(reproduce identically with the HEAD seed on this tree).
+
+
 ## Status
 - Kernel self-build alloc churn: **50.56 GB → 3.00 GB**; ALLOC_CALLS
   **1.19B → 83M**; wall time 47.5 s → ~5 s. (Round 12 spent +179 MB of

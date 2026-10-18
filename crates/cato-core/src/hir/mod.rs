@@ -370,6 +370,12 @@ pub struct HArm {
     pub variant: Option<u32>,
     pub binders: Vec<String>,
     pub body: HExpr,
+    /// Drop-planner output. `Some(skip)`: the scrutinee's heap box is freed
+    /// when this arm completes, with the field slots of the binders in
+    /// `skip` nulled first (their objects moved out, or are the arm's own
+    /// value, so their duty lives elsewhere). `None`: no free here — the box
+    /// stays with its owner's scope, or it is borrowed/aliased/loop-ridden.
+    pub exit_free: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -512,6 +518,7 @@ pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
 pub(crate) use ownership::plan_drops;
+pub use ownership::{compute_alias_ret, tail_may_alias};
 pub(crate) use parse::*;
 pub(crate) use pipeline::*;
 pub(crate) use stagefn::*;

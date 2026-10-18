@@ -57,7 +57,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     ']' => '[',
                     _ => '{',
                 };
-                let here = Span { lo: i, hi: i + 1 };
+                let here = Span::new(i, i + 1);
                 let kind = kind_stack.pop();
                 // `#{...}` sets close with '}' but carry their own kind.
                 let is_set = kind == Some('#');
@@ -68,7 +68,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 let items = stack.pop().unwrap();
                 if is_set {
                     let node = Expr::SetLit(items);
-                    push_node(node, Span { lo: open, hi: i + 1 }, &mut stack, &mut top, &mut spans);
+                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
                     i += 1;
                     continue;
                 }
@@ -76,7 +76,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     if !items.len().is_multiple_of(2) {
                         return Err(rerr(
                             "map literal must have key/value pairs",
-                            Span { lo: open, hi: i + 1 },
+                            Span::new(open, i + 1),
                         ));
                     }
                     let pairs: Vec<(Expr, Expr)> = items
@@ -84,7 +84,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                         .map(|p| (p[0].clone(), p[1].clone()))
                         .collect();
                     let node = Expr::MapLit(pairs);
-                    push_node(node, Span { lo: open, hi: i + 1 }, &mut stack, &mut top, &mut spans);
+                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
                     i += 1;
                     continue;
                 }
@@ -93,7 +93,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 } else {
                     Expr::Vector(items)
                 };
-                push_node(node, Span { lo: open, hi: i + 1 }, &mut stack, &mut top, &mut spans);
+                push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
                 i += 1;
             }
             '"' => {
@@ -107,11 +107,11 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     j += 1;
                 }
                 if j >= bytes.len() {
-                    return Err(rerr("unterminated string", Span { lo: open, hi: bytes.len() }));
+                    return Err(rerr("unterminated string", Span::new(open, bytes.len())));
                 }
                 let raw = &input[start..j];
                 let unescaped = unescape(raw);
-                let span = Span { lo: open, hi: j + 1 };
+                let span = Span::new(open, j + 1);
                 push_node(Expr::LitStr(unescaped), span, &mut stack, &mut top, &mut spans);
                 i = j + 1;
             }
@@ -121,8 +121,8 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                     i += 1;
                 }
                 let token = &input[start..i];
-                let atom = parse_atom(token).map_err(|e| rerr(e, Span { lo: start, hi: i }))?;
-                let span = Span { lo: start, hi: i };
+                let atom = parse_atom(token).map_err(|e| rerr(e, Span::new(start, i)))?;
+                let span = Span::new(start, i);
                 push_node(atom, span, &mut stack, &mut top, &mut spans);
             }
         }
@@ -131,7 +131,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
         let open = start_stack.first().copied().unwrap_or(0);
         return Err(rerr(
             "unclosed delimiter",
-            Span { lo: open, hi: open + 1 },
+            Span::new(open, open + 1),
         ));
     }
     Ok((top, spans))

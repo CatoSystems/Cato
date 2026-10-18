@@ -210,6 +210,7 @@ pub fn check(h: &HExpr) -> HExpr {
                     variant: a.variant,
                     binders: a.binders.clone(),
                     body: check(&a.body),
+                    exit_free: a.exit_free.clone(),
                 })
                 .collect(),
             ty: *ty,

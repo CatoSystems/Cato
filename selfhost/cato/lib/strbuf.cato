@@ -47,7 +47,12 @@
 (defn sb-str [b :- StrBuf] :- str
   (match b
     (SB [parts n]
-      (let [v (loop [acc :- (Vector str) [] l :- StrCell (sb-rev parts) i :- i64 0]
+      ; The accumulator seeds with a fresh one-element vector (`split` of
+      ; the empty string), not the static `[]` literal: a loop result is
+      ; owned (and freed after the join) only when every path leaves a
+      ; heap buffer in the slot, and an empty buffer would hand the
+      ; literal back. The leading "" is invisible to the join.
+      (let [v (loop [acc :- (Vector str) (split "" "") l :- StrCell (sb-rev parts) i :- i64 0]
                 (if (or (>= i n) (sb-null l))
                   acc
                   (match l

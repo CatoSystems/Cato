@@ -196,9 +196,12 @@
 (defn d-arms [arms :- HArms tab :- i64] :- str
   (match arms
     (HANil [] "")
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [vname (if (= variant -1) "_" (str variant))
-            piece (str " (arm " vname " " (d-sids-list binders (clone tab)) " " (d-e body (clone tab)) ")")]
+            efname (match ef
+                     (AFNone [] "-")
+                     (AFSkip [skip] (d-sids-list skip (clone tab))))
+            piece (str " (arm " vname " " (d-sids-list binders (clone tab)) " " (d-e body (clone tab)) " " efname ")")]
         (str piece (d-arms next (clone tab)))))))
 
 (defn d-params [ps :- PList tab :- i64] :- str

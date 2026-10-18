@@ -127,6 +127,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
             .filter(|d| d.ret_borrowed)
             .map(|d| d.name.clone())
             .collect();
+        let alias_ret = hir::compute_alias_ret(&program.defns);
         for d in program.defns.iter_mut() {
             if d.is_extern {
                 continue;
@@ -144,6 +145,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &facts,
                 &program.adts,
                 true,
+                &alias_ret,
             )?;
         }
         for lam in program.lambdas.iter_mut() {
@@ -163,6 +165,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
                 &facts,
                 &program.adts,
                 false,
+                &alias_ret,
             )?;
         }
         Ok(program)
@@ -195,28 +198,42 @@ const PRELUDE: &str = r#"
 // Phase 19: modules — (ns ...) and (require [path :as alias])
 // ---------------------------------------------------------------------------
 
-/// Is this form `(require [path :as alias])`?
-fn require_of(form: &Expr) -> Option<(String, String)> {
-    let Expr::List(items) = form else { return None };
+/// What a top-level form is, with respect to `require`.
+enum RequireForm {
+    /// Not a `(require ...)` form.
+    NotRequire,
+    /// Head is `require` but the spec is not `[path :as alias]`.
+    Malformed,
+    /// A well-formed `(require [path :as alias])`.
+    Ok(String, String),
+}
+
+/// Classify a top-level form as `(require [path :as alias])`. `require` is a
+/// reserved head, so a list starting with it is always a require form: a
+/// wrong shape is `Malformed` (an error), never an ordinary form.
+fn require_of(form: &Expr) -> RequireForm {
+    let Expr::List(items) = form else {
+        return RequireForm::NotRequire;
+    };
     if !matches!(items.first(), Some(Expr::LitSym(h)) if h == "require") {
-        return None;
+        return RequireForm::NotRequire;
     }
     let Some(Expr::Vector(spec)) = items.get(1) else {
-        return None;
+        return RequireForm::Malformed;
     };
     if spec.len() != 3 {
-        return None;
+        return RequireForm::Malformed;
     }
     let Some(Expr::LitStr(path)) = spec.first() else {
-        return None;
+        return RequireForm::Malformed;
     };
     if !matches!(spec.get(1), Some(Expr::LitSym(s)) if s == ":as") {
-        return None;
+        return RequireForm::Malformed;
     }
     let Some(Expr::LitSym(alias)) = spec.get(2) else {
-        return None;
+        return RequireForm::Malformed;
     };
-    Some((path.clone(), alias.clone()))
+    RequireForm::Ok(path.clone(), alias.clone())
 }
 
 /// Rewrite call heads in `forms`: `from` -> `to` (position-0 symbols of
@@ -392,8 +409,18 @@ fn expand_file(
     canon_prefix: &str,
     ctx: &mut ModCtx,
 ) -> Result<Vec<(Expr, crate::ast::Span)>, String> {
+    // Register this file's text so its spans render against it, not the
+    // entry file, and stamp the id onto every span the reader produced.
+    let fid = diagnostics::register_source(file, src);
     let (all_forms, all_spans) = reader::read_all_spanned(src)
-        .map_err(|e| diagnostics::locate(e.span, &e.msg))?;
+        .map_err(|e| {
+            let span = crate::ast::Span { file: fid, ..e.span };
+            diagnostics::locate(span, &e.msg)
+        })?;
+    let all_spans: Vec<crate::ast::Span> = all_spans
+        .into_iter()
+        .map(|s| crate::ast::Span { file: fid, ..s })
+        .collect();
 
     let mut kept: Vec<(Expr, crate::ast::Span)> = Vec::new();
     for (f, s) in all_forms.into_iter().zip(all_spans) {
@@ -421,28 +448,32 @@ fn expand_file(
     let mut own: Vec<(Expr, crate::ast::Span)> = Vec::new();
     let mut this_aliases: Vec<(String, String)> = Vec::new();
     for (f, s) in kept {
-        if let Some((path, alias)) = require_of(&f) {
-            let child = parent_join(file, &path);
-            let canon = match ctx.canon.get(&child) {
-                Some(c) => c.clone(),
-                None => {
-                    // Record before recursing so a cycle terminates.
-                    ctx.canon.insert(child.clone(), alias.clone());
-                    let child_src = std::fs::read_to_string(&child).map_err(|e| {
-                        diagnostics::locate(
-                            s,
-                            &format!("require: cannot read {}: {}", child, e),
-                        )
-                    })?;
-                    let child_forms = expand_file(&child, &child_src, &alias, ctx)?;
-                    merged.extend(child_forms);
-                    alias.clone()
-                }
-            };
-            this_aliases.push((alias, canon));
-            continue;
+        match require_of(&f) {
+            RequireForm::Malformed => {
+                return Err(diagnostics::locate(s, "require expects [path :as alias]"));
+            }
+            RequireForm::Ok(path, alias) => {
+                let child = parent_join(file, &path);
+                let canon = match ctx.canon.get(&child) {
+                    Some(c) => c.clone(),
+                    None => {
+                        // Record before recursing so a cycle terminates.
+                        ctx.canon.insert(child.clone(), alias.clone());
+                        let child_src = std::fs::read_to_string(&child).map_err(|e| {
+                            diagnostics::locate(
+                                s,
+                                &format!("require: cannot read {}: {}", child, e),
+                            )
+                        })?;
+                        let child_forms = expand_file(&child, &child_src, &alias, ctx)?;
+                        merged.extend(child_forms);
+                        alias.clone()
+                    }
+                };
+                this_aliases.push((alias, canon));
+            }
+            RequireForm::NotRequire => own.push((f, s)),
         }
-        own.push((f, s));
     }
 
     // Rename this file's own members under its canonical prefix, then point

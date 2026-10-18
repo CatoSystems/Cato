@@ -1,0 +1,3 @@
+(ns bad.main)
+(require ["badalias_lib.cato" :as x])
+(defn main [] :- i64 (z/sq 3))

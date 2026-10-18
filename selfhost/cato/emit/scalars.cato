@@ -99,12 +99,11 @@
 (defn fc-cur-of [c :- &FnCtx] :- str
   (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone cur))))
 
+; Replace every ~ in s with t. Split+join does it in one pass; the old
+; per-character walk allocated a fresh string per byte (the seed's
+; str::replace shape, linear too).
 (defn str-rep [s :- str t :- str] :- str
-  (if (= (count s) 0)
-    ""
-    (if (= (nth s 0 0) 126)
-      (str t (str-rep (subs s 1 (count s)) t))
-      (str (char->str (nth s 0 0)) (str-rep (subs s 1 (count s)) t)))))
+  (join t (split s "~")))
 
 (defn em-ins [st :- Emit body :- str] :- ETRes
   (match (em-temp st)
@@ -791,7 +790,7 @@
 (defn arm-labels-mint [cur :- HArms st :- Emit acc :- EMLS] :- EArmsRes
   (match cur
     (HANil [] (ARes st acc))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (match (em-blk st)
         (ETRes [st2 lbl]
           (arm-labels-mint next st2 (EMLSCons variant lbl acc)))))))
@@ -814,10 +813,11 @@
                   scrut :- str ai :- i64 name :- str ty :- Ty env :- EEnv acc :- EMPS] :- EBodiesRes
   (match arms
     (HANil [] (BRRes st acc))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (match labels
         (EMLSCons [lvar lbl lrest]
-          (let [st0 (state/em-env-put st (clone env))
+          (let [binders2 (clone binders)
+                st0 (state/em-env-put st (clone env))
                 st1 (em-open st0 lbl)
                 st2 (if (= variant -1)
                       st1
@@ -826,11 +826,47 @@
               (ESRes [st3 v]
                 (match (pin-arm v (clone ty) st3)
                   (EPinRes [st4 pv]
-                    (let [pred (em-cur st4)
-                          st5 (em-line st4 (str "  br label %" merged))]
+                    (let [st4b (arm-exit-free ef variant binders2 st4 scrut name ai)
+                          pred (em-cur st4b)
+                          st5 (em-line st4b (str "  br label %" merged))]
                       (arm-bodies next lrest st5 merged scrut ai name ty env
                                   (MPSCons pv pred acc)))))))))
-        (_ (BRRes st acc)))))); Binder k of variant vi: load per its field type (adt.cato).
+        (_ (BRRes st acc)))))); The planner's arm-exit free (the seed's emit_arm_exit_free): null the
+; field slots of the binders whose objects left, then run the box's
+; null-tolerant drop glue. Only the drop for a wildcard arm.
+(defn aef-null-slots [st :- Emit scrut :- str name :- str off :- i64 n :- i64
+                      s :- i64] :- Emit
+  (if (< s n)
+    (match (em-temp st)
+      (ETRes [st1 g]
+        (let [st2 (em-line st1 (str "  " g " = getelementptr inbounds %" name ", ptr " scrut ", i32 0, i32 1, i32 " (+ off s)))
+              st3 (em-line st2 (str "  store i64 0, ptr " g ", align 8"))]
+          (aef-null-slots st3 scrut name off n (+ s 1)))))
+    st))
+
+(defn aef-fields [binds :- Sids k :- i64 skip :- Sids st :- Emit scrut :- str
+                  name :- str ai :- i64 vi :- i64] :- Emit
+  (if (types/sids-null binds)
+    st
+    (let [b (types/sids-idx binds 0)]
+      (if (types/sids-has skip b)
+        (match st
+          (Emit [c mdl sigs]
+            (aef-fields (types/sids-drop binds 1) (+ k 1) skip
+                        (aef-null-slots st scrut name (state/md-fs-off mdl ai vi k)
+                                        (state/md-fs-count-at mdl ai vi k) 0)
+                        scrut name ai vi)))
+        (aef-fields (types/sids-drop binds 1) (+ k 1) skip st scrut name ai vi)))))
+
+(defn arm-exit-free [ef :- ArmFree variant :- i64 binders :- Sids st :- Emit
+                     scrut :- str name :- str ai :- i64] :- Emit
+  (match ef
+    (AFNone [] st)
+    (AFSkip [skip]
+      (let [st1 (if (= variant -1) st (aef-fields binders 0 skip st scrut name ai))]
+        (em-line st1 (str "  call void @drop__" name "(ptr " scrut ")"))))))
+
+; Binder k of variant vi: load per its field type (adt.cato).
 
 (defn arm-field-loads [binders :- Sids ai :- i64 vi :- i64 k :- i64 st :- Emit
                        scrut :- str name :- str] :- Emit
@@ -852,10 +888,11 @@
                        anydone :- bool] :- LMBRes
   (match arms
     (HANil [] (LMBRes st acc anydone))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (match labels
         (EMLSCons [lvar lbl lrest]
-          (let [st0 (state/em-env-put st (clone env))
+          (let [binders2 (clone binders)
+                st0 (state/em-env-put st (clone env))
                 st1 (em-open st0 lbl)
                 st2 (if (= variant -1)
                       st1
@@ -865,8 +902,9 @@
                 (if done
                   (match (pin-arm v (clone ty) st3)
                     (EPinRes [st4 pv]
-                      (let [pred (em-cur st4)
-                            st5 (em-line st4 (str "  br label %" merged))]
+                      (let [st4b (arm-exit-free ef variant binders2 st4 scrut name ai)
+                            pred (em-cur st4b)
+                            st5 (em-line st4b (str "  br label %" merged))]
                         (loop-arm-bodies next lrest st5 merged scrut ai name ty env
                                          (MPSCons pv pred acc) true))))
                   (loop-arm-bodies next lrest st3 merged scrut ai name ty env
@@ -987,12 +1025,7 @@
     (ESlotsNil [] st)
     (ESlots2 [name slot ty next]
       (if (state/loop-slot-vec ty)
-        (match (state/em-ins3 st
-                 (str "~ = load %VecI64, ptr " slot ", align 8")
-                 (str "~ = extractvalue %VecI64 ^1, 0")
-                 (str "~ = extractvalue %VecI64 ^2, 1"))
-          (ET3Res [st1 _h d l]
-            (loop-load-slots next (em-vc-put st1 name d l (types/ty-arg ty)))))
+        (loop-load-slots next (em-gr-put st name slot (types/ty-arg ty)))
         (match (em-temp st)
           (ETRes [st1 r]
             (match st1
@@ -1090,6 +1123,26 @@
   (match (loop-slot-vec-init d l st)
     (ESRes [st1 hdr] (EURes (em-line st1 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))))))
 
+; Store a vector recur arg into its loop slot. A conj already produced a
+; slot holding {ptr, len, cap}; copy it whole so capacity (offset 2)
+; survives the recur instead of being reset to len (which would force a
+; grow every iteration — the quadratic kernel conj).
+(defn store-recur-vec-arg [kid :- HExpr slot :- str st :- Emit] :- EURes
+  (match kid
+    (HConj [v x el inplace]
+      (match (heap/emit-conj (clone v) (clone x) el inplace st)
+        (ETRes [st1 cslot]
+          (match (em-temp st1)
+            (ETRes [st2 t]
+              (let [st3 (em-line st2 (str t " = load %VecI64, ptr " cslot ", align 8"))
+                    st4 (em-line st3 (str "  store %VecI64 " t ", ptr " slot ", align 8"))]
+                (EURes st4)))))))
+    (_
+      (match (heap/emit-vec-pair kid st)
+        (EVRes [st1 d l el]
+          (match (recur-store-vec d l slot st1)
+            (EURes [st2] (EURes st2))))))))
+
 (defn recur-stores [args :- HExprs slots :- EMLSlots st :- Emit] :- EURes
   (match args
     (HENil [] (EURes st))
@@ -1097,10 +1150,8 @@
       (match slots
         (ESlots2 [name slot sty snext]
           (if (state/loop-slot-vec sty)
-            (match (heap/emit-vec-pair kid st)
-              (EVRes [st1 d l el]
-                (match (recur-store-vec d l slot st1)
-                  (EURes [st2] (recur-stores2 next snext st2)))))
+            (match (store-recur-vec-arg kid slot st)
+              (EURes [st1] (recur-stores2 next snext st1)))
             (match (emit-typed kid (clone sty) st)
               (ESRes [st1 v]
                 (match st1
@@ -1117,10 +1168,8 @@
       (match slots
         (ESlots2 [name slot sty snext]
           (if (state/loop-slot-vec sty)
-            (match (heap/emit-vec-pair kid st)
-              (EVRes [st1 d l el]
-                (match (recur-store-vec d l slot st1)
-                  (EURes [st2] (recur-stores2 next snext st2)))))
+            (match (store-recur-vec-arg kid slot st)
+              (EURes [st1] (recur-stores2 next snext st1)))
             (match (emit-typed kid (clone sty) st)
               (ESRes [st1 v]
                 (match st1

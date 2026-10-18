@@ -197,6 +197,7 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
                     variant: a.variant,
                     binders: a.binders,
                     body: rewrite(a.body, f),
+                    exit_free: a.exit_free,
                 })
                 .collect(),
             ty,
@@ -677,6 +678,7 @@ pub fn substitute(e: HExpr, name: &str, replacement: &HExpr) -> HExpr {
                             variant: a.variant,
                             binders: a.binders,
                             body: substitute(a.body, name, replacement),
+                            exit_free: a.exit_free,
                         }
                     }
                 })

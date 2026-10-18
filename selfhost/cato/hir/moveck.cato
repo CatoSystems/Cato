@@ -47,7 +47,8 @@
 (deftype BCtx (BCtx [escaped :- Sids shadowed :- Sids facts :- Facts
                     tab :- i64 shared :- Sids loopcopy :- Sids adts :- AdtTab
                     dparams :- DParams retb :- RBTable
-                    nomove :- Sids curbrb :- i64]))
+                    nomove :- Sids curbrb :- i64
+                     recur-ok :- i64 loopseed :- Sids]))
 
 (deftype BRes (BOk [st :- IMap owns :- IMap rem :- IMap cons :- IMap e :- HExpr])
              (BErr [msg :- str]))
@@ -72,13 +73,13 @@
                (types/is-non-copy-ty t)
                (= (forms/im-get st v 0) 1))
         (match bcx
-          (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+          (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
             (UseRes rem2 (str "use of moved value " (forms/sym-str (clone tab) v)))))
         (UseRes rem2 "")))))
 
 (defn b-loopcopy-of [bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared loopcopy adts dp retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared loopcopy adts dp retb _nm _crb _rok _lseed]
       (clone loopcopy))))
 
 (deftype MoveRes (MoveRes [st :- IMap owns :- IMap cons :- IMap msg :- str]))
@@ -94,7 +95,7 @@
                 wsc :- i64 wbs :- &Sids] :- MoveRes
   (if (types/sids-has (b-nomove-of bcx) v)
     (match bcx
-      (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
+      (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
         (MoveRes st owns cons
                  (str "cannot move " (forms/sym-str (clone tab) v)
                       ": it is a borrowed parameter and still belongs to the caller"))))
@@ -106,7 +107,7 @@
 
 (defn b-nomove-of [bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb nomove _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb nomove _crb _rok _lseed]
       (clone nomove))))
 
 ; mark a watch's aliasing binders Moved/unowning (the box just left)
@@ -132,7 +133,7 @@
             (match bcx
               ; a non-Copy loop variable rides as Copy: calls and
               ; constructors borrow it, nothing moves (S8)
-              (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp _retb _nm _crb]
+              (BCtx [escaped shadowed facts tab shared loopcopy _adts _dp _retb _nm _crb _rok _lseed]
                 (if (types/sids-has loopcopy v)
                   (MncRes st owns rem2 cons)
                   (match (move-var v st owns cons bcx wsc wbs)
@@ -205,8 +206,8 @@
     (cond
       ; subs/split/join/strcat/charstr/tostr: fresh strings
       (or (= tag 15) (= tag 16) (= tag 17) (= tag 14) (= tag 19) (= tag 13)) true
-      ; conj/args: fresh collections
-      (or (= tag 21) (= tag 42)) true
+      ; conj/args: fresh collections; vec literals are fresh
+      (or (= tag 21) (= tag 42) (= tag 5)) true
       ; a closure mints its owning env allocation
       (= tag 37) true
       ; a fresh collection from a call; an explicit deep copy
@@ -296,7 +297,7 @@
 (defn b-count-vars-arms [arms :- &HArms counts :- IMap] :- IMap
   (match arms
     (HANil [] counts)
-    (HACons [variant binders body next] (b-count-vars-arms next (b-count-vars body counts)))))
+    (HACons [variant binders body ef next] (b-count-vars-arms next (b-count-vars body counts)))))
 
 (defn b-count-caps [caps :- &Caps counts :- IMap] :- IMap
   (match caps
@@ -364,7 +365,7 @@
 (defn b-tail-escape-arms [arms :- &HArms acc :- Sids] :- Sids
   (match arms
     (HANil [] acc)
-    (HACons [variant binders body next] (b-tail-escape-arms next (b-tail-escape body acc)))))
+    (HACons [variant binders body ef next] (b-tail-escape-arms next (b-tail-escape body acc)))))
 
 ; --- the checker -------------------------------------------------------------------
 
@@ -442,7 +443,7 @@
 (defn b-call-move [name :- i64 args :- HExprs st :- IMap owns :- IMap rem :- IMap
                   cons :- IMap tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids] :- B4
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts dp _retb _nm _crb _rok _lseed]
       (if (types/sids-has shared name)
         (B4 st owns rem cons)
         (match (dparams-get dp name)
@@ -533,40 +534,40 @@
 
 (defn b-facts-of [bcx :- &BCtx] :- Facts
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb] (clone facts))))
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed] (clone facts))))
 
 (defn b-retb-of [bcx :- &BCtx] :- RBTable
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp retb _nm _crb] (clone retb))))
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp retb _nm _crb _rok _lseed] (clone retb))))
 
 ; The accessors above hand back an owned field, so every read copied the
 ; ownership list (one cons per ADT in the program). The consumers of these
 ; only borrow, so the read happens inside the match instead.
 (defn b-facts-owns-at [bcx :- &BCtx i :- i64] :- i64
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (forms/facts-owns-at facts i))))
 
 (defn b-facts-boxed-at [bcx :- &BCtx i :- i64] :- i64
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (forms/facts-boxed-at facts i))))
 
 (defn b-allocates-of [v :- &HExpr bcx :- &BCtx] :- bool
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (b-allocates v facts))))
 
 (defn b-arm-state-of [binders :- Sids fields :- TyList pst :- IMap powns :- IMap
                       tys :- TyEnv bcx :- &BCtx] :- BLRes
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (b-arm-state binders fields pst powns tys facts))))
 
 (defn b-arm-esc-of [binders :- Sids fields :- TyList st :- IMap escaped :- Sids
                     bcx :- &BCtx acc :- i64] :- i64
   (match bcx
-    (BCtx [escaped0 shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped0 shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (b-arm-esc binders fields st escaped facts acc))))
 
 ; Is this an expression whose value is a borrow (a call to a `&T` callee)?
@@ -579,7 +580,7 @@
 ; consumed ∧ not shadowed, in binding order — the whole destruction rule
 (defn b-frees [binds :- Binds st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (b-frees-walk binds st owns cons escaped shadowed facts))))
 
 (defn b-frees-walk [binds :- &Binds st :- &IMap owns :- &IMap cons :- &IMap
@@ -659,7 +660,7 @@
 (defn b-mentions-arms [arms :- &HArms name :- i64] :- bool
   (match arms
     (HANil [] false)
-    (HACons [_ binders body next]
+    (HACons [_ binders body _ef next]
       (or (types/sids-has binders name)
           (b-mentions body name)
           (b-mentions-arms next name)))))
@@ -703,7 +704,7 @@
 (defn b-rebound-arms [arms :- &HArms name :- i64] :- bool
   (match arms
     (HANil [] false)
-    (HACons [_ _ body next] (or (b-rebound body name) (b-rebound-arms next name)))))
+    (HACons [_ _ body _ef next] (or (b-rebound body name) (b-rebound-arms next name)))))
 
 (defn b-rebound-binds [binds :- &Binds name :- i64] :- bool
   (match binds
@@ -720,7 +721,7 @@
 (defn b-frees-here [binds :- &Binds body :- &HExpr st :- &IMap owns :- &IMap
                     cons :- &IMap bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped _sh facts tab shared _lc adts dp retb _nm _crb]
+    (BCtx [escaped _sh facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
       (b-frees-here-walk binds body st owns cons escaped facts))))
 
 (defn b-frees-here-walk [binds :- &Binds body :- &HExpr st :- &IMap owns :- &IMap
@@ -741,29 +742,105 @@
 ; loop bindings: Copy-typed; the init checks against the outer state, the
 ; binding shadows for the body, and the previous state restores after
 (deftype BLoopRes (BLoopRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap
-                            tys :- TyEnv binds :- Binds saved :- IMap savedo :- IMap])
-                (BLoopErr [msg :- str]))
+                             tys :- TyEnv binds :- Binds saved :- IMap savedo :- IMap
+                             seed :- Sids])
+                 (BLoopErr [msg :- str]))
 
 ; S8: a non-Copy loop variable rides as Copy — reads and calls never
 ; move it, and no scope frees it. Non-Copy bind names collect into a set
 ; the body walk consults through the context.
-(defn bcx-with-loopcopy [bcx :- &BCtx names :- Sids] :- BCtx
+(defn bcx-with-loopcopy [bcx :- &BCtx names :- Sids seed :- Sids] :- BCtx
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
       ; nested loops accumulate: an outer loop variable stays Copy inside
       ; an inner loop body (the seed keeps one accumulating set). The
       ; caller resets the watch pair for the body (a new loop body is not
-      ; inside any match arm).
+      ; inside any match arm). A fresh recur-ok context starts here.
       (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared)
             (sids-into names (clone _lc)) (clone adts) (clone dp) (clone retb)
-            (clone _nm) _crb))))
+            (clone _nm) _crb -1 (sids-into seed (clone _lseed))))))
+
+; recur-ok: the accumulator the enclosing HRecur proved a self-update conj
+; for (the seed's recur_ok); -1 outside. loopseed: the loop variables whose
+; seed is a fresh allocation (the seed's loop_seed_fresh) — only those may
+; take the in-place recur path.
+(defn b-recur-ok-of [bcx :- &BCtx] :- i64
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb rok _lseed] rok)))
+
+(defn b-loopseed-of [bcx :- &BCtx] :- Sids
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok lseed]
+      (clone lseed))))
+
+(defn bcx-with-recur-ok [bcx :- &BCtx rok :- i64] :- BCtx
+  (match bcx
+    (BCtx [escaped shadowed facts tab shared lc adts dp retb nm crb _rok lseed]
+      (BCtx (clone escaped) (clone shadowed) (clone facts) (clone tab) (clone shared)
+            (clone lc) (clone adts) (clone dp) (clone retb) (clone nm) crb rok
+            (clone lseed)))))
+
+; the seed's conj_counts: how many recur args are `(conj n ...)`
+(defn recur-conj-count [args :- &HExprs n :- i64] :- i64
+  (match args
+    (HENil [] 0)
+    (HECons [a next]
+      (let [hit (match a
+                  (HConj [v x el inpo]
+                    (match v (HVar [vname] (if (= vname n) 1 0)) (_ 0)))
+                  (_ 0))]
+        (+ hit (recur-conj-count next n))))))
+
+; the seed's sibling_reads: does any arg other than ai read n?
+(defn recur-sibling-reads [args :- &HExprs ai :- i64 k :- i64 n :- i64] :- bool
+  (match args
+    (HENil [] false)
+    (HECons [a next]
+      (if (= k ai)
+        (recur-sibling-reads next ai (+ k 1) n)
+        (if (> (forms/im-get (b-count-vars a (MNil)) n 0) 0)
+          true
+          (recur-sibling-reads next ai (+ k 1) n))))))
+
+; Is arg `kid` the loop's self-update `(conj acc x)` (the seed's recur_ok
+; candidate)? Only a single conj of a fresh-seeded loop variable counts,
+; and no sibling arg may read it (a sibling seeing the old header would
+; observe the append, or the growth's free).
+(defn recur-cand-of [kid :- HExpr all :- &HExprs ai :- i64 bcx :- &BCtx] :- i64
+  (match kid
+    (HConj [v x el inpo]
+      (match v
+        (HVar [n]
+          (if (and (types/sids-has (b-loopcopy-of bcx) n)
+                   (types/sids-has (b-loopseed-of bcx) n)
+                   (= (recur-conj-count all n) 1)
+                   (not (recur-sibling-reads all ai 0 n)))
+            n
+            -1))
+        (_ -1)))
+    (_ -1)))
+
+; b-kids with a per-arg recur-ok context: the arg at `ai` that is the
+; self-update conj is checked under recur-ok = its accumulator var.
+(defn b-recur-kids [es :- HExprs st :- IMap owns :- IMap rem :- IMap cons :- IMap
+                    tys :- &TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids acc :- HExprs
+                    all :- &HExprs ai :- i64] :- BKRes
+  (match es
+    (HENil [] (BKOk st owns rem cons (hexpr/hes-rev acc (HENil))))
+    (HECons [kid next]
+      (let [bcx2 (bcx-with-recur-ok bcx (recur-cand-of (clone kid) all ai bcx))]
+        (match (bcheck kid st owns rem cons (clone tys) bcx2 wsc wbs)
+          (BErr [msg] (BKErr msg))
+          (BOk [st2 owns2 rem2 cons2 c2]
+            (b-recur-kids next st2 owns2 rem2 cons2 tys bcx wsc wbs (HECons c2 acc)
+                          all (+ ai 1))))))))
 
 ; The watch set: binders whose field aliases the scrutinee's one heap box
 ; (str/vec/map/set/fn fields and boxed-ADT children — the seed's rule,
 ; including inline-ADT children whose binder is the field's address).
 (defn b-facts-alias-of [bcx :- &BCtx fty :- &Ty] :- i64
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
       (fp-binder-alias fty facts))))
 
 (defn aliasing-binders [binders :- Sids fields :- TyList bcx :- &BCtx acc :- Sids] :- Sids
@@ -808,17 +885,17 @@
 
 (defn b-tab-of [bcx :- &BCtx] :- i64
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
       tab)))
 
 (defn b-escaped-of [bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
       (clone escaped))))
 
 (defn b-currbrb-of [bcx :- &BCtx] :- i64
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm curbrb]
+    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm curbrb _rok _lseed]
       curbrb)))
 
 (defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
@@ -830,9 +907,9 @@
 
 (defn b-loop-binds [binds :- Binds st :- IMap owns :- IMap rem :- IMap cons :- IMap
                    tys :- TyEnv bcx :- &BCtx wsc :- i64 wbs :- &Sids
-                   acc :- Binds saved :- IMap savedo :- IMap] :- BLoopRes
+                   acc :- Binds saved :- IMap savedo :- IMap seed :- Sids] :- BLoopRes
   (match binds
-    (BNil [] (BLoopRes st owns rem cons tys acc saved savedo))
+    (BNil [] (BLoopRes st owns rem cons tys acc saved savedo seed))
     (BCons [name init ty next]
       (match (bcheck init st owns rem cons (clone tys) bcx wsc wbs)
         (BErr [msg] (BLoopErr msg))
@@ -858,16 +935,19 @@
                                     (forms/te-put tys name ty)
                                     bcx wsc wbs (BCons name init2 ty acc)
                                     (forms/im-put saved name sval)
-                                    (forms/im-put savedo name soval))))))
+                                    (forms/im-put savedo name soval)
+                                    seed)))))
               (let [iown (if (types/is-non-copy-ty ty)
                            (if (b-allocates-of init2 bcx) 1 0)
-                           0)]
+                           0)
+                    seed2 (if (= iown 1) (SCons name seed) seed)]
                 (b-loop-binds next (forms/im-put st1 name 0)
                               (forms/im-put owns1 name iown) rem1 cons1
                               (forms/te-put tys name ty)
                               bcx wsc wbs (BCons name init2 ty acc)
                               (forms/im-put saved name sval)
-                              (forms/im-put savedo name soval))))))))))
+                              (forms/im-put savedo name soval)
+                              seed2)))))))))
 
 (defn b-restore-st [saved :- IMap st :- IMap] :- IMap
   (match saved
@@ -912,7 +992,7 @@
 ; table itself copied every ADT in the program.
 (defn b-varnt-fields-at [bcx :- &BCtx t :- i64 vi :- i64] :- TyList
   (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb _nm _crb]
+    (BCtx [escaped shadowed facts tab shared _lc adts _dp _retb _nm _crb _rok _lseed]
       (forms/varnt-fields-at adts t vi))))
 
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
@@ -960,7 +1040,7 @@
              adtidx :- i64 boxed :- i64 esc :- i64 scrid :- i64] :- BArmsRes
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [fields (if (= boxed 1) (b-varnt-fields-at bcx adtidx variant) (TyNil))]
         (match (b-arm-state-of (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) bcx)
           (BLErr [msg] (BArmsErr msg))
@@ -995,14 +1075,14 @@
                       (BArmsErr borrowed-hit)
                       (b-arms next pst powns st3 owns3 rem2 cons2
                               tys bcx wsc wbs
-                              (HACons variant binders body2 acc)
+                              (HACons variant binders body2 (AFNone) acc)
                               adtidx boxed esc2 scrid))))))))))))
 
 (defn hes-rev-arms [arms :- HArms acc :- HArms] :- HArms
   (match arms
     (HANil [] acc)
-    (HACons [variant binders body next]
-      (hes-rev-arms next (HACons variant binders body acc)))))
+    (HACons [variant binders body ef next]
+      (hes-rev-arms next (HACons variant binders body (AFNone) acc)))))
 
 ; closure captures: use, record the heap-ownership bit, then move the
 ; non-Copy ones (the env's drop glue frees only what it really owns)
@@ -1259,7 +1339,11 @@
         (BOk st1 owns1 rem1 cons1 (HSeq c1)))))
 
     (HRecur [args]
-    (match (b-kids args st owns rem cons tys bcx wsc wbs (HENil))
+    ; `all` is walked for sibling reads while the owned copy's elements are
+    ; moved into bcheck one by one: the borrowed position needs its own list
+    ; (one value in two parameter positions is an alias, and the reads would
+    ; hit consumed elements).
+    (match (b-recur-kids args st owns rem cons tys bcx wsc wbs (HENil) (clone args) 0)
       (BKErr [msg] (BErr msg))
       (BKOk [st1 owns1 rem1 cons1 c1]
         (BOk st1 owns1 rem1 cons1 (HRecur c1)))))
@@ -1288,7 +1372,8 @@
                          (types/is-non-copy-ty t)
                          (= (forms/im-get st1 vn 0) 0)
                          (= (forms/im-get owns1 vn 0) 1)
-                         (= (forms/im-get rem1 vn 0) 0))]
+                         (or (= (forms/im-get rem1 vn 0) 0)
+                             (= (b-recur-ok-of bcx) vn)))]
           (if (not lastq)
             (match (bcheck x st1 owns1 rem1 cons1 tys bcx wsc wbs)
               (BErr [msg] (BErr msg))
@@ -1336,11 +1421,11 @@
               (BOk st2 owns2 rem2 cons2 (HLet binds3 body2 frees2))))))))
 
     (HLoop [binds ty body]
-    (match (b-loop-binds binds st owns rem cons tys bcx wsc wbs (BNil) (MNil) (MNil))
+    (match (b-loop-binds binds st owns rem cons tys bcx wsc wbs (BNil) (MNil) (MNil) (SNil))
       (BLoopErr [msg] (BErr msg))
-      (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved savedo]
+      (BLoopRes [st1 owns1 rem1 cons1 tys1 binds2 saved savedo seed1]
         (match (bcheck body st1 owns1 rem1 cons1 tys1
-                       (bcx-with-loopcopy bcx (binds-loopcopy (hexpr/binds-rev (clone binds2) (BNil)) (SNil)))
+                       (bcx-with-loopcopy bcx (binds-loopcopy (hexpr/binds-rev (clone binds2) (BNil)) (SNil)) seed1)
                        -1 (SNil))
           (BErr [msg] (BErr msg))
           (BOk [st2 owns2 rem2 cons2 body2]
@@ -1546,7 +1631,7 @@
 (defn b-tail-arms-ok [arms :- &HArms borrows :- &Sids sc :- i64 dparams :- &DParams retb :- &RBTable] :- bool
   (match arms
     (HANil [] true)
-    (HACons [variant binders body next]
+    (HACons [variant binders body ef next]
       (let [arb (if (= sc 1) (sids-into binders (clone borrows)) (clone borrows))]
         (if (b-tail-borrow-ok body arb dparams retb)
           (b-tail-arms-ok next borrows sc dparams retb)
@@ -1604,7 +1689,7 @@
 ; definition, and every definition copied it twice.
 (defn fp-frees-of [params :- PList st :- &IMap owns :- &IMap bcx :- &BCtx] :- Sids
   (match bcx
-    (BCtx [esc _sh facts _tab _shared _lc _adts _dp _retb _nm _crb]
+    (BCtx [esc _sh facts _tab _shared _lc _adts _dp _retb _nm _crb _rok _lseed]
       (fp-frees params st owns facts esc))))
 
 (defn b-plan [name :- i64 params :- PList body :- HExpr ret :- Ty rb :- i64 facts :- Facts
@@ -1637,23 +1722,23 @@
 ; is active outside a match arm.
 (defn b-plan-ctx [facts :- Facts tab :- i64 shared :- Sids adts :- AdtTab
                  dparams :- DParams retb :- RBTable nomove :- Sids curbrb :- i64] :- BCtx
-  (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb))
+  (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb -1 (SNil)))
 
 (defn b-plan-body [name :- i64 params :- PList body :- HExpr bcx :- BCtx] :- BPlanRes
   ; `shared` (builtins, which never consume) and `dparams` (per-callee
   ; parameter borrows) are computed once per program by check-program —
   ; computing them per defn walked the whole Defns chain 1000+ times.
   (match bcx
-    (BCtx [_esc0 _sh0 facts tab shared _lc0 adts dparams retb nomove curbrb]
+    (BCtx [_esc0 _sh0 facts tab shared _lc0 adts dparams retb nomove curbrb _rok _lseed]
       (let [escaped (b-tail-escape body (SNil))
             rem0 (b-count-vars body (MNil))
             r (b-init-params (clone params) (clone facts) (MNil) (MNil) (MNil) (MNil) (TENil))]
         (match r
           (BLErr [msg]
-            (BPlanRes (BCtx escaped (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb)
+            (BPlanRes (BCtx escaped (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb -1 (SNil))
                       (BPlanErr msg)))
           (BLRes [st0 owns0 rem0 cons0 tys0 binds0]
-            (let [bcx2 (BCtx escaped (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb)]
+            (let [bcx2 (BCtx escaped (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb -1 (SNil))]
               (match (bcheck body st0 owns0 rem0 cons0 tys0 bcx2 -1 (SNil))
                 (BErr [msg]
                   (BPlanRes bcx2
@@ -1711,8 +1796,8 @@
 (defn osr-arms [as :- HArms] :- HArms
   (match as
     (HANil [] (HANil))
-    (HACons [variant binders body next]
-      (HACons variant binders (own-str-return body) (osr-arms next)))))
+    (HACons [variant binders body ef next]
+      (HACons variant binders (own-str-return body) ef (osr-arms next)))))
 
 ; --- whole-program check: rewrite every plain defn and lambda ---------------
 
@@ -1733,7 +1818,7 @@
             (match (b-plan name (clone params) body (clone ret) rb facts tab shared adts dparams retb)
               (BPlanRes [bcx plan]
                 (match bcx
-                  (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2 _nm2 _crb2]
+                  (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2 _nm2 _crb2 _rok _lseed]
                     (match plan
                       (BPlanErr [msg] (CKErr msg))
                       (BPlan [st owns body2 frees]
@@ -1760,7 +1845,7 @@
           (match (b-plan mangled (clone params) body (clone ret) 0 facts tab shared adts dparams retb)
             (BPlanRes [bcx plan]
               (match bcx
-                (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2 _nm2 _crb2]
+                (BCtx [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2 _nm2 _crb2 _rok _lseed]
                   (match plan
                     (BPlanErr [msg] (LErrL msg))
                     (BPlan [st owns body2 _frees]

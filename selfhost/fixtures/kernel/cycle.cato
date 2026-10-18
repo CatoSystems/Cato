@@ -1,0 +1,3 @@
+(ns cyc.main)
+(require ["cycle_a.cato" :as a])
+(defn main [] :- i32 (do (print-i64 (a/one 5)) 0))

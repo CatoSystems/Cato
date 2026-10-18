@@ -1,0 +1,2 @@
+(ns bad.lib)
+(defn sq [a :- i64] :- i64 (* a a))

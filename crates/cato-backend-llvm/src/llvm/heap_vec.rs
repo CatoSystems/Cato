@@ -611,6 +611,26 @@ pub(crate) fn free_binding_storage(name: &str, c: &mut FnCtx, mdl: &mut Mdl) -> 
         ));
         return true;
     }
+    // A read-only (ptr, len) vector the planner nevertheless owns: a fresh
+    // call result, a hoisted temp, an owned loop result. The planner only
+    // grants ownership to buffers that are provably heap (alias-returning
+    // callees and static seeds excluded), so a plain free is sound.
+    if let Some((p, l, elem)) = c.vecs.get(name).cloned() {
+        if std::env::var_os("CATO_NO_VECFREE").is_some() {
+            return false;
+        }
+        if elem == Elem::Str {
+            mdl.ensure_decl("declare void @cato_str_vec_free(ptr, i64)");
+            c.line(&format!(
+                "  call void @cato_str_vec_free(ptr {}, i64 {})",
+                p, l
+            ));
+        } else {
+            mdl.ensure_decl("declare void @free(ptr)");
+            c.line(&format!("  call void @free(ptr {})", p));
+        }
+        return true;
+    }
     false
 }
 

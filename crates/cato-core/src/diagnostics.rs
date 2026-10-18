@@ -61,16 +61,30 @@ impl SourceMap {
 }
 
 thread_local! {
-    static SOURCE: RefCell<Option<SourceMap>> = const { RefCell::new(None) };
+    static SOURCES: RefCell<Vec<SourceMap>> = const { RefCell::new(Vec::new()) };
 }
 
-/// Install the source map for the duration of `f`, so errors can render
-/// locations. Nested calls replace the map (compile entry points only).
+/// Install the entry-file source map and clear the registry for the duration
+/// of `f`. Required files register themselves via [`register_source`]; their
+/// spans carry the returned id.
 pub fn with_source<T>(file: &str, src: &str, f: impl FnOnce() -> T) -> T {
-    SOURCE.with(|s| *s.borrow_mut() = Some(SourceMap::new(file, src)));
+    SOURCES.with(|s| {
+        s.borrow_mut().clear();
+        s.borrow_mut().push(SourceMap::new(file, src));
+    });
     let out = f();
-    SOURCE.with(|s| *s.borrow_mut() = None);
+    SOURCES.with(|s| s.borrow_mut().clear());
     out
+}
+
+/// Register a source file (the entry file or a required module) and return
+/// the 1-based id to stamp onto its spans (0 means "unknown file").
+pub fn register_source(file: &str, src: &str) -> u32 {
+    SOURCES.with(|s| {
+        let mut s = s.borrow_mut();
+        s.push(SourceMap::new(file, src));
+        s.len() as u32
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -171,9 +185,12 @@ pub fn locate(span: Span, msg: &str) -> String {
     if span == Span::default() {
         return head;
     }
-    SOURCE.with(|s| match s.borrow().as_ref() {
-        Some(map) => render_at(map, span, &head),
-        None => head,
+    SOURCES.with(|s| {
+        let sources = s.borrow();
+        match span.file.checked_sub(1).and_then(|i| sources.get(i as usize)) {
+            Some(map) => render_at(map, span, &head),
+            None => head,
+        }
     })
 }
 

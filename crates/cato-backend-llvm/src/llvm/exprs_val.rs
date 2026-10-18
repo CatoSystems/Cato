@@ -353,6 +353,8 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let slot = c.temp();
                 c.prelude
                     .push(format!("  {} = alloca %VecI64, align 8", slot));
+                // Only the alloca hoists: the fills read values defined in
+                // the current block, so they must land there too.
                 for i in 0..3 {
                     let v = c.temp();
                     c.line(&format!(
@@ -360,16 +362,14 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                         v, st, i
                     ));
                     let pf = c.temp();
-                    c.prelude.push(format!(
+                    c.line(&format!(
                         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 {}",
                         pf, slot, i
                     ));
                     if i == 0 {
-                        c.prelude
-                            .push(format!("  store ptr {}, ptr {}, align 8", v, pf));
+                        c.line(&format!("  store ptr {}, ptr {}, align 8", v, pf));
                     } else {
-                        c.prelude
-                            .push(format!("  store i64 {}, ptr {}, align 8", v, pf));
+                        c.line(&format!("  store i64 {}, ptr {}, align 8", v, pf));
                     }
                 }
                 c.growm.insert(name.clone(), (slot, *ty));
@@ -581,27 +581,26 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let slot = c.temp();
                 c.prelude
                     .push(format!("  {} = alloca %VecI64, align 8", slot));
+                // Only the alloca hoists; the header fills read values from
+                // the current block.
                 let pf = c.temp();
-                c.prelude.push(format!(
+                c.line(&format!(
                     "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
                     pf, slot
                 ));
-                c.prelude
-                    .push(format!("  store ptr {}, ptr {}, align 8", p, pf));
+                c.line(&format!("  store ptr {}, ptr {}, align 8", p, pf));
                 let lf = c.temp();
-                c.prelude.push(format!(
+                c.line(&format!(
                     "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 1",
                     lf, slot
                 ));
-                c.prelude
-                    .push(format!("  store i64 {}, ptr {}, align 8", l, lf));
+                c.line(&format!("  store i64 {}, ptr {}, align 8", l, lf));
                 let cf = c.temp();
-                c.prelude.push(format!(
+                c.line(&format!(
                     "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 2",
                     cf, slot
                 ));
-                c.prelude
-                    .push(format!("  store i64 {}, ptr {}, align 8", cap, cf));
+                c.line(&format!("  store i64 {}, ptr {}, align 8", cap, cf));
                 c.growm.insert(name.clone(), (slot, *ty));
             }
             _ => {

@@ -24,6 +24,10 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
             Some(last) => adt_of(last, c, sigs),
             None => panic!("codegen: empty seq has no ADT value"),
         },
+        // The planner's own `let` around a scrutinee call: its bindings are
+        // hoisted argument temps, freed before the arms, and the value is
+        // the call's.
+        HExpr::Let(_, body, _) => adt_of(body, c, sigs),
         // The loop's recorded completing type.
         HExpr::Loop { ty: Ty::Adt(i), .. } => *i,
         HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
@@ -158,6 +162,56 @@ pub(crate) fn emit_adt(
     }
 }
 
+/// The planner's arm-exit free (`HArm::exit_free`): once the arm's value is
+/// computed, null the field slots of the binders whose objects left (moved
+/// into a callee or constructor, or the arm's own value), then run the
+/// box's drop glue — null-tolerant, so exactly the objects nobody else
+/// holds are released. Collection fields null all three header words so a
+/// skipped `(Vector str)` frees neither its array nor its elements.
+pub(crate) fn emit_arm_exit_free(
+    arm: &HArm,
+    scrut_ptr: &str,
+    ai: u32,
+    name: &str,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+) {
+    let Some(skip) = &arm.exit_free else {
+        return;
+    };
+    if !mdl.adt_owns(ai) {
+        return;
+    }
+    if let Some(vi) = arm.variant {
+        if !skip.is_empty() {
+            let def = mdl.adts[ai as usize].clone();
+            let fields = def.variants[vi as usize].1.clone();
+            let offsets = mdl.adt_field_offsets(ai)[vi as usize].clone();
+            for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
+                if !skip.contains(binder) {
+                    continue;
+                }
+                let n = cato_core::field_slot_count(fty, &mdl.boxed, &mdl.adts);
+                for s in 0..n {
+                    let t_f = c.temp();
+                    c.line(&format!(
+                        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
+                        t_f,
+                        name,
+                        scrut_ptr,
+                        offsets[k] + s
+                    ));
+                    c.line(&format!("  store i64 0, ptr {}, align 8", t_f));
+                }
+            }
+        }
+    }
+    c.line(&format!(
+        "  call void @drop__{}(ptr {})",
+        mdl.adts[ai as usize].name, scrut_ptr
+    ));
+}
+
 /// Emit a `match`: switch on the tag, load fields in each arm block, phi the
 /// arm results in the merge block (scalars by value, ADTs as ptr).
 pub(crate) fn emit_match_node(
@@ -221,6 +275,7 @@ pub(crate) fn emit_match_node(
             }
         }
         let v = emit_typed(&arm.body, *ty, c, mdl, sigs);
+        emit_arm_exit_free(arm, &scrut_ptr, ai, &name, c, mdl);
         // The arm's binders end here: a sibling arm referencing a shadowed
         // name must see the outer binding, not this arm's register.
         c.restore_binds(scope);
@@ -324,6 +379,9 @@ pub(crate) fn emit_match_in_loop(
             }
         }
         let v = loop_tail(&arm.body, *ty, c, mdl, sigs);
+        if v.is_some() {
+            emit_arm_exit_free(arm, &scrut_ptr, ai, &name, c, mdl);
+        }
         c.restore_binds(scope);
         if let Some(v) = v {
             let v = match ty {
@@ -884,6 +942,12 @@ pub(crate) fn emit_adt_drop_fn(adts: &[AdtDef], owns: &[bool], boxed: &[bool], i
     out.push_str(&format!("define void @drop__{}(ptr %src) {{\n", def.name));
     out.push_str("entry:\n");
     if boxed[i as usize] {
+        // A nulled slot (an arm-exit free skipping a transferred child, or
+        // a child that was never set) is simply not ours to free.
+        out.push_str("  %nz = icmp ne ptr %src, null\n");
+        out.push_str("  br i1 %nz, label %live, label %nul\n");
+        out.push_str("nul:\n  ret void\n\n");
+        out.push_str("live:\n");
         out.push_str("  %tag = load i64, ptr %src\n");
         let cases: Vec<String> = def
             .variants

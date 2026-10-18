@@ -1,0 +1,3 @@
+(ns mal.main)
+(require "lib.cato")
+(defn main [] :- i64 0)

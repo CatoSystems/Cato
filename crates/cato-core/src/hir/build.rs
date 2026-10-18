@@ -204,6 +204,7 @@ pub fn build_program_located(
         .filter(|d| d.ret_borrowed)
         .map(|d| d.name.clone())
         .collect();
+    let alias_ret = compute_alias_ret(&out);
     let span_by_name: HashMap<&str, crate::ast::Span> = raws
         .iter()
         .map(|(r, s)| (r.name.as_str(), *s))
@@ -225,6 +226,7 @@ pub fn build_program_located(
             &facts,
             &adts,
             false,
+            &alias_ret,
         )
         .map_err(|e| {
             let span = span_by_name
@@ -249,6 +251,7 @@ pub fn build_program_located(
             &facts,
             &adts,
             false,
+            &alias_ret,
         )?;
     }
     Ok((adts, out, lambdas, fn_sigs))

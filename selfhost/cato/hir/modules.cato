@@ -130,7 +130,10 @@
 ; middle symbol is compared by name (the seed compares strings).
 ; ---------------------------------------------------------------------------
 
-(deftype MoRSpec (MoReq [path :- str alias :- i64]) (MoNotReq))
+; `require` is a reserved head, so a list starting with it is always a
+; require form: MoReqBad marks a wrong shape (an error), MoNotReq an
+; ordinary form.
+(deftype MoRSpec (MoReq [path :- str alias :- i64]) (MoNotReq) (MoReqBad))
 
 (defn mo-require-of [tab :- i64 f :- Ast] :- MoRSpec
   (match f
@@ -140,8 +143,8 @@
           (AVec [vk vat]
             (if (= (ast/asts-depth vk) 3)
               (mo-require-spec tab (expand/asts-idx (clone vk) 0) (expand/asts-idx (clone vk) 1) (expand/asts-idx vk 2))
-              (MoNotReq)))
-          (_ (MoNotReq)))
+              (MoReqBad)))
+          (_ (MoReqBad)))
         (MoNotReq)))
     (_ (MoNotReq))))
 
@@ -153,10 +156,10 @@
           (if (= (sym/stab-get tab s1) ":as")
             (match a2
               (ASym [s2 s2at] (MoReq pv s2))
-              (_ (MoNotReq)))
-            (MoNotReq)))
-        (_ (MoNotReq))))
-    (_ (MoNotReq))))
+              (_ (MoReqBad)))
+            (MoReqBad)))
+        (_ (MoReqBad))))
+    (_ (MoReqBad))))
 
 ; ---------------------------------------------------------------------------
 ; (ns name) recognition
@@ -337,6 +340,8 @@
       (match (mo-require-of tab (clone f))
         (MoNotReq []
           (mo-load-requires path rest tab st merged-rev (KCons f own-rev) aliases))
+        (MoReqBad []
+          (MoLRErr "require expects [path :as alias]" (rdump/ast-at f)))
         (MoReq [rel alias]
           (let [child (path-join (path-dir path) rel)
                 csid (mo-intern tab child)]
