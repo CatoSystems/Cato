@@ -47,14 +47,14 @@ fn cc_has_wasm_ld(cc: &str) -> bool {
 }
 
 /// Pick a wasm-capable compiler: an explicit `--cc` is required to support
-/// wasm (fail loudly if it does not), otherwise prefer Homebrew LLVM, then
-/// the system compiler.
+/// wasm (fail loudly if it does not), otherwise prefer Homebrew LLVM (macOS),
+/// then the system compiler.
 fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
     let guidance = |why: &str| {
         format!(
             "{why}\n\
              wasm32 codegen itself always works: 'cato compile <file> --emit-ir --target wasm32'\n\
-             to LINK .wasm binaries install a wasm-capable clang with lld, e.g.\n\
+             to LINK .wasm binaries install a wasm-capable clang with lld:\n\
              \x20 brew install llvm lld\n\
              \x20 cato compile --target wasm32 <file> --cc $(brew --prefix llvm)/bin/clang"
         )
@@ -72,7 +72,18 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
         }
         return Ok(cc.clone());
     }
-    for cc in ["/opt/homebrew/opt/llvm/bin/clang", "/usr/local/opt/llvm/bin/clang", "clang"] {
+    #[cfg(windows)]
+    let candidates: &[&str] = &[
+        r"C:\Program Files\LLVM\bin\clang.exe",
+        "clang",
+    ];
+    #[cfg(not(windows))]
+    let candidates: &[&str] = &[
+        "/opt/homebrew/opt/llvm/bin/clang",
+        "/usr/local/opt/llvm/bin/clang",
+        "clang",
+    ];
+    for cc in candidates {
         if cc_supports_wasm32(cc) && cc_has_wasm_ld(cc) {
             return Ok(cc.to_string());
         }
