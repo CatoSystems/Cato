@@ -115,8 +115,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                     cli.target = crate::driver::lookup(name).unwrap();
                     i += 2;
                 }
-                _ => {
-                    eprintln!("cato: --target expects 'native' or 'wasm32'");
+                other => {
+                    let got = other.unwrap_or("<missing>");
+                    let names = crate::driver::target_names().join(", ");
+                    eprintln!("cato: unknown --target '{got}' (known: {names})");
                     std::process::exit(2);
                 }
             },
@@ -348,6 +350,7 @@ USAGE:
   cato compile <file.cato> [-o bin]     compile to a native executable
   cato compile <file.cato> --emit-ir [-o out.ll]   emit LLVM IR (stdout by default)
   cato compile <file.cato> --target wasm32 [-o out.wasm]   compile to WebAssembly
+  cato compile <file.cato> --target x86_64-linux --cc <cross-cc>   cross-compile
   cato repl | cato lsp                 interactive tooling
   cato --explain E301                  long-form documentation for a code
   cato help | cato --version
@@ -357,7 +360,10 @@ OPTIONS:
                    driver-owned output is never overridable via --)
   --emit-ir        stop after IR emission (stdout by default, or -o)
   --emit-ll <path> keep the intermediate LLVM IR alongside the artifact
-  --target <t>     'native' (default) or 'wasm32' (wasm32-unknown-unknown)
+  --target <t>     native (default), wasm32, x86_64-linux, aarch64-linux,
+                   x86_64-macos, aarch64-macos, x86_64-windows (cross targets
+                   stamp their LLVM triple in the IR; pass a cross-capable
+                   --cc to link)
   -O0..-O3         C-compiler optimization level (default: -O2)
   --opt-level <n>  same as -On
   -g               debug info

@@ -79,9 +79,10 @@ fn llvm_backend(cli: &Cli) -> LlvmBackend {
     LlvmBackend {
         fast: cli.fast,
         threads: cli.threads,
-        target: match cli.target.flavor {
-            driver::Flavor::Native => cato_llvm::Target::Native,
-            driver::Flavor::Wasm => cato_llvm::Target::Wasm32,
+        target: match (cli.target.flavor, cli.target.triple) {
+            (driver::Flavor::Wasm, _) => cato_llvm::Target::Wasm32,
+            (driver::Flavor::Native, Some(t)) => cato_llvm::Target::Triple(t),
+            (driver::Flavor::Native, None) => cato_llvm::Target::Native,
         },
     }
 }

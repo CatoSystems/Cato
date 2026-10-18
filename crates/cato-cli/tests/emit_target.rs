@@ -140,6 +140,39 @@ fn wasm_build_links_or_explains() {
     }
 }
 
+// An unknown --target names itself and lists the known targets.
+#[test]
+fn unknown_target_lists_known_names() {
+    let src = write_demo();
+    let out = cato().arg("compile").arg(&src).args(["--target", "powerpc"])
+        .arg("--emit-ir").output().expect("run cato");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("powerpc"), "got: {}", stderr);
+    assert!(stderr.contains("x86_64-linux"), "got: {}", stderr);
+    assert!(stderr.contains("aarch64-macos"), "got: {}", stderr);
+}
+
+// Cross targets stamp the triple in the IR but let clang supply the
+// data layout from it (no hardcoded layout for foreign triples).
+#[test]
+fn cross_target_emits_triple_in_ir() {
+    let src = write_demo();
+    let out = cato().arg("compile").arg(&src)
+        .args(["--target", "aarch64-linux", "--emit-ir"])
+        .output().expect("run cato");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains(r#"target triple = "aarch64-unknown-linux-gnu""#),
+        "got: {}", stdout
+    );
+    assert!(
+        !stdout.contains("target datalayout"),
+        "cross triple must not carry a datalayout: {}", stdout
+    );
+}
+
 /// Homebrew LLVM, if installed (the only wasm32-capable toolchain on a
 /// typical macOS dev box without wasi-sdk).
 fn wasm_llvm_bin() -> Option<PathBuf> {

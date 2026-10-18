@@ -88,9 +88,10 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     let backend = LlvmBackend {
         fast: cli.fast,
         threads: cli.threads,
-        target: match cli.target.flavor {
-            Flavor::Native => LlvmTarget::Native,
-            Flavor::Wasm => LlvmTarget::Wasm32,
+        target: match (cli.target.flavor, cli.target.triple) {
+            (Flavor::Wasm, _) => LlvmTarget::Wasm32,
+            (Flavor::Native, Some(t)) => LlvmTarget::Triple(t),
+            (Flavor::Native, None) => LlvmTarget::Native,
         },
     };
     let ir = backend

@@ -38,10 +38,45 @@ pub const TARGETS: &[TargetSpec] = &[
         exe_suffix: ".wasm",
         flavor: Flavor::Wasm,
     },
+    TargetSpec {
+        name: "x86_64-linux",
+        triple: Some("x86_64-unknown-linux-gnu"),
+        exe_suffix: "",
+        flavor: Flavor::Native,
+    },
+    TargetSpec {
+        name: "aarch64-linux",
+        triple: Some("aarch64-unknown-linux-gnu"),
+        exe_suffix: "",
+        flavor: Flavor::Native,
+    },
+    TargetSpec {
+        name: "x86_64-macos",
+        triple: Some("x86_64-apple-darwin"),
+        exe_suffix: "",
+        flavor: Flavor::Native,
+    },
+    TargetSpec {
+        name: "aarch64-macos",
+        triple: Some("aarch64-apple-darwin"),
+        exe_suffix: "",
+        flavor: Flavor::Native,
+    },
+    TargetSpec {
+        name: "x86_64-windows",
+        triple: Some("x86_64-w64-mingw32"),
+        exe_suffix: ".exe",
+        flavor: Flavor::Native,
+    },
 ];
 
 pub fn lookup(name: &str) -> Option<&'static TargetSpec> {
     TARGETS.iter().find(|t| t.name == name)
+}
+
+/// The known target names, for the `--target` error message.
+pub fn target_names() -> Vec<&'static str> {
+    TARGETS.iter().map(|t| t.name).collect()
 }
 
 pub fn default_out(spec: &TargetSpec, stem: &str) -> String {
@@ -327,5 +362,31 @@ mod tests {
         }
         let err = r.expect_err("missing CATO_RUNTIME must error");
         assert!(err.contains("does not exist"), "err: {err}");
+    }
+
+    #[test]
+    fn target_table_matches_spec() {
+        let expect: &[(&str, Option<&str>, &str, Flavor)] = &[
+            ("native", None, "", Flavor::Native),
+            ("wasm32", Some("wasm32-unknown-unknown"), ".wasm", Flavor::Wasm),
+            ("x86_64-linux", Some("x86_64-unknown-linux-gnu"), "", Flavor::Native),
+            ("aarch64-linux", Some("aarch64-unknown-linux-gnu"), "", Flavor::Native),
+            ("x86_64-macos", Some("x86_64-apple-darwin"), "", Flavor::Native),
+            ("aarch64-macos", Some("aarch64-apple-darwin"), "", Flavor::Native),
+            ("x86_64-windows", Some("x86_64-w64-mingw32"), ".exe", Flavor::Native),
+        ];
+        assert_eq!(TARGETS.len(), expect.len(), "TARGETS: {TARGETS:?}");
+        for (spec, (name, triple, suffix, flavor)) in TARGETS.iter().zip(expect) {
+            assert_eq!(spec.name, *name);
+            assert_eq!(spec.triple, *triple, "{} triple", spec.name);
+            assert_eq!(spec.exe_suffix, *suffix, "{} suffix", spec.name);
+            assert_eq!(spec.flavor, *flavor, "{} flavor", spec.name);
+        }
+    }
+
+    #[test]
+    fn windows_default_out_has_exe_suffix() {
+        let win = lookup("x86_64-windows").unwrap();
+        assert_eq!(default_out(win, "foo"), "foo.exe");
     }
 }

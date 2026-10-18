@@ -212,18 +212,23 @@ pub enum Target {
     /// emitted IR carries the wasm32 triple and data layout; runtime C
     /// helpers (print, malloc) become host imports.
     Wasm32,
+    /// An explicit cross-compilation triple (e.g. `x86_64-unknown-linux-gnu`).
+    /// The triple is stamped in the header; clang supplies the matching
+    /// data layout from it.
+    Triple(&'static str),
 }
 
 impl Target {
     /// `(triple, data layout)` for the module header, or `None` for the
     /// native default.
-    fn header(self) -> Option<(&'static str, &'static str)> {
+    fn header(self) -> Option<(&'static str, Option<&'static str>)> {
         match self {
             Target::Native => None,
             Target::Wasm32 => Some((
                 "wasm32-unknown-unknown",
-                "e-m:e-p:32:32-i64:64-a:0:32-n32:64-S128",
+                Some("e-m:e-p:32:32-i64:64-a:0:32-n32:64-S128"),
             )),
+            Target::Triple(t) => Some((t, None)),
         }
     }
 }
@@ -264,9 +269,12 @@ impl Backend for LlvmBackend {
         );
         Ok(match self.target.header() {
             None => ir,
-            Some((triple, layout)) => format!(
-                "target datalayout = \"{layout}\"\ntarget triple = \"{triple}\"\n\n{ir}"
-            ),
+            Some((triple, layout)) => {
+                let layout = layout
+                    .map(|l| format!("target datalayout = \"{l}\"\n"))
+                    .unwrap_or_default();
+                format!("{layout}target triple = \"{triple}\"\n\n{ir}")
+            }
         })
     }
 }
