@@ -192,30 +192,14 @@
       (adt-clone-variants adts owns i (+ vi 1) (clone tab))
     )))
 
-(defn adt-clone-fields [adts
-  :-
-  AdtTab
-  owns
-  :-
-  Sids
-  i
-  :-
-  i64
-  vi
-  :-
-  i64
-  k
-  :-
-  i64
-  serial
-  :-
-  i64
-  tab
-  :-
-  i64
-  acc
-  :-
-  str
+(defn adt-clone-fields [adts :- AdtTab
+  owns :- Sids
+  i :- i64
+  vi :- i64
+  k :- i64
+  serial :- i64
+  tab :- i64
+  acc :- str
 ] :- str
   (if
     (>= k (types/tys-depth (forms/varnt-fields-at adts i vi)))
@@ -236,33 +220,15 @@
         (str acc (clone-field-text fty off nm adts owns vi serial tg (clone tab)))
       ))))
 
-(defn clone-field-text [fty
-  :-
-  Ty
-  off
-  :-
-  i64
-  nm
-  :-
-  str
-  adts
-  :-
-  AdtTab
-  owns
-  :-
-  Sids
-  vi
-  :-
-  i64
-  serial
-  :-
-  i64
-  tg
-  :-
-  i64
-  tab
-  :-
-  i64
+(defn clone-field-text [fty :- Ty
+  off :- i64
+  nm :- str
+  adts :- AdtTab
+  owns :- Sids
+  vi :- i64
+  serial :- i64
+  tg :- i64
+  tab :- i64
 ] :- str
   (let [u (str "v" vi "f" serial)]
     (cond
@@ -589,30 +555,14 @@
         (adt-drop-variants adts owns i (+ vi 1) (clone tab))
       ))))
 
-(defn adt-drop-fields [adts
-  :-
-  AdtTab
-  owns
-  :-
-  Sids
-  i
-  :-
-  i64
-  vi
-  :-
-  i64
-  k
-  :-
-  i64
-  serial
-  :-
-  i64
-  tab
-  :-
-  i64
-  acc
-  :-
-  str
+(defn adt-drop-fields [adts :- AdtTab
+  owns :- Sids
+  i :- i64
+  vi :- i64
+  k :- i64
+  serial :- i64
+  tab :- i64
+  acc :- str
 ] :- str
   (if
     (>= k (types/tys-depth (forms/varnt-fields-at adts i vi)))
@@ -633,33 +583,15 @@
         (str acc (drop-field-text fty off nm adts owns vi serial tg (clone tab)))
       ))))
 
-(defn drop-field-text [fty
-  :-
-  Ty
-  off
-  :-
-  i64
-  nm
-  :-
-  str
-  adts
-  :-
-  AdtTab
-  owns
-  :-
-  Sids
-  vi
-  :-
-  i64
-  serial
-  :-
-  i64
-  tg
-  :-
-  i64
-  tab
-  :-
-  i64
+(defn drop-field-text [fty :- Ty
+  off :- i64
+  nm :- str
+  adts :- AdtTab
+  owns :- Sids
+  vi :- i64
+  serial :- i64
+  tg :- i64
+  tab :- i64
 ] :- str
   (let [u (str "v" vi "f" serial)]
     (cond
@@ -1475,27 +1407,13 @@
         ))
     )))
 
-(defn emit-lambda-pair [mangled
-  :-
-  i64
-  caps
-  :-
-  Caps
-  params
-  :-
-  PList
-  ret
-  :-
-  Ty
-  body
-  :-
-  HExpr
-  mdl
-  :-
-  Mdl
-  sigs
-  :-
-  ESigTab
+(defn emit-lambda-pair [mangled :- i64
+  caps :- Caps
+  params :- PList
+  ret :- Ty
+  body :- HExpr
+  mdl :- Mdl
+  sigs :- ESigTab
 ] :- ELPR
   (let [mname (state/md-sym mdl mangled) st0 (Emit (state/fn-new) mdl sigs)]
     (match

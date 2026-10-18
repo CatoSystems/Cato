@@ -193,33 +193,15 @@
   (MncRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap])
   (MncErr [msg :- str]))
 
-(defn move-if-nc [v
-  :-
-  i64
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn move-if-nc [v :- i64
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- MncRes
   (let [t (forms/te-get tys v)]
     (if
@@ -550,36 +532,16 @@
 ; --- the checker -------------------------------------------------------------------
 
 ; sequential children
-(defn b-kids [es
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
-  acc
-  :-
-  HExprs
+(defn b-kids [es :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+  acc :- HExprs
 ] :- BKRes
   (match es
     (HENil [] (BKOk st owns rem cons (hexpr/hes-rev acc (HENil))))
@@ -597,33 +559,15 @@
     )))
 
 ; a Get's optional default (absent = the empty chain)
-(defn b-default [dflt
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn b-default [dflt :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- BKRes
   (match dflt
     (HENil [] (BKOk st owns rem cons (HENil)))
@@ -713,36 +657,16 @@
         (Defn [name params ret isextern body rb] (b-retb t (RBCons name rb acc))))
     )))
 
-(defn b-call-move [name
-  :-
-  i64
-  args
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn b-call-move [name :- i64
+  args :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- B4
   (match bcx
     (
@@ -757,36 +681,16 @@
           (DMissing [] (b-call-move-walk args st owns rem cons tys bcx wsc wbs))))
     )))
 
-(defn b-call-move-ps [args
-  :-
-  HExprs
-  ps
-  :-
-  PList
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn b-call-move-ps [args :- HExprs
+  ps :- PList
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -836,33 +740,15 @@
         ))
     )))
 
-(defn b-call-move-walk [args
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn b-call-move-walk [args :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -888,36 +774,16 @@
   (BLRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap tys :- TyEnv binds :- Binds])
   (BLErr [msg :- str]))
 
-(defn b-let-binds [binds
-  :-
-  Binds
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
-  acc
-  :-
-  Binds
+(defn b-let-binds [binds :- Binds
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+  acc :- Binds
 ] :- BLRes
   (match binds
     (BNil [] (BLRes st owns rem cons tys acc))
@@ -1037,24 +903,12 @@
       (b-allocates v facts)
     )))
 
-(defn b-arm-state-of [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  pst
-  :-
-  IMap
-  powns
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
-  bcx
-  :-
-  &BCtx
+(defn b-arm-state-of [binders :- Sids
+  fields :- TyList
+  pst :- IMap
+  powns :- IMap
+  tys :- TyEnv
+  bcx :- &BCtx
 ] :- BLRes
   (match bcx
     (
@@ -1063,24 +917,12 @@
       (b-arm-state binders fields pst powns tys facts)
     )))
 
-(defn b-arm-esc-of [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  st
-  :-
-  IMap
-  escaped
-  :-
-  Sids
-  bcx
-  :-
-  &BCtx
-  acc
-  :-
-  i64
+(defn b-arm-esc-of [binders :- Sids
+  fields :- TyList
+  st :- IMap
+  escaped :- Sids
+  bcx :- &BCtx
+  acc :- i64
 ] :- i64
   (match bcx
     (
@@ -1105,27 +947,13 @@
       (b-frees-walk binds st owns cons escaped shadowed facts)
     )))
 
-(defn b-frees-walk [binds
-  :-
-  &Binds
-  st
-  :-
-  &IMap
-  owns
-  :-
-  &IMap
-  cons
-  :-
-  &IMap
-  escaped
-  :-
-  &Sids
-  shadowed
-  :-
-  &Sids
-  facts
-  :-
-  &Facts
+(defn b-frees-walk [binds :- &Binds
+  st :- &IMap
+  owns :- &IMap
+  cons :- &IMap
+  escaped :- &Sids
+  shadowed :- &Sids
+  facts :- &Facts
 ] :- Sids
   (match binds
     (BNil [] (SNil))
@@ -1286,24 +1114,12 @@
 
 ; The let's scope-exit frees: the seed's destruction rule with the per-let
 ; shadow check inlined, so no per-let IMap is built.
-(defn b-frees-here [binds
-  :-
-  &Binds
-  body
-  :-
-  &HExpr
-  st
-  :-
-  &IMap
-  owns
-  :-
-  &IMap
-  cons
-  :-
-  &IMap
-  bcx
-  :-
-  &BCtx
+(defn b-frees-here [binds :- &Binds
+  body :- &HExpr
+  st :- &IMap
+  owns :- &IMap
+  cons :- &IMap
+  bcx :- &BCtx
 ] :- Sids
   (match bcx
     (
@@ -1312,27 +1128,13 @@
       (b-frees-here-walk binds body st owns cons escaped facts)
     )))
 
-(defn b-frees-here-walk [binds
-  :-
-  &Binds
-  body
-  :-
-  &HExpr
-  st
-  :-
-  &IMap
-  owns
-  :-
-  &IMap
-  cons
-  :-
-  &IMap
-  escaped
-  :-
-  &Sids
-  facts
-  :-
-  &Facts
+(defn b-frees-here-walk [binds :- &Binds
+  body :- &HExpr
+  st :- &IMap
+  owns :- &IMap
+  cons :- &IMap
+  escaped :- &Sids
+  facts :- &Facts
 ] :- Sids
   (match binds
     (BNil [] (SNil))
@@ -1528,42 +1330,18 @@
 
 ; b-kids with a per-arg recur-ok context: the arg at `ai` that is the
 ; self-update conj is checked under recur-ok = its accumulator var.
-(defn b-recur-kids [es
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
-  acc
-  :-
-  HExprs
-  all
-  :-
-  &HExprs
-  ai
-  :-
-  i64
+(defn b-recur-kids [es :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+  acc :- HExprs
+  all :- &HExprs
+  ai :- i64
 ] :- BKRes
   (match es
     (HENil [] (BKOk st owns rem cons (hexpr/hes-rev acc (HENil))))
@@ -1619,45 +1397,23 @@
 ; the caller's box to someone else — the caller frees it too. Legitimate
 ; only when the defn's return is itself a borrow (`&T`): the alias IS the
 ; return value.
-(defn b-borrowed-scrut-hit [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  st
-  :-
-  IMap
-  escaped
-  :-
-  Sids
-  bcx
-  :-
-  &BCtx
-  scrid
-  :-
-  i64
+(defn b-borrowed-scrut-hit [binders :- Sids
+  fields :- TyList
+  st :- IMap
+  escaped :- Sids
+  bcx :- &BCtx
+  scrid :- i64
 ] :- str
   (if
     (or (< scrid 0) (not (types/sids-has (b-nomove-of bcx) scrid)))
     ""
     (b-borrowed-scrut-walk binders fields st escaped bcx)))
 
-(defn b-borrowed-scrut-walk [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  st
-  :-
-  IMap
-  escaped
-  :-
-  Sids
-  bcx
-  :-
-  &BCtx
+(defn b-borrowed-scrut-walk [binders :- Sids
+  fields :- TyList
+  st :- IMap
+  escaped :- Sids
+  bcx :- &BCtx
 ] :- str
   (match binders
     (SNil [] "")
@@ -1715,45 +1471,19 @@
       )
     )))
 
-(defn b-loop-binds [binds
-  :-
-  Binds
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
-  acc
-  :-
-  Binds
-  saved
-  :-
-  IMap
-  savedo
-  :-
-  IMap
-  seed
-  :-
-  Sids
+(defn b-loop-binds [binds :- Binds
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+  acc :- Binds
+  saved :- IMap
+  savedo :- IMap
+  seed :- Sids
 ] :- BLoopRes
   (match binds
     (BNil [] (BLoopRes st owns rem cons tys acc saved savedo seed))
@@ -1901,24 +1631,12 @@
 ; Did any aliasing binder escape the arm (tail position) or get moved? If
 ; so the box's drop duty transfers and the scrutinee's scope free is
 ; suppressed (the seed's any_alias_escape).
-(defn b-arm-esc [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  st
-  :-
-  IMap
-  escaped
-  :-
-  Sids
-  facts
-  :-
-  &Facts
-  acc
-  :-
-  i64
+(defn b-arm-esc [binders :- Sids
+  fields :- TyList
+  st :- IMap
+  escaped :- Sids
+  facts :- &Facts
+  acc :- i64
 ] :- i64
   (match binders
     (SNil [] acc)
@@ -1956,24 +1674,12 @@
   (BArmsRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap arms :- HArms esc :- i64])
   (BArmsErr [msg :- str]))
 
-(defn b-arm-state [binders
-  :-
-  Sids
-  fields
-  :-
-  TyList
-  pst
-  :-
-  IMap
-  powns
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
-  facts
-  :-
-  &Facts
+(defn b-arm-state [binders :- Sids
+  fields :- TyList
+  pst :- IMap
+  powns :- IMap
+  tys :- TyEnv
+  facts :- &Facts
 ] :- BLRes
   (match binders
     (SNil [] (BLRes pst powns (MNil) (MNil) tys (BNil)))
@@ -2006,54 +1712,22 @@
           )))
     )))
 
-(defn b-arms [arms
-  :-
-  HArms
-  pst
-  :-
-  IMap
-  powns
-  :-
-  IMap
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
-  acc
-  :-
-  HArms
-  adtidx
-  :-
-  i64
-  boxed
-  :-
-  i64
-  esc
-  :-
-  i64
-  scrid
-  :-
-  i64
+(defn b-arms [arms :- HArms
+  pst :- IMap
+  powns :- IMap
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+  acc :- HArms
+  adtidx :- i64
+  boxed :- i64
+  esc :- i64
+  scrid :- i64
 ] :- BArmsRes
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
@@ -2167,33 +1841,15 @@
   (BCapRes [st :- IMap owns :- IMap rem :- IMap cons :- IMap caps :- Caps])
   (BCapErr [msg :- str]))
 
-(defn b-caps [caps
-  :-
-  Caps
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn b-caps [caps :- Caps
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- BCapRes
   (match caps
     (CNil [] (BCapRes st owns rem cons (CNil)))
@@ -2241,33 +1897,15 @@
 
 ; --- the checker body ----------------------------------------------------------------
 
-(defn bcheck [e
-  :-
-  HExpr
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+(defn bcheck [e :- HExpr
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- BRes
   (match e
     (HConstI64 [v] (BOk st owns rem cons e))
@@ -2942,33 +2580,15 @@
             (B4Err [msg] (BErr msg))
             (B4 [st2 owns2 rem2 cons2] (BOk st2 owns2 rem2 cons2 (HCall name c1))))
         ))
-    ))) (defn b-ctor-move [args
-  :-
-  HExprs
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  &TyEnv
-  bcx
-  :-
-  &BCtx
-  wsc
-  :-
-  i64
-  wbs
-  :-
-  &Sids
+    ))) (defn b-ctor-move [args :- HExprs
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -3135,21 +2755,11 @@
     (HSeq [es] (b-tail-seq-ok es borrows dparams retb))
     (_ false)))
 
-(defn b-tail-args-ok [args
-  :-
-  &HExprs
-  ps
-  :-
-  &PList
-  borrows
-  :-
-  &Sids
-  dparams
-  :-
-  &DParams
-  retb
-  :-
-  &RBTable
+(defn b-tail-args-ok [args :- &HExprs
+  ps :- &PList
+  borrows :- &Sids
+  dparams :- &DParams
+  retb :- &RBTable
 ] :- bool
   (match args
     (HENil [] true)
@@ -3173,21 +2783,11 @@
         ))
     )))
 
-(defn b-tail-arms-ok [arms
-  :-
-  &HArms
-  borrows
-  :-
-  &Sids
-  sc
-  :-
-  i64
-  dparams
-  :-
-  &DParams
-  retb
-  :-
-  &RBTable
+(defn b-tail-arms-ok [arms :- &HArms
+  borrows :- &Sids
+  sc :- i64
+  dparams :- &DParams
+  retb :- &RBTable
 ] :- bool
   (match arms
     (HANil [] true)
@@ -3287,39 +2887,17 @@
       (fp-frees params st owns facts esc)
     )))
 
-(defn b-plan [name
-  :-
-  i64
-  params
-  :-
-  PList
-  body
-  :-
-  HExpr
-  ret
-  :-
-  Ty
-  rb
-  :-
-  i64
-  facts
-  :-
-  Facts
-  tab
-  :-
-  i64
-  shared
-  :-
-  Sids
-  adts
-  :-
-  AdtTab
-  dparams
-  :-
-  DParams
-  retb
-  :-
-  RBTable
+(defn b-plan [name :- i64
+  params :- PList
+  body :- HExpr
+  ret :- Ty
+  rb :- i64
+  facts :- Facts
+  tab :- i64
+  shared :- Sids
+  adts :- AdtTab
+  dparams :- DParams
+  retb :- RBTable
 ] :- BPlanRes
   ; Borrowed-return preconditions fire first so the reported error is the
   ; return-shape problem, not a downstream symptom.
@@ -3369,30 +2947,14 @@
 ; names and the return-borrow flag travel with it (the seed's no_move and
 ; ret_borrowed). The watch pair starts empty (-1, no binders) — no watch
 ; is active outside a match arm.
-(defn b-plan-ctx [facts
-  :-
-  Facts
-  tab
-  :-
-  i64
-  shared
-  :-
-  Sids
-  adts
-  :-
-  AdtTab
-  dparams
-  :-
-  DParams
-  retb
-  :-
-  RBTable
-  nomove
-  :-
-  Sids
-  curbrb
-  :-
-  i64
+(defn b-plan-ctx [facts :- Facts
+  tab :- i64
+  shared :- Sids
+  adts :- AdtTab
+  dparams :- DParams
+  retb :- RBTable
+  nomove :- Sids
+  curbrb :- i64
 ] :- BCtx
   (BCtx (SNil) (SNil) facts tab shared (SNil) adts dparams retb nomove curbrb -1 (SNil)))
 
@@ -3473,27 +3035,13 @@
           )))
     )))
 
-(defn b-init-params [params
-  :-
-  PList
-  facts
-  :-
-  Facts
-  st
-  :-
-  IMap
-  owns
-  :-
-  IMap
-  rem
-  :-
-  IMap
-  cons
-  :-
-  IMap
-  tys
-  :-
-  TyEnv
+(defn b-init-params [params :- PList
+  facts :- Facts
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- TyEnv
 ] :- BLRes
   (match params
     (PNil [] (BLRes st owns rem cons tys (BNil)))
@@ -3574,30 +3122,14 @@
   (CKOk [defs :- Defns lams :- Lams])
   (CKErr [msg :- str]))
 
-(defn check-defns [ds
-  :-
-  Defns
-  acc
-  :-
-  Defns
-  facts
-  :-
-  Facts
-  tab
-  :-
-  i64
-  shared
-  :-
-  Sids
-  adts
-  :-
-  AdtTab
-  dparams
-  :-
-  DParams
-  retb
-  :-
-  RBTable
+(defn check-defns [ds :- Defns
+  acc :- Defns
+  facts :- Facts
+  tab :- i64
+  shared :- Sids
+  adts :- AdtTab
+  dparams :- DParams
+  retb :- RBTable
 ] :- CkRes
   ; the whole-program state threads by move — a per-step clone of facts/
   ; tab/alldefs made the self-compile quadratic (S8)
@@ -3668,30 +3200,14 @@
   (LOkL [lams :- Lams])
   (LErrL [msg :- str]))
 
-(defn check-lams [ls
-  :-
-  Lams
-  acc
-  :-
-  Lams
-  facts
-  :-
-  Facts
-  tab
-  :-
-  i64
-  shared
-  :-
-  Sids
-  adts
-  :-
-  AdtTab
-  dparams
-  :-
-  DParams
-  retb
-  :-
-  RBTable
+(defn check-lams [ls :- Lams
+  acc :- Lams
+  facts :- Facts
+  tab :- i64
+  shared :- Sids
+  adts :- AdtTab
+  dparams :- DParams
+  retb :- RBTable
 ] :- LkRes
   (match ls
     (LMNil [] (LOkL acc))

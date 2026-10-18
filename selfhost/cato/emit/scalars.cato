@@ -1451,36 +1451,16 @@
         (mls-switch next (em-line st (str "    i64 " variant ", label %" lbl))))
     )))
 
-(defn arm-bodies [arms
-  :-
-  HArms
-  labels
-  :-
-  EMLS
-  st
-  :-
-  Emit
-  merged
-  :-
-  str
-  scrut
-  :-
-  str
-  ai
-  :-
-  i64
-  name
-  :-
-  str
-  ty
-  :-
-  Ty
-  env
-  :-
-  EEnv
-  acc
-  :-
-  EMPS
+(defn arm-bodies [arms :- HArms
+  labels :- EMLS
+  st :- Emit
+  merged :- str
+  scrut :- str
+  ai :- i64
+  name :- str
+  ty :- Ty
+  env :- EEnv
+  acc :- EMPS
 ] :- EBodiesRes
   (match arms
     (HANil [] (BRRes st acc))
@@ -1549,30 +1529,14 @@
       ))
     st))
 
-(defn aef-fields [binds
-  :-
-  Sids
-  k
-  :-
-  i64
-  skip
-  :-
-  Sids
-  st
-  :-
-  Emit
-  scrut
-  :-
-  str
-  name
-  :-
-  str
-  ai
-  :-
-  i64
-  vi
-  :-
-  i64
+(defn aef-fields [binds :- Sids
+  k :- i64
+  skip :- Sids
+  st :- Emit
+  scrut :- str
+  name :- str
+  ai :- i64
+  vi :- i64
 ] :- Emit
   (if
     (types/sids-null binds)
@@ -1606,27 +1570,13 @@
           ))
         (aef-fields (types/sids-drop binds 1) (+ k 1) skip st scrut name ai vi)))))
 
-(defn arm-exit-free [ef
-  :-
-  ArmFree
-  variant
-  :-
-  i64
-  binders
-  :-
-  Sids
-  st
-  :-
-  Emit
-  scrut
-  :-
-  str
-  name
-  :-
-  str
-  ai
-  :-
-  i64
+(defn arm-exit-free [ef :- ArmFree
+  variant :- i64
+  binders :- Sids
+  st :- Emit
+  scrut :- str
+  name :- str
+  ai :- i64
 ] :- Emit
   (match ef
     (AFNone [] st)
@@ -1643,27 +1593,13 @@
 
 ; Binder k of variant vi: load per its field type (adt.cato).
 
-(defn arm-field-loads [binders
-  :-
-  Sids
-  ai
-  :-
-  i64
-  vi
-  :-
-  i64
-  k
-  :-
-  i64
-  st
-  :-
-  Emit
-  scrut
-  :-
-  str
-  name
-  :-
-  str
+(defn arm-field-loads [binders :- Sids
+  ai :- i64
+  vi :- i64
+  k :- i64
+  st :- Emit
+  scrut :- str
+  name :- str
 ] :- Emit
   (if
     (types/sids-null binders)
@@ -1679,39 +1615,17 @@
 ; through with a value contribute a phi incoming and a `br merged`.
 (deftype LMBRes (LMBRes [st :- Emit vals :- EMPS anydone :- bool]))
 
-(defn loop-arm-bodies [arms
-  :-
-  HArms
-  labels
-  :-
-  EMLS
-  st
-  :-
-  Emit
-  merged
-  :-
-  str
-  scrut
-  :-
-  str
-  ai
-  :-
-  i64
-  name
-  :-
-  str
-  ty
-  :-
-  Ty
-  env
-  :-
-  EEnv
-  acc
-  :-
-  EMPS
-  anydone
-  :-
-  bool
+(defn loop-arm-bodies [arms :- HArms
+  labels :- EMLS
+  st :- Emit
+  merged :- str
+  scrut :- str
+  ai :- i64
+  name :- str
+  ty :- Ty
+  env :- EEnv
+  acc :- EMPS
+  anydone :- bool
 ] :- LMBRes
   (match arms
     (HANil [] (LMBRes st acc anydone))

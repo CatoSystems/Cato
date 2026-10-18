@@ -264,36 +264,16 @@
 ; never-freed, never-moved values. Every helper call here returns a value
 ; (an index, a node, a classification) — no helper is on the scan's
 ; control path, so the loop is the only frame that persists across events.
-(defn scan [src
-  :-
-  str
-  i0
-  :-
-  i64
-  line0
-  :-
-  i64
-  col0
-  :-
-  i64
-  depth0
-  :-
-  i64
-  bline0
-  :-
-  i64
-  bcol0
-  :-
-  i64
-  stack0
-  :-
-  RStack
-  kids0
-  :-
-  Asts
-  tab0
-  :-
-  i64
+(defn scan [src :- str
+  i0 :- i64
+  line0 :- i64
+  col0 :- i64
+  depth0 :- i64
+  bline0 :- i64
+  bcol0 :- i64
+  stack0 :- RStack
+  kids0 :- Asts
+  tab0 :- i64
 ] :- RRes
   ; The source length rides as a loop variable: `count` on a str is a
   ; strlen, and re-strlens per event would make the whole scan quadratic.

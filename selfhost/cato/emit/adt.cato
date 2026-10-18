@@ -504,27 +504,13 @@
         ))
     )))
 
-(defn emit-field-load [binder
-  :-
-  i64
-  ai
-  :-
-  i64
-  vi
-  :-
-  i64
-  k
-  :-
-  i64
-  st
-  :-
-  Emit
-  scrut
-  :-
-  str
-  name
-  :-
-  str
+(defn emit-field-load [binder :- i64
+  ai :- i64
+  vi :- i64
+  k :- i64
+  st :- Emit
+  scrut :- str
+  name :- str
 ] :- EURes
   (match st
     (

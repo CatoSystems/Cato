@@ -1461,36 +1461,16 @@
 ; vec pair, branch to merge, accumulate both phi chains.
 ; Vector-typed match arms: walk arms + labels together; each step
 ; opens the arm's block via arm-vec-one.
-(defn arm-vec-bodies [arms
-  :-
-  HArms
-  labels
-  :-
-  EMLS
-  st
-  :-
-  Emit
-  merged
-  :-
-  str
-  scrut
-  :-
-  str
-  ai
-  :-
-  i64
-  name
-  :-
-  str
-  env
-  :-
-  EEnv
-  acc-p
-  :-
-  EMPS
-  acc-l
-  :-
-  EMPS
+(defn arm-vec-bodies [arms :- HArms
+  labels :- EMLS
+  st :- Emit
+  merged :- str
+  scrut :- str
+  ai :- i64
+  name :- str
+  env :- EEnv
+  acc-p :- EMPS
+  acc-l :- EMPS
 ] :- EVPRes
   (match arms
     (HANil [] (EVPRes st acc-p acc-l))
@@ -1527,51 +1507,21 @@
 
 ; One arm: opens its block, loads fields (non-wildcard only), emits the
 ; pair, branches, recurses.
-(defn arm-vec-one [variant
-  :-
-  i64
-  binders
-  :-
-  Sids
-  body
-  :-
-  HExpr
-  ef
-  :-
-  ArmFree
-  next
-  :-
-  HArms
-  lrest
-  :-
-  EMLS
-  lbl
-  :-
-  str
-  st
-  :-
-  Emit
-  merged
-  :-
-  str
-  scrut
-  :-
-  str
-  ai
-  :-
-  i64
-  name
-  :-
-  str
-  env
-  :-
-  EEnv
-  acc-p
-  :-
-  EMPS
-  acc-l
-  :-
-  EMPS
+(defn arm-vec-one [variant :- i64
+  binders :- Sids
+  body :- HExpr
+  ef :- ArmFree
+  next :- HArms
+  lrest :- EMLS
+  lbl :- str
+  st :- Emit
+  merged :- str
+  scrut :- str
+  ai :- i64
+  name :- str
+  env :- EEnv
+  acc-p :- EMPS
+  acc-l :- EMPS
 ] :- EVPRes
   (let [binders2 (clone binders)
     st0 (state/em-env-put st (clone env))
@@ -2031,39 +1981,17 @@
           (EH3Res st2 bf bg bm)))
     )))
 
-(defn conj-fast [st
-  :-
-  Emit
-  slot
-  :-
-  str
-  ll
-  :-
-  str
-  p
-  :-
-  str
-  l
-  :-
-  str
-  cp
-  :-
-  str
-  one
-  :-
-  str
-  xv
-  :-
-  str
-  bm
-  :-
-  str
-  el
-  :-
-  i64
-  bf
-  :-
-  str
+(defn conj-fast [st :- Emit
+  slot :- str
+  ll :- str
+  p :- str
+  l :- str
+  cp :- str
+  one :- str
+  xv :- str
+  bm :- str
+  el :- i64
+  bf :- str
 ] :- EURes
   (let [st0 (scalars/em-open st bf)]
     (match
@@ -2083,42 +2011,18 @@
           (EURes st6))
       ))))
 
-(defn conj-grow [st
-  :-
-  Emit
-  slot
-  :-
-  str
-  ll
-  :-
-  str
-  p
-  :-
-  str
-  l
-  :-
-  str
-  cp
-  :-
-  str
-  one
-  :-
-  str
-  xv
-  :-
-  str
-  el
-  :-
-  i64
-  freeable
-  :-
-  i64
-  bm
-  :-
-  str
-  bg
-  :-
-  str
+(defn conj-grow [st :- Emit
+  slot :- str
+  ll :- str
+  p :- str
+  l :- str
+  cp :- str
+  one :- str
+  xv :- str
+  el :- i64
+  freeable :- i64
+  bm :- str
+  bg :- str
 ] :- EURes
   (let [st0 (scalars/em-open st bg)]
     (match

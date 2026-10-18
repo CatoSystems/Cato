@@ -1733,27 +1733,13 @@
 (defn ps-reset-typarams [ps :- PS] :- PS
   (match ps (PS [tab decls adts sigs typarams err] (PS tab decls adts sigs (SNil) err))))
 
-(defn parse-defn-ret [items
-  :-
-  Asts
-  n
-  :-
-  i64
-  i
-  :-
-  i64
-  params
-  :-
-  PList
-  name-sid
-  :-
-  i64
-  isextern
-  :-
-  i64
-  ps
-  :-
-  PS
+(defn parse-defn-ret [items :- Asts
+  n :- i64
+  i :- i64
+  params :- PList
+  name-sid :- i64
+  isextern :- i64
+  ps :- PS
 ] :- RawRes
   (let [has-ret
     (
@@ -1797,33 +1783,15 @@
               )))))
       (parse-defn-body items n i params name-sid (types/t-i64) 0 isextern ps))))
 
-(defn parse-defn-body [items
-  :-
-  Asts
-  n
-  :-
-  i64
-  i
-  :-
-  i64
-  params
-  :-
-  PList
-  name-sid
-  :-
-  i64
-  ret
-  :-
-  Ty
-  ret-borrowed
-  :-
-  i64
-  isextern
-  :-
-  i64
-  ps
-  :-
-  PS
+(defn parse-defn-body [items :- Asts
+  n :- i64
+  i :- i64
+  params :- PList
+  name-sid :- i64
+  ret :- Ty
+  ret-borrowed :- i64
+  isextern :- i64
+  ps :- PS
 ] :- RawRes
   (match ps
     (

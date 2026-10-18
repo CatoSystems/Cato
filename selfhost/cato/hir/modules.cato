@@ -448,27 +448,13 @@
 
 ; Pass 2: split kept forms into required children (`merged-rev`, prepended in
 ; require order) and own forms (`own-rev`); recurse into each unseen child.
-(defn mo-load-requires [path
-  :-
-  str
-  forms
-  :-
-  Asts
-  tab
-  :-
-  i64
-  st
-  :-
-  ModSt
-  merged-rev
-  :-
-  Asts
-  own-rev
-  :-
-  Asts
-  aliases
-  :-
-  IMap
+(defn mo-load-requires [path :- str
+  forms :- Asts
+  tab :- i64
+  st :- ModSt
+  merged-rev :- Asts
+  own-rev :- Asts
+  aliases :- IMap
 ] :- MoLRR
   (match forms
     (
