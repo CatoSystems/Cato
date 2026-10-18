@@ -1,0 +1,1 @@
+(defn compute [a :- Int second-argument-is-deliberately-quite-long :- SomeTypeName third-argument :- Int] (+ a 1))

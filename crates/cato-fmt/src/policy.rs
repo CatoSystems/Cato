@@ -196,7 +196,7 @@ fn node_to_doc_styled(n: &Node, hug: bool) -> Doc {
             if is_empty_form(n) {
                 open_close_text(n)
             } else if hug {
-                hug_delimited(n)
+                params_hug_doc(n)
             } else {
                 delimited_to_doc(n)
             }
@@ -224,10 +224,55 @@ fn delimited_to_doc(n: &Node) -> Doc {
     ]))
 }
 
+/// Head-position parameter vector: each `name [:- Type]` chunk is its
+/// own group, so an annotated argument never breaks between the name,
+/// `:-`, and the type; chunks separate on break. Falls back to plain
+/// hug style when comments inside the vector make chunking ambiguous.
+fn params_hug_doc(n: &Node) -> Doc {
+    let items = collect_items(&n.kids);
+    if items
+        .iter()
+        .any(|i| !i.own_comments.is_empty() || i.trailing_comment.is_some() || i.node.is_none())
+    {
+        return hug_delimited(n);
+    }
+    let elems: Vec<&Node> = items.iter().filter_map(|i| i.node.as_ref()).collect();
+    let mut chunks: Vec<Doc> = Vec::new();
+    let mut i = 0;
+    while i < elems.len() {
+        let start = i;
+        i += 1;
+        if i < elems.len() && is_atom_text(Some(elems[i]), ":-") && i + 1 < elems.len() {
+            i += 2;
+        }
+        let parts: Vec<Doc> = elems[start..i].iter().map(|e| node_to_doc(e)).collect();
+        let mut sep = Vec::new();
+        for (j, p) in parts.into_iter().enumerate() {
+            if j > 0 {
+                sep.push(Doc::Soft);
+            }
+            sep.push(p);
+        }
+        chunks.push(doc::group(doc::concat(sep)));
+    }
+    let mut inner: Vec<Doc> = Vec::new();
+    for (i, b) in chunks.into_iter().enumerate() {
+        if i > 0 {
+            inner.push(Doc::Soft);
+        }
+        inner.push(b);
+    }
+    doc::group(doc::concat(vec![
+        doc::text(n.open.text.clone()),
+        doc::nest(2, doc::concat(inner)),
+        final_sep(&items),
+        doc::text(n.close.as_ref().map(|c| c.text.clone()).unwrap_or_default()),
+    ]))
+}
+
 /// Hug style (head-position vectors): first element stays on the open
 /// delimiter's line when broken; close hugs the last element.
-fn hug_delimited(n: &Node) -> Doc {
-    let items = collect_items(&n.kids);
+fn hug_delimited(n: &Node) -> Doc {    let items = collect_items(&n.kids);
     let close = n.close.as_ref().map(|c| c.text.clone()).unwrap_or_default();
     let mut inner: Vec<Doc> = Vec::new();
     for (i, item) in items.iter().enumerate() {
