@@ -15,6 +15,7 @@ version = "0.1.0"
 dependencies = [
  "cato-backend-llvm",
  "cato-core",
+ "cato-fmt",
  "cato-interp",
 ]
 
@@ -24,6 +25,10 @@ version = "0.1.0"
 dependencies = [
  "cato-backend-llvm",
 ]
+
+[[package]]
+name = "cato-fmt"
+version = "0.1.0"
 
 [[package]]
 name = "cato-interp"

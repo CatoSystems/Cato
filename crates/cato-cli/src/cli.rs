@@ -23,7 +23,7 @@ const FLAGS: &[&str] = &[
 ];
 
 /// Known commands for did-you-mean suggestions (live commands only).
-const COMMANDS: &[&str] = &["compile", "repl", "lsp", "help"];
+const COMMANDS: &[&str] = &["compile", "repl", "lsp", "format", "help"];
 
 pub struct Cli {
     pub file: String,
@@ -351,6 +351,8 @@ USAGE:
   cato compile <file.cato> --emit-ir [-o out.ll]   emit LLVM IR (stdout by default)
   cato compile <file.cato> --target wasm32 [-o out.wasm]   compile to WebAssembly
   cato compile <file.cato> --target x86_64-linux --cc <cross-cc>   cross-compile
+  cato format <file>... [--check] [--width n]   CST formatter (rewrite in place;
+                   --check lists files that would change and exits 1)
   cato repl | cato lsp                 interactive tooling
   cato --explain E301                  long-form documentation for a code
   cato help | cato --version

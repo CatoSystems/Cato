@@ -13,3 +13,6 @@ cato-core = { path = "../cato-core" }
 cato-backend-llvm = { path = "../cato-backend-llvm" }
 cato-fmt = { path = "../cato-fmt" }
 cato-interp = { path = "../cato-backend-interp" }
+
+[dev-dependencies]
+cato-fmt = { path = "../cato-fmt" }

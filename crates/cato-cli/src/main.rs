@@ -3,6 +3,7 @@
 
 mod cli;
 mod driver;
+mod fmt;
 mod lsp;
 mod native;
 mod repl;
@@ -22,6 +23,10 @@ fn main() {
     }
     if args.first().map(|s| s.as_str()) == Some("lsp") {
         lsp::run();
+        return;
+    }
+    if args.first().map(|s| s.as_str()) == Some("format") {
+        fmt::run(&args[1..]);
         return;
     }
     let cli = cli::parse_args(&args);
