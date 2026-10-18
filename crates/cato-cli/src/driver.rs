@@ -91,6 +91,25 @@ pub fn resolve_cc(flag: Option<&str>) -> String {
         .unwrap_or_else(|| "clang".to_string())
 }
 
+/// Empty-file probe: can `cc` compile C for `triple`?
+/// `<cc> --target=<triple> -c -x c <empty.c> -o <temp>` succeeds.
+pub fn cc_supports_triple(cc: &str, triple: &str) -> bool {
+    let tmp = std::env::temp_dir().join(format!("cato_probe_{}", std::process::id()));
+    let src = tmp.with_extension("c");
+    let obj = tmp.with_extension("o");
+    let _ = std::fs::write(&src, "");
+    let result = std::process::Command::new(cc)
+        .arg(format!("--target={triple}"))
+        .args(["-c", "-x", "c"])
+        .arg(&src)
+        .args(["-o"])
+        .arg(&obj)
+        .output();
+    let _ = std::fs::remove_file(&src);
+    let _ = std::fs::remove_file(&obj);
+    result.map(|o| o.status.success()).unwrap_or(false)
+}
+
 pub fn resolve_runtime() -> Result<PathBuf, String> {
     if let Ok(p) = std::env::var("CATO_RUNTIME") {
         let p = PathBuf::from(p);

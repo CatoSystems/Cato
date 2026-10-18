@@ -120,14 +120,47 @@ fn runtime_flag_overrides_default_runtime_source() {
         .env("CATO_ARGCAP", &cap)
         .status()
         .expect("cato compile");
-    assert!(status.success(), "compile with --runtime failed");
+    assert!(status.success(), "compile with fake cc failed");
     let text = std::fs::read_to_string(&cap).expect("read captured argv");
+    let argv: Vec<&str> = text.lines().collect();
     assert!(
-        text.lines().any(|l| l == custom.display().to_string()),
+        argv.iter().any(|a| *a == custom.display().to_string()),
         "--runtime source must appear in argv:\n{text}"
     );
     assert!(
-        !text.lines().any(|l| l.ends_with("/runtime/runtime.c")),
-        "default runtime must be replaced:\n{text}"
+        !argv.iter().any(|a| a.ends_with("runtime/runtime.c")),
+        "default runtime must not appear when --runtime given:\n{text}"
     );
+}
+
+// A native cross target probes the cc's triple support first; a cc that
+// cannot compile for it fails with exit 1 before any link argv runs.
+#[test]
+fn cross_target_probe_rejects_unsupported_cc() {
+    let dir = root().join("target/fake cc");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let bad = dir.join("no-cross-cc");
+    // Fails the empty-file probe: rejects any --target=… -c invocation.
+    std::fs::write(&bad, "#!/bin/sh\nexit 1\n").expect("write");
+    let mut perm = std::fs::metadata(&bad).unwrap().permissions();
+    perm.set_mode(0o755);
+    std::fs::set_permissions(&bad, perm).expect("chmod");
+
+    let src = root().join("examples/slice.cato");
+    let out = root().join("target/fake_out");
+    let result = Command::new(root().join("target/debug/cato"))
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&out)
+        .arg("--cc")
+        .arg(&bad)
+        .arg("--target")
+        .arg("x86_64-linux")
+        .output()
+        .expect("cato compile");
+    assert_eq!(result.status.code(), Some(1), "tool failure is exit 1");
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("does not support target"), "stderr: {stderr}");
+    assert!(stderr.contains("x86_64-unknown-linux-gnu"), "stderr: {stderr}");
 }
