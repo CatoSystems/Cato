@@ -82,7 +82,8 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
 
 /// Emit IR for `program` and link it into an executable at `out`.
 /// The intermediate IR goes to `cli.emit_ll` when given (and is kept),
-/// otherwise a temp file that is deleted after linking.
+/// otherwise a temp file that is deleted after linking. All toolchain
+/// argv is assembled by `driver::link_invocations`.
 pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf, String> {
     let backend = LlvmBackend {
         fast: cli.fast,
@@ -104,10 +105,7 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     std::fs::write(&ll_path, &ir)
         .map_err(|e| format!("cannot write {}: {}", ll_path.display(), e))?;
 
-    let result = match cli.target.flavor {
-        Flavor::Native => link_native(&ll_path, cli, out),
-        Flavor::Wasm => link_wasm(&ll_path, cli, out),
-    };
+    let result = link(&ll_path, cli, out);
     if keep_ll.is_none() {
         let _ = std::fs::remove_file(&ll_path);
     }
@@ -129,54 +127,45 @@ fn run_cc(mut cmd: Command, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn link_native(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
-    let rt = crate::driver::resolve_runtime()?;
-    let cc = crate::driver::resolve_cc(cli.cc.as_deref());
-    let mut cmd = Command::new(&cc);
-    cmd.arg(format!("-O{}", cli.opt_level));
-    if cli.asan {
-        cmd.arg("-fsanitize=address");
+/// The runtime source: `--runtime` (must exist) or the repo/env lookup.
+fn resolve_runtime_path(cli: &Cli) -> Result<PathBuf, String> {
+    match &cli.runtime {
+        Some(p) => {
+            let p = PathBuf::from(p);
+            if p.exists() {
+                Ok(p)
+            } else {
+                Err(format!("--runtime={} does not exist", p.display()))
+            }
+        }
+        None => crate::driver::resolve_runtime(),
     }
-    cmd.arg(ll_path).arg(&rt).arg("-o").arg(out);
-    run_cc(cmd, &cc)
 }
 
-/// Link a wasm32 module: compile the runtime C helpers for the same
-/// target, then link freestanding with `--no-entry` (print/malloc become
-/// host imports thanks to `--allow-undefined`).
-fn link_wasm(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
-    let cc = resolve_wasm_cc(cli)?;
-    let rt = crate::driver::resolve_runtime()?;
-
-    let rt_o = unique_temp("runtime", ".o");
-    let mut compile = Command::new(&cc);
-    compile
-        .arg("--target=wasm32-unknown-unknown")
-        .args(["-c", "-O2", "-ffreestanding"])
-        .arg(&rt)
-        .arg("-o")
-        .arg(&rt_o);
-    let compile_what = format!("{cc} (runtime → wasm object)");
-    let compiled = run_cc(compile, &compile_what);
-    if compiled.is_err() {
-        let _ = std::fs::remove_file(&rt_o);
-        return compiled;
+/// Link `ll_path` at `out` through `driver::link_invocations` — every
+/// toolchain argv in the compiler comes from there (spec §5).
+fn link(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
+    let cc = match cli.target.flavor {
+        Flavor::Native => crate::driver::resolve_cc(cli.cc.as_deref()),
+        Flavor::Wasm => resolve_wasm_cc(cli)?,
+    };
+    let rt = resolve_runtime_path(cli)?;
+    let opts = crate::driver::LinkOpts {
+        opt_level: cli.opt_level,
+        debug: cli.debug,
+        asan: cli.asan,
+        rtlib: cli.rtlib.clone(),
+        passthrough: cli.passthrough.clone(),
+    };
+    let invs = crate::driver::link_invocations(cli.target, &cc, ll_path, &rt, out, &opts);
+    for inv in &invs {
+        let mut cmd = Command::new(&inv.program);
+        cmd.args(&inv.args);
+        run_cc(cmd, inv.what)?;
     }
-
-    let mut link = Command::new(&cc);
-    link.arg("--target=wasm32-unknown-unknown")
-        .arg(format!("-O{}", cli.opt_level))
-        .arg("-nostdlib")
-        .arg(ll_path)
-        .arg(&rt_o)
-        .args([
-            "-Wl,--no-entry",
-            "-Wl,--allow-undefined",
-            "-Wl,--export=main",
-        ])
-        .arg("-o")
-        .arg(out);
-    let linked = run_cc(link, &format!("{cc} (wasm link)"));
-    let _ = std::fs::remove_file(&rt_o);
-    linked
+    // The wasm link step leaves its runtime object next to the output.
+    if cli.target.flavor == Flavor::Wasm {
+        let _ = std::fs::remove_file(format!("{}.runtime.o", out.display()));
+    }
+    Ok(())
 }
