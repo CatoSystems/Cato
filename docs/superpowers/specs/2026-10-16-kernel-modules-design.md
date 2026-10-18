@@ -200,3 +200,14 @@ threads through the loader and on into `expand-all`/`compile-build`.
 - General module features beyond what the seed has (no qualified
   re-export, no `:refer`, no per-symbol imports).
 - The middle end / codegen improvements (unchanged scope).
+- **Missing-required-file parity.** The seed rejects an unreadable `require`
+  with `require: cannot read {child}: …` (with a span). The kernel cannot yet
+  mirror this: its only file primitive, `slurp`, returns `""` for both a
+  missing and an empty file (native `runtime.c` and the interpreter agree),
+  so an unreadable require loads as an empty module instead of erroring.
+  Every in-repo build path runs the seed first, so this is unreachable there,
+  but it is a real accept/reject divergence. Follow-up: add a fallible
+  file primitive (e.g. `file-exists`) and mirror the seed's error verbatim.
+  The kernel gate pins the *other* loader-contract cases (`dupns`,
+  `badalias`, `malreq`, `cycle`) so this is the only unmirrored one.
+

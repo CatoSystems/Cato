@@ -28,7 +28,7 @@
 - The same module required under two different aliases: both requirers' refs resolve to the module's single canonical definitions.
 - The same file reached via two different path spellings: dedup is by string; behavior must be defined and tested, not accidental.
 - A duplicate `(ns ...)` name across the graph: rejected with an error naming the name.
-- A ref through an alias the file never required, or a missing required file: a build error with a span, never a panic or hang.
+- A ref through an alias the file never required, or a missing required file: a build error with a span, never a panic or hang. (Known divergence: the kernel has no fallible file primitive — `slurp` returns `""` for a missing file — so it loads a missing require as an empty module instead of erroring; see the spec's Non-goals. The kernel gate pins cycle/duplicate-ns/unknown-alias/malformed-require, so missing-file is the only unmirrored case, tracked for a `file-exists` follow-up.)
 
 ---
 
@@ -220,11 +220,11 @@ git commit -m "feat(seed): canonical-per-file require semantics (diamonds work)"
   - Helpers (internal): `path-dir [p :- str] :- str`, `path-join [dir :- str rel :- str] :- str`, `rewrite-head-sids [a :- Ast pairs :- (AList i64)] :- Ast`, `rewrite-alias-sids [a :- Ast tab :- i64 aliases :- (AList i64)] :- Ast`, `defn-name-sids [forms :- Asts tab :- i64 acc :- Sids] :- Sids`.
   - `read-all-with [src :- str tab :- i64] :- RRes` now lives in `reader/read.cato` (it was triplicated in `cli.cato:28`, `hir_ref.cato:19`, `emit_ref.cato:32`; all three copies move there).
 
-- [ ] **Step 1: Move `read-all-with` into `reader/read.cato`**
+- [x] **Step 1: Move `read-all-with` into `reader/read.cato`**
 
 `read-all-with` is currently triplicated: `cli.cato:28`, `hir_ref.cato:19`, `emit_ref.cato:32`. Cut all three and paste one copy into `reader/read.cato` (it is a reader primitive: seed `scan` with the pre-interned table). All three entries keep calling `(read-all-with src tab)` bare — still one namespace at this point, so no call-site change yet.
 
-- [ ] **Step 2: Create `selfhost/cato/hir/modules.cato`**
+- [x] **Step 2: Create `selfhost/cato/hir/modules.cato`**
 
 Implement:
 - `path-dir`: scan from the end for the last `/`; return `subs p 0 i` if found, else `""`.
@@ -238,7 +238,7 @@ Implement:
 
 `prefix` for a file = the name of the alias it was required with; the entry file (`canon` has no entry) uses no prefix.
 
-- [ ] **Step 3: Wire the loader into `cli.cato`**
+- [x] **Step 3: Wire the loader into `cli.cato`**
 
 In `compile-to-ir` (`cli.cato:45`), after `read-all-with` succeeds, call `resolve-modules` before `expand-all`:
 
@@ -259,7 +259,7 @@ In `compile-to-ir` (`cli.cato:45`), after `read-all-with` succeeds, call `resolv
         (do (print-string (str "err " (spat at) " " msg)) "")))))
 ```
 
-- [ ] **Step 4: Add the fixture pair and gate check**
+- [x] **Step 4: Add the fixture pair and gate check**
 
 `selfhost/fixtures/kernel/mod_geom.cato`:
 ```
@@ -279,7 +279,7 @@ In `tools/kernel_gate.sh`, after the existing `check_out` lines, add:
 check_out mod "$(printf '49\n25\n16')"
 ```
 
-- [ ] **Step 5: Verify the loader**
+- [x] **Step 5: Verify the loader**
 
 Run:
 ```bash
@@ -293,7 +293,7 @@ Expected: `/tmp/mod` prints `49`, `25`, `16`.
 Run: `./tools/kernel_gate.sh | tail -12`
 Expected: existing lines unchanged, `OK mod`, `GATE: PASS`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add selfhost/cato/hir/modules.cato selfhost/cato/reader/read.cato selfhost/cato/cli.cato tools/concat_kernel.py selfhost/fixtures/kernel/mod.cato selfhost/fixtures/kernel/mod_geom.cato tools/kernel_gate.sh
@@ -314,7 +314,7 @@ git commit -m "feat(kernel): require loader (canonical rename) in Cato"
 - Consumes: Task 1 seed `require`; Task 2 kernel loader.
 - Produces: `selfhost/cato/cli.cato` as the kernel entry; `selfhost/cato/lib/stdlib_ref.cato`, `selfhost/cato/reader/reader_ref.cato`, `selfhost/cato/hir/hir_ref.cato`, `selfhost/cato/emit/emit_ref.cato` as the harness entries.
 
-- [ ] **Step 1: Write `tools/split_kernel.py`**
+- [x] **Step 1: Write `tools/split_kernel.py`**
 
 The script:
 - Defines `MODULES`: the 23 graph files (the 22 kernel files plus the new `hir/modules.cato`) and the 4 `_ref` files, each with a `(path, alias, ns_name)`; `alias` is the canonical short name (e.g. `sym`, `strbuf`, `span`, `ast`, `alist`, `result`, `read`, `rdump`, `types`, `expand`, `forms`, `hexpr`, `lower`, `moveck`, `hdump`, `state`, `scalars`, `heap`, `adt`, `closures`, `emit`, `modules`).
@@ -324,13 +324,13 @@ The script:
 - Never rewrite: local binders, parameters, type names, constructors — only exact matches to an owner name in call/defn-head position.
 - `_ref` files: same treatment (their cross-file heads pull the modules they drive); they keep their single `main`.
 
-- [ ] **Step 2: Run the script and inspect the diff**
+- [x] **Step 2: Run the script and inspect the diff**
 
 Run: `python3 tools/split_kernel.py`
 Then: `git diff --stat selfhost/cato`
 Expected: all 27 files (23 graph + 4 `_ref`) modified; spot-check one `hir/` file (has `(ns ...)`, `(require ...)` block, aliased heads) and one lib file (`(ns ...)` only, or a couple of requires).
 
-- [ ] **Step 3: Switch the gate and delete the concat**
+- [x] **Step 3: Switch the gate and delete the concat**
 
 In `tools/kernel_gate.sh`: remove `python3 tools/concat_kernel.py || exit 2`; replace every `selfhost/cato.cato` with `selfhost/cato/cli.cato`.
 
@@ -339,7 +339,7 @@ Run:
 rm -f selfhost/cato.cato tools/concat_kernel.py tools/split_kernel.py
 ```
 
-- [ ] **Step 4: Verify the fixpoint and gate from entries**
+- [x] **Step 4: Verify the fixpoint and gate from entries**
 
 Run:
 ```bash
@@ -354,7 +354,7 @@ Expected: `FIXPOINT-OK`.
 Run: `./tools/kernel_gate.sh | tail -12`
 Expected: `FIXPOINT: OK`, fixtures `OK` (t1–t6, mod, bk1/bk3), `GATE: PASS`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A selfhost/cato selfhost/fixtures tools/kernel_gate.sh
@@ -378,7 +378,7 @@ git commit -m "refactor(kernel): build from require'd modules; delete concat + g
 - Consumes: the entry files from Task 3.
 - Produces: no new interfaces.
 
-- [ ] **Step 1: Rewire `kernel_reader.rs` / `kernel_emit.rs` / `selfhost.rs`**
+- [x] **Step 1: Rewire `kernel_reader.rs` / `kernel_emit.rs` / `selfhost.rs`**
 
 Delete `CONCAT_FILES` (and `LIB_FILES` in `selfhost.rs`) and the concatenation in `setup()`. Point `cato`/`--emit-ir` and `cato run` at the entry file:
 - `kernel_reader.rs` → `selfhost/cato/reader/reader_ref.cato`
@@ -386,21 +386,21 @@ Delete `CONCAT_FILES` (and `LIB_FILES` in `selfhost.rs`) and the concatenation i
 - `selfhost.rs` → `selfhost/cato/lib/stdlib_ref.cato`
 Keep the scratch `.ll`/`.cato` paths in `target/` only if still needed; otherwise drop them.
 
-- [ ] **Step 2: Rewire `kernel_hir.rs`**
+- [x] **Step 2: Rewire `kernel_hir.rs`**
 
 Same as Step 1, entry `selfhost/cato/hir/hir_ref.cato` (its `main` is driven through the seed interpreter; keep the mode flags/arguments as-is).
 
-- [ ] **Step 3: Rewire `kernel_bootstrap.rs`**
+- [x] **Step 3: Rewire `kernel_bootstrap.rs`**
 
 Delete `CONCAT_FILES`, `generate_concat`, and the `kernel_concat_is_fresh` test. Replace `selfhost/cato.cato` with `selfhost/cato/cli.cato` in `kernel_cli_builds_and_runs_the_fixtures` and the ignored `bootstrap_chain_cato1_builds_cato2`.
 
-- [ ] **Step 4: Update docs**
+- [x] **Step 4: Update docs**
 
 - `ROADMAP.md`: every `selfhost/cato.cato` build-path reference (today lines 20, 23, 29, 100, 107, 241, 243, 244, 255, 256) becomes `selfhost/cato/cli.cato`; replace the concat/generator sentences with the module layout; move the "After the fixpoint" `require` item to shipped.
 - `HANDOFF.md`: every `selfhost/cato.cato`/`python3 tools/concat_kernel.py` occurrence (Quick commands and "Files to focus") becomes `selfhost/cato/cli.cato` (line 536's concat step is dropped, not replaced).
 - S8 spec §"The canonical concat": replace with a short note that the kernel is `require`-connected modules and `cli.cato` is the entry.
 
-- [ ] **Step 5: Verify the whole suite**
+- [x] **Step 5: Verify the whole suite**
 
 Run:
 ```bash
@@ -411,7 +411,7 @@ python3 -m unittest discover -s tools/tests
 ```
 Expected: `cargo test` green (including `parity::modules_agree_between_backends`, `kernel_reader_*`, `kernel_hir_*`, `kernel_emit_*`, `seed_builds_the_kernel_stdlib_and_both_backends_agree`, `kernel_cli_builds_and_runs_the_fixtures`); `GATE: PASS`; `Ran 20 tests … OK`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/cato-backend-interp/tests ROADMAP.md HANDOFF.md docs/superpowers/specs/2026-10-02-cato-s8-stage1-bootstrap.md
@@ -430,4 +430,4 @@ git commit -m "test(kernel): drive require'd entries; drop concat from harnesses
 
 **Proportion:** The plan pins signatures, algorithms for the loader (which the signature does not determine), test assertions, and commands; it does not transcribe bodies of the mechanical conversion.
 
-**Review Focus coverage:** cycle → Task 1 `cycle_terminates`; two aliases → Task 1 `same_module_under_two_aliases`; differing spellings → Task 1 `same_file_reached_by_two_spellings_dedups` and `cross_directory_diamond_dedups` (both dedup via lexical normalization); duplicate ns → Task 1 `duplicate_ns_is_rejected`; unknown alias / missing file → Task 1 `unknown_alias_is_a_build_error` and `missing_required_file_is_an_error`.
+**Review Focus coverage:** cycle → Task 1 `cycle_terminates`; two aliases → Task 1 `same_module_under_two_aliases`; differing spellings → Task 1 `same_file_reached_by_two_spellings_dedups` and `cross_directory_diamond_dedups` (both dedup via lexical normalization); duplicate ns → Task 1 `duplicate_ns_is_rejected`; unknown alias / missing file → Task 1 `unknown_alias_is_a_build_error` and `missing_required_file_is_an_error`; malformed require → Task 1 `malformed_require_is_an_error`. The kernel loader's contract is pinned by gate fixtures `cycle` (builds+runs), `dupns`, `badalias`, `malreq` (`tools/kernel_gate.sh`); missing-file kernel parity is the tracked follow-up (spec Non-goals).
