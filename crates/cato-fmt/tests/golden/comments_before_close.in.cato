@@ -1,0 +1,10 @@
+(list  a   b ; note
+   )
+
+(defn f []  ; head note
+   (+ 1 2) ; body note
+ ; tail comment
+)
+
+(defn g [] (inner) ; bye
+)

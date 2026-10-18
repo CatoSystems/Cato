@@ -72,10 +72,17 @@ pub fn run(args: &[String]) {
             }
             match cato_fmt::format_source(&src, width) {
                 Ok(out) => {
-                    let stdout = std::io::stdout();
-                    let mut lock = stdout.lock();
-                    if lock.write_all(out.as_bytes()).is_err() {
-                        std::process::exit(1);
+                    if check {
+                        if out != src {
+                            println!("-");
+                            changed = true;
+                        }
+                    } else {
+                        let stdout = std::io::stdout();
+                        let mut lock = stdout.lock();
+                        if lock.write_all(out.as_bytes()).is_err() {
+                            std::process::exit(1);
+                        }
                     }
                 }
                 Err(e) => {
@@ -101,7 +108,7 @@ pub fn run(args: &[String]) {
                 if check {
                     println!("{}", f);
                     changed = true;
-                } else if let Err(e) = std::fs::write(f, &out) {
+                } else if let Err(e) = write_atomic(f, &out) {
                     eprintln!("cato: {}: {}", f, e);
                     failed = true;
                 }
@@ -118,4 +125,18 @@ pub fn run(args: &[String]) {
     if check && changed {
         std::process::exit(1);
     }
+}
+
+/// Replace `path` atomically: write a sibling temp file, then rename it
+/// over the original, so a failed write never truncates the user's file.
+fn write_atomic(path: &str, contents: &str) -> std::io::Result<()> {
+    let p = std::path::Path::new(path);
+    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = p.with_file_name(format!("{}.cato-fmt-{}.tmp", name, std::process::id()));
+    std::fs::write(&tmp, contents)?;
+    if let Err(e) = std::fs::rename(&tmp, p) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
 }

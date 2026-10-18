@@ -177,3 +177,64 @@ fn malformed_file_exits_one_and_keeps_other_files() {
     assert_eq!(fs::read_to_string(&good).unwrap(), NEAT, "later files still formatted");
     assert_eq!(fs::read_to_string(&bad).unwrap(), "(defn f [\n", "bad file untouched");
 }
+
+#[test]
+fn check_mode_on_stdin_reports_change_without_writing() {
+    let mut child = Command::new(bin())
+        .args(["format", "--check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(MESSY.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "check on would-change stdin must exit 1; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(stdout.trim(), "-", "stdout must be only the operand, got: {stdout}");
+    assert!(
+        !stdout.contains("defn"),
+        "check mode must not print formatted source, got: {stdout}"
+    );
+}
+
+#[test]
+fn check_mode_on_clean_stdin_exits_zero() {
+    let mut child = Command::new(bin())
+        .args(["format", "--check", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(NEAT.as_bytes()).unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(out.stdout.is_empty(), "clean stdin check should print nothing");
+}
+
+#[test]
+fn rewrite_replaces_file_atomically() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = scratch("atomic");
+    let file = dir.join("a.cato");
+    fs::write(&file, MESSY).unwrap();
+    let ino_before = fs::metadata(&file).unwrap().ino();
+    let out = Command::new(bin())
+        .args(["format", file.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    // Atomic replacement (rename over the original) changes the inode;
+    // truncate-in-place would keep it. No temp debris may remain.
+    let ino_after = fs::metadata(&file).unwrap().ino();
+    assert_ne!(ino_before, ino_after, "rewrite must replace via rename, not truncate-in-place");
+    assert_eq!(fs::read_to_string(&file).unwrap(), NEAT);
+    let entries: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
+    assert_eq!(entries.len(), 1, "no temp files may be left behind");
+}

@@ -54,23 +54,50 @@ fn idempotent_on_golden_outputs() {
     }
 }
 
-#[test]
-fn idempotent_on_real_corpus() {
+/// Plan §Task 4 corpus: `examples/*.cato` plus every `*.cato` under a
+/// `fixtures/` directory anywhere in `selfhost/` (skipping `err_*`,
+/// the intentionally-malformed reader fixtures).
+fn corpus_files() -> Vec<PathBuf> {
     let root = corpus_root();
     let mut files = Vec::new();
-    for dir in [root.join("examples"), root.join("selfhost/cato/reader/fixtures")] {
-        for entry in fs::read_dir(&dir).expect("corpus dir").flatten() {
+    for entry in fs::read_dir(root.join("examples")).expect("examples dir").flatten() {
+        let path = entry.path();
+        if path.extension().map(|x| x == "cato").unwrap_or(false) {
+            files.push(path);
+        }
+    }
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).expect("selfhost dir").flatten() {
             let path = entry.path();
-            if path.extension().map(|x| x == "cato").unwrap_or(false) {
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().map(|x| x == "cato").unwrap_or(false)
+                && path.components().any(|c| c.as_os_str() == "fixtures")
+            {
                 let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                if name.starts_with("err_") {
-                    continue;
+                if !name.starts_with("err_") {
+                    out.push(path);
                 }
-                files.push(path);
             }
         }
     }
-    assert!(!files.is_empty(), "corpus is empty");
+    walk(&root.join("selfhost"), &mut files);
+    files.sort();
+    files
+}
+
+#[test]
+fn idempotent_on_real_corpus() {
+    let files = corpus_files();
+    assert!(
+        files.len() >= 60,
+        "corpus must sweep examples + all selfhost fixtures recursively, found only {}",
+        files.len()
+    );
+    assert!(
+        files.iter().any(|p| p.components().any(|c| c.as_os_str() == "hir")),
+        "corpus must include selfhost/cato/hir/fixtures"
+    );
     for path in files {
         let src = fs::read_to_string(&path).unwrap();
         let once = format_source(&src, 100)

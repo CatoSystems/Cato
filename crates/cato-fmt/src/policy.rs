@@ -130,9 +130,14 @@ fn collect_items(kids: &[Elem]) -> Vec<Item> {
 
 fn item_doc(item: &Item) -> Doc {
     let mut parts: Vec<Doc> = Vec::new();
-    for c in &item.own_comments {
+    for (i, c) in item.own_comments.iter().enumerate() {
         parts.push(doc::text(c.clone()));
-        parts.push(Doc::Line);
+        // A comment-only item (no node) must not end its own line: its
+        // line-end is `final_sep`, emitted outside the nest so a close
+        // delimiter after trailing comments aligns at the outer indent.
+        if item.node.is_some() || i + 1 < item.own_comments.len() {
+            parts.push(Doc::Line);
+        }
     }
     if let Some(n) = &item.node {
         parts.push(node_to_doc(n));
@@ -153,12 +158,12 @@ fn sep_between(prev: &Item, next: &Item) -> Doc {
 }
 
 /// Separator before the close delimiter: a trailing comment or a
-/// comment-only tail already ended the line; otherwise a (possibly
-/// breaking) hug.
+/// comment-only tail ends the line at the *outer* indent (so the close
+/// delimiter never lands indented inside the form); otherwise a
+/// (possibly breaking) hug.
 fn final_sep(items: &[Item]) -> Doc {
     match items.last() {
-        Some(l) if l.node.is_none() => Doc::Nil, // item_doc ended with Line
-        Some(l) if l.trailing_comment.is_some() => Doc::Line,
+        Some(l) if l.node.is_none() || l.trailing_comment.is_some() => Doc::Line,
         Some(_) => Doc::Softline,
         None => Doc::Nil,
     }
@@ -373,6 +378,13 @@ fn head_form_doc(items: &[Item], head: &str) -> Doc {
             body_docs.push(item_doc(it));
         }
         parts.push(doc::nest(2, doc::concat(vec![first_sep, doc::concat(body_docs)])));
+        // A trailing or comment-only last body item ends its line at the
+        // outer indent, so `)` is never swallowed by the comment or
+        // pushed into the body's nest.
+        let tail = body.last().unwrap();
+        if tail.node.is_none() || tail.trailing_comment.is_some() {
+            parts.push(Doc::Line);
+        }
     } else if comment_break {
         parts.push(Doc::Line);
     }
