@@ -1,0 +1,5 @@
+(defn a [] "hi ;( there")
+(defn b [] "escaped \" quote and \\ backslash")
+(defn c [] "")
+(defn d [] "multi
+line")

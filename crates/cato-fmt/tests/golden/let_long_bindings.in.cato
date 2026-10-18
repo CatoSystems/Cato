@@ -1,0 +1,3 @@
+(let [first-binding-name (some-long-function-call argument-one argument-two) second (another-call abc defghijklmnopqrstuvwxyz)
+ third 3]
+ (do-something first-binding-name second third))

@@ -1,0 +1,2 @@
+(defn a [] 1)
+; eof comment with no newline

@@ -1,0 +1,6 @@
+(defn f []  ; trailing on head
+  (+ 1 2))  ; trailing on form
+
+; leading comment
+(defn g []
+  0)
