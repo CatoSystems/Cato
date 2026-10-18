@@ -34,6 +34,7 @@ fn seed_builds_the_kernel_stdlib_and_both_backends_agree() {
     let ll = root.join("target/selfhost_stdlib.ll");
     let exe = root.join("target/selfhost_stdlib_bin");
     let status = Command::new(&cato)
+        .arg("compile")
         .arg(&entry)
         .arg("--emit-ir")
         .arg("-o")

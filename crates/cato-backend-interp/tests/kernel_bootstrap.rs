@@ -162,7 +162,7 @@ fn bootstrap_chain_cato1_builds_cato2() {
     // Seed → cato1.
     let cato1 = root.join("target/cato1");
     let build1 = Command::new(&cato)
-        .arg("build")
+        .arg("compile")
         .arg(root.join("selfhost/cato/cli.cato"))
         .arg("-o")
         .arg(&cato1)

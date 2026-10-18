@@ -32,46 +32,42 @@ fn write_demo() -> PathBuf {
     path
 }
 
-// Bare `cato file` is a compile check: success, zero output.
+// `cato compile -o` keeps stdout clean; the timing summary goes to stderr.
 #[test]
 fn compile_check_mode_is_silent() {
     let src = write_demo();
-    let out = cato().arg(&src).output().expect("run cato");
+    let bin = manifest_root().join("target/optin_bin_demo");
+    let out = cato().arg("compile").arg(&src).arg("-o").arg(&bin).output().expect("run cato");
     assert!(out.status.success(), "compile failed");
-    assert!(out.stdout.is_empty(), "check mode must print nothing to stdout, got {:?}",
+    assert!(out.stdout.is_empty(), "compile must print nothing to stdout, got {:?}",
         String::from_utf8_lossy(&out.stdout));
+    let _ = std::fs::remove_file(&bin);
 }
 
-// Errors still surface in check mode.
+// Errors still surface in compile mode.
 #[test]
 fn compile_check_mode_reports_errors() {
     let src = manifest_root().join("target/optin_bad.cato");
     std::fs::write(&src, "(defn main [] (print (+ 1 \"nope\")))").expect("write bad");
-    let out = cato().arg(&src).output().expect("run cato");
-    assert!(!out.status.success(), "type error must fail the check");
+    let out = cato().arg("compile").arg(&src).output().expect("run cato");
+    assert!(!out.status.success(), "type error must fail the compile");
 }
 
-// IR only on `--emit-ir`; `-o` without an emit flag is rejected.
+// IR only on `--emit-ir`; `-o` without it names the artifact instead.
 #[test]
 fn ir_is_opt_in_via_emit_ir() {
     let src = write_demo();
-    let out = cato().arg(&src).arg("--emit-ir").output().expect("run cato");
+    let out = cato().arg("compile").arg(&src).arg("--emit-ir").output().expect("run cato");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("define i32 @main"), "IR must contain main");
-
-    let rejected = cato().arg(&src).arg("-o").arg("/tmp/should_not_exist.ll")
-        .output().expect("run cato");
-    assert!(!rejected.status.success(), "-o without --emit-ir must be rejected");
-    let stderr = String::from_utf8_lossy(&rejected.stderr);
-    assert!(stderr.contains("--emit-ir"), "error must guide to --emit-ir: {}", stderr);
 }
 
 // The wasm32 target stamps the module with the wasm triple and layout.
 #[test]
 fn wasm_target_emits_wasm_module_header() {
     let src = write_demo();
-    let out = cato().arg(&src).args(["--emit-ir", "--target", "wasm32"])
+    let out = cato().arg("compile").arg(&src).args(["--emit-ir", "--target", "wasm32"])
         .output().expect("run cato");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -79,7 +75,7 @@ fn wasm_target_emits_wasm_module_header() {
     assert!(stdout.contains(r#"target datalayout = "e-m:e-p:32:32"#));
 
     // Native emission must NOT claim a wasm triple.
-    let native = cato().arg(&src).arg("--emit-ir").output().expect("run cato");
+    let native = cato().arg("compile").arg(&src).arg("--emit-ir").output().expect("run cato");
     let stdout = String::from_utf8_lossy(&native.stdout);
     assert!(!stdout.contains("wasm32"), "native IR must not claim wasm32");
 }
@@ -101,7 +97,7 @@ fn wasm_ir_passes_through_llvm_wasm_codegen() {
 
     let src = write_demo();
     let ir = manifest_root().join("target/optin_wasm.ll");
-    let status = cato().arg(&src).args(["--emit-ir", "--target", "wasm32"])
+    let status = cato().arg("compile").arg(&src).args(["--emit-ir", "--target", "wasm32"])
         .arg("-o").arg(&ir)
         .status().expect("emit wasm ir");
     assert!(status.success(), "wasm IR emission failed");
@@ -120,24 +116,24 @@ fn wasm_ir_passes_through_llvm_wasm_codegen() {
     assert_eq!(&bytes[..4], b"\0asm", "output must be a WebAssembly binary");
 }
 
-// `cato build --target wasm32` either links a real .wasm (toolchain with
+// `cato compile --target wasm32` either links a real .wasm (toolchain with
 // lld present) or fails with guidance. Never succeeds silently.
 #[test]
 fn wasm_build_links_or_explains() {
     if wasm_link_toolchain_present() {
         let src = write_demo();
         let out = manifest_root().join("target/optin_demo.wasm");
-        let status = cato().arg("build").arg("--target").arg("wasm32")
+        let status = cato().arg("compile").arg("--target").arg("wasm32")
             .arg(&src).arg("-o").arg(&out)
-            .status().expect("cato build wasm");
+            .status().expect("cato compile wasm");
         assert!(status.success(), "wasm build failed on a capable toolchain");
         let bytes = std::fs::read(&out).expect("read wasm");
         assert_eq!(&bytes[..4], b"\0asm");
     } else {
         let src = write_demo();
-        let out = cato().arg("build").arg("--target").arg("wasm32")
+        let out = cato().arg("compile").arg("--target").arg("wasm32")
             .arg(&src).arg("-o").arg("/tmp/optin_demo.wasm")
-            .output().expect("cato build wasm");
+            .output().expect("cato compile wasm");
         assert!(!out.status.success(), "wasm build must not silently no-op");
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stderr.contains("wasm"), "error must mention wasm: {}", stderr);

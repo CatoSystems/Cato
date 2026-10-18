@@ -8,10 +8,10 @@ mod native;
 mod repl;
 mod ui;
 
-use cli::{Cli, Mode, Target};
+use cli::{Cli, Mode};
 use cato_core::Backend;
 use cato_interp::InterpBackend;
-use cato_llvm::{LlvmBackend, Target as LlvmTarget};
+use cato_llvm::LlvmBackend;
 use std::time::Instant;
 
 fn main() {
@@ -39,50 +39,38 @@ fn main() {
         eprintln!("{:#?}", program);
     }
 
-    // `--backend interp` executes instead of compiling, exactly like `run`.
+    // `--backend interp` executes instead of compiling.
     let mode = match cli.mode {
         Mode::Compile if cli.backend == "interp" => Mode::RunInterp,
         other => other,
     };
     let result = match mode {
-        // Compile check; IR text only on explicit `--emit-ir`.
+        // `cato compile`: link a native/wasm artifact, or stop after IR
+        // emission on explicit `--emit-ir`.
         Mode::Compile => {
-            if !cli.emit_ir {
-                eprintln!(
-                    "{} compiled {} in {}ms",
-                    ui::check_mark(),
-                    cli.file,
-                    started.elapsed().as_millis()
-                );
+            if cli.emit_ir {
+                let backend = llvm_backend(&cli);
+                let ir = backend
+                    .emit(&program)
+                    .unwrap_or_else(|e| {
+                        eprintln!("{} backend error: {}", ui::error_lead(), e);
+                        std::process::exit(1);
+                    });
+                match &cli.out {
+                    Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
+                        eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);
+                        std::process::exit(1);
+                    }),
+                    None => print!("{}", ir),
+                }
                 return;
             }
-            let backend = llvm_backend(&cli);
-            let ir = backend
-                .emit(&program)
-                .unwrap_or_else(|e| {
-                    eprintln!("{} backend error: {}", ui::error_lead(), e);
-                    std::process::exit(1);
-                });
-            match &cli.out {
-                Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
-                    eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);
-                    std::process::exit(1);
-                }),
-                None => print!("{}", ir),
-            }
-            return;
-        }
-        // Compile to a native executable and (for run) execute it.
-        Mode::Build => {
-            let default = match cli.target {
-                Target::Wasm32 => format!("{}.wasm", default_stem(&cli.file)),
-                Target::Native => default_stem(&cli.file),
-            };
+            let default = driver::default_out(cli.target, &default_stem(&cli.file));
             let out = cli.out.clone().unwrap_or(default);
             match native::build_native(&program, &cli, std::path::Path::new(&out)) {
                 Ok(bin) => {
                     eprintln!(
-                        "{} built {} in {}ms",
+                        "{} compiled {} in {}ms",
                         ui::check_mark(),
                         bin.display(),
                         started.elapsed().as_millis()
@@ -149,9 +137,9 @@ fn llvm_backend(cli: &Cli) -> LlvmBackend {
     LlvmBackend {
         fast: cli.fast,
         threads: cli.threads,
-        target: match cli.target {
-            Target::Native => LlvmTarget::Native,
-            Target::Wasm32 => LlvmTarget::Wasm32,
+        target: match cli.target.flavor {
+            driver::Flavor::Native => cato_llvm::Target::Native,
+            driver::Flavor::Wasm => cato_llvm::Target::Wasm32,
         },
     }
 }

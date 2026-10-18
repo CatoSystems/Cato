@@ -6,7 +6,8 @@
 //! layout `target/debug/cato` → `<root>/runtime/runtime.c`), the working
 //! directory, or `CATO_RUNTIME`.
 
-use crate::cli::{Cli, Target};
+use crate::cli::Cli;
+use crate::driver::Flavor;
 use cato_core::{Backend, Program};
 use cato_llvm::{LlvmBackend, Target as LlvmTarget};
 use std::path::{Path, PathBuf};
@@ -52,10 +53,10 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
     let guidance = |why: &str| {
         format!(
             "{why}\n\
-             wasm32 codegen itself always works: 'cato <file> --emit-ir --target wasm32'\n\
+             wasm32 codegen itself always works: 'cato compile <file> --emit-ir --target wasm32'\n\
              to LINK .wasm binaries install a wasm-capable clang with lld, e.g.\n\
              \x20 brew install llvm lld\n\
-             \x20 cato build --target wasm32 <file> --cc $(brew --prefix llvm)/bin/clang"
+             \x20 cato compile --target wasm32 <file> --cc $(brew --prefix llvm)/bin/clang"
         )
     };
     if let Some(cc) = &cli.cc {
@@ -86,9 +87,9 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     let backend = LlvmBackend {
         fast: cli.fast,
         threads: cli.threads,
-        target: match cli.target {
-            Target::Native => LlvmTarget::Native,
-            Target::Wasm32 => LlvmTarget::Wasm32,
+        target: match cli.target.flavor {
+            Flavor::Native => LlvmTarget::Native,
+            Flavor::Wasm => LlvmTarget::Wasm32,
         },
     };
     let ir = backend
@@ -103,9 +104,9 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     std::fs::write(&ll_path, &ir)
         .map_err(|e| format!("cannot write {}: {}", ll_path.display(), e))?;
 
-    let result = match cli.target {
-        Target::Native => link_native(&ll_path, cli, out),
-        Target::Wasm32 => link_wasm(&ll_path, cli, out),
+    let result = match cli.target.flavor {
+        Flavor::Native => link_native(&ll_path, cli, out),
+        Flavor::Wasm => link_wasm(&ll_path, cli, out),
     };
     if keep_ll.is_none() {
         let _ = std::fs::remove_file(&ll_path);

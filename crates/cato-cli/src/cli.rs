@@ -16,35 +16,26 @@ const FLAGS: &[&str] = &[
     "--asan",
     "--opt-level",
     "--backend",
+    "--runtime",
+    "--rtlib",
     "--explain",
     "--version",
     "--help",
 ];
 
-/// Known commands for did-you-mean suggestions.
-const COMMANDS: &[&str] = &["build", "run", "repl", "lsp", "help"];
+/// Known commands for did-you-mean suggestions (live commands only).
+const COMMANDS: &[&str] = &["compile", "run", "repl", "lsp", "help"];
 
 /// What the binary should do after compiling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Compile only: run the full pipeline and report errors. Nothing is
-    /// written unless an emit flag is given.
+    /// Compile to an executable in the current toolchain, or stop after
+    /// IR emission with `--emit-ir`.
     Compile,
-    /// Compile to a native executable in the current toolchain.
-    Build,
     /// Execute with the tree-walking interpreter (`cato run`).
     RunInterp,
     /// Build and execute a native binary (`cato run --native`).
     RunNative,
-}
-
-/// Emission targets (`--target`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    /// The compiling host.
-    Native,
-    /// WebAssembly 32-bit freestanding (`wasm32-unknown-unknown`).
-    Wasm32,
 }
 
 pub struct Cli {
@@ -53,9 +44,9 @@ pub struct Cli {
     pub out: Option<String>,
     /// Arguments after the file in `cato run file args...` (S3).
     pub interp_args: Vec<String>,
-    /// Emit LLVM IR text in compile mode (`--emit-ir`).
+    /// Emit LLVM IR text (`--emit-ir`): stop before linking.
     pub emit_ir: bool,
-    pub target: Target,
+    pub target: &'static crate::driver::TargetSpec,
     pub fast: bool,
     pub backend: String,
     /// Worker threads for `(parallel ...)` loops.
@@ -69,10 +60,18 @@ pub struct Cli {
     pub cc: Option<String>,
     /// Optimization level passed to the C compiler (0–3).
     pub opt_level: u8,
-    /// Where to keep the intermediate LLVM IR when building natively.
+    /// Where to keep the intermediate LLVM IR when linking.
     pub emit_ll: Option<String>,
     /// Link with AddressSanitizer.
     pub asan: bool,
+    /// Debug info (`-g`).
+    pub debug: bool,
+    /// Runtime source override (`--runtime`).
+    pub runtime: Option<String>,
+    /// Runtime library (`--rtlib`, default compiler-rt).
+    pub rtlib: String,
+    /// Everything after `--`, forwarded verbatim to the toolchain.
+    pub passthrough: Vec<String>,
 }
 
 impl Default for Cli {
@@ -83,7 +82,7 @@ impl Default for Cli {
             out: None,
             interp_args: Vec::new(),
             emit_ir: false,
-            target: Target::Native,
+            target: crate::driver::lookup("native").unwrap(),
             fast: false,
             backend: "llvm".to_string(),
             threads: 1,
@@ -93,6 +92,10 @@ impl Default for Cli {
             opt_level: 2,
             emit_ll: None,
             asan: false,
+            debug: false,
+            runtime: None,
+            rtlib: "compiler-rt".to_string(),
+            passthrough: Vec::new(),
         }
     }
 }
@@ -101,6 +104,8 @@ pub fn parse_args(args: &[String]) -> Cli {
     let mut cli = Cli::default();
     let mut file: Option<String> = None;
     let mut explain = None;
+    let mut saw_command = false;
+    let mut command = "";
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -114,6 +119,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                     std::process::exit(2);
                 }
             },
+            "-g" => {
+                cli.debug = true;
+                i += 1;
+            }
             "--fast" => {
                 cli.fast = true;
                 i += 1;
@@ -123,12 +132,8 @@ pub fn parse_args(args: &[String]) -> Cli {
                 i += 1;
             }
             "--target" => match args.get(i + 1).map(|s| s.as_str()) {
-                Some("native") => {
-                    cli.target = Target::Native;
-                    i += 2;
-                }
-                Some("wasm32") => {
-                    cli.target = Target::Wasm32;
+                Some(name) if crate::driver::lookup(name).is_some() => {
+                    cli.target = crate::driver::lookup(name).unwrap();
                     i += 2;
                 }
                 _ => {
@@ -159,6 +164,26 @@ pub fn parse_args(args: &[String]) -> Cli {
                 }
                 None => {
                     eprintln!("cato: --cc requires a compiler path");
+                    std::process::exit(2);
+                }
+            },
+            "--runtime" => match args.get(i + 1) {
+                Some(p) => {
+                    cli.runtime = Some(p.clone());
+                    i += 2;
+                }
+                None => {
+                    eprintln!("cato: --runtime requires a path");
+                    std::process::exit(2);
+                }
+            },
+            "--rtlib" => match args.get(i + 1) {
+                Some(p) => {
+                    cli.rtlib = p.clone();
+                    i += 2;
+                }
+                None => {
+                    eprintln!("cato: --rtlib requires a name");
                     std::process::exit(2);
                 }
             },
@@ -222,6 +247,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                     std::process::exit(2);
                 }
             },
+            "--" => {
+                cli.passthrough.extend(args[i + 1..].iter().cloned());
+                i = args.len();
+            }
             "--version" | "-V" => {
                 println!("cato {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -244,11 +273,19 @@ pub fn parse_args(args: &[String]) -> Cli {
                 std::process::exit(0);
             }
             "build" if file.is_none() => {
-                cli.mode = Mode::Build;
+                eprintln!("cato: 'build' was renamed to 'compile' (cato compile <file> [-o out])");
+                std::process::exit(2);
+            }
+            "compile" if file.is_none() => {
+                cli.mode = Mode::Compile;
+                saw_command = true;
+                command = "compile";
                 i += 1;
             }
             "run" if file.is_none() => {
                 cli.mode = Mode::RunInterp;
+                saw_command = true;
+                command = "run";
                 i += 1;
             }
             s => {
@@ -303,39 +340,43 @@ pub fn parse_args(args: &[String]) -> Cli {
     }
     // Flag-combination validation before touching any files.
     if cli.emit_ir && cli.mode != Mode::Compile {
-        eprintln!("cato: --emit-ir is only valid in compile mode (use --emit-ll with build/run)");
+        eprintln!("cato: --emit-ir is only valid in compile mode");
         std::process::exit(2);
     }
-    if cli.emit_ll.is_some() && cli.mode == Mode::Compile {
-        eprintln!("cato: --emit-ll is only valid with build/run --native (use --emit-ir in compile mode)");
+    if cli.emit_ll.is_some() && cli.mode != Mode::Compile {
+        eprintln!("cato: --emit-ll is only valid when linking (cato compile)");
         std::process::exit(2);
     }
-    if cli.mode == Mode::Compile && cli.out.is_some() && !cli.emit_ir {
+    if cli.emit_ir && cli.emit_ll.is_some() {
         eprintln!(
-            "cato: -o with nothing to emit — pass --emit-ir to write LLVM IR, \
-             or use 'cato build -o <bin>' for a native binary"
+            "cato: --emit-ir stops before linking; --emit-ll only applies when linking"
         );
         std::process::exit(2);
     }
-    if cli.target == Target::Wasm32 && cli.mode == Mode::RunNative {
+    if cli.target.flavor == crate::driver::Flavor::Wasm && cli.mode == Mode::RunNative {
         eprintln!(
-            "cato: wasm binaries cannot be executed directly — build them with \
-             'cato build --target wasm32' and run them in a wasm runtime"
+            "cato: wasm binaries cannot be executed directly — compile them with \
+             'cato compile --target wasm32' and run them in a wasm runtime"
         );
         std::process::exit(2);
     }
     match file {
+        Some(_) if !saw_command => {
+            eprintln!(
+                "cato: subcommand required — '<file>' needs a command; try 'cato compile <file>'"
+            );
+            std::process::exit(2);
+        }
         Some(f) if Path::new(&f).exists() => {
             cli.file = f;
             cli
         }
         Some(f) => {
-            eprintln!(
-                "{} no such file {}{}",
-                ui::error_lead(),
-                f,
-                ui::suggestion_suffix(&f, COMMANDS)
-            );
+            eprintln!("{} no such file {}", ui::error_lead(), f);
+            std::process::exit(2);
+        }
+        None if saw_command => {
+            eprintln!("cato: {} requires an input file (.cato)", command);
             std::process::exit(2);
         }
         None => {
@@ -352,7 +393,7 @@ fn banner() {
         env!("CARGO_PKG_VERSION")
     );
     eprintln!();
-    eprintln!("  quick start:   cato run your_program.cato");
+    eprintln!("  quick start:   cato compile your_program.cato");
     eprintln!("  full usage:    cato --help");
 }
 
@@ -362,40 +403,43 @@ fn usage_text() -> String {
         "cato {} — a statically-typed Lisp that compiles to native code and WebAssembly
 
 USAGE:
-  cato <file.cato>                     compile (type/mid-end check); no output
-  cato <file.cato> --emit-ir [-o out.ll]   emit LLVM IR (stdout by default)
-  cato build <file.cato> [-o bin]      compile to a native executable
-  cato build --target wasm32 <file>    compile to a WebAssembly binary
-  cato run <file.cato>                 execute with the built-in interpreter
-  cato run --native <file.cato>        compile and execute a native binary
+  cato compile <file.cato> [-o bin]     compile to a native executable
+  cato compile <file.cato> --emit-ir [-o out.ll]   emit LLVM IR (stdout by default)
+  cato compile <file.cato> --target wasm32 [-o out.wasm]   compile to WebAssembly
   cato repl | cato lsp                 interactive tooling
   cato --explain E301                  long-form documentation for a code
   cato help | cato --version
 
 OPTIONS:
-  --emit-ir        emit the LLVM IR in compile mode (opt-in)
-  -o <path>        output path (IR in compile mode, binary for build)
+  -o <path>        output path (artifact name; IR path with --emit-ir; the
+                   driver-owned output is never overridable via --)
+  --emit-ir        stop after IR emission (stdout by default, or -o)
+  --emit-ll <path> keep the intermediate LLVM IR alongside the artifact
   --target <t>     'native' (default) or 'wasm32' (wasm32-unknown-unknown)
-  --emit-ll <path> keep the intermediate LLVM IR when building natively
-  -O0..-O3         C-compiler optimization level (default: -O2 for native builds)
+  -O0..-O3         C-compiler optimization level (default: -O2)
+  --opt-level <n>  same as -On
+  -g               debug info
+  --asan           link the native binary with AddressSanitizer
   --fast           attach vectorization metadata to fused loops (auto-SIMD)
   --no-opt         skip the middle-end HIR pipeline (fold, DCE, copy-prop,
                    devirtualization, inlining, clone elision)
   --dump-hir       print the HIR to stderr for debugging
   --threads <n>    worker threads for (parallel ...) loops
   --cc <path>      C compiler used for linking (default: $CATO_CC, $CC, clang)
-  --asan           link the native binary with AddressSanitizer
-  --backend <b>    compile-mode execution backend: llvm (default) or interp
+  --runtime <path> runtime source (default: $CATO_RUNTIME, repo runtime/runtime.c)
+  --rtlib <name>   runtime library (default: compiler-rt)
+  --               everything after -- is forwarded verbatim to the compiler
+                   driver (each option still appears exactly once in argv)
 
 EXIT STATUS:
   0  success
   1  compile error, or a runtime error executing the program
   2  command-line usage error
 
-The interpreter and native execution produce identical output; the parity
-suites in tests assert this across every example. wasm32 builds need a
-wasm-capable clang with lld (e.g. 'brew install llvm lld', then pass --cc);
-`--emit-ir --target wasm32` always works, no linker required.",
+The parity suites assert interpreter/native output agreement across every
+example. wasm32 builds need a wasm-capable clang with lld (e.g. 'brew
+install llvm lld', then pass --cc); `compile --emit-ir --target wasm32`
+always works, no linker required.",
         env!("CARGO_PKG_VERSION")
     )
 }

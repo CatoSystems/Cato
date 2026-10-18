@@ -36,6 +36,7 @@ fn setup() -> Paths {
     // in the S6 spec notes; revisit with S7).
     let ll = root.join("target/selfhost_hir.ll");
     let status = Command::new(&cato)
+        .arg("compile")
         .arg(&entry)
         .arg("--emit-ir")
         .arg("-o")

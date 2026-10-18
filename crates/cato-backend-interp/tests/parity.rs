@@ -48,7 +48,7 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
         // LLVM output: emit IR, compile, run.
         let ll = root.join("target").join(format!("parity_{}.ll", name));
         let exe = root.join("target").join(format!("parity_{}_bin", name));
-        let status = Command::new(&cato).arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("cato emit");
+        let status = Command::new(&cato).arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("cato emit");
         assert!(status.success(), "{}: emit failed", name);
         let cc = Command::new("clang").arg(&ll).arg(&rt).arg("-o").arg(&exe).status().expect("clang");
         assert!(cc.success(), "{}: clang failed", name);
@@ -89,6 +89,7 @@ fn generic_instantiations_over_str_and_widths_emit_valid_ir() {
     let ll = root.join("target/parity_str_generic.ll");
     let exe = root.join("target/parity_str_generic_bin");
     let status = Command::new(&cato)
+        .arg("compile")
         .arg(&scratch)
         .arg("--emit-ir")
         .arg("-o")
@@ -150,6 +151,7 @@ fn string_builder_patterns_agree_between_backends() {
     let ll = root.join("target/parity_strbuilder.ll");
     let exe = root.join("target/parity_strbuilder_bin");
     let status = Command::new(&cato)
+        .arg("compile")
         .arg(&scratch)
         .arg("--emit-ir")
         .arg("-o")
@@ -339,7 +341,7 @@ fn modules_agree_between_backends() {
 
     let ll = root.join("target/modules_main.ll");
     let exe = root.join("target/modules_main_bin");
-    let status = Command::new(&cato).arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("emit");
+    let status = Command::new(&cato).arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("emit");
     assert!(status.success());
     let cc = Command::new("clang").arg(&ll).arg(&rt).arg("-o").arg(&exe).status().expect("clang");
     assert!(cc.success());

@@ -17,7 +17,7 @@ interpreter↔LLVM parity.
 
 ```
 seed (Rust crates/)          trusted stage-0 compiler
-  │  cato build selfhost/cato/cli.cato
+  │  cato compile selfhost/cato/cli.cato
   ▼
 cato1 (native, built by seed)
   │  cato1 build selfhost/cato/cli.cato
@@ -64,7 +64,7 @@ its own suites (differential against the seed where representations overlap).
 - Backends: LLVM IR text emission (tagged unions, fused loops, closures,
   collections) and the tree-walking interpreter, byte-identical on all of
   `examples/`; ~222 tests.
-- Tooling: `cato build/run/repl/lsp`, wasm32 emission, coded diagnostics,
+- Tooling: `cato compile/run/repl/lsp`, wasm32 emission, coded diagnostics,
   `runtime/runtime.c` helpers linked by every native build.
 - Zero external crates; everything above is the space the kernel must
   eventually cover or explicitly retire.
@@ -240,7 +240,7 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
   [runtime.c]`, exit 0/1/2, the `system` extern modeled by the seed
   interp so the driver runs identically under `cato run`; the kernel is
   `require`-connected modules and `cli.cato` is the entry.)*
-- `cato build selfhost/cato/cli.cato` (seed) → **cato1**; `cato1 build
+- `cato compile selfhost/cato/cli.cato` (seed) → **cato1**; `cato1 build
   selfhost/cato/cli.cato` → **cato2**; cato2-produced binaries run all reference
   programs and agree with `cato run` parity output.
   *(The seed builds cato1; cato1's CLI builds every fixture and the

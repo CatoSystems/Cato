@@ -95,8 +95,8 @@ def targets_for(name, tier):
     def add(mode, cmd, out, cwd=None):
         t[mode] = {"cmd": [str(c) for c in cmd], "cwd": str(cwd) if cwd else None, "out": Path(out)}
 
-    add("cato-seed-o2", [SEED, "build", src, "-o", BIN_DIR / f"{name}.seed-o2"], BIN_DIR / f"{name}.seed-o2")
-    add("cato-seed-o3", [SEED, "build", src, "-O3", "-o", BIN_DIR / f"{name}.seed-o3"], BIN_DIR / f"{name}.seed-o3")
+    add("cato-seed-o2", [SEED, "compile", src, "-o", BIN_DIR / f"{name}.seed-o2"], BIN_DIR / f"{name}.seed-o2")
+    add("cato-seed-o3", [SEED, "compile", src, "-O3", "-o", BIN_DIR / f"{name}.seed-o3"], BIN_DIR / f"{name}.seed-o3")
     if tier == "shared" and KERNEL.exists():
         add("cato-kernel", [KERNEL, "build", src, BIN_DIR / f"{name}.kernel", RUNTIME],
             BIN_DIR / f"{name}.kernel", cwd=ROOT)

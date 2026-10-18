@@ -28,6 +28,7 @@ fn setup() -> Paths {
     let ll = root.join("target/selfhost_reader.ll");
     let exe = root.join("target/selfhost_reader_bin");
     let status = Command::new(&cato)
+        .arg("compile")
         .arg(&entry)
         .arg("--emit-ir")
         .arg("-o")

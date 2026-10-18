@@ -15,7 +15,7 @@ rm -f /tmp/k1 /tmp/k2 /tmp/k2.ll /tmp/k3 /tmp/k3.ll /tmp/k2build.log /tmp/run_*
 
 # Seed (Rust) accepts `-o`; the kernel takes a positional output and exits 0
 # even when cc fails, so every kernel build is verified by its artifact.
-"$SEED" build selfhost/cato/cli.cato -o /tmp/k1 || { echo "SEED BUILD FAIL"; exit 2; }
+"$SEED" compile selfhost/cato/cli.cato -o /tmp/k1 || { echo "SEED BUILD FAIL"; exit 2; }
 
 kb() { # src out   (kernel build; true iff artifact exists)
   /tmp/k1 build "$1" "$2" >/tmp/kb.log 2>&1

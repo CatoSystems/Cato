@@ -197,7 +197,7 @@ Seed-side gaps found on the way (documented, not fixed):
 An audit of the ownership model found confirmed memory-unsafety bugs in
 both compilers. All are fixed; every fix has a probe (kept in
 /tmp/cato_audit, with an ASAN/footprint harness — LeakSanitizer is NOT
-available on this macOS, `cato build --asan` compiles the .ll at -O2
+available on this macOS, `cato compile --asan` compiles the .ll at -O2
 which optimizes the toy double-frees away; the working recipe is
 `clang -O0 -fsanitize=address <(cato --emit-ir [--no-opt]) runtime.c`).
 

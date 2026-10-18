@@ -47,8 +47,8 @@ opt-off vs opt-on interpreter differential (`opt_parity.rs`);
 ```
 cato <file.cato>              compile check: full pipeline, no output
 cato <file.cato> --emit-ir    emit LLVM IR (stdout, or -o path)   [opt-in]
-cato build <file.cato>        IR + runtime/runtime.c -> native binary (-o, default: input stem)
-cato build --target wasm32    -> WebAssembly binary (wasm32-unknown-unknown)
+cato compile <file.cato>        IR + runtime/runtime.c -> native binary (-o, default: input stem)
+cato compile --target wasm32    -> WebAssembly binary (wasm32-unknown-unknown)
 cato run <file.cato>          execute with the tree-walking interpreter
 cato run --native <file.cato>   build and execute a native binary in one step
 cato repl                     Clojure-style REPL: ns prompt (user=>), multi-line

@@ -23,7 +23,7 @@ echo "== building kernel cato1 =="
 KERNEL_SRC="selfhost/cato/cli.cato"
 [ -f "$KERNEL_SRC" ] || KERNEL_SRC="selfhost/cato.cato"
 mkdir -p "$(dirname "$KERNEL")"
-"$SEED" build "$KERNEL_SRC" -o "$KERNEL" >/dev/null
+"$SEED" compile "$KERNEL_SRC" -o "$KERNEL" >/dev/null
 
 STAMP="$(date +%Y%m%d_%H%M%S)"
 MD="$ROOT/bench/results/run_${STAMP}.md"
