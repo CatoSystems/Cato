@@ -1,7 +1,7 @@
 //! Full-fidelity formatting front end for Cato: a lossless lexer, a
 //! trivia-preserving CST, a Wadler-style Doc engine, and the style
-//! policy. The compiler's reader (`cato-core`) is untouched — this crate
-//! must never regress it for the sake of a formatter (spec §3).
+//! policy. The compiler's reader stays untouched — this crate must
+//! never regress it for the sake of a formatter (spec §3).
 
 pub mod cst;
 pub mod doc;
