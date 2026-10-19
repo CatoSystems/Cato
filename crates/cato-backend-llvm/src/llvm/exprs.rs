@@ -399,10 +399,24 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_int(body, c, mdl, sigs))
         }
         HExpr::Seq(vs) => {
-            for v in vs {
+            // `(do s… e)` yields `e`; only a statement-only tail yields 0.
+            let Some((last, init)) = vs.split_last() else {
+                return "0".to_string();
+            };
+            for v in init {
                 emit_stmt(v, c, mdl, sigs);
             }
-            "0".to_string()
+            let stmt_only = matches!(
+                last,
+                HExpr::Spit { .. } | HExpr::Exit(_) | HExpr::DropStmt(_)
+            ) || matches!(last, HExpr::Call(n, _)
+                if n == "print-f64" || n == "print-i64" || n == "print-str");
+            if stmt_only {
+                emit_stmt(last, c, mdl, sigs);
+                "0".to_string()
+            } else {
+                emit_int(last, c, mdl, sigs)
+            }
         }
         HExpr::If(cond, then, els, t) => emit_if_node(cond, then, els, *t, c, mdl, sigs),
         HExpr::Abs(e, Ty::I32) => {
