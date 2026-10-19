@@ -13,12 +13,12 @@ fail=0
 # cycle — the gate reported PASS while k1 rejected bk1/bk3).
 rm -f /tmp/k1 /tmp/k2 /tmp/k2.ll /tmp/k3 /tmp/k3.ll /tmp/k2build.log /tmp/run_*
 
-# Seed (Rust) accepts `-o`; the kernel takes a positional output and exits 0
-# even when cc fails, so every kernel build is verified by its artifact.
+# Every kernel build is also verified by its artifact (exit codes alone
+# once hid a stale binary, see above).
 "$SEED" compile selfhost/cato/cli.cato -o /tmp/k1 || { echo "SEED BUILD FAIL"; exit 2; }
 
 kb() { # src out   (kernel build; true iff artifact exists)
-  /tmp/k1 build "$1" "$2" >/tmp/kb.log 2>&1
+  /tmp/k1 compile "$1" -o "$2" >/tmp/kb.log 2>&1
   [ -x "$2" ]
 }
 
@@ -31,12 +31,12 @@ clang -dynamiclib -O2 -o /tmp/alloc_count.dylib tools/alloc_count.c \
   || { echo "ALLOC COUNTER BUILD FAIL"; exit 2; }
 
 # The k2 self-build is where churn is measured.
-DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 build selfhost/cato/cli.cato /tmp/k2 >/tmp/k2build.log 2>&1
+DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 compile selfhost/cato/cli.cato -o /tmp/k2 --emit-ll /tmp/k2.ll >/tmp/k2build.log 2>&1
 [ -x /tmp/k2 ] || { echo "KERNEL BUILD k2 FAIL"; tail -2 /tmp/k2build.log; exit 2; }
 read -r ALLOC CALLS <<<"$(awk '/ALLOC_BYTES/{b=$2;c=$4} END{print b, c}' /tmp/k2build.log)"
 
 # k3 is built by the kernel-generated k2 — the self-hosting fixpoint.
-/tmp/k2 build selfhost/cato/cli.cato /tmp/k3 >/tmp/k3build.log 2>&1
+/tmp/k2 compile selfhost/cato/cli.cato -o /tmp/k3 --emit-ll /tmp/k3.ll >/tmp/k3build.log 2>&1
 [ -x /tmp/k3 ] || { echo "KERNEL BUILD k3 FAIL"; tail -2 /tmp/k3build.log; exit 2; }
 
 if [ -f /tmp/k2.ll ] && [ -f /tmp/k3.ll ] && cmp -s /tmp/k2.ll /tmp/k3.ll; then
@@ -83,6 +83,16 @@ check_ok bk1; check_bad bk2; check_ok bk3; check_bad bk4
 # Loader contract (parity with the seed): duplicate ns, an unbound alias,
 # and a malformed require spec are all build errors in the kernel too.
 check_bad dupns; check_bad badalias; check_bad malreq
+
+# Diagnostics name the failing sub-form (file:line:col), not the defn.
+check_loc() { # file expected-location
+  /tmp/k1 compile "$FX/$1.cato" -o "/tmp/run_$1" >/tmp/kb.log 2>&1
+  grep -q "$FX/$1.cato:$2: " /tmp/kb.log && echo "OK $1" \
+    || { echo "LOCATION FAIL $1: $(head -1 /tmp/kb.log)"; fail=1; }
+}
+check_loc errloc 5:10
+check_loc errloc_move 7:25
+check_out capnest "5"
 
 echo "ALLOC_BYTES: $ALLOC"
 echo "ALLOC_CALLS: $CALLS"
