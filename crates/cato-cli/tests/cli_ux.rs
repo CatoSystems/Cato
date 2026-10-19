@@ -192,3 +192,106 @@ fn exit_code_tiers() {
     let usage_err = cato().arg("--no-such-flag").output().expect("run cato");
     assert_eq!(usage_err.status.code(), Some(2), "usage error -> 2");
 }
+
+// Short typos get proportionate suggestions: `-O` is not two edits from
+// `--cc` in any useful sense.
+#[test]
+fn short_flag_typo_suggests_opt_level() {
+    let src = demo_source();
+    let out = cato().arg("compile").arg(&src).arg("-O").output().expect("run cato");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("did you mean '-O2'"), "got: {}", stderr);
+    assert!(!stderr.contains("--cc"), "got: {}", stderr);
+}
+
+// A lone mistyped command is named, not shown as a '<file>' placeholder.
+#[test]
+fn lone_mistyped_command_suggests_closest_match() {
+    let out = cato().arg("compil").output().expect("run cato");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("did you mean 'compile'"), "got: {}", stderr);
+    assert!(!stderr.contains("<file>"), "got: {}", stderr);
+}
+
+// Every subcommand answers --help on stdout; repl/lsp reject stray args.
+#[test]
+fn subcommands_answer_help_and_reject_stray_args() {
+    for sub in ["repl", "lsp", "format"] {
+        let out = cato().arg(sub).arg("--help").output().expect("run cato");
+        assert!(out.status.success(), "{sub} --help must succeed");
+        assert!(!out.stdout.is_empty(), "{sub} --help must print to stdout");
+    }
+    for sub in ["repl", "lsp"] {
+        let out = cato().arg(sub).arg("extra").output().expect("run cato");
+        assert_eq!(out.status.code(), Some(2), "{sub} with an argument is a usage error");
+    }
+}
+
+// Toolchain failures name the compiler and print the status once, with a
+// single `cato: error:` lead.
+#[cfg(not(feature = "static-llvm"))]
+#[test]
+fn toolchain_failures_name_the_compiler() {
+    let src = demo_source();
+    let bin = std::env::temp_dir().join(format!("cato_ux_cc_{}", std::process::id()));
+    let missing = cato()
+        .arg("compile").arg(&src).arg("-o").arg(&bin)
+        .args(["--cc", "/definitely/not/a/cc"])
+        .output().expect("run cato");
+    assert_eq!(missing.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(stderr.contains("'/definitely/not/a/cc'"), "got: {}", stderr);
+    assert!(stderr.contains("--cc"), "must point at the fix: {}", stderr);
+
+    let failing = cato()
+        .arg("compile").arg(&src).arg("-o").arg(&bin)
+        .args(["--cc", "false"])
+        .output().expect("run cato");
+    assert_eq!(failing.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    assert!(stderr.contains("false exited with status 1"), "got: {}", stderr);
+    assert!(!stderr.contains("exit exit"), "got: {}", stderr);
+    assert_eq!(stderr.matches("cato:").count(), 1, "one lead: {}", stderr);
+}
+
+// A lowering error points at the failing sub-form, not the enclosing defn.
+#[test]
+fn diagnostics_point_at_the_failing_subform() {
+    let bad = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/ux_errloc.cato");
+    std::fs::write(&bad, "(defn main [] :- i64\n  (let [a 1]\n    (+ a \"x\")))\n")
+        .expect("write bad");
+    let out = cato().arg("compile").arg(&bad).output().expect("run cato");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("ux_errloc.cato:3:5"), "got: {}", stderr);
+    assert!(stderr.contains("(+ a \"x\")"), "snippet shows the form: {}", stderr);
+}
+
+// Ownership errors point at the offending occurrence, not the defn.
+#[test]
+fn ownership_errors_point_at_the_occurrence() {
+    let bad = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("target/ux_errloc_move.cato");
+    std::fs::write(
+        &bad,
+        "(defn take [v :- (Vector i64)] :- i64 (count v))\n\
+         (defn main [] :- i64\n  (let [xs (vec-i64 1 2)]\n    (+ (take xs) (count xs))))\n",
+    )
+    .expect("write bad");
+    let out = cato().arg("compile").arg(&bad).output().expect("run cato");
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("use of moved value xs"), "got: {}", stderr);
+    assert!(stderr.contains("ux_errloc_move.cato:4:25"), "got: {}", stderr);
+}

@@ -64,6 +64,12 @@ fn reject_unsupported(cli: &Cli) -> Result<(), String> {
     if cli.asan {
         return Err("cato: --asan is not supported in this cato build".to_string());
     }
+    if cli.debug {
+        return Err(
+            "cato: -g is not supported in this cato build (in-process codegen emits no debug info)"
+                .to_string(),
+        );
+    }
     if cli.rtlib_given {
         return Err(
             "cato: --rtlib is not supported in this cato build (compiler-rt is embedded)"
@@ -255,11 +261,9 @@ pub fn build_hermetic(
     let staged = staging.path.clone();
     let prog_o = staged.join("prog.o");
     fs::write(&prog_o, &obj).map_err(|e| format!("cato: cannot write object: {}", e))?;
-    if let Ok(assets) = assets_for(&target_name) {
-        for (name, bytes) in assets.files {
-            let dst = staged.join(name);
-            fs::write(&dst, bytes).map_err(|e| format!("cato: cannot stage asset: {}", e))?;
-        }
+    for (name, bytes) in assets_for(&target_name)?.files {
+        let dst = staged.join(name);
+        fs::write(&dst, bytes).map_err(|e| format!("cato: cannot stage asset: {}", e))?;
     }
     let (flavor, argv) = hermetic_link_argv(&target_name, &staged, out)?;
     #[cfg(feature = "in-process-lld")]
@@ -291,12 +295,16 @@ pub fn build_hermetic(
         cmd.args(&argv[1..]);
         let result = cmd.output().map_err(|e| format!("cannot run lld: {}", e))?;
         if !result.status.success() {
-            return Err(format!(
-                "lld link failed (exit {}):
-{}",
-                result.status,
-                String::from_utf8_lossy(&result.stderr)
-            ));
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            let mut msg = format!(
+                "link failed: lld {}",
+                crate::native::describe_status(result.status)
+            );
+            if !stderr.trim_end().is_empty() {
+                msg.push_str(":\n");
+                msg.push_str(stderr.trim_end());
+            }
+            return Err(msg);
         }
         Ok(out.to_path_buf())
     }
@@ -337,6 +345,12 @@ mod tests {
         assert_eq!(
             reject_unsupported(&c).unwrap_err(),
             "cato: --asan is not supported in this cato build"
+        );
+        let mut c = cli.clone();
+        c.debug = true;
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: -g is not supported in this cato build (in-process codegen emits no debug info)"
         );
         let mut c = cli.clone();
         c.rtlib_given = true;

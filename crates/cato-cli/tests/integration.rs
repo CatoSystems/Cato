@@ -697,3 +697,53 @@ fn repl_evaluates_forms() {
     assert!(stdout.contains("\n144"), "got: {}", stdout);
     assert!(stdout.contains("\n7"), "got: {}", stdout);
 }
+
+// Build `src` natively (extra flags appended) and run it.
+fn build_and_run_native(name: &str, src: &str, extra: &[&str]) -> std::process::Output {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src_path = manifest.join("../../target").join(format!("{name}.cato"));
+    std::fs::write(&src_path, src).expect("write source");
+    let exe = manifest.join("../../target").join(format!("{name}_bin"));
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(&src_path).arg("-o").arg(&exe)
+        .args(extra)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed for {name}");
+    let out = Command::new(&exe).output().expect("run binary");
+    let _ = std::fs::remove_file(&exe);
+    out
+}
+
+// `(do s… e)` in i64 position yields `e` natively, as in the interpreter
+// (the backend used to lower every such `do` to 0, so `(exit (f))` with
+// `(defn f [] (do (print-string ..) 2))` exited 0).
+#[test]
+fn do_block_yields_its_last_value_natively() {
+    let out = build_and_run_native(
+        "do_tail_value",
+        "(defn d [c :- str] :- i64 (do (print-string \"x\") 2))\n\
+         (defn main [] (let [a (args)] (exit (d (get a 0 \"\")))))\n",
+        &[],
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "x\n");
+    assert_eq!(out.status.code(), Some(2), "the do block's value is the exit status");
+}
+
+// Re-binding an owned (Vector str) in the same let (`[a (split ..) a
+// (conj a ..)]`) used to free the last buffer twice at scope exit.
+#[cfg(not(feature = "static-llvm"))]
+#[test]
+fn let_rebinding_an_owned_str_vec_frees_once() {
+    let out = build_and_run_native(
+        "let_rebind_str_vec",
+        "(defn f [cc :- str] :- i64 (let [a (split cc \",\") a (conj a \"x\") a (conj a \"y\")] (count a)))\n\
+         (defn main [] (let [a (args)] (print (f \"p,q\"))))\n",
+        &["--asan"],
+    );
+    assert!(
+        out.status.success(),
+        "ASAN run failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+}

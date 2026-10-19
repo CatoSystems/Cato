@@ -62,12 +62,12 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
     if let Some(cc) = &cli.cc {
         if !cc_supports_wasm32(cc) {
             return Err(guidance(&format!(
-                "cato: --cc {cc} does not support the wasm32 target"
+                "--cc {cc} does not support the wasm32 target"
             )));
         }
         if !cc_has_wasm_ld(cc) {
             return Err(guidance(&format!(
-                "cato: --cc {cc} has no wasm-ld available (install lld)"
+                "--cc {cc} has no wasm-ld available (install lld)"
             )));
         }
         return Ok(cc.clone());
@@ -88,7 +88,7 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
             return Ok(cc.to_string());
         }
     }
-    Err(guidance("cato: no wasm32-capable compiler with wasm-ld found"))
+    Err(guidance("no wasm32-capable compiler with wasm-ld found"))
 }
 
 /// Emit IR for `program` and link it into an executable at `out`.
@@ -130,17 +130,41 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     result.map(|_| out.to_path_buf())
 }
 
-fn run_cc(mut cmd: Command, what: &str) -> Result<(), String> {
-    let result = cmd
-        .output()
-        .map_err(|e| format!("cannot run {}: {}", what, e))?;
+/// `exited with status 1` / `was killed by signal 9`.
+pub(crate) fn describe_status(status: std::process::ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exited with status {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return format!("was killed by signal {sig}");
+        }
+    }
+    status.to_string()
+}
+
+fn run_cc(program: &str, args: &[String], what: &str) -> Result<(), String> {
+    let result = Command::new(program).args(args).output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!(
+                "cannot run C compiler '{program}' for the {what} step: not found \
+                 (pass --cc <path> or set CATO_CC)"
+            )
+        } else {
+            format!("cannot run C compiler '{program}' for the {what} step: {e}")
+        }
+    })?;
     if !result.status.success() {
-        return Err(format!(
-            "{} failed (exit {}):\n{}",
-            what,
-            result.status,
-            String::from_utf8_lossy(&result.stderr)
-        ));
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        let stderr = stderr.trim_end();
+        let mut msg = format!("{what} failed: {program} {}", describe_status(result.status));
+        if !stderr.is_empty() {
+            msg.push_str(":\n");
+            msg.push_str(stderr);
+        }
+        return Err(msg);
     }
     Ok(())
 }
@@ -189,9 +213,7 @@ fn link(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
     };
     let invs = crate::driver::link_invocations(cli.target, &cc, ll_path, &rt, out, &opts);
     for inv in &invs {
-        let mut cmd = Command::new(&inv.program);
-        cmd.args(&inv.args);
-        run_cc(cmd, inv.what)?;
+        run_cc(&inv.program, &inv.args, inv.what)?;
     }
     // The wasm link step leaves its runtime object next to the output.
     if cli.target.flavor == Flavor::Wasm {

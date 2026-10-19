@@ -22,10 +22,22 @@ fn main() {
     let started = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("repl") {
+        no_args_subcommand(
+            "repl",
+            &args[1..],
+            "cato repl — interactive session over the interpreter \
+             (definitions accumulate; :quit or Ctrl-D exits)",
+        );
         repl::run();
         return;
     }
     if args.first().map(|s| s.as_str()) == Some("lsp") {
+        no_args_subcommand(
+            "lsp",
+            &args[1..],
+            "cato lsp — language server over stdio (started by an editor, \
+             not interactively)",
+        );
         lsp::run();
         return;
     }
@@ -77,8 +89,30 @@ fn main() {
             );
         }
         Err(e) => {
+            // Toolchain errors may carry their own `cato:` lead.
+            let e = e.strip_prefix("cato: ").unwrap_or(&e);
             eprintln!("{} {}", ui::error_lead(), e);
             std::process::exit(1);
+        }
+    }
+}
+
+/// `repl` and `lsp` take no arguments: `--help`/`-h` describes the
+/// subcommand, anything else is a usage error (exit 2) — never silently
+/// ignored.
+fn no_args_subcommand(name: &str, rest: &[String], help: &str) {
+    match rest.first().map(|s| s.as_str()) {
+        None => {}
+        Some("--help" | "-h") => {
+            println!("{help}");
+            std::process::exit(0);
+        }
+        Some(other) => {
+            eprintln!(
+                "{} cato {name} takes no arguments (got '{other}')",
+                ui::error_lead()
+            );
+            std::process::exit(2);
         }
     }
 }

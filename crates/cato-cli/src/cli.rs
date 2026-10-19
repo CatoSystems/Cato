@@ -15,6 +15,7 @@ const FLAGS: &[&str] = &[
     "--cc",
     "--asan",
     "--opt-level",
+    "-O2",
     "--runtime",
     "--rtlib",
     "--explain",
@@ -96,7 +97,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 _ => {
-                    eprintln!("cato: -o requires a filename argument");
+                    eprintln!("{} -o requires a filename argument", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -120,7 +121,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                 other => {
                     let got = other.unwrap_or("<missing>");
                     let names = crate::driver::target_names().join(", ");
-                    eprintln!("cato: unknown --target '{got}' (known: {names})");
+                    eprintln!("{} unknown --target '{got}' (known: {names})", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -142,7 +143,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("cato: --cc requires a compiler path");
+                    eprintln!("{} --cc requires a compiler path", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -152,7 +153,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("cato: --runtime requires a path");
+                    eprintln!("{} --runtime requires a path", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -163,7 +164,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("cato: --rtlib requires a name");
+                    eprintln!("{} --rtlib requires a name", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -177,7 +178,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 _ => {
-                    eprintln!("cato: --opt-level expects 0, 1, 2 or 3");
+                    eprintln!("{} --opt-level expects 0, 1, 2 or 3", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -187,7 +188,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("cato: --emit-ll requires a filename");
+                    eprintln!("{} --emit-ll requires a filename", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -198,12 +199,12 @@ pub fn parse_args(args: &[String]) -> Cli {
                         i += 2;
                     }
                     _ => {
-                        eprintln!("cato: --threads expects a number between 1 and 1024");
+                        eprintln!("{} --threads expects a number between 1 and 1024", ui::error_lead());
                         std::process::exit(2);
                     }
                 },
                 None => {
-                    eprintln!("cato: --threads requires a number");
+                    eprintln!("{} --threads requires a number", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -213,7 +214,7 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("cato: --explain requires a code (e.g. --explain E301)");
+                    eprintln!("{} --explain requires a code (e.g. --explain E301)", ui::error_lead());
                     std::process::exit(2);
                 }
             },
@@ -243,13 +244,13 @@ pub fn parse_args(args: &[String]) -> Cli {
                 std::process::exit(0);
             }
             "build" if file.is_none() => {
-                eprintln!("cato: 'build' was renamed to 'compile' (cato compile <file> [-o out])");
+                eprintln!("{} 'build' was renamed to 'compile' (cato compile <file> [-o out])", ui::error_lead());
                 std::process::exit(2);
             }
             "run" if file.is_none() => {
                 eprintln!(
-                    "cato: 'run' was removed — 'cato compile' produces a binary; \
-                     the interpreter lives in 'cato repl'"
+                    "{} 'run' was removed — 'cato compile' produces a binary; \
+                     the interpreter lives in 'cato repl'", ui::error_lead()
                 );
                 std::process::exit(2);
             }
@@ -291,10 +292,13 @@ pub fn parse_args(args: &[String]) -> Cli {
                 std::process::exit(0);
             }
             None => {
+                let mut codes: Vec<_> = cato_core::diagnostics::all_codes().collect();
+                codes.sort();
                 eprintln!(
-                    "cato: unknown diagnostic code {} (known: {})",
+                    "{} unknown diagnostic code '{}'\n  known codes: {}",
+                    ui::error_lead(),
                     code,
-                    cato_core::diagnostics::all_codes().collect::<Vec<_>>().join(" ")
+                    codes.join(" ")
                 );
                 std::process::exit(2);
             }
@@ -303,15 +307,22 @@ pub fn parse_args(args: &[String]) -> Cli {
     // Flag-combination validation before touching any files.
     if cli.emit_ir && cli.emit_ll.is_some() {
         eprintln!(
-            "cato: --emit-ir stops before linking; --emit-ll only applies when linking"
+            "{} --emit-ir stops before linking; --emit-ll only applies when linking", ui::error_lead()
         );
         std::process::exit(2);
     }
     match file {
-        Some(_) if !saw_command => {
-            eprintln!(
-                "cato: subcommand required — '<file>' needs a command; try 'cato compile <file>'"
-            );
+        Some(f) if !saw_command => {
+            let suggestion = ui::suggestion_suffix(&f, COMMANDS);
+            if !suggestion.is_empty() && !Path::new(&f).exists() {
+                eprintln!("{} unknown command '{}'{}", ui::error_lead(), f, suggestion);
+            } else {
+                eprintln!(
+                    "{} subcommand required — try 'cato compile {}'",
+                    ui::error_lead(),
+                    f
+                );
+            }
             std::process::exit(2);
         }
         Some(f) if Path::new(&f).exists() => {
@@ -323,7 +334,7 @@ pub fn parse_args(args: &[String]) -> Cli {
             std::process::exit(2);
         }
         None if saw_command => {
-            eprintln!("cato: compile requires an input file (.cato)");
+            eprintln!("{} compile requires an input file (.cato)", ui::error_lead());
             std::process::exit(2);
         }
         None => {
@@ -343,6 +354,17 @@ fn banner() {
     eprintln!("  quick start:   cato compile your_program.cato");
     eprintln!("  full usage:    cato --help");
 }
+
+/// Extra help for builds that link natively in-process (no C compiler).
+#[cfg(feature = "static-llvm")]
+const HERMETIC_NOTE: &str = "THIS BUILD:
+  links native targets in-process (embedded LLVM, lld and runtime) — no C
+  compiler needed; --cc, --runtime, --rtlib, --asan, -g and -- passthrough
+  are rejected for native targets (they still apply to --target wasm32).
+
+";
+#[cfg(not(feature = "static-llvm"))]
+const HERMETIC_NOTE: &str = "";
 
 /// The complete usage text (`cato --help`, `cato help`).
 fn usage_text() -> String {
@@ -389,11 +411,12 @@ EXIT STATUS:
   1  compile error, or a runtime error executing the program
   2  command-line usage error
 
-The parity suites assert interpreter/native output agreement across every
+{hermetic}The parity suites assert interpreter/native output agreement across every
 example. wasm32 builds need a wasm-capable clang with lld (e.g. 'brew
 install llvm lld', then pass --cc); `compile --emit-ir --target wasm32`
 always works, no linker required.",
-        env!("CARGO_PKG_VERSION")
+        env!("CARGO_PKG_VERSION"),
+        hermetic = HERMETIC_NOTE
     )
 }
 

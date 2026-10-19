@@ -30,7 +30,7 @@ fn hermetic_rejects_cc_flag() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
-            "cato: --cc is not used in this cato build (it links hermetically; no external C compiler is consulted)"
+            "--cc is not used in this cato build (it links hermetically; no external C compiler is consulted)"
         ),
         "got: {}",
         stderr
@@ -55,7 +55,7 @@ fn hermetic_rejects_runtime_flag() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         stderr.contains(
-            "cato: --runtime is not supported in this cato build (the runtime is embedded)"
+            "--runtime is not supported in this cato build (the runtime is embedded)"
         ),
         "got: {}",
         stderr

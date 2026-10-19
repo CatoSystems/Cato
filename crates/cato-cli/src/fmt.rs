@@ -7,7 +7,7 @@
 use crate::ui;
 use std::io::{Read, Write};
 
-const FORMAT_FLAGS: &[&str] = &["--check", "--width"];
+const FORMAT_FLAGS: &[&str] = &["--check", "--width", "--help"];
 
 /// Run `cato format` with the arguments after the subcommand. Always
 /// exits the process (0 success, 1 file/parse failure, 2 usage error).
@@ -36,6 +36,16 @@ pub fn run(args: &[String]) {
                     std::process::exit(2);
                 }
             },
+            "--help" | "-h" => {
+                println!(
+                    "usage: cato format <file>... [--check] [--width n]\n\n\
+                     Rewrites each file in place with the CST formatter.\n\
+                     \x20 --check     list files that would change; exit 1 if any\n\
+                     \x20 --width n   target line width (20..=1000, default 100)\n\
+                     \x20 -           read stdin, write stdout"
+                );
+                std::process::exit(0);
+            }
             "-" => {
                 files.push("-".to_string());
                 i += 1;

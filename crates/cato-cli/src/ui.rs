@@ -78,8 +78,12 @@ pub fn did_you_mean(input: &str, candidates: &[&str]) -> Option<String> {
     candidates
         .iter()
         .filter_map(|c| {
-            let d = levenshtein(input, c.trim_start_matches('-'));
-            (d <= 2 && d < c.len()).then_some((d, c))
+            let cand = c.trim_start_matches('-');
+            let d = levenshtein(input, cand);
+            // At most 2 edits, and never more than half the longer word:
+            // `-O` must not suggest `--cc` (2 edits over 2 letters).
+            let longest = input.chars().count().max(cand.chars().count());
+            (d <= 2 && d < c.len() && 2 * d <= longest).then_some((d, c))
         })
         .min_by_key(|(d, _)| *d)
         .map(|(_, c)| (*c).to_string())
