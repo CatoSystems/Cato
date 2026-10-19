@@ -1,0 +1,193 @@
+(ns cato.lib.errloc)
+
+(require ["ast.cato" :as ast])
+(require ["span.cato" :as span])
+(require ["sym.cato" :as sym])
+
+; errloc.cato — locating check errors found on HIR (which keeps no
+; positions). The checker reports the k-th source occurrence of a symbol
+; (span/err-occ): a variable's value-position reads, a closure capture, a
+; call head. This walks the defn's expanded AST counting the same way —
+; binders (defn params, let/loop/if-let/when-let/doseq binding names, match
+; arm binders) and `:- type` annotations are skipped, and a `fn` form
+; counts once for a variable it captures — and returns that occurrence's
+; position. The seed's diagnostics::refine_occurrence is the same walk.
+
+(deftype OccRes
+  (OHit [line :- i64 col :- i64 len :- i64])
+  (OLeft [left :- i64]))
+
+(defn sym-name [a :- &Ast tab :- i64] :- str
+  (match a
+    (ASym [sid _at] (sym/stab-get tab sid))
+    (_ "")))
+
+(defn head-name [ks :- &Asts tab :- i64] :- str
+  (match ks
+    (KCons [h _next] (sym-name h tab))
+    (KNil [] "")))
+
+; The tag of the i-th child (-1 past the end).
+(defn nth-tag [ks :- &Asts i :- i64] :- i64
+  (match ks
+    (KNil [] -1)
+    (KCons [k next] (if (= i 0) (ast/ast-tag k) (nth-tag next (- i 1))))))
+
+(defn mentions [a :- &Ast s :- i64] :- bool
+  (match a
+    (ASym [sid _at] (= sid s))
+    (AList [ks _at] (mentions-kids ks s))
+    (AVec [ks _at] (mentions-kids ks s))
+    (AMap [ks _at] (mentions-kids ks s))
+    (ASet [ks _at] (mentions-kids ks s))
+    (_ false)))
+
+(defn mentions-kids [ks :- &Asts s :- i64] :- bool
+  (match ks
+    (KNil [] false)
+    (KCons [k next] (or (mentions k s) (mentions-kids next s)))))
+
+; Any mention past the first `skip` children.
+(defn mentions-from [ks :- &Asts skip :- i64 s :- i64] :- bool
+  (match ks
+    (KNil [] false)
+    (KCons [k next] (if (> skip 0) (mentions-from next (- skip 1) s) (or (mentions k s) (mentions-from next 0 s))))))
+
+; One occurrence at `at`: the hit when it is the last one wanted.
+(defn at-hit [at :- &Span left :- i64] :- OccRes
+  (if (= left 1)
+    (match at (Span [l c n] (OHit l c n)))
+    (OLeft (- left 1))))
+
+(defn occ-walk [a :- &Ast s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match a
+    (ASym [sid at] (if (= sid s) (at-hit at left) (OLeft left)))
+    (AList [ks at] (occ-list ks at s left tab))
+    (AVec [ks _at] (occ-seq ks 0 s left tab))
+    (AMap [ks _at] (occ-seq ks 0 s left tab))
+    (ASet [ks _at] (occ-seq ks 0 s left tab))
+    (_ (OLeft left))))
+
+; Walk the children past the first `skip`, skipping `:- type` pairs.
+(defn occ-seq [ks :- &Asts skip :- i64 s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match ks
+    (KNil [] (OLeft left))
+    (KCons [k next]
+      (cond
+        (> skip 0) (occ-seq next (- skip 1) s left tab)
+        (= (sym-name k tab) ":-") (occ-seq next 1 s left tab)
+        (match (occ-walk k s left tab)
+          (OHit [l c n] (OHit l c n))
+          (OLeft [l2] (occ-seq next 0 s l2 tab)))))))
+
+; A binding vector: binder, optional `:- type`, value — values only.
+(defn occ-binds [bk :- &Asts s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match bk
+    (KNil [] (OLeft left))
+    (KCons [_binder r] (occ-bind-val r s left tab))))
+
+(defn occ-bind-val [r :- &Asts s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match r
+    (KNil [] (OLeft left))
+    (KCons [v next]
+      (if (= (sym-name v tab) ":-")
+        (match next
+          (KCons [_ty next2] (occ-bind-val next2 s left tab))
+          (KNil [] (OLeft left)))
+        (match (occ-walk v s left tab)
+          (OHit [l c n] (OHit l c n))
+          (OLeft [l2] (occ-binds next s l2 tab)))))))
+
+(defn binding-head [h :- str] :- bool
+  (or (= h "let") (= h "loop") (= h "if-let") (= h "when-let")
+      (= h "doseq") (= h "for") (= h "dotimes")))
+
+(defn occ-list [ks :- &Asts at :- &Span s :- i64 left :- i64 tab :- i64] :- OccRes
+  (let [h (head-name ks tab)]
+    (cond
+      (or (= h "ns") (= h "require") (= h "deftype") (= h "defgeneric") (= h "extern"))
+      (OLeft left)
+      (or (= h "defn") (= h "defmethod"))
+      (occ-seq ks (if (= (nth-tag ks 2) 6) 3 2) s left tab)
+      (and (binding-head h) (= (nth-tag ks 1) 6))
+      (occ-let ks s left tab)
+      (= h "fn")
+      (occ-fn ks at s left)
+      (= h "match")
+      (occ-match ks s left tab)
+      (occ-seq ks 0 s left tab))))
+
+(defn occ-let [ks :- &Asts s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match ks
+    (KCons [_h r]
+      (match r
+        (KCons [bv rest]
+          (match bv
+            (AVec [bk _at]
+              (match (occ-binds bk s left tab)
+                (OHit [l c n] (OHit l c n))
+                (OLeft [l2] (occ-seq rest 0 s l2 tab))))
+            (_ (OLeft left))))
+        (KNil [] (OLeft left))))
+    (KNil [] (OLeft left))))
+
+; A closure captures a variable its body names and its params do not bind:
+; the checker sees one use, at the `fn` form.
+(defn occ-fn [ks :- &Asts at :- &Span s :- i64 left :- i64] :- OccRes
+  (match ks
+    (KCons [_h r]
+      (match r
+        (KCons [params _body]
+          (if (and (not (mentions params s)) (mentions-from ks 2 s))
+            (at-hit at left)
+            (OLeft left)))
+        (KNil [] (OLeft left))))
+    (KNil [] (OLeft left))))
+
+(defn occ-match [ks :- &Asts s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match ks
+    (KCons [h r]
+      (match (occ-walk h s left tab)
+        (OHit [l c n] (OHit l c n))
+        (OLeft [l1]
+          (match r
+            (KCons [scrut arms]
+              (match (occ-walk scrut s l1 tab)
+                (OHit [l c n] (OHit l c n))
+                (OLeft [l2] (occ-arms arms s l2 tab))))
+            (KNil [] (OLeft l1))))))
+    (KNil [] (OLeft left))))
+
+; An arm `(Variant [binders] body)` / `(_ body)`: the body only.
+(defn occ-arms [arms :- &Asts s :- i64 left :- i64 tab :- i64] :- OccRes
+  (match arms
+    (KNil [] (OLeft left))
+    (KCons [arm next]
+      (let [r (match arm
+                (AList [ak _at] (occ-seq ak (if (= (nth-tag ak 1) 6) 2 1) s left tab))
+                (_ (occ-walk arm s left tab)))]
+        (match r
+          (OHit [l c n] (OHit l c n))
+          (OLeft [l2] (occ-arms next s l2 tab)))))))
+
+; The defn named `fsid` among the top-level forms, walked for the k-th
+; occurrence of `s`.
+(defn find-occurrence [forms :- &Asts fsid :- i64 s :- i64 k :- i64 tab :- i64] :- OccRes
+  (match forms
+    (KNil [] (OLeft k))
+    (KCons [f next]
+      (match f
+        (AList [ks _at]
+          (match ks
+            (KCons [_h r]
+              (match r
+                (KCons [nm _rest]
+                  (match nm
+                    (ASym [sid _a]
+                      (if (= sid fsid)
+                        (occ-walk f s k tab)
+                        (find-occurrence next fsid s k tab)))
+                    (_ (find-occurrence next fsid s k tab))))
+                (KNil [] (find-occurrence next fsid s k tab))))
+            (KNil [] (find-occurrence next fsid s k tab))))
+        (_ (find-occurrence next fsid s k tab))))))

@@ -4,6 +4,7 @@
 (require ["lower.cato" :as lower])
 (require ["hexpr.cato" :as hexpr])
 (require ["expand.cato" :as expand])
+(require ["../lib/span.cato" :as span])
 
 ; moveck.cato — S6: the move checker + drop planner.
 ;
@@ -33,11 +34,14 @@
   (DPNil)
   (DPCons [name :- i64 ps :- PList next :- DParams]))
 
-; callee name -> return-borrowed flag (1 when the defn's return is `&T`).
-; A call to such a callee yields a borrow: the binding does not own it.
+; callee name -> return kind and return type. rb: 1 when the defn's
+; return is `&T` (a call yields a borrow: the binding does not own it);
+; 2 when its string/collection result may alias a parameter, runtime
+; memory or static data (the seed's alias_ret — never fresh, never the
+; caller's to free); 0 otherwise. ret feeds the R5 hoist (hoist_ty).
 (deftype RBTable
   (RBNil)
-  (RBCons [name :- i64 rb :- i64 next :- RBTable]))
+  (RBCons [name :- i64 rb :- i64 ret :- Ty next :- RBTable]))
 
 ; nomove: the borrowed (&) parameter names of the defn under check —
 ; moving one anywhere in the body is an error (the caller still owns the
@@ -108,6 +112,22 @@
 
 (deftype UseRes (UseRes [rem :- IMap msg :- str]))
 
+; Error sites (span/err-occ): per symbol, how many of its source
+; occurrences the walk has reached — a variable's value-position reads, a
+; closure capture (one per `fn` form), a call's head. The counts ride in
+; `rem` under key -(sid+10) (rem threads sequentially through every walk;
+; -1 is the hoist counter).
+(defn occ-key [v :- i64] :- i64 (- -10 v))
+
+(defn occ-bump [rem :- IMap v :- i64] :- IMap
+  (forms/im-put rem (occ-key v) (+ 1 (forms/im-get rem (occ-key v) 0))))
+
+(defn occ-at [rem :- &IMap v :- i64] :- i64 (forms/im-get rem (occ-key v) 0))
+
+; Tag an error with the latest occurrence of v.
+(defn occ-tag [msg :- str rem :- &IMap v :- i64] :- str
+  (if (> (count msg) 0) (span/err-occ msg v (occ-at rem v)) msg))
+
 ; use_var: one occurrence consumed; a non-Copy read of a Moved value errors
 (defn use-var [v :- i64 rem :- IMap tys :- &TyEnv st :- &IMap bcx :- &BCtx] :- UseRes
   ; a non-Copy loop variable rides as Copy: reads never see it Moved (S8)
@@ -121,7 +141,8 @@
           (
             BCtx
             [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
-            (UseRes rem2 (str "use of moved value " (forms/sym-str (clone tab) v)))
+            (let [msg (span/err-occ (str "use of moved value " (forms/sym-str (clone tab) v)) v (occ-at rem2 v))]
+              (UseRes rem2 msg))
           ))
         (UseRes rem2 "")))))
 
@@ -230,7 +251,7 @@
                       [st2 owns2 cons2 m2]
                       (if
                         (> (count m2) 0)
-                        (MncErr m2)
+                        (MncErr (occ-tag m2 rem2 v))
                         (MncRes st2 owns2 rem2 cons2))
                     )))
               )))
@@ -370,6 +391,9 @@
       true
       (= tag 40)
       true
+      ; a `let`'s value is its body's (the planner's hoisted-temp lets)
+      (= tag 30)
+      (match v (HLet [_b body _f] (b-allocates body facts)) (_ false))
       ; a fresh box for an owning ADT; a fresh Option from parse-*
       (= tag 33)
       (= (forms/facts-owns-at facts (hexpr/hctor-adt v)) 1)
@@ -606,11 +630,24 @@
     (RBNil [] 0)
     (
       RBCons
-      [n v next]
+      [n v _ret next]
       (if
         (= n name)
         v
         (rb-get next name))
+    )))
+
+; The callee's return type; t-none for builtins (no defn).
+(defn rb-ret-get [rb :- &RBTable name :- i64] :- Ty
+  (match rb
+    (RBNil [] (types/t-none))
+    (
+      RBCons
+      [n _v ret next]
+      (if
+        (= n name)
+        (clone ret)
+        (rb-ret-get next name))
     )))
 
 (defn b-mark-borrowed [ps :- PList] :- PList
@@ -645,17 +682,245 @@
         ))
     )))
 
-; callee name -> return-borrowed flag, collected once per program
-(defn b-retb [defs :- &Defns acc :- RBTable] :- RBTable
+; callee name -> return kind (see RBTable) and type, once per program
+(defn b-retb [defs :- &Defns alias :- &Sids acc :- RBTable] :- RBTable
   (match defs
     (DNil [] acc)
     (
       DCons
       [h t]
       (match
-        (clone h)
-        (Defn [name params ret isextern body rb] (b-retb t (RBCons name rb acc))))
+        h
+        (
+          Defn
+          [name params ret isextern body rb]
+          (
+            b-retb
+            t
+            alias
+            (RBCons name (if (= rb 1) 1 (if (types/sids-has alias name) 2 0)) (clone ret) acc)
+          )
+        ))
     )))
+
+; --- alias-returning functions (the seed's compute_alias_ret) -----------------
+
+(defn b-coll-ty [t :- &Ty] :- bool
+  (let [g (types/ty-tag t)] (or (= g 12) (= g 13) (= g 14) (= g 15))))
+
+; May the value of e point into memory reachable from the names in alias?
+; (the seed's tail_may_alias)
+(defn b-tail-may-alias [e :- &HExpr alias :- &Sids calls :- &Sids] :- bool
+  (match e
+    (HVar [v] (types/sids-has alias v))
+    (HCall [name args] (and (types/sids-has calls name) (b-tma-any args alias calls)))
+    (HLet [binds body _] (let [inner (b-tma-binds binds (clone alias) calls)] (b-tail-may-alias body inner calls)))
+    (HSeq [es] (b-tma-last es alias calls))
+    (HIf [_c t2 e2 _] (or (b-tail-may-alias t2 alias calls) (b-tail-may-alias e2 alias calls)))
+    (HMatch [scrut arms _] (b-tma-arms arms (b-tail-may-alias scrut alias calls) alias calls))
+    (
+      HGet
+      [src _idx dflt ty res]
+      (or
+        (and
+          (or (= (types/ty-tag ty) 12) (not (lower/ty-noneq res)))
+          (b-tail-may-alias src alias calls))
+        (b-tma-any dflt alias calls))
+    )
+    (HLoop [binds _ty body] (or (b-tma-inits binds alias calls) (b-tail-may-alias body alias calls)))
+    (_ false)))
+
+(defn b-tma-any [es :- &HExprs alias :- &Sids calls :- &Sids] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (or (b-tail-may-alias k alias calls) (b-tma-any next alias calls)))))
+
+(defn b-tma-last [es :- &HExprs alias :- &Sids calls :- &Sids] :- bool
+  (match es
+    (HENil [] false)
+    (
+      HECons
+      [k next]
+      (if
+        (hexpr/hes-null next)
+        (b-tail-may-alias k alias calls)
+        (b-tma-last next alias calls))
+    )))
+
+(defn b-tma-binds [binds :- &Binds alias :- Sids calls :- &Sids] :- Sids
+  (match binds
+    (BNil [] alias)
+    (
+      BCons
+      [n v _ty next]
+      (if
+        (b-tail-may-alias v (clone alias) calls)
+        (b-tma-binds next (SCons n alias) calls)
+        (b-tma-binds next alias calls))
+    )))
+
+(defn b-tma-inits [binds :- &Binds alias :- &Sids calls :- &Sids] :- bool
+  (match binds
+    (BNil [] false)
+    (BCons [_n v _ty next] (or (b-tail-may-alias v alias calls) (b-tma-inits next alias calls)))))
+
+(defn b-tma-arms [arms :- &HArms scrut-alias :- bool alias :- &Sids calls :- &Sids] :- bool
+  (match arms
+    (HANil [] false)
+    (
+      HACons
+      [_v binders body _fr next]
+      (or
+        (let [inner (if scrut-alias (sids-into binders (clone alias)) (clone alias))] (b-tail-may-alias body inner calls))
+        (b-tma-arms next scrut-alias alias calls))
+    )))
+
+; Is the value of e not fresh: a call to a nonfresh function, a var bound
+; to such a value, or a static vec literal? (the seed's tail_nonfresh)
+(defn b-tail-nonfresh [e :- &HExpr nonfresh :- &Sids vars :- &Sids] :- bool
+  (match e
+    (HCall [c _args] (types/sids-has nonfresh c))
+    (HVar [v] (types/sids-has vars v))
+    (HVecLit [_el _vals] true)
+    (HLet [binds body _] (let [inner (b-tnf-binds binds nonfresh (clone vars))] (b-tail-nonfresh body nonfresh inner)))
+    (HSeq [es] (b-tnf-last es nonfresh vars))
+    (HIf [_c t2 e2 _] (or (b-tail-nonfresh t2 nonfresh vars) (b-tail-nonfresh e2 nonfresh vars)))
+    (HMatch [_s arms _] (b-tnf-arms arms nonfresh vars))
+    (HLoop [binds _ty body] (b-tnf-leaves body nonfresh (b-tnf-binds binds nonfresh (clone vars))))
+    (_ false)))
+
+(defn b-tnf-binds [binds :- &Binds nonfresh :- &Sids vars :- Sids] :- Sids
+  (match binds
+    (BNil [] vars)
+    (
+      BCons
+      [n v _ty next]
+      (if
+        (b-tail-nonfresh v nonfresh (clone vars))
+        (b-tnf-binds next nonfresh (SCons n vars))
+        (b-tnf-binds next nonfresh vars))
+    )))
+
+(defn b-tnf-last [es :- &HExprs nonfresh :- &Sids vars :- &Sids] :- bool
+  (match es
+    (HENil [] false)
+    (
+      HECons
+      [k next]
+      (if
+        (hexpr/hes-null next)
+        (b-tail-nonfresh k nonfresh vars)
+        (b-tnf-last next nonfresh vars))
+    )))
+
+(defn b-tnf-arms [arms :- &HArms nonfresh :- &Sids vars :- &Sids] :- bool
+  (match arms
+    (HANil [] false)
+    (HACons [_v _b body _fr next] (or (b-tail-nonfresh body nonfresh vars) (b-tnf-arms next nonfresh vars)))))
+
+; A loop's completing leaves (the seed's tail_leaves minus recurs).
+(defn b-tnf-leaves [e :- &HExpr nonfresh :- &Sids vars :- Sids] :- bool
+  (match e
+    (HLet [_b body _f] (b-tnf-leaves body nonfresh vars))
+    (HSeq [es] (b-tnf-leaves-last es nonfresh vars))
+    (HIf [_c t2 e2 _] (or (b-tnf-leaves t2 nonfresh (clone vars)) (b-tnf-leaves e2 nonfresh vars)))
+    (HMatch [_s arms _] (b-tnf-leaves-arms arms nonfresh vars))
+    (HRecur [_args] false)
+    (_ (b-tail-nonfresh e nonfresh (clone vars)))))
+
+(defn b-tnf-leaves-last [es :- &HExprs nonfresh :- &Sids vars :- Sids] :- bool
+  (match es
+    (HENil [] false)
+    (
+      HECons
+      [k next]
+      (if
+        (hexpr/hes-null next)
+        (b-tnf-leaves k nonfresh vars)
+        (b-tnf-leaves-last next nonfresh vars))
+    )))
+
+(defn b-tnf-leaves-arms [arms :- &HArms nonfresh :- &Sids vars :- Sids] :- bool
+  (match arms
+    (HANil [] false)
+    (
+      HACons
+      [_v _b body _fr next]
+      (or (b-tnf-leaves body nonfresh (clone vars)) (b-tnf-leaves-arms next nonfresh vars))
+    )))
+
+(defn b-coll-param-names [ps :- &PList acc :- Sids] :- Sids
+  (match ps
+    (PNil [] acc)
+    (
+      PCons
+      [p rest]
+      (match p
+        (
+          Param
+          [n ty _b]
+          (b-coll-param-names rest (if (b-coll-ty ty) (SCons n acc) acc))
+        ))
+    )))
+
+; Seeds: externs returning a collection (runtime memory). `&T` defns seed
+; the alias-call set.
+(defn b-ar-seed [defs :- &Defns out :- Sids] :- Sids
+  (match defs
+    (DNil [] out)
+    (
+      DCons
+      [h t]
+      (match h
+        (
+          Defn
+          [name _ps ret isextern _body _rb]
+          (b-ar-seed t (if (and (= isextern 1) (b-coll-ty ret)) (SCons name out) out))
+        ))
+    )))
+
+(defn b-ar-calls [defs :- &Defns acc :- Sids] :- Sids
+  (match defs
+    (DNil [] acc)
+    (
+      DCons
+      [h t]
+      (match h
+        (Defn [name _ps _ret _ie _body rb] (b-ar-calls t (if (= rb 1) (SCons name acc) acc))))
+    )))
+
+(deftype ARStep (ARStep [out :- Sids calls :- Sids changed :- i64]))
+
+; One pass over the defns: every non-extern collection-returning defn
+; whose tail may alias a collection parameter (through an alias call) or
+; is not fresh joins both sets.
+(defn b-ar-pass [defs :- &Defns out :- Sids calls :- Sids changed :- i64] :- ARStep
+  (match defs
+    (DNil [] (ARStep out calls changed))
+    (
+      DCons
+      [h t]
+      (match h
+        (
+          Defn
+          [name ps ret isextern body _rb]
+          (if
+            (or (= isextern 1) (types/sids-has out name) (not (b-coll-ty ret)))
+            (b-ar-pass t out calls changed)
+            (if
+              (let [cps (b-coll-param-names ps (SNil)) none (SNil)]
+                (or (b-tail-may-alias body cps calls) (b-tail-nonfresh body out none)))
+              (b-ar-pass t (SCons name out) (SCons name calls) 1)
+              (b-ar-pass t out calls changed)))
+        ))
+    )))
+
+(defn b-ar-fix [defs :- &Defns out :- Sids calls :- Sids] :- Sids
+  (match (b-ar-pass defs out calls 0)
+    (ARStep [out2 calls2 changed] (if (= changed 1) (b-ar-fix defs out2 calls2) out2))))
+
+(defn b-alias-ret [defs :- &Defns] :- Sids
+  (b-ar-fix defs (b-ar-seed defs (SNil)) (b-ar-calls defs (SNil))))
 
 (defn b-call-move [name :- i64
   args :- HExprs
@@ -711,7 +976,7 @@
                   and
                   (= pb 0)
                   (= (lower/h-tag (clone kid)) 39)
-                  (= (rb-get (b-retb-of bcx) (lower/name-of (clone kid))) 1)
+                  (= (b-rb-at bcx (lower/name-of (clone kid))) 1)
                 )
                 ; a borrowed (`&T`) call result handed to an owned parameter
                 ; would let the callee free a value that still belongs to
@@ -719,10 +984,15 @@
                 (
                   B4Err
                   (
-                    str
-                    "cannot move the borrowed result of "
-                    (forms/sym-str (b-tab-of bcx) (lower/name-of (clone kid)))
-                    " into an owned parameter: it belongs to the caller"
+                    occ-tag
+                    (
+                      str
+                      "cannot move the borrowed result of "
+                      (forms/sym-str (b-tab-of bcx) (lower/name-of (clone kid)))
+                      " into an owned parameter: it belongs to the caller"
+                    )
+                    rem
+                    (lower/name-of (clone kid))
                   )
                 )
                 (if
@@ -841,10 +1111,10 @@
                     owns1
                     name
                     (if
-                      (b-borrowed-call v2 (b-retb-of bcx))
+                      (b-borrowed-call-at v2 bcx)
                       0
                       (if
-                        (b-allocates-of v2 bcx)
+                        (b-let-allocates-of v2 bcx)
                         1
                         0))
                   ))]
@@ -903,6 +1173,21 @@
       (b-allocates v facts)
     )))
 
+; A let binding owns its value only when that value is a fresh heap
+; allocation. Vec literals are not (the seed's allocates_fresh): the
+; emitter mints them as private constants (md-mint-vec), so a let that
+; "owned" one would hand a global to a closure env's drop glue. Loop seeds
+; keep b-allocates-of (the emitter copies a literal seed into the loop's
+; growable slot).
+(defn b-let-allocates-of [v :- &HExpr bcx :- &BCtx] :- bool
+  (match v
+    ; a call result is fresh unless the callee may return an alias (rb 2;
+    ; rb 1 borrowed calls are filtered by b-borrowed-call first)
+    (HCall [c _args] (/= (b-rb-at bcx c) 2))
+    ; a `let`'s value is its body's (the planner's hoisted-temp lets)
+    (HLet [_b body _f] (b-let-allocates-of body bcx))
+    (_ (and (/= (lower/h-tag v) 5) (b-allocates-of v bcx)))))
+
 (defn b-arm-state-of [binders :- Sids
   fields :- TyList
   pst :- IMap
@@ -932,6 +1217,12 @@
     )))
 
 ; Is this an expression whose value is a borrow (a call to a `&T` callee)?
+; b-borrowed-call through the context, without copying the table out
+(defn b-borrowed-call-at [v :- &HExpr bcx :- &BCtx] :- bool
+  (match v
+    (HCall [name _args] (= (b-rb-at bcx name) 1))
+    (_ false)))
+
 (defn b-borrowed-call [v :- &HExpr retb :- &RBTable] :- bool
   (match v
     (HCall [name args] (= (rb-get retb name) 1))
@@ -1151,6 +1442,10 @@
             (not (types/sids-has escaped name))
             (not (forms/im-has cons name))
             (not (b-rebound body name))
+            ; a name re-bound later in this same let is planned once, for
+            ; its last binding (the state maps describe only that one; a
+            ; second entry would free the same buffer twice)
+            (not (b-binds-has next name))
           )
           (SCons name rest)
           rest))
@@ -1403,17 +1698,19 @@
   escaped :- Sids
   bcx :- &BCtx
   scrid :- i64
+  rem :- &IMap
 ] :- str
   (if
     (or (< scrid 0) (not (types/sids-has (b-nomove-of bcx) scrid)))
     ""
-    (b-borrowed-scrut-walk binders fields st escaped bcx)))
+    (b-borrowed-scrut-walk binders fields st escaped bcx rem)))
 
 (defn b-borrowed-scrut-walk [binders :- Sids
   fields :- TyList
   st :- IMap
   escaped :- Sids
   bcx :- &BCtx
+  rem :- &IMap
 ] :- str
   (match binders
     (SNil [] "")
@@ -1440,8 +1737,8 @@
             ""))]
         (if
           (> (count hit) 0)
-          hit
-          (b-borrowed-scrut-walk rest frest st escaped bcx)))
+          (span/err-occ hit b (occ-at rem b))
+          (b-borrowed-scrut-walk rest frest st escaped bcx rem)))
     )))
 
 (defn b-tab-of [bcx :- &BCtx] :- i64
@@ -1797,6 +2094,7 @@
                       escaped
                       bcx
                       scrid
+                      rem2
                     )
                     st3 (b-merge-st st1 st2 st)
                     owns3 (b-merge-owns owns1 owns2 owns)]
@@ -1857,7 +2155,7 @@
       CCons
       [name ty own next]
       (match
-        (use-var name rem tys st bcx)
+        (use-var name (occ-bump rem name) tys st bcx)
         (
           UseRes
           [rem2 msg]
@@ -1874,7 +2172,7 @@
                     [st2 owns2 cons2 m2]
                     (if
                       (> (count m2) 0)
-                      (BCapErr m2)
+                      (BCapErr (occ-tag m2 rem2 name))
                       (match
                         (b-caps next st2 owns2 rem2 cons2 tys bcx wsc wbs)
                         (BCapErr [msg] (BCapErr msg))
@@ -1894,10 +2192,375 @@
                   )))))
         ))
     )))
+;
+; --- R5: hoisting fresh argument temps ------------------------------------------
+;
+; The seed's hoist_arg_temps: `(f … <temp> …)` becomes
+; `(let [~aN <temp>] (f … ~aN …))` and the ordinary let planning frees ~aN
+; after the node. Two kinds of temp leak otherwise: a fresh box on a
+; borrowed parameter (the callee only reads it, nobody owns it) and any
+; fresh string/collection temp (callees never free those; constructors,
+; str, conj and spit copy or consume the bytes). Never under a `&T` or
+; alias-returning callee, whose result may be the temp itself. Evaluation
+; order is kept: every effectful argument before a hoisted one is hoisted
+; too (under its own type), and the hoist stops at an argument it cannot
+; type. The ~aN counter is per defn and rides in `rem` under key -1 (rem
+; threads sequentially through every walk, like the seed's counter).
+
+(defn hz-none [t :- &Ty] :- bool (= (types/ty-tag t) 19))
+
+; Reads of bindings, literals and arithmetic over them: no effects to
+; reorder around a hoisted argument (the seed's order_free).
+(defn hz-order-free [e :- &HExpr] :- bool
+  (match e
+    (HVar [_v] true)
+    (HStrLit [_v] true)
+    (HConstI64 [_v] true)
+    (HConstF64 [_v] true)
+    (HConstB [_v] true)
+    (HVecLit [_el _vals] true)
+    (HArgs [] true)
+    (HBinW [_op a b _ty] (and (hz-order-free a) (hz-order-free b)))
+    (HCmpW [_op a b _ty] (and (hz-order-free a) (hz-order-free b)))
+    (HBinF [_op a b] (and (hz-order-free a) (hz-order-free b)))
+    (HAnd [a b] (and (hz-order-free a) (hz-order-free b)))
+    (HOr [a b] (and (hz-order-free a) (hz-order-free b)))
+    (HMin [a b _ty] (and (hz-order-free a) (hz-order-free b)))
+    (HMax [a b _ty] (and (hz-order-free a) (hz-order-free b)))
+    (HNot [a] (hz-order-free a))
+    (HAbs [a _ty] (hz-order-free a))
+    (HICast [a _f _t] (hz-order-free a))
+    (HCount [a] (hz-order-free a))
+    (HStrCmp [_p a b] (and (hz-order-free a) (hz-order-free b)))
+    (HStrOrd [_op a b] (and (hz-order-free a) (hz-order-free b)))
+    (HStrNth [s idx res] (and (hz-none res) (hz-order-free s) (hz-order-free idx)))
+    (_ false)))
+
+(defn b-rb-at [bcx :- &BCtx name :- i64] :- i64
+  (match bcx
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (rb-get retb name))))
+
+(defn b-ret-at [bcx :- &BCtx name :- i64] :- Ty
+  (match bcx
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (rb-ret-get retb name))))
+
+; Is the callee's i-th parameter owned? Borrowed (`&`) parameters and
+; extern parameters are not; builtins without a defn are owned except the
+; seed's never-consuming set.
+(defn plist-owned-at [ps :- &PList i :- i64] :- i64
+  (match ps
+    (PNil [] 1)
+    (
+      PCons
+      [p rest]
+      (if
+        (= i 0)
+        (match p (Param [_n _ty b] (if (= b 1) 0 1)))
+        (plist-owned-at rest (- i 1)))
+    )))
+
+(defn dparams-owned-at [dp :- &DParams name :- i64 i :- i64] :- i64
+  (match dp
+    (DPNil [] -1)
+    (
+      DPCons
+      [n ps next]
+      (if
+        (= n name)
+        (plist-owned-at ps i)
+        (dparams-owned-at next name i))
+    )))
+
+(defn hz-builtin-shared [nm :- str] :- bool
+  (or (= nm "count") (= nm "even?") (= nm "print-i64") (= nm "print-f64")
+      (= nm "get") (= nm "clone") (= nm "drop")))
+
+(defn b-param-owned-at [bcx :- &BCtx name :- i64 i :- i64] :- i64
+  (match bcx
+    (
+      BCtx
+      [_e _s _f tab _sh _lc _adts dp _retb _nm _crb _rok _lseed]
+      (let [k (dparams-owned-at dp name i)]
+        (if
+          (>= k 0)
+          k
+          (if (hz-builtin-shared (forms/sym-str tab name)) 0 1)))
+    )))
+
+; Does this type pass the hoist's filter? boxed: a boxed ADT; otherwise a
+; string or collection.
+(defn hz-want [t :- &Ty boxed :- bool bcx :- &BCtx] :- bool
+  (if
+    boxed
+    (and (= (types/ty-tag t) 16) (= (b-facts-boxed-at bcx (types/ty-arg t)) 1))
+    (b-coll-ty t)))
+
+(defn hz-filter [t :- Ty boxed :- bool bcx :- &BCtx] :- Ty
+  (if (hz-want t boxed bcx) t (types/t-none)))
+
+; The static type of a fresh heap value the caller would otherwise lose,
+; t-none when e is not one (the seed's fresh_temp_ty).
+(defn hz-fresh [e :- &HExpr tys :- &TyEnv boxed :- bool bcx :- &BCtx] :- Ty
+  (match e
+    (
+      HCall
+      [c _args]
+      (if
+        (> (b-rb-at bcx c) 0)
+        (types/t-none)
+        (hz-filter (b-ret-at bcx c) boxed bcx))
+    )
+    (
+      HCtor
+      [adt _v _args]
+      (if
+        (and boxed (= (b-facts-boxed-at bcx adt) 1))
+        (types/t-adt adt)
+        (types/t-none))
+    )
+    (
+      HClone
+      [inner]
+      (match inner
+        (HVar [v] (hz-filter (forms/te-get tys v) boxed bcx))
+        (_ (hz-fresh inner tys boxed bcx)))
+    )
+    (HSubs [_s _a _b] (if boxed (types/t-none) (types/t-str)))
+    (HStrCat [_args] (if boxed (types/t-none) (types/t-str)))
+    (HJoin [_sep _xs] (if boxed (types/t-none) (types/t-str)))
+    (HToStr [_e _ty] (if boxed (types/t-none) (types/t-str)))
+    (HCharStr [_e] (if boxed (types/t-none) (types/t-str)))
+    (HSlurp [_p] (if boxed (types/t-none) (types/t-str)))
+    (HSplit [_s _sep] (if boxed (types/t-none) (types/t-vec 2)))
+    (HConj [_v _x el _ip] (if boxed (types/t-none) (types/t-vec el)))
+    (_ (types/t-none))))
+
+; The static type to bind a hoisted argument under (the seed's hoist_ty).
+(defn hz-hoist-ty [e :- &HExpr tys :- &TyEnv bcx :- &BCtx] :- Ty
+  (match e
+    (HCall [c _args] (b-ret-at bcx c))
+    (HCtor [adt _v _args] (types/t-adt adt))
+    (
+      HClone
+      [inner]
+      (match inner
+        (HVar [v] (forms/te-get tys v))
+        (_ (hz-hoist-ty inner tys bcx)))
+    )
+    (HSubs [_s _a _b] (types/t-str))
+    (HStrCat [_args] (types/t-str))
+    (HJoin [_sep _xs] (types/t-str))
+    (HToStr [_e _ty] (types/t-str))
+    (HCharStr [_e] (types/t-str))
+    (HSlurp [_p] (types/t-str))
+    (HSplit [_s _sep] (types/t-vec 2))
+    (HConj [_v _x el _ip] (types/t-vec el))
+    (HIf [_c _t _e ty] (clone ty))
+    (HMatch [_s _a ty] (clone ty))
+    (HLoop [_b ty _body] (clone ty))
+    (HGet [_src _idx _d ty res] (if (hz-none res) (clone ty) (clone res)))
+    (HStrNth [_s _idx res] (clone res))
+    (HParseNum [_s _int res] (clone res))
+    (_ (types/t-none))))
+
+; A hoist plan, newest entry first: argument index, bind type, leaks bit.
+(deftype HPlan
+  (HPNil)
+  (HPCons [i :- i64 ty :- Ty leaks :- i64 next :- HPlan]))
+
+; callee: the HCall's name (per-parameter kinds), -1 for nodes whose
+; arguments are all owned (str, constructors, conj, spit).
+(defn hz-plan [args :- &HExprs i :- i64 callee :- i64 tys :- &TyEnv bcx :- &BCtx acc :- HPlan] :- HPlan
+  (match args
+    (HENil [] acc)
+    (
+      HECons
+      [a next]
+      (if
+        (hz-order-free a)
+        (hz-plan next (+ i 1) callee tys bcx acc)
+        (let [ht (hz-hoist-ty a tys bcx)]
+          (if
+            (hz-none ht)
+            acc
+            (hz-plan next (+ i 1) callee tys bcx (HPCons i ht (hz-leaks-bit a i callee tys bcx) acc)))))
+    )))
+
+; Trailing hoists that free nothing only add noise: drop them (the plan is
+; newest-first, so trailing entries are at the head).
+(defn hz-trim [p :- HPlan] :- HPlan
+  (match p
+    (HPNil [] (HPNil))
+    (HPCons [i ty leaks next] (if (= leaks 1) (HPCons i ty leaks next) (hz-trim next)))))
+
+(defn hz-plan-ty [p :- &HPlan i :- i64] :- Ty
+  (match p
+    (HPNil [] (types/t-none))
+    (HPCons [j ty _l next] (if (= j i) (clone ty) (hz-plan-ty next i)))))
+
+(defn hz-mint [tab :- i64 n :- i64] :- i64
+  (match (forms/intern1 tab (str "~a" n)) (I1Res [_t sid] sid)))
+
+(deftype HZArgs (HZArgs [args :- HExprs binds :- Binds rem :- IMap]))
+
+; Replace each planned argument with a fresh ~aN var; the binds come back
+; in argument order.
+(defn hz-rewrite [args :- HExprs i :- i64 p :- &HPlan rem :- IMap tab :- i64 acc :- HExprs bacc :- Binds] :- HZArgs
+  (match args
+    (HENil [] (HZArgs (hexpr/hes-rev acc (HENil)) (hexpr/binds-rev bacc (BNil)) rem))
+    (
+      HECons
+      [a next]
+      (let [t (hz-plan-ty p i)]
+        (if
+          (hz-none t)
+          (hz-rewrite next (+ i 1) p rem tab (HECons a acc) bacc)
+          (let [n (forms/im-get rem -1 0) sid (hz-mint tab n)]
+            (
+              hz-rewrite
+              next
+              (+ i 1)
+              p
+              (forms/im-put rem -1 (+ n 1))
+              tab
+              (HECons (HVar sid) acc)
+              (BCons sid a t bacc)
+            ))))
+    )))
+
+(deftype HZOut (HZOut [e :- HExpr rem :- IMap]))
+
+(defn b-tab-at [bcx :- &BCtx] :- i64
+  (match bcx (BCtx [_e _s _f tab _sh _lc _adts _dp _retb _nm _crb _rok _lseed] tab)))
+
+; Hoist args; rebuild yields the node over the rewritten args.
+(defn hz-apply [args :- HExprs callee :- i64 rem :- IMap tys :- &TyEnv bcx :- &BCtx] :- HZArgs
+  (let [p (hz-trim (hz-plan args 0 callee tys bcx (HPNil)))]
+    (match p
+      (HPNil [] (HZArgs args (BNil) rem))
+      (_ (hz-rewrite args 0 p rem (b-tab-at bcx) (HENil) (BNil))))))
+
+(defn hz-wrap [binds :- Binds node :- HExpr rem :- IMap] :- HZOut
+  (match binds
+    (BNil [] (HZOut node rem))
+    (_ (HZOut (HLet binds node (SNil)) rem))))
+
+(defn hz-one [x :- HExpr] :- HExprs (HECons x (HENil)))
+
+(defn hz-first [xs :- HExprs] :- HExpr
+  (match xs
+    (HECons [k _next] k)
+    (HENil [] (HConstI64 0))))
+
+(defn hz-second [xs :- HExprs] :- HExpr
+  (match xs
+    (HECons [_k next] (hz-first next))
+    (HENil [] (HConstI64 0))))
+
+(defn b-hoist [e :- HExpr rem :- IMap tys :- &TyEnv bcx :- &BCtx] :- HZOut
+  (match e
+    (
+      HCall
+      [name args]
+      (if
+        (> (b-rb-at bcx name) 0)
+        (HZOut (HCall name args) rem)
+        (match (hz-apply args name rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HCall name a2) rem2))))
+    )
+    (HStrCat [args] (match (hz-apply args -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HStrCat a2) rem2))))
+    (
+      HCtor
+      [adt variant args]
+      (match (hz-apply args -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HCtor adt variant a2) rem2)))
+    )
+    (
+      HConj
+      [v x el ip]
+      (match
+        (hz-apply (hz-one x) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HConj v (hz-first a2) el ip) rem2)))
+    )
+    (
+      HSpit
+      [path data]
+      (match
+        (hz-apply (HECons path (hz-one data)) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HSpit (hz-first (clone a2)) (hz-second a2)) rem2)))
+    )
+    (_ (HZOut e rem))))
+
+; The plan step for one argument, without building the plan: 0 keep going
+; (order-free, or hoistable without leaking), 1 leaks (the trimmed plan is
+; nonempty), 2 stop (cannot be typed: the plan ends here).
+(defn hz-arg-step [a :- &HExpr i :- i64 callee :- i64 tys :- &TyEnv bcx :- &BCtx] :- i64
+  (if
+    (hz-order-free a)
+    0
+    (if
+      (hz-none (hz-hoist-ty a tys bcx))
+      2
+      (hz-leaks-bit a i callee tys bcx))))
+
+; 1 when the argument leaks: a fresh string/collection, or a fresh box on a
+; borrowed parameter. The parameter kind is looked up only for the latter.
+(defn hz-leaks-bit [a :- &HExpr i :- i64 callee :- i64 tys :- &TyEnv bcx :- &BCtx] :- i64
+  (cond
+    (not (hz-none (hz-fresh a tys false bcx)))
+    1
+    (hz-none (hz-fresh a tys true bcx))
+    0
+    (< callee 0)
+    0
+    (= (b-param-owned-at bcx callee i) 0)
+    1
+    0))
+
+(defn hz-leaky [args :- &HExprs i :- i64 callee :- i64 tys :- &TyEnv bcx :- &BCtx] :- bool
+  (match args
+    (HENil [] false)
+    (
+      HECons
+      [a next]
+      (let [k (hz-arg-step a i callee tys bcx)]
+        (if (= k 0) (hz-leaky next (+ i 1) callee tys bcx) (= k 1)))
+    )))
+
+; Would b-hoist rewrite this node? A borrowed, allocation-free test, so the
+; common no-hoist path never rebuilds a node.
+(defn hz-needed [e :- &HExpr tys :- &TyEnv bcx :- &BCtx] :- bool
+  (match e
+    (HCall [name args] (and (= (b-rb-at bcx name) 0) (hz-leaky args 0 name tys bcx)))
+    (HStrCat [args] (hz-leaky args 0 -1 tys bcx))
+    (HCtor [_adt _v args] (hz-leaky args 0 -1 tys bcx))
+    (HConj [_v x _el _ip] (= (hz-arg-step x 0 -1 tys bcx) 1))
+    (
+      HSpit
+      [path data]
+      (let [k (hz-arg-step path 0 -1 tys bcx)]
+        (or (= k 1) (and (= k 0) (= (hz-arg-step data 1 -1 tys bcx) 1))))
+    )
+    (_ false)))
+
+; Every node is hoisted before it is checked (the seed's check entry); the
+; planner-made let is then planned like any other.
+(defn bcheck [e :- HExpr
+  st :- IMap
+  owns :- IMap
+  rem :- IMap
+  cons :- IMap
+  tys :- TyEnv
+  bcx :- &BCtx
+  wsc :- i64
+  wbs :- &Sids
+] :- BRes
+  (if
+    (hz-needed e tys bcx)
+    (match (b-hoist e rem tys bcx) (HZOut [e2 rem2] (bcheck-node e2 st owns rem2 cons tys bcx wsc wbs)))
+    (bcheck-node e st owns rem cons tys bcx wsc wbs)))
 
 ; --- the checker body ----------------------------------------------------------------
 
-(defn bcheck [e :- HExpr
+(defn bcheck-node [e :- HExpr
   st :- IMap
   owns :- IMap
   rem :- IMap
@@ -1918,7 +2581,7 @@
       HVar
       [name]
       (match
-        (use-var name rem tys st bcx)
+        (use-var name (occ-bump rem name) tys st bcx)
         (
           UseRes
           [rem2 msg]
@@ -2570,7 +3233,7 @@
       HCall
       [name args]
       (match
-        (b-kids args st owns rem cons tys bcx wsc wbs (HENil))
+        (b-kids args st owns (occ-bump rem name) cons tys bcx wsc wbs (HENil))
         (BKErr [msg] (BErr msg))
         (
           BKOk
@@ -3022,7 +3685,7 @@
                   (
                     BPlanRes
                     bcx2
-                    (BPlanErr (str "ownership check failed in " (forms/sym-str tab name) ": " msg))
+                    (BPlanErr (str (span/err-tags msg) "ownership check failed in " (forms/sym-str tab name) ": " (span/err-text msg)))
                   )
                 )
                 (
@@ -3155,7 +3818,7 @@
                     BCtx
                     [_e _s facts2 tab2 shared2 _lc adts2 dp2 retb2 _nm2 _crb2 _rok _lseed]
                     (match plan
-                      (BPlanErr [msg] (CKErr msg))
+                      (BPlanErr [msg] (CKErr (span/err-in-fn msg name)))
                       (
                         BPlan
                         [st owns body2 frees]
@@ -3269,7 +3932,7 @@
     dparams
     (b-dparams defs (DPNil))
     retb
-    (b-retb defs (RBNil))
+    (b-retb defs (b-alias-ret defs) (RBNil))
     ; the second stage re-reads the small program state: clone it
     ; before the first call moves it
     facts2

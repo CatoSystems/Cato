@@ -1,0 +1,6 @@
+;; A closure captures a variable nested below its body's first level
+;; (`xs` inside the `get` under `+`).
+(defn main [] :- i64
+  (let [xs (vec-i64 3 4)
+        f (fn [i :- i64] (+ i (get xs 1 0)))]
+    (do (print-i64 (f 1)) 0)))

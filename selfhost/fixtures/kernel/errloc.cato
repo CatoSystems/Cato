@@ -1,0 +1,5 @@
+; Diagnostic location contract: a lowering error points at the innermost
+; source form that raised it, not the enclosing defn.
+(defn main [] :- i64
+  (let [a 1]
+    (+ a zzz)))

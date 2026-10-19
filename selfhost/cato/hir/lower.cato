@@ -189,7 +189,61 @@
 ] :- LRes
   (lower a env (types/t-none) tab adts insts sigs lams rets ncached defs raws))
 
+; The source line / column of a node, read in place (no Span copy: this
+; runs for every lowered node).
+(defn sp-line-of [at :- &Span] :- i64 (match at (Span [l _c _n] l)))
+
+(defn sp-col-of [at :- &Span] :- i64 (match at (Span [_l c _n] c)))
+
+(defn ast-line [a :- &Ast] :- i64
+  (match a
+    (ANil [at] (sp-line-of at))
+    (ASym [_s at] (sp-line-of at))
+    (AInt [_v at] (sp-line-of at))
+    (AF64 [_v at] (sp-line-of at))
+    (ABool [_v at] (sp-line-of at))
+    (AStr [_v at] (sp-line-of at))
+    (AList [_k at] (sp-line-of at))
+    (AVec [_k at] (sp-line-of at))
+    (AMap [_k at] (sp-line-of at))
+    (ASet [_k at] (sp-line-of at))))
+
+(defn ast-col [a :- &Ast] :- i64
+  (match a
+    (ANil [at] (sp-col-of at))
+    (ASym [_s at] (sp-col-of at))
+    (AInt [_v at] (sp-col-of at))
+    (AF64 [_v at] (sp-col-of at))
+    (ABool [_v at] (sp-col-of at))
+    (AStr [_v at] (sp-col-of at))
+    (AList [_k at] (sp-col-of at))
+    (AVec [_k at] (sp-col-of at))
+    (AMap [_k at] (sp-col-of at))
+    (ASet [_k at] (sp-col-of at))))
+
+; Lower one node; an error leaving it is tagged with the node's position
+; unless an inner node already located it (span/err-at: innermost wins).
 (defn lower [a :- Ast
+  env :- TyEnv
+  expected :- Ty
+  tab :- i64
+  adts :- AdtTab
+  insts :- IMap
+  sigs :- Sigs
+  lams :- Lams
+  rets :- TyEnv
+  ncached :- i64
+  defs :- Defns
+  raws :- &Raws
+] :- LRes
+  (let [l (ast-line a)
+    c (ast-col a)
+    r (lower-node a env expected tab adts insts sigs lams rets ncached defs raws)]
+    (match r
+      (LErr [msg] (LErr (span/err-at msg l c)))
+      (_ r))))
+
+(defn lower-node [a :- Ast
   env :- TyEnv
   expected :- Ty
   tab :- i64
@@ -3024,7 +3078,9 @@
             (forms/te-has env v)
             (CapsRes (CCons v (forms/te-get env v) 1 (clone caps)) (SCons v (clone seen)))
             (CapsRes (clone caps) (clone seen)))))
-      (CapsRes caps seen))))
+      ; any other node: recurse (a var nested below a child — `(+ i (get xs
+      ; 0 0))` — is still a capture; dropping non-var children missed it)
+      (caps-of e env params seen caps))))
 
 (defn cap-pair [e :- HExpr env :- &TyEnv params :- Sids seen :- Sids caps :- Caps] :- CapsRes
   (cap-2 (hv-a e) (hv-b e) env params seen caps))

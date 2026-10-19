@@ -1,0 +1,7 @@
+;; Diagnostic location contract for check errors: an ownership error
+;; points at the offending occurrence, not the enclosing defn.
+(defn take [v :- (Vector i64)] :- i64 (count v))
+
+(defn main [] :- i64
+  (let [xs (vec-i64 1 2)]
+    (+ (take xs) (count xs))))

@@ -1,4 +1,5 @@
 (ns cato.cli)
+
 (require ["reader/read.cato" :as read])
 (require ["hir/expand.cato" :as expand])
 (require ["hir/modules.cato" :as modules])
@@ -8,153 +9,101 @@
 (require ["hir/forms.cato" :as forms])
 (require ["hir/moveck.cato" :as moveck])
 (require ["emit/emit.cato" :as emit])
+(require ["lib/args.cato" :as argm])
+(require ["lib/driver.cato" :as driver])
+(require ["lib/compile.cato" :as compile])
 
-; cli.cato — S8 kernel CLI, the kernel entry point (the only `main`).
+; cli.cato — the kernel entry point (the only `main`).
 ;
-; Its `require`s pull the lib, reader, hir and emit modules by relative
-; path; the loader (hir/modules.cato) wires them into one program. The
-; skeleton per the roadmap:
+;   cato1 compile <file.cato> [-o out] [options] [-- cc-args...]
 ;
-;   cato1 build <file.cato> [out] [runtime.c]
-;
-; read → compile → write <out>.ll → spawn cc → native binary, with real
-; exit codes: 0 success, 1 compile error or cc failure, 2 usage error.
-; The output path defaults to the input's stem ("slice.cato" → "slice")
-; and the runtime to `runtime/runtime.c` relative to the working
-; directory. Both are positional (no flag parsing in the skeleton); the
-; C compiler runs through the `system` extern with the wait status
-; decoded by an arithmetic shift — the interp models system with the
-; same convention, so the driver runs identically under `cato run`
-; (the bootstrap's engine room until the seed's emitter is fixed) and
-; natively once cato1 exists.
+; read → compile → write IR → spawn cc → native binary. Exit codes match
+; the seed: 0 success, 1 compile error or toolchain failure, 2 usage error.
+; Diagnostics go to stderr; help and --emit-ir output go to stdout.
+; `main` ends in `exit` because a returned value is not the process status.
 
-(extern system [cmd :- str] :- i64)
+(defn usage-text [] :- str
+  "usage: cato1 compile <file.cato> [-o out] [-O0..3|--opt-level n] [-g] [--asan]
+                     [--target T] [--emit-ir] [--emit-ll F] [--cc CC]
+                     [--runtime RT] [--rtlib N] [-- cc-args...]
+       cato1 help | cato1 --version")
 
-; The exit code of a libc system() wait status (-1 means the shell did
-; not run at all, which must not decode to success).
-(defn exit-of [status :- i64] :- i64
-  (if
-    (= status -1)
-    -1
-    (/ status 256)))
-
-; The reader entry (read-all-with in reader/read.cato) is seeded with the
-; pre-interned table; the S6/S7 drivers share it.
-
-(defn usage [] :- i64
-  (do
-    (print-str "cato1: usage: cato1 build <file.cato> [out] [runtime.c]")
-    2))
-
-; "slice.cato" -> "slice" (the seed's default_stem for the .cato suffix).
-(defn stem-of [p :- str] :- str
-  (if
-    (and (> (count p) 5) (= (subs p (- (count p) 5) (count p)) ".cato"))
-    (subs p 0 (- (count p) 5))
-    p))
-
-; The compile pipeline through the emitted LLVM IR text: an empty result
-; means the pipeline failed and the message is on stdout already.
-(defn compile-to-ir [path :- str] :- str
-  (let [src (slurp path) r (read/read-all-with src (expand/magic-table))]
-    (match r
-      (
-        ROk
-        [forms tab]
-        (match
-          (modules/resolve-modules path forms tab (modules/mod-empty))
-          (
-            OROk
-            [forms2 tab2 st]
-            (match
-              (expand/expand-all forms2 (KNil))
-              (EOk [xforms] (compile-build tab2 xforms))
-              (
-                EErr
-                [msg at]
-                (do
-                  (print-string (str "err " (rdump/spat at) " " msg))
-                  "")
-              ))
-          )
-          (
-            ORErr
-            [msg at]
-            (do
-              (print-string (str "err " (rdump/spat at) " " msg))
-              "")
-          ))
-      )
-      (
-        RErr
-        [msg at]
-        (do
-          (print-string (str "err " (rdump/spat at) " " msg))
-          "")
-      ))))
-
-(defn compile-build [tab :- i64 forms :- Asts] :- str
-  (match
-    (lower/build-program forms tab)
-    (
-      PErr
-      [msg]
-      (do
-        (print-string (str "err " msg))
-        "")
-    )
-    (
-      POk
-      [tab2 adts defs lams sigs]
-      (let [facts (do (forms/facts-compute (forms/adts-templates (clone adts))))]
-        (match
-          (moveck/check-program defs lams facts (clone tab2) (clone adts))
-          (
-            CKErr
-            [msg]
-            (do
-              (print-string (str "err " msg))
-              "")
-          )
-          (CKOk [defs2 lams2] (emit/emit-program adts defs2 lams2 sigs tab2))))
-    )))
-
-(defn build-cmd [a :- (Vector str)] :- i64
-  (if
-    (< (count a) 2)
-    (usage)
-    (let [path (get a 1 "")
-      out
-      (if
-        (> (count a) 2)
-        (get a 2 "")
-        (stem-of path))
-      rt
-      (if
-        (> (count a) 3)
-        (get a 3 "")
-        "runtime/runtime.c")
-      ir (compile-to-ir path)]
-      (if
-        (= (count ir) 0)
-        1
-        (let [ll (str out ".ll")]
-          (do
-            (spit ll ir)
-            (let [status (system (str "clang -O2 " ll " " rt " -o " out))]
-              (if
-                (= (exit-of status) 0)
-                0
-                (do
-                  (print-string (str "cato1: cc failed (exit " (exit-of status) ")"))
-                  1)))))))))
+(defn version-text [] :- str "cato1 (kernel)")
 
 (defn main []
-  (let [a (args) cmd (get a 0 "")]
-    (
-      exit
-      (if
-        (= cmd "build")
-        (build-cmd a)
-        (usage))
-    )))
+  (let [a (args)]
+    (exit (dispatch a))))
+
+(defn dispatch [a :- (Vector str)] :- i64
+  (let [cmd (get a 0 "")]
+    (cond
+      (or (= cmd "help") (= cmd "--help") (= cmd "-h")) (do (print-string (usage-text)) 0)
+      (or (= cmd "--version") (= cmd "-V")) (do (print-string (version-text)) 0)
+      (= cmd "compile") (compile-cmd a)
+      (= cmd "build") (do (driver/eprint "'build' was renamed to 'compile' (cato1 compile <file> [-o out])") 2)
+      (or (= cmd "format") (= cmd "repl") (= cmd "lsp"))
+        (do (driver/eprint (str cmd " is not available in cato1 (use the seed: cato " cmd ")")) 2)
+      (= cmd "") (do (usage-err) 2)
+      (do (driver/eprint (str "unknown command '" cmd "' (see 'cato1 help')")) 2))))
+
+(defn usage-err [] :- i64
+  (driver/eprint (usage-text)))
+
+(defn compile-cmd [a :- (Vector str)] :- i64
+  (let [res (argm/parse a)]
+    (match res
+      (ArgErr [msg] (do (driver/eprint msg) 2))
+      (ArgOk [file out cc runtime target opt debug asan emit-ir emit-ll rtlib help rest]
+        (compile-one file out cc runtime target opt debug asan emit-ir emit-ll rtlib help rest)))))
+
+(defn compile-one [file :- str out :- str cc :- str runtime :- str target :- str opt :- i64 debug :- i64 asan :- i64 emit-ir :- i64 emit-ll :- str rtlib :- str help :- i64 rest :- (Vector str)] :- i64
+  (cond
+    (= help 1) (do (print-string (usage-text)) 0)
+    (= file "") (do (driver/eprint "compile requires an input file (.cato)") 2)
+    (= target "wasm32") (do (driver/eprint "--target wasm32 is not supported by cato1 (use the seed: cato compile --target wasm32)") 2)
+    (< (driver/target-index target) 0)
+      (do (driver/eprint (str "unknown --target '" target "' (known: " (driver/target-names) ")")) 2)
+    (and (= emit-ir 1) (/= emit-ll ""))
+      (do (driver/eprint "--emit-ir stops before linking; --emit-ll only applies when linking") 2)
+    (not (driver/file-exists file)) (do (driver/eprint (str "no such file " file)) 2)
+    (run-compile file out cc runtime (driver/target-index target) opt debug asan emit-ir emit-ll rtlib rest)))
+
+(defn report [file :- str msg :- str line :- i64 col :- i64] :- i64
+  (do
+    (if (= line 0)
+      (driver/eprint (str "error: " file ": " msg))
+      (driver/eprint (str "error: " file ":" line ":" (+ col 1) ": " msg)))
+    1))
+
+(defn run-compile [file :- str out :- str cc :- str runtime :- str ti :- i64 opt :- i64 debug :- i64 asan :- i64 emit-ir :- i64 emit-ll :- str rtlib :- str rest :- (Vector str)] :- i64
+  (match (compile/compile-text file (slurp file))
+    (CRErr [msg line col len] (report file msg line col))
+    (CROk [ir]
+      (if (= emit-ir 1)
+        ; --emit-ir: IR to -o, or stdout (the seed's contract).
+        (if (= out "")
+          (do (print-string ir) 0)
+          (do (spit out ir) 0))
+        (link ir out cc runtime ti opt debug asan emit-ll rtlib rest file)))))
+
+(defn link [ir :- str out :- str cc :- str runtime :- str ti :- i64 opt :- i64 debug :- i64 asan :- i64 emit-ll :- str rtlib :- str rest :- (Vector str) file :- str] :- i64
+  (let [cc (driver/resolve-cc cc)
+        rt (driver/resolve-runtime runtime)
+        out2 (if (= out "") (driver/default-out ti file) out)
+        triple (driver/target-triple ti)]
+    (cond
+      (not (driver/file-exists rt))
+        (do (driver/eprint (str "cannot locate runtime " rt " (pass --runtime or set CATO_RUNTIME)")) 1)
+      (and (/= triple "") (not (driver/cc-supports-triple cc triple)))
+        (do (driver/eprint (str cc " does not support target " triple " (pass a cross-capable --cc)")) 1)
+      ; The IR goes to --emit-ll (kept) or <out>.ll (removed after linking).
+      (let [ll (if (= emit-ll "") (str out2 ".ll") emit-ll)]
+        (do
+          (spit ll ir)
+          (let [status (driver/spawn (driver/build-argv ti opt debug asan rtlib rest cc ll rt out2))]
+            (do
+              (if (= emit-ll "") (driver/remove-file ll) 0)
+              (cond
+                (= status 0) 0
+                (= status 127) (do (driver/eprint (str "cannot run C compiler '" cc "' (pass --cc or set CATO_CC)")) 1)
+                (do (driver/eprint (str "link failed: " cc " exited with status " status)) 1)))))))))

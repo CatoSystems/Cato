@@ -1,0 +1,193 @@
+(ns cato.lib.driver)
+
+(extern cato-getenv [name :- str] :- str)
+(extern cato-file-exists [path :- str] :- bool)
+(extern cato-spawn [argv :- (Vector str)] :- i64)
+(extern cato-stderr [s :- str] :- i64)
+(extern cato-remove-file [path :- str] :- i64)
+
+; Note: `subs` takes [start end) — not (start, length).
+
+; Target table. Row i of target-name/target-triple/target-suffix is one
+; target; target-count bounds it. wasm32 is not a row: the kernel does not
+; link wasm (cli.cato reports it as unsupported). Stored as functions
+; because (Vector str) literals are not supported by the kernel reader.
+
+(defn target-count [] :- i64 6)
+
+(defn target-name [i :- i64] :- str
+  (cond
+    (= i 0) "native"
+    (= i 1) "x86_64-linux"
+    (= i 2) "aarch64-linux"
+    (= i 3) "x86_64-macos"
+    (= i 4) "aarch64-macos"
+    (= i 5) "x86_64-windows"
+    ""))
+
+(defn target-triple [i :- i64] :- str
+  (cond
+    (= i 1) "x86_64-unknown-linux-gnu"
+    (= i 2) "aarch64-unknown-linux-gnu"
+    (= i 3) "x86_64-apple-darwin"
+    (= i 4) "aarch64-apple-darwin"
+    (= i 5) "x86_64-w64-mingw32"
+    ""))
+
+(defn target-suffix [i :- i64] :- str
+  (cond
+    (= i 5) ".exe"
+    ""))
+
+(defn find-target [name :- str i :- i64 n :- i64] :- i64
+  (if (>= i n) -1
+    (if (= (target-name i) name) i
+      (find-target name (+ i 1) n))))
+
+(defn target-index [name :- str] :- i64
+  (find-target name 0 (target-count)))
+
+(defn join-names [i :- i64 n :- i64 acc :- str] :- str
+  (if (>= i n) acc
+    (join-names (+ i 1) n
+      (if (= i 0) (target-name i) (str acc ", " (target-name i))))))
+
+; "native, x86_64-linux, ..." for error messages.
+(defn target-names [] :- str
+  (join-names 0 (target-count) ""))
+
+; --- paths ---
+
+(defn last-slash [s :- str i :- i64] :- i64
+  (if (< i 0) -1
+    (if (= (subs s i (+ i 1)) "/") i
+      (last-slash s (- i 1)))))
+
+; "dir/slice.cato" -> "slice" (the seed's file_stem: the output lands in
+; the working directory, without the .cato suffix).
+(defn stem-of [file :- str] :- str
+  (let [n (count file)
+        base (subs file (+ (last-slash file (- n 1)) 1) n)
+        m (count base)]
+    (if (and (> m 5) (= (subs base (- m 5) m) ".cato"))
+      (subs base 0 (- m 5))
+      base)))
+
+(defn default-out [i :- i64 file :- str] :- str
+  (str (stem-of file) (target-suffix i)))
+
+(defn resolve-cc [flag :- str] :- str
+  (if (/= flag "")
+    flag
+    (let [env (cato-getenv "CATO_CC")]
+      (if (/= env "") env
+        (let [env2 (cato-getenv "CC")]
+          (if (/= env2 "") env2 "clang"))))))
+
+(defn resolve-runtime [flag :- str] :- str
+  (if (/= flag "")
+    flag
+    (let [env (cato-getenv "CATO_RUNTIME")]
+      (if (/= env "") env "runtime/runtime.c"))))
+
+(defn spawn [argv :- (Vector str)] :- i64 (cato-spawn argv))
+
+(defn file-exists [p :- str] :- bool (cato-file-exists p))
+
+(defn remove-file [p :- str] :- i64 (cato-remove-file p))
+
+; A `cato1: <msg>` line on stderr.
+(defn eprint [msg :- str] :- i64 (cato-stderr (str "cato1: " msg "\n")))
+
+; [x] as a (Vector str): a bare `[]` literal would infer (Vector i64), so
+; the empty vector takes its element type from this parameter.
+(defn str-vec1 [acc :- (Vector str) x :- str] :- (Vector str) (conj acc x))
+
+; Can `cc` compile C for `triple`? Mirrors the seed's cc_supports_triple
+; (`<cc> --target=<triple> -c -x c <empty> -o <null>`).
+(defn cc-supports-triple [cc :- str triple :- str] :- bool
+  (let [argv (str-vec1 [] cc)
+        argv (conj argv (str "--target=" triple))
+        argv (conj argv "-c")
+        argv (conj argv "-x")
+        argv (conj argv "c")
+        argv (conj argv "/dev/null")
+        argv (conj argv "-o")
+        argv (conj argv "/dev/null")]
+    (= (cato-spawn argv) 0)))
+
+; --- passthrough option keys (the seed's passthrough_key) ---
+; Strip leading `-`s, cut at `=`, and map O0..O3 to "O".
+
+(defn strip-d [s :- str] :- str
+  (if (and (> (count s) 0) (= (subs s 0 1) "-"))
+    (strip-d (subs s 1 (count s)))
+    s))
+
+(defn eq-pos [s :- str i :- i64] :- i64
+  (if (>= i (count s)) -1
+    (if (= (subs s i (+ i 1)) "=") i
+      (eq-pos s (+ i 1)))))
+
+(defn base-key [s :- str] :- str
+  (let [p (eq-pos s 0)]
+    (if (< p 0) s
+      (subs s 0 p))))
+
+(defn norm-key [k :- str] :- str
+  (if (and (= (count k) 2) (= (subs k 0 1) "O")
+           (or (= (subs k 1 2) "0") (= (subs k 1 2) "1")
+               (= (subs k 1 2) "2") (= (subs k 1 2) "3")))
+    "O"
+    k))
+
+(defn opt-key [tok :- str] :- str
+  (norm-key (base-key (strip-d tok))))
+
+(defn has-key [rest :- (Vector str) key :- str i :- i64 n :- i64] :- i64
+  (if (>= i n) 0
+    (if (= (opt-key (get rest i "")) key) 1
+      (has-key rest key (+ i 1) n))))
+
+(defn key-in-rest [rest :- (Vector str) key :- str] :- i64
+  (has-key rest key 0 (count rest)))
+
+; --- link argv ---
+; Parsed options in contract order (-O, -g, -fsanitize, -rtlib, --target),
+; then passthrough, then the driver-owned inputs and -o. A parsed option
+; whose key appears in the passthrough is dropped (the passthrough wins).
+; -Wno-override-module: kernel IR carries no target triple, so clang would
+; otherwise warn on every link.
+(defn parsed-opts [acc :- (Vector str) target-i :- i64 opt :- i64 debug :- i64 asan :- i64 rtlib :- str] :- (Vector str)
+  (let [v acc
+        v (conj v (str "-O" opt))
+        v (if (= debug 1) (conj v "-g") v)
+        v (if (= asan 1) (conj v "-fsanitize=address") v)
+        v (conj v (str "-rtlib=" rtlib))
+        triple (target-triple target-i)
+        v (if (/= triple "") (conj v (str "--target=" triple)) v)
+        v (conj v "-Wno-override-module")]
+    v))
+
+(defn append-all [src :- (Vector str) i :- i64 n :- i64 acc :- (Vector str)] :- (Vector str)
+  (if (>= i n) acc
+    (append-all (clone src) (+ i 1) n (conj acc (get (clone src) i "")))))
+
+(defn filter-parsed [po :- (Vector str) rest :- (Vector str) i :- i64 n :- i64 acc :- (Vector str)] :- (Vector str)
+  (if (>= i n) acc
+    (let [tok (get po i "")
+          key (opt-key tok)]
+      (if (= (key-in-rest (clone rest) key) 1)
+        (filter-parsed po (clone rest) (+ i 1) n acc)
+        (filter-parsed po (clone rest) (+ i 1) n (conj acc tok))))))
+
+(defn build-argv [target-i :- i64 opt :- i64 debug :- i64 asan :- i64
+                  rtlib :- str rest :- (Vector str)
+                  cc :- str ll :- str rt :- str out :- str] :- (Vector str)
+  (let [po (parsed-opts [] target-i opt debug asan rtlib)
+        filtered (filter-parsed po (clone rest) 0 (count po) (str-vec1 [] cc))
+        with-pass (append-all (clone rest) 0 (count (clone rest)) filtered)
+        with-ll (conj with-pass ll)
+        with-rt (conj with-ll rt)
+        with-o (conj with-rt "-o")]
+    (conj with-o out)))

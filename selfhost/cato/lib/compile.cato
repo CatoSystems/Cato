@@ -1,0 +1,113 @@
+(ns cato.lib.compile)
+
+(require ["../reader/read.cato" :as read])
+(require ["../hir/expand.cato" :as expand])
+(require ["../hir/modules.cato" :as modules])
+(require ["../lib/ast.cato" :as ast])
+(require ["../reader/dump.cato" :as rdump])
+(require ["../lib/span.cato" :as span])
+(require ["../hir/lower.cato" :as lower])
+(require ["../hir/forms.cato" :as forms])
+(require ["../hir/moveck.cato" :as moveck])
+(require ["../emit/emit.cato" :as emit])
+(require ["../lib/errloc.cato" :as errloc])
+
+(deftype CRes (CROk [ir :- str]) (CRErr [msg :- str line :- i64 col :- i64 len :- i64]))
+
+; Top-level form name -> its span: `(defn f ...)`, `(deftype T ...)` …
+; keyed by the second element's symbol, so a check error tagged with a defn
+; name (span/err-in-fn) can point at that defn.
+(deftype SpTab
+  (STNil)
+  (STCons [sid :- i64 at :- Span next :- SpTab]))
+
+(defn form-name-at [kids :- &Asts at :- Span acc :- SpTab] :- SpTab
+  (match kids
+    (KCons [_head rest]
+      (match rest
+        (KCons [k2 _more]
+          (match k2
+            (ASym [sid _at] (STCons sid at acc))
+            (_ acc)))
+        (KNil [] acc)))
+    (KNil [] acc)))
+
+(defn form-spans [fs :- &Asts acc :- SpTab] :- SpTab
+  (match fs
+    (KNil [] acc)
+    (KCons [f next]
+      (match f
+        (AList [kids at] (form-spans next (form-name-at kids at acc)))
+        (_ (form-spans next acc))))))
+
+(defn sptab-get [t :- &SpTab sid :- i64] :- Span
+  (match t
+    (STNil [] (Span 0 0 0))
+    (STCons [k at next] (if (= k sid) (clone at) (sptab-get next sid)))))
+
+; A tagged message as a CRErr at its node, or its defn (line 0: no
+; location). The tags stay on the message: compile-text refines an
+; occurrence tag and strips them.
+(defn located [msg :- str tabs :- &SpTab] :- CRes
+  (let [sid (span/err-fn-sid msg)
+        at (if (< sid 0) (span/err-span msg) (sptab-get tabs sid))]
+    (match at (Span [l c n] (CRErr msg l c n)))))
+
+(defn build-ir [tab :- i64 fs :- Asts] :- CRes
+  (let [tabs (form-spans fs (STNil))]
+    (build-ir-at tab fs tabs)))
+
+(defn build-ir-at [tab :- i64 fs :- Asts tabs :- SpTab] :- CRes
+  (match (lower/build-program fs tab)
+    (PErr [msg]
+      (located msg tabs))
+    (POk [tab2 adts defs lams sigs]
+      (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
+        (match (moveck/check-program defs lams facts (clone tab2) (clone adts))
+          (CKErr [msg]
+            (located msg tabs))
+          (CKOk [defs2 lams2]
+            (CROk (emit/emit-program adts defs2 lams2 sigs tab2))))))))
+
+(defn compile-text [path :- str src :- str] :- CRes
+  (match (compile-core path src)
+    (CROk [ir] (CROk ir))
+    (CRErr [msg l c n]
+      (if (and (>= (span/err-occ-sid msg) 0) (>= (span/err-fn-sid msg) 0))
+        (refine-occ path src msg l c n)
+        (CRErr (span/err-text msg) l c n)))))
+
+; A check error at the k-th occurrence of a symbol in a defn: re-read and
+; re-expand the source (error path only — the compile already consumed its
+; forms) and walk that defn for the occurrence; the defn's own position
+; when it cannot be found.
+(defn refine-occ [path :- str src :- str msg :- str l :- i64 c :- i64 n :- i64] :- CRes
+  (let [text (span/err-text msg)
+        r (read/read-all-with src (expand/magic-table))]
+    (match r
+      (ROk [forms tab]
+        (match (modules/resolve-modules path forms tab (modules/mod-empty))
+          (OROk [forms2 tab2 st]
+            (match (expand/expand-all forms2 (KNil))
+              (EOk [xforms]
+                (match (errloc/find-occurrence xforms (span/err-fn-sid msg) (span/err-occ-sid msg) (span/err-occ-k msg) tab2)
+                  (OHit [l2 c2 n2] (CRErr text l2 c2 n2))
+                  (OLeft [_k] (CRErr text l c n))))
+              (EErr [_m _at] (CRErr text l c n))))
+          (ORErr [_m _at] (CRErr text l c n))))
+      (RErr [_m _at] (CRErr text l c n)))))
+
+(defn compile-core [path :- str src :- str] :- CRes
+  (let [r (read/read-all-with src (expand/magic-table))]
+    (match r
+      (ROk [forms tab]
+        (match (modules/resolve-modules path forms tab (modules/mod-empty))
+          (OROk [forms2 tab2 st]
+            (match (expand/expand-all forms2 (KNil))
+              (EOk [xforms] (build-ir tab2 xforms))
+              (EErr [msg at]
+                (CRErr msg (span/sp-line at) (span/sp-col at) (span/sp-len at)))))
+          (ORErr [msg at]
+            (CRErr msg (span/sp-line at) (span/sp-col at) (span/sp-len at)))))
+      (RErr [msg at]
+        (CRErr msg (span/sp-line at) (span/sp-col at) (span/sp-len at))))))

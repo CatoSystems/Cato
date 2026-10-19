@@ -1,6 +1,7 @@
 (ns cato.hir.hir_ref)
 (require ["expand.cato" :as expand])
 (require ["../lib/ast.cato" :as ast])
+(require ["../lib/span.cato" :as span])
 (require ["../lib/strbuf.cato" :as strbuf])
 (require ["../reader/dump.cato" :as rdump])
 (require ["lower.cato" :as lower])
@@ -56,14 +57,14 @@
 (defn build-and-dump [tab :- i64 forms :- Asts]
   (match
     (lower/build-program forms tab)
-    (PErr [msg] (print-string (str "err " msg)))
+    (PErr [msg] (print-string (str "err " (span/err-text msg))))
     (
       POk
       [tab2 adts defs lams sigs]
       (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
         (match
           (moveck/check-program defs lams facts (clone tab2) (clone adts))
-          (CKErr [msg] (print-string (str "err " msg)))
+          (CKErr [msg] (print-string (str "err " (span/err-text msg))))
           (CKOk [defs2 lams2] (print-lines (hdump/dump-program adts defs2 lams2 sigs tab2)))))
     )))
 

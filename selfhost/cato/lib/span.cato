@@ -17,3 +17,103 @@
 (defn sp-len [s :- Span] :- i64 (match s (Span [l c n] n)))
 
 (defn sp-str [s :- Span] :- str (match s (Span [l c n] (str l ":" c "+" n))))
+
+; --- located error messages ---------------------------------------------------
+;
+; Lowering and checking errors are plain strings threaded through many
+; result types, so locations ride inside the message as leading tags:
+;   "@@<line>:<col>@@"   — the innermost AST node the error left
+;   "@@occ <sid> <k>@@"  — the k-th source occurrence of a symbol (a check
+;                          error found on HIR, which keeps no positions)
+;   "@@fn <sid>@@"       — the defn (by name sid) a check error is in
+; A fn tag goes in front of an occ tag; otherwise the first tag wins (an
+; outer node never relocates a located error). err-text strips the tags.
+
+(defn err-tagged [msg :- str] :- bool
+  (and (>= (count msg) 2) (= (subs msg 0 2) "@@")))
+
+; Index of the "@@" closing a tag opened at i; -1 when there is none.
+(defn err-close [msg :- str i :- i64 n :- i64] :- i64
+  (if (> (+ i 2) n) -1
+    (if (= (subs msg i (+ i 2)) "@@") i
+      (err-close msg (+ i 1) n))))
+
+; Where the tag opened at i ends (past its closing "@@"); -1 when no tag.
+(defn tag-end-at [msg :- str i :- i64] :- i64
+  (let [n (count msg)]
+    (if (and (<= (+ i 2) n) (= (subs msg i (+ i 2)) "@@"))
+      (let [c (err-close msg (+ i 2) n)] (if (< c 0) -1 (+ c 2)))
+      -1)))
+
+; The body of the tag opened at i ("" when none).
+(defn tag-body-at [msg :- str i :- i64] :- str
+  (let [e (tag-end-at msg i)] (if (< e 0) "" (subs msg (+ i 2) (- e 2)))))
+
+; Where the leading tags end.
+(defn tags-end [msg :- str i :- i64] :- i64
+  (let [e (tag-end-at msg i)] (if (< e 0) i (tags-end msg e))))
+
+; The first leading tag whose body starts with pre ("" when none).
+(defn find-tag [msg :- str i :- i64 pre :- str] :- str
+  (let [e (tag-end-at msg i)]
+    (if (< e 0) ""
+      (let [b (tag-body-at msg i) k (count pre)]
+        (if (and (>= (count b) k) (= (subs b 0 k) pre)) b (find-tag msg e pre))))))
+
+(defn err-at [msg :- str l :- i64 c :- i64] :- str
+  (if (err-tagged msg) msg (str "@@" l ":" c "@@" msg)))
+
+(defn err-occ [msg :- str sid :- i64 k :- i64] :- str
+  (if (err-tagged msg) msg (str "@@occ " sid " " k "@@" msg)))
+
+(defn err-in-fn [msg :- str sid :- i64] :- str
+  (if (> (count (find-tag msg 0 "fn ")) 0) msg (str "@@fn " sid "@@" msg)))
+
+; The leading tags alone (to re-attach in front of a reworded message).
+(defn err-tags [msg :- str] :- str
+  (subs msg 0 (tags-end msg 0)))
+
+(defn err-text [msg :- str] :- str
+  (subs msg (tags-end msg 0) (count msg)))
+
+(defn digits-of [s :- str i :- i64 n :- i64 acc :- i64] :- i64
+  (if (>= i n) acc
+    (let [d (subs s i (+ i 1))]
+      (cond
+        (= d "0") (digits-of s (+ i 1) n (* acc 10))
+        (= d "1") (digits-of s (+ i 1) n (+ (* acc 10) 1))
+        (= d "2") (digits-of s (+ i 1) n (+ (* acc 10) 2))
+        (= d "3") (digits-of s (+ i 1) n (+ (* acc 10) 3))
+        (= d "4") (digits-of s (+ i 1) n (+ (* acc 10) 4))
+        (= d "5") (digits-of s (+ i 1) n (+ (* acc 10) 5))
+        (= d "6") (digits-of s (+ i 1) n (+ (* acc 10) 6))
+        (= d "7") (digits-of s (+ i 1) n (+ (* acc 10) 7))
+        (= d "8") (digits-of s (+ i 1) n (+ (* acc 10) 8))
+        (= d "9") (digits-of s (+ i 1) n (+ (* acc 10) 9))
+        acc))))
+
+(defn char-at [s :- str ch :- str i :- i64 n :- i64] :- i64
+  (if (>= i n) -1
+    (if (= (subs s i (+ i 1)) ch) i
+      (char-at s ch (+ i 1) n))))
+
+; A located tag's span (width 1); line 0 when there is none.
+(defn err-span [msg :- str] :- Span
+  (let [t (tag-body-at msg 0) n (count t) k (char-at t ":" 0 n)]
+    (if (or (< k 0) (= n 0) (= (subs t 0 1) "f") (= (subs t 0 1) "o"))
+      (Span 0 0 0)
+      (Span (digits-of t 0 k 0) (digits-of t (+ k 1) n 0) 1))))
+
+; A fn tag's name sid; -1 when absent.
+(defn err-fn-sid [msg :- str] :- i64
+  (let [t (find-tag msg 0 "fn ")]
+    (if (> (count t) 3) (digits-of t 3 (count t) 0) -1)))
+
+; An occ tag's symbol sid and occurrence number; -1 / 0 when absent.
+(defn err-occ-sid [msg :- str] :- i64
+  (let [t (find-tag msg 0 "occ ") n (count t) sp (char-at t " " 4 n)]
+    (if (< sp 0) -1 (digits-of t 4 sp 0))))
+
+(defn err-occ-k [msg :- str] :- i64
+  (let [t (find-tag msg 0 "occ ") n (count t) sp (char-at t " " 4 n)]
+    (if (< sp 0) 0 (digits-of t (+ sp 1) n 0))))

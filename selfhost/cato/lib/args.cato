@@ -1,0 +1,85 @@
+(ns cato.lib.args)
+
+(deftype ArgRes
+  (ArgOk [file :- str out :- str cc :- str runtime :- str target :- str
+          opt :- i64 debug :- i64 asan :- i64 emit-ir :- i64
+          emit-ll :- str rtlib :- str help :- i64 rest :- (Vector str)])
+  (ArgErr [msg :- str]))
+
+(defn g [a :- (Vector str) i :- i64] :- str (get a i ""))
+
+(defn collect-rest [a :- (Vector str) i :- i64 n :- i64 acc :- (Vector str)] :- (Vector str)
+  (if (>= i n) acc
+    (collect-rest (clone a) (+ i 1) n (conj acc (g (clone a) i)))))
+
+; Flags the seed accepts that the kernel does not implement.
+(defn seed-only [tok :- str] :- bool
+  (or (= tok "--fast") (= tok "--no-opt") (= tok "--dump-hir")
+      (= tok "--threads") (= tok "--explain")))
+
+(defn go [a :- (Vector str) i :- i64
+          file :- str out :- str cc :- str runtime :- str target :- str
+          opt :- i64 debug :- i64 asan :- i64 emit-ir :- i64
+          emit-ll :- str rtlib :- str help :- i64 rest :- (Vector str)
+          n :- i64] :- ArgRes
+  (if (>= i n)
+    (ArgOk file out cc runtime target opt debug asan emit-ir emit-ll rtlib help rest)
+    (let [tok (g (clone a) i)]
+      (if (= tok "--")
+        (ArgOk file out cc runtime target opt debug asan emit-ir emit-ll rtlib help
+               (collect-rest (clone a) (+ i 1) n rest))
+        (if (= (subs tok 0 1) "-")
+          (cond
+            (= tok "-O0") (go (clone a) (+ i 1) file out cc runtime target 0 debug asan emit-ir emit-ll rtlib help rest n)
+            (= tok "-O1") (go (clone a) (+ i 1) file out cc runtime target 1 debug asan emit-ir emit-ll rtlib help rest n)
+            (= tok "-O2") (go (clone a) (+ i 1) file out cc runtime target 2 debug asan emit-ir emit-ll rtlib help rest n)
+            (= tok "-O3") (go (clone a) (+ i 1) file out cc runtime target 3 debug asan emit-ir emit-ll rtlib help rest n)
+            (= tok "--opt-level")
+              (if (>= (+ i 1) n)
+                (ArgErr "--opt-level requires a value")
+                (let [v (g (clone a) (+ i 1)) po (parse-i64 v)]
+                  (match po
+                    (Some [lvl]
+                      (if (or (< lvl 0) (> lvl 3))
+                        (ArgErr "invalid --opt-level")
+                        (go (clone a) (+ i 2) file out cc runtime target lvl debug asan emit-ir emit-ll rtlib help rest n)))
+                    (None [] (ArgErr "invalid --opt-level")))))
+            (= tok "-o")
+              (if (or (>= (+ i 1) n) (= (subs (g (clone a) (+ i 1)) 0 1) "-"))
+                (ArgErr "-o requires a filename argument")
+                (go (clone a) (+ i 2) file (g (clone a) (+ i 1)) cc runtime target opt debug asan emit-ir emit-ll rtlib help rest n))
+            (= tok "--cc")
+              (if (>= (+ i 1) n)
+                (ArgErr "--cc requires a value")
+                (go (clone a) (+ i 2) file out (g (clone a) (+ i 1)) runtime target opt debug asan emit-ir emit-ll rtlib help rest n))
+            (= tok "--runtime")
+              (if (>= (+ i 1) n)
+                (ArgErr "--runtime requires a value")
+                (go (clone a) (+ i 2) file out cc (g (clone a) (+ i 1)) target opt debug asan emit-ir emit-ll rtlib help rest n))
+            (= tok "--target")
+              (if (>= (+ i 1) n)
+                (ArgErr "--target requires a value")
+                (go (clone a) (+ i 2) file out cc runtime (g (clone a) (+ i 1)) opt debug asan emit-ir emit-ll rtlib help rest n))
+            (= tok "--emit-ll")
+              (if (>= (+ i 1) n)
+                (ArgErr "--emit-ll requires a filename")
+                (go (clone a) (+ i 2) file out cc runtime target opt debug asan emit-ir (g (clone a) (+ i 1)) rtlib help rest n))
+            (= tok "--rtlib")
+              (if (>= (+ i 1) n)
+                (ArgErr "--rtlib requires a value")
+                (go (clone a) (+ i 2) file out cc runtime target opt debug asan emit-ir emit-ll (g (clone a) (+ i 1)) help rest n))
+            (= tok "--emit-ir") (go (clone a) (+ i 1) file out cc runtime target opt debug asan 1 emit-ll rtlib help rest n)
+            (= tok "-g") (go (clone a) (+ i 1) file out cc runtime target opt 1 asan emit-ir emit-ll rtlib help rest n)
+            (= tok "--asan") (go (clone a) (+ i 1) file out cc runtime target opt debug 1 emit-ir emit-ll rtlib help rest n)
+            (or (= tok "--help") (= tok "-h")) (go (clone a) (+ i 1) file out cc runtime target opt debug asan emit-ir emit-ll rtlib 1 rest n)
+            (seed-only tok) (ArgErr (str tok " is not supported by cato1 (use the seed: cato compile ... " tok ")"))
+            (ArgErr (str "unknown flag " tok " (see 'cato1 help')")))
+          (if (= file "")
+            (go (clone a) (+ i 1) tok out cc runtime target opt debug asan emit-ir emit-ll rtlib help rest n)
+            (ArgErr (str "unexpected argument '" tok "' (only one input file)"))))))))
+
+(defn parse [a :- (Vector str)] :- ArgRes
+  (let [n (count (clone a))]
+    (if (< n 1)
+      (ArgErr "compile requires an input file")
+      (go a 1 "" "" "" "" "native" 2 0 0 0 "" "compiler-rt" 0 [] n))))

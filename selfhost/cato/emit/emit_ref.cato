@@ -1,5 +1,6 @@
 (ns cato.emit.emit_ref)
 (require ["../hir/lower.cato" :as lower])
+(require ["../lib/span.cato" :as span])
 (require ["../hir/forms.cato" :as forms])
 (require ["../hir/moveck.cato" :as moveck])
 (require ["emit.cato" :as emit])
@@ -31,14 +32,14 @@
 (defn emit-build [tab :- i64 forms :- Asts]
   (match
     (lower/build-program forms tab)
-    (PErr [msg] (print-string (str "err " msg)))
+    (PErr [msg] (print-string (str "err " (span/err-text msg))))
     (
       POk
       [tab2 adts defs lams sigs]
       (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
         (match
           (moveck/check-program defs lams facts (clone tab2) (clone adts))
-          (CKErr [msg] (print-string (str "err " msg)))
+          (CKErr [msg] (print-string (str "err " (span/err-text msg))))
           (CKOk [defs2 lams2] (emit-print-lines (emit/emit-program adts defs2 lams2 sigs tab2)))))
     )))
 
