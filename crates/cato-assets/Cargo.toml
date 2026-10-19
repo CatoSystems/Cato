@@ -1,0 +1,4 @@
+[package]
+name = "cato-assets"
+version.workspace = true
+edition.workspace = true
