@@ -1,15 +1,13 @@
 #[cfg(feature = "static-llvm")]
 use crate::cli::Cli;
 #[cfg(feature = "static-llvm")]
-use crate::driver::{Flavor, TargetSpec};
+use crate::driver::TargetSpec;
 #[cfg(feature = "static-llvm")]
 use cato_core::Program;
 #[cfg(feature = "static-llvm")]
 use crate::objgen;
 #[cfg(feature = "static-llvm")]
 use cato_assets::{assets_for, host_target_name};
-#[cfg(feature = "static-llvm")]
-use std::ffi::{CStr, CString};
 #[cfg(feature = "static-llvm")]
 use std::fs;
 #[cfg(feature = "static-llvm")]
@@ -113,17 +111,24 @@ fn resolve_target_asset_name(spec: &TargetSpec) -> Result<String, String> {
 }
 
 #[cfg(feature = "static-llvm")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LldFlavor {
+    Elf,
+    Mingw,
+    Darwin,
+}
+
 pub(super) fn hermetic_link_argv(
     target_name: &str,
     staged: &Path,
     out: &Path,
-) -> Result<(cato_lld_sys::Flavor, Vec<String>), String> {
+) -> Result<(LldFlavor, Vec<String>), String> {
     let out_str = out.to_string_lossy().to_string();
     let staged_str = staged.to_string_lossy().to_string();
     let _assets = assets_for(target_name)?;
     match target_name {
         "x86_64-linux" => Ok((
-            cato_lld_sys::Flavor::Elf,
+            LldFlavor::Elf,
             vec![
                 "ld.lld".to_string(),
                 "-static".to_string(),
@@ -144,7 +149,7 @@ pub(super) fn hermetic_link_argv(
             ],
         )),
         "aarch64-linux" => Ok((
-            cato_lld_sys::Flavor::Elf,
+            LldFlavor::Elf,
             vec![
                 "ld.lld".to_string(),
                 "-static".to_string(),
@@ -184,10 +189,10 @@ pub(super) fn hermetic_link_argv(
                     _ => args.push(format!("{}/{}", staged_str, name)),
                 }
             }
-            Ok((cato_lld_sys::Flavor::Mingw, args))
+            Ok((LldFlavor::Mingw, args))
         }
         "x86_64-macos" => Ok((
-            cato_lld_sys::Flavor::Darwin,
+            LldFlavor::Darwin,
             vec![
                 "ld64.lld".to_string(),
                 "-arch".to_string(),
@@ -206,7 +211,7 @@ pub(super) fn hermetic_link_argv(
             ],
         )),
         "aarch64-macos" => Ok((
-            cato_lld_sys::Flavor::Darwin,
+            LldFlavor::Darwin,
             vec![
                 "ld64.lld".to_string(),
                 "-arch".to_string(),
@@ -265,15 +270,47 @@ pub fn build_hermetic(
     let (flavor, argv) = hermetic_link_argv(&target_name, &staged, out)?;
     #[cfg(feature = "in-process-lld")]
     {
-        let mut cstrs: Vec<CString> = Vec::with_capacity(argv.len());
+        let mut cstrs: Vec<std::ffi::CString> = Vec::with_capacity(argv.len());
         for a in &argv {
-            cstrs.push(CString::new(a.as_str()).map_err(|_| "cato: invalid argv string")?);
+            cstrs.push(std::ffi::CString::new(a.as_str()).map_err(|_| "cato: invalid argv string")?);
         }
-        let refs: Vec<&CStr> = cstrs.iter().map(|c| c.as_c_str()).collect();
-        cato_lld_sys::link(flavor, &refs).map_err(|e| format!("cato: link failed: {}", e))?;
+        let refs: Vec<&std::ffi::CStr> = cstrs.iter().map(|c| c.as_c_str()).collect();
+        let lld_flavor = match flavor {
+            LldFlavor::Elf => cato_lld_sys::Flavor::Elf,
+            LldFlavor::Mingw => cato_lld_sys::Flavor::Mingw,
+            LldFlavor::Darwin => cato_lld_sys::Flavor::Darwin,
+        };
+        cato_lld_sys::link(lld_flavor, &refs).map_err(|e| format!("cato: link failed: {}", e))?;
         Ok(out.to_path_buf())
     }
-    #[cfg(not(feature = "in-process-lld"))]
+    #[cfg(cato_bundled_lld)]
+    {
+        let _ = flavor;
+        let lld = bundled::ensure_lld()?;
+        use std::process::Command;
+        let mut cmd = Command::new(&lld);
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.arg0(&argv[0]);
+        }
+        cmd.args(&argv[1..]);
+        let result = cmd.output().map_err(|e| format!("cannot run lld: {}", e))?;
+        if !result.status.success() {
+            return Err(format!(
+                "lld link failed (exit {}):
+{}",
+                result.status,
+                String::from_utf8_lossy(&result.stderr)
+            ));
+        }
+        Ok(out.to_path_buf())
+    }
+    #[cfg(all(feature = "static-llvm", not(feature = "in-process-lld"), not(cato_bundled_lld)))]
+    {
+        Err("cato: hermetic linking unavailable in this build".to_string())
+    }
+    #[cfg(not(feature = "static-llvm"))]
     {
         let _ = (flavor, argv);
         Err("cato: hermetic linking unavailable in this build".to_string())
@@ -285,11 +322,10 @@ pub fn build_hermetic(
 #[cfg(all(feature = "static-llvm", test))]
 mod tests {
     use super::*;
-    use crate::driver::lookup;
 
     #[test]
     fn rejects_cc_runtime_asan_rtlib_passthrough() {
-        let mut cli = Cli::default();
+        let cli = Cli::default();
         let mut c = cli.clone();
         c.cc = Some("/bin/cc".to_string());
         assert!(reject_unsupported(&c).is_err());
@@ -312,7 +348,7 @@ mod tests {
         let t = std::env::temp_dir().join("cato-test");
         let out = t.join("out");
         let (flavor, argv) = hermetic_link_argv("x86_64-linux", &t, &out).unwrap();
-        assert!(matches!(flavor, cato_lld_sys::Flavor::Elf));
+        assert!(matches!(flavor, LldFlavor::Elf));
         assert_eq!(argv[0], "ld.lld");
         assert_eq!(argv[1], "-static");
         assert_eq!(argv[2], "-m");
@@ -329,7 +365,7 @@ mod tests {
         let t = std::env::temp_dir().join("cato-test2");
         let out = t.join("out");
         let (flavor, argv) = hermetic_link_argv("aarch64-linux", &t, &out).unwrap();
-        assert!(matches!(flavor, cato_lld_sys::Flavor::Elf));
+        assert!(matches!(flavor, LldFlavor::Elf));
         assert_eq!(argv[0], "ld.lld");
         assert!(!argv.contains(&"-m".to_string()));
     }
@@ -339,7 +375,7 @@ mod tests {
         let t = std::env::temp_dir().join("cato-test3");
         let out = t.join("out.exe");
         let (flavor, argv) = hermetic_link_argv("x86_64-windows", &t, &out).unwrap();
-        assert!(matches!(flavor, cato_lld_sys::Flavor::Mingw));
+        assert!(matches!(flavor, LldFlavor::Mingw));
         assert!(argv.iter().any(|a| a == "-m"));
         assert!(argv.iter().any(|a| a == "i386pep"));
         assert!(argv.iter().any(|a| a == "--subsystem"));
@@ -351,7 +387,7 @@ mod tests {
         let t = std::env::temp_dir().join("cato-test4");
         let out = t.join("out");
         let (flavor, argv) = hermetic_link_argv("x86_64-macos", &t, &out).unwrap();
-        assert!(matches!(flavor, cato_lld_sys::Flavor::Darwin));
+        assert!(matches!(flavor, LldFlavor::Darwin));
         assert!(argv.contains(&"-arch".to_string()));
         assert!(argv.contains(&"x86_64".to_string()));
         assert!(argv.contains(&"-platform_version".to_string()));
@@ -363,7 +399,7 @@ mod tests {
         let t = std::env::temp_dir().join("cato-test5");
         let out = t.join("out");
         let (flavor, argv) = hermetic_link_argv("aarch64-macos", &t, &out).unwrap();
-        assert!(matches!(flavor, cato_lld_sys::Flavor::Darwin));
+        assert!(matches!(flavor, LldFlavor::Darwin));
         assert!(argv.contains(&"arm64".to_string()));
     }
 
@@ -374,5 +410,213 @@ mod tests {
         let e = hermetic_link_argv("wasm32", &t, &out).expect_err("should fail");
         assert!(e.contains("no embedded assets for target 'wasm32'"));
         assert!(e.contains("this cato build does not embed wasm32"));
+    }
+}
+
+#[cfg(cato_bundled_lld)]
+mod bundled {
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    fn host_target_name() -> &'static str {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        {
+            "x86_64-linux"
+        }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            "aarch64-linux"
+        }
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        {
+            "x86_64-macos"
+        }
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            "aarch64-macos"
+        }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            "x86_64-windows"
+        }
+    }
+
+    pub fn cache_path() -> Result<PathBuf, String> {
+        let base = if let Some(h) = std::env::var_os("HOME") {
+            PathBuf::from(h)
+        } else if let Some(up) = std::env::var_os("USERPROFILE") {
+            PathBuf::from(up)
+        } else {
+            return Err("cato: cannot determine home directory for bundled lld cache".to_string());
+        };
+        let name = if cfg!(target_os = "windows") {
+            "lld.exe"
+        } else {
+            "lld"
+        };
+        Ok(base
+            .join(".cache")
+            .join("cato")
+            .join(format!("lld-{}", env!("CARGO_PKG_VERSION")))
+            .join(host_target_name())
+            .join(name))
+    }
+
+    fn lock_is_stale(lock: &Path) -> bool {
+        lock.metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .map(|age| age > Duration::from_secs(60))
+            .unwrap_or(false)
+    }
+
+    pub fn extract_to(dest: &Path, bytes: &[u8], timeout: Duration) -> Result<(), String> {
+        let parent = dest
+            .parent()
+            .ok_or_else(|| "cato: invalid cache path".to_string())?;
+        fs::create_dir_all(parent).map_err(|e| format!("cato: cannot create cache dir: {}", e))?;
+        let lock = dest.with_extension("lock");
+        let start = SystemTime::now();
+        loop {
+            match OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(mut f) => {
+                    let _ = f.write_all(b"1");
+                    break;
+                }
+                Err(_) => {
+                    if lock_is_stale(&lock) {
+                        let _ = fs::remove_file(&lock);
+                        continue;
+                    }
+                    if start.elapsed().map(|e| e > timeout).unwrap_or(true) {
+                        return Err(format!(
+                            "cato: timed out waiting for bundled lld extraction lock {}",
+                            lock.display()
+                        ));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+        }
+        let result = (|| -> Result<(), String> {
+            if let Ok(meta) = dest.metadata() {
+                if meta.len() as usize == bytes.len() {
+                    return Ok(());
+                }
+                return Err(format!(
+                    "cato: bundled lld is missing or corrupt (expected {} bytes, found {}) — reinstall cato",
+                    bytes.len(),
+                    meta.len()
+                ));
+            }
+            let tmp = dest.with_extension("tmp");
+            fs::write(&tmp, bytes).map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
+            fs::rename(&tmp, dest).map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perm = dest
+                    .metadata()
+                    .map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?
+                    .permissions();
+                perm.set_mode(0o755);
+                let _ = fs::set_permissions(dest, perm);
+            }
+            Ok(())
+        })();
+        let _ = fs::remove_file(&lock);
+        result
+    }
+
+    pub fn ensure_lld() -> Result<PathBuf, String> {
+        #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+        let bytes: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cato-assets/assets/lld/x86_64-linux/lld"
+        ));
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        let bytes: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cato-assets/assets/lld/aarch64-linux/lld"
+        ));
+        #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+        let bytes: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cato-assets/assets/lld/x86_64-macos/lld"
+        ));
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let bytes: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cato-assets/assets/lld/aarch64-macos/lld"
+        ));
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        let bytes: &[u8] = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../cato-assets/assets/lld/x86_64-windows/lld.exe"
+        ));
+        let dest = cache_path()?;
+        extract_to(&dest, bytes, Duration::from_secs(10))?;
+        Ok(dest)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn tmp_path(name: &str) -> PathBuf {
+            std::env::temp_dir().join(format!("cato-bundled-test-{}-{}", std::process::id(), name))
+        }
+
+        #[test]
+        fn extraction_is_exactly_once_under_races() {
+            let dest = tmp_path("race");
+            let _ = fs::remove_file(&dest);
+            let a = vec![7u8; 4096];
+            let b = vec![9u8; 4096];
+            let da = dest.clone();
+            let db = dest.clone();
+            let ta = std::thread::spawn(move || extract_to(&da, &a, Duration::from_secs(10)));
+            let tb = std::thread::spawn(move || extract_to(&db, &b, Duration::from_secs(10)));
+            assert!(ta.join().unwrap().is_ok());
+            assert!(tb.join().unwrap().is_ok());
+            let got = fs::read(&dest).expect("read dest");
+            assert_eq!(got.len(), 4096);
+            assert!(
+                got.iter().all(|&x| x == 7) || got.iter().all(|&x| x == 9),
+                "dest must match one writer whole"
+            );
+            let _ = fs::remove_file(&dest);
+        }
+
+        #[test]
+        fn size_mismatch_reports_reinstall() {
+            let dest = tmp_path("mismatch");
+            let _ = fs::remove_file(&dest);
+            let _ = fs::remove_file(dest.with_extension("lock"));
+            fs::write(&dest, b"abc").expect("seed");
+            let e = extract_to(&dest, b"hello", Duration::from_secs(2)).expect_err("must err");
+            assert_eq!(
+                e,
+                "cato: bundled lld is missing or corrupt (expected 5 bytes, found 3) — reinstall cato"
+            );
+            let _ = fs::remove_file(&dest);
+        }
+
+        #[test]
+        fn lock_timeout_is_an_error() {
+            let dest = tmp_path("lock");
+            let _ = fs::remove_file(&dest);
+            let lock = dest.with_extension("lock");
+            let _ = fs::remove_file(&lock);
+            fs::write(&lock, b"1").expect("hold lock");
+            let e = extract_to(&dest, b"hello", Duration::from_millis(1)).expect_err("must err");
+            assert!(e.contains("timed out"), "got: {e}");
+            assert!(e.contains(&lock.to_string_lossy().to_string()), "got: {e}");
+            let _ = fs::remove_file(&lock);
+            let _ = fs::remove_file(&dest);
+        }
     }
 }
