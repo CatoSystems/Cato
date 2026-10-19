@@ -20,7 +20,7 @@ seed (Rust crates/)          trusted stage-0 compiler
   │  cato compile selfhost/cato/cli.cato
   ▼
 cato1 (native, built by seed)
-  │  cato1 build selfhost/cato/cli.cato
+  │  cato1 compile selfhost/cato/cli.cato
   ▼
 cato2 (native, built by cato1)
 ```
@@ -236,11 +236,11 @@ Ordinary Cato, built by the seed, guarded by the parity suite.
 
 - Kernel CLI skeleton: read source → compile → write `.ll` → spawn `cc` →
   native binary, with real exit codes.
-  *(Shipped: `selfhost/cato/cli.cato` — `cato1 build <file> [out]
+  *(Shipped: `selfhost/cato/cli.cato` — `cato1 compile <file> [out]
   [runtime.c]`, exit 0/1/2, the `system` extern modeled by the seed
   interp so the driver runs identically under the interpreter; the kernel is
   `require`-connected modules and `cli.cato` is the entry.)*
-- `cato compile selfhost/cato/cli.cato` (seed) → **cato1**; `cato1 build
+- `cato compile selfhost/cato/cli.cato` (seed) → **cato1**; `cato1 compile
   selfhost/cato/cli.cato` → **cato2**; cato2-produced binaries run all reference
   programs and agree with the interpreter parity output.
   *(The seed builds cato1; cato1's CLI builds every fixture and the

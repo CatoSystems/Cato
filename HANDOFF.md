@@ -80,13 +80,26 @@ bug); probes in /tmp/probe (a–f: call-scrutinee, let-bound, clone-to-param,
 moved-binder, conditional-move, hoist) all at 183 never-freed = pre-main
 allocations only.
 
-**Remaining (the port):** `kernel_hir` now fails on exactly the hoisting
-diff — the kernel's `moveck.cato` must mirror the seed planner: `RBTable`
-needs return types; `fp-scrut-adt` needs HCall/HClone/HMatch/HIf/HLet;
-then fresh-box/hoist (order-free, hoist-ty, fresh-temp-ty), the arm-exit
+**Remaining (the port):** R5 is ported (2026-10-19): `moveck.cato` has
+`compute_alias_ret` (`b-alias-ret`; `RBTable` rb 2 = alias-returning,
+entries carry return types), the hoist (`hz-*`, `b-hoist`; a borrowed
+`hz-needed` pre-check keeps the no-hoist path allocation-free; the ~aN
+counter rides in `rem` under key -1), `allocates-fresh` with the alias
+guard and let look-through. Let-bound vec literals no longer own (the
+seed's rule: they are static constants — owning one put a global into a
+closure env's drop glue, the old `closures` fixture crash). `kernel_hir`,
+`kernel_emit` and `kernel_bootstrap` are green. Diagnostics now point at
+sub-forms in both compilers: lowering errors via the failing node (seed:
+`diagnostics::refine` over the lowering chain; kernel: `@@line:col@@`
+tags from `lower`), ownership errors via the k-th source occurrence of the
+symbol involved (seed: `BCheck.occ` + `refine_occurrence`; kernel: occ
+counts in `rem` under key -(sid+10), `@@occ@@` tags, `lib/errloc.cato`).
+Also fixed: the kernel's `collect-caps` ignored non-var children, so a
+var nested below a closure body's first level was never captured. Still to port:
+`fp-scrut-adt` for HCall/HClone/HMatch/HIf/HLet, the arm-exit
 plan in `b-arms` (skip sets, freeable-alias threading, escaped transfer),
-`branch_frees` for HIf and across arms, `allocates-fresh` with the
-alias-return guard, and loop-result ownership in the let merge. The HIR
+`branch_frees` for HIf and across arms, and loop-result ownership in the
+let merge. The HIR
 shape is already ported (`ArmFree`/`HACons` 5 fields, dump format
 `(arm v [binds] body -|[skip])`, emitter `arm-exit-free` + null-tolerant
 boxed glue + `adt-of` HLet) — only the decision logic is missing.
