@@ -27,6 +27,14 @@ fn hermetic_rejects_cc_flag() {
         .arg("/bin/false");
     let out = cmd.output().expect("run");
     assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "cato: --cc is not used in this cato build (it links hermetically; no external C compiler is consulted)"
+        ),
+        "got: {}",
+        stderr
+    );
 }
 
 #[cfg(feature = "in-process-lld")]
@@ -44,6 +52,14 @@ fn hermetic_rejects_runtime_flag() {
         .arg("runtime/runtime.c");
     let out = cmd.output().expect("run");
     assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(
+            "cato: --runtime is not supported in this cato build (the runtime is embedded)"
+        ),
+        "got: {}",
+        stderr
+    );
 }
 
 #[cfg(feature = "in-process-lld")]
@@ -122,6 +138,7 @@ fn hermetic_cross_windows_is_pe() {
 }
 
 #[cfg(feature = "in-process-lld")]
+#[cfg(target_os = "macos")]
 #[test]
 fn hermetic_cross_macos_is_macho() {
     let tmp = env::temp_dir().join(format!("cato-macho-{}", std::process::id()));
@@ -178,6 +195,34 @@ fn hermetic_macos_output_links_only_libsystem() {
     );
 }
 
+
+#[cfg(feature = "in-process-lld")]
+#[test]
+fn hermetic_cleans_up_staging_dir() {
+    let private_tmp = env::temp_dir().join(format!("cato-cleanup-root-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&private_tmp);
+    fs::create_dir_all(&private_tmp).expect("create private tmp");
+    let out = private_tmp.join("slice");
+    let status = cato()
+        .arg("compile")
+        .arg(src())
+        .arg("-o")
+        .arg(&out)
+        .env("TMPDIR", &private_tmp)
+        .env("TMP", &private_tmp)
+        .env("TEMP", &private_tmp)
+        .status()
+        .expect("compile");
+    assert!(status.success());
+    let leftovers: Vec<_> = fs::read_dir(&private_tmp)
+        .expect("read private tmp")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name())
+        .filter(|n| n.to_string_lossy().starts_with("cato-hermetic"))
+        .collect();
+    assert!(leftovers.is_empty(), "leaked staging dirs: {:?}", leftovers);
+    let _ = fs::remove_dir_all(&private_tmp);
+}
 
 #[cfg(all(feature = "static-llvm", not(feature = "in-process-lld")))]
 #[test]

@@ -33,9 +33,18 @@ jobs:
         with:
           path: vendor/llvm-prefix
           key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Check out LLVM source (cache miss only)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: llvmorg-23.1.4
+          path: llvm-project
       - name: Build LLVM+lld prefix
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          LLVM_SRC: ${{ github.workspace }}/llvm-project
         run: tools/build_toolchain.sh
       - name: Verify cached LLVM prefix
         if: steps.llvm-cache.outputs.cache-hit == 'true'
@@ -69,9 +78,18 @@ jobs:
         with:
           path: vendor/llvm-prefix
           key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Check out LLVM source (cache miss only)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: llvmorg-23.1.4
+          path: llvm-project
       - name: Build LLVM+lld prefix
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          LLVM_SRC: ${{ github.workspace }}/llvm-project
         run: tools/build_toolchain.sh
       - name: Verify cached LLVM prefix
         if: steps.llvm-cache.outputs.cache-hit == 'true'
@@ -102,9 +120,18 @@ jobs:
         with:
           path: vendor/llvm-prefix
           key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Check out LLVM source (cache miss only)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: llvm/llvm-project
+          ref: llvmorg-23.1.4
+          path: llvm-project
       - name: Build LLVM+lld prefix
         if: steps.llvm-cache.outputs.cache-hit != 'true'
         shell: bash
+        env:
+          LLVM_SRC: ${{ github.workspace }}/llvm-project
         run: tools/build_toolchain.sh
       - name: Verify cached LLVM prefix
         if: steps.llvm-cache.outputs.cache-hit == 'true'

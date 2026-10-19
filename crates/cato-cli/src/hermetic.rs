@@ -43,44 +43,37 @@ impl Drop for TempDir {
 }
 
 #[cfg(feature = "static-llvm")]
-fn unique_temp(prefix: &str) -> std::io::Result<PathBuf> {
-    TempDir::new(prefix).map(|t| {
-        let p = t.path.clone();
-        Box::leak(Box::new(t));
-        p
-    })
+fn unique_temp(prefix: &str) -> std::io::Result<TempDir> {
+    TempDir::new(prefix)
 }
 
 #[cfg(feature = "static-llvm")]
 fn reject_unsupported(cli: &Cli) -> Result<(), String> {
-    if let Some(ref cc) = cli.cc {
-        return Err(format!(
-            "cato: --cc '{}' is not supported with hermetic static linking (remove --cc)",
-            cc
-        ));
+    if cli.cc.is_some() {
+        return Err(
+            "cato: --cc is not used in this cato build (it links hermetically; no external C compiler is consulted)"
+                .to_string(),
+        );
     }
     if cli.runtime.is_some() {
         return Err(
-            "cato: --runtime is not supported with hermetic static linking (remove --runtime)"
+            "cato: --runtime is not supported in this cato build (the runtime is embedded)"
                 .to_string(),
         );
     }
     if cli.asan {
-        return Err(
-            "cato: --asan is not supported with hermetic static linking (remove --asan)"
-                .to_string(),
-        );
+        return Err("cato: --asan is not supported in this cato build".to_string());
     }
     if cli.rtlib_given {
         return Err(
-            "cato: --rtlib is not supported with hermetic static linking (remove --rtlib)"
+            "cato: --rtlib is not supported in this cato build (compiler-rt is embedded)"
                 .to_string(),
         );
     }
     if !cli.passthrough.is_empty() {
         let first = cli.passthrough.first().cloned().unwrap_or_default();
         return Err(format!(
-            "cato: passthrough flags are not supported with hermetic static linking ('{}')",
+            "cato: passthrough '{}' is not supported in this cato build",
             first
         ));
     }
@@ -257,8 +250,9 @@ pub fn build_hermetic(
         fs::write(ll_path, &ir).map_err(|e| format!("cato: cannot write LLVM IR: {}", e))?;
     }
     let obj = objgen::emit_object(&ir, llvm_triple_for_target(&target_name), cli.opt_level)?;
-    let staged = unique_temp("cato-hermetic")
+    let staging = unique_temp("cato-hermetic")
         .map_err(|e| format!("cato: cannot create staging dir: {}", e))?;
+    let staged = staging.path.clone();
     let prog_o = staged.join("prog.o");
     fs::write(&prog_o, &obj).map_err(|e| format!("cato: cannot write object: {}", e))?;
     if let Ok(assets) = assets_for(&target_name) {
@@ -328,19 +322,34 @@ mod tests {
         let cli = Cli::default();
         let mut c = cli.clone();
         c.cc = Some("/bin/cc".to_string());
-        assert!(reject_unsupported(&c).is_err());
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: --cc is not used in this cato build (it links hermetically; no external C compiler is consulted)"
+        );
         let mut c = cli.clone();
         c.runtime = Some("runtime/runtime.c".to_string());
-        assert!(reject_unsupported(&c).is_err());
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: --runtime is not supported in this cato build (the runtime is embedded)"
+        );
         let mut c = cli.clone();
         c.asan = true;
-        assert!(reject_unsupported(&c).is_err());
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: --asan is not supported in this cato build"
+        );
         let mut c = cli.clone();
         c.rtlib_given = true;
-        assert!(reject_unsupported(&c).is_err());
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: --rtlib is not supported in this cato build (compiler-rt is embedded)"
+        );
         let mut c = cli.clone();
         c.passthrough = vec!["-Wl,--no-as-needed".to_string()];
-        assert!(reject_unsupported(&c).is_err());
+        assert_eq!(
+            reject_unsupported(&c).unwrap_err(),
+            "cato: passthrough '-Wl,--no-as-needed' is not supported in this cato build"
+        );
     }
 
     #[test]
