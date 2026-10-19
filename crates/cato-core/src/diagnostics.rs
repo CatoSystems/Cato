@@ -88,6 +88,259 @@ pub fn register_source(file: &str, src: &str) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
+// Error sites: pointing a defn-level error at the sub-form that raised it
+// ---------------------------------------------------------------------------
+//
+// The AST carries no spans below top-level forms, so lowering records the
+// chain of expressions an error passed through (innermost first): each
+// `lower_expect` that fails pushes its expression, and one that succeeds
+// drops whatever a recovered attempt beneath it pushed. On the error path,
+// `refine` re-reads the form's source with a span tree and walks the chain
+// outermost-first, narrowing to the first matching sub-form each step.
+// Forms rewritten by macro expansion do not match their source and are
+// skipped, so the result is the innermost unexpanded form on the chain.
+
+thread_local! {
+    static SITE: RefCell<Vec<crate::ast::Expr>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Chain length to restore with [`site_reset`] when lowering succeeds.
+pub fn site_mark() -> usize {
+    SITE.with(|s| s.borrow().len())
+}
+
+pub fn site_reset(mark: usize) {
+    SITE.with(|s| s.borrow_mut().truncate(mark));
+}
+
+pub fn site_push(e: &crate::ast::Expr) {
+    SITE.with(|s| s.borrow_mut().push(e.clone()));
+}
+
+pub fn site_clear() {
+    SITE.with(|s| s.borrow_mut().clear());
+}
+
+/// The narrowest source span inside `span` (a top-level form) for the
+/// recorded error chain; `span` itself when nothing narrower matches.
+pub fn refine(span: Span) -> Span {
+    let chain = SITE.with(|s| std::mem::take(&mut *s.borrow_mut()));
+    if chain.is_empty() || span == Span::default() {
+        return span;
+    }
+    let text = SOURCES.with(|s| {
+        let sources = s.borrow();
+        let map = span.file.checked_sub(1).and_then(|i| sources.get(i as usize))?;
+        map.src.get(span.lo..span.hi).map(|t| t.to_string())
+    });
+    let Some(text) = text else { return span };
+    let Ok(mut forms) = crate::reader::read_span_trees(&text) else { return span };
+    if forms.len() != 1 {
+        return span;
+    }
+    let (form, tree) = forms.remove(0);
+    let (mut expr, mut node) = (&form, &tree);
+    for want in chain.iter().rev() {
+        if let Some((e, n)) = find_sub(expr, node, want) {
+            expr = e;
+            node = n;
+        }
+    }
+    Span { lo: span.lo + node.span.lo, hi: span.lo + node.span.hi, file: span.file }
+}
+
+/// Preorder search for `want` under (`e`, `n`), which share one shape.
+fn find_sub<'a>(
+    e: &'a crate::ast::Expr,
+    n: &'a crate::reader::SpanNode,
+    want: &crate::ast::Expr,
+) -> Option<(&'a crate::ast::Expr, &'a crate::reader::SpanNode)> {
+    use crate::ast::Expr;
+    if e == want {
+        return Some((e, n));
+    }
+    let kids: Vec<&Expr> = match e {
+        Expr::List(xs) | Expr::Vector(xs) | Expr::SetLit(xs) => xs.iter().collect(),
+        Expr::MapLit(ps) => ps.iter().flat_map(|(k, v)| [k, v]).collect(),
+        _ => return None,
+    };
+    kids.into_iter()
+        .zip(n.kids.iter())
+        .find_map(|(k, kn)| find_sub(k, kn, want))
+}
+
+// Ownership errors are found on HIR, which keeps no positions. The checker
+// instead reports *which occurrence* of a symbol the error is at — the k-th
+// value-position read of a variable, the k-th call of a function, the k-th
+// `match` — in walk order, which follows source order per symbol. The
+// source form is then walked with the same notion of occurrence: binders
+// (defn params, let/loop/if-let/doseq binding names, match arm binders)
+// and `:- type` annotations are skipped, and a `fn` form counts once for a
+// variable it captures (the checker sees the capture, not the body).
+
+thread_local! {
+    static OCC: RefCell<Option<(String, usize)>> = const { RefCell::new(None) };
+}
+
+pub fn set_occurrence(sym: &str, k: usize) {
+    OCC.with(|o| *o.borrow_mut() = Some((sym.to_string(), k)));
+}
+
+/// The recorded occurrence's span inside `span` (a top-level form); `span`
+/// itself when there is none or it cannot be matched.
+pub fn refine_occurrence(span: Span) -> Span {
+    let Some((sym, k)) = OCC.with(|o| o.borrow_mut().take()) else { return span };
+    if k == 0 || span == Span::default() {
+        return span;
+    }
+    let text = SOURCES.with(|s| {
+        let sources = s.borrow();
+        let map = span.file.checked_sub(1).and_then(|i| sources.get(i as usize))?;
+        map.src.get(span.lo..span.hi).map(|t| t.to_string())
+    });
+    let Some(text) = text else { return span };
+    let Ok(forms) = crate::reader::read_span_trees(&text) else { return span };
+    let Some((form, tree)) = forms.first() else { return span };
+    let mut left = k;
+    match occ_walk(form, tree, &sym, &mut left) {
+        Some(at) => Span { lo: span.lo + at.lo, hi: span.lo + at.hi, file: span.file },
+        None => span,
+    }
+}
+
+fn head_of(e: &crate::ast::Expr) -> Option<&str> {
+    match e {
+        crate::ast::Expr::List(xs) => match xs.first() {
+            Some(crate::ast::Expr::LitSym(h)) => Some(h.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn mentions(e: &crate::ast::Expr, sym: &str) -> bool {
+    use crate::ast::Expr;
+    match e {
+        Expr::LitSym(s) => s == sym,
+        Expr::List(xs) | Expr::Vector(xs) | Expr::SetLit(xs) => xs.iter().any(|x| mentions(x, sym)),
+        Expr::MapLit(ps) => ps.iter().any(|(k, v)| mentions(k, sym) || mentions(v, sym)),
+        _ => false,
+    }
+}
+
+/// Count down `left` over the occurrences of `sym` under `e`; the span of
+/// the one that reaches zero.
+fn occ_walk(
+    e: &crate::ast::Expr,
+    n: &crate::reader::SpanNode,
+    sym: &str,
+    left: &mut usize,
+) -> Option<Span> {
+    use crate::ast::Expr;
+    let hit = |left: &mut usize, at: Span| {
+        *left -= 1;
+        (*left == 0).then_some(at)
+    };
+    match e {
+        Expr::LitSym(s) if s == sym => hit(left, n.span),
+        Expr::List(xs) => {
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = xs.iter().zip(n.kids.iter()).collect();
+            match head_of(e) {
+                Some("ns" | "require" | "deftype" | "defgeneric" | "extern") => None,
+                Some("defn" | "defmethod") => {
+                    // (defn name [params] [:- ret] body...)
+                    let skip = if matches!(xs.get(2), Some(Expr::Vector(_))) { 3 } else { 2 };
+                    occ_seq(&kids[skip.min(kids.len())..], sym, left)
+                }
+                Some("let" | "loop" | "if-let" | "when-let" | "doseq" | "for" | "dotimes") => {
+                    if let (Some((Expr::Vector(bs), bn)), true) = (kids.get(1).copied(), kids.len() > 1) {
+                        let pairs: Vec<(&Expr, &crate::reader::SpanNode)> =
+                            bs.iter().zip(bn.kids.iter()).collect();
+                        let mut i = 0;
+                        while i < pairs.len() {
+                            i += 1; // the binder
+                            if matches!(pairs.get(i), Some((Expr::LitSym(t), _)) if t == ":-") {
+                                i += 2; // `:- type`
+                            }
+                            if let Some((v, vn)) = pairs.get(i) {
+                                if let Some(at) = occ_walk(v, vn, sym, left) {
+                                    return Some(at);
+                                }
+                            }
+                            i += 1;
+                        }
+                        occ_seq(&kids[2..], sym, left)
+                    } else {
+                        occ_seq(&kids, sym, left)
+                    }
+                }
+                Some("fn") => {
+                    let params_bind = matches!(xs.get(1), Some(p) if mentions(p, sym));
+                    let body_uses = xs.iter().skip(2).any(|x| mentions(x, sym));
+                    if !params_bind && body_uses {
+                        hit(left, n.span)
+                    } else {
+                        None
+                    }
+                }
+                Some("match") => {
+                    if let Some(at) = occ_seq(&kids[..kids.len().min(2)], sym, left) {
+                        return Some(at);
+                    }
+                    for (arm, an) in kids.iter().skip(2) {
+                        let r = match arm {
+                            Expr::List(ys) => {
+                                let ak: Vec<(&Expr, &crate::reader::SpanNode)> =
+                                    ys.iter().zip(an.kids.iter()).collect();
+                                let skip = if matches!(ys.get(1), Some(Expr::Vector(_))) { 2 } else { 1 };
+                                occ_seq(&ak[skip.min(ak.len())..], sym, left)
+                            }
+                            other => occ_walk(other, an, sym, left),
+                        };
+                        if r.is_some() {
+                            return r;
+                        }
+                    }
+                    None
+                }
+                _ => occ_seq(&kids, sym, left),
+            }
+        }
+        Expr::Vector(xs) | Expr::SetLit(xs) => {
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = xs.iter().zip(n.kids.iter()).collect();
+            occ_seq(&kids, sym, left)
+        }
+        Expr::MapLit(ps) => {
+            let flat: Vec<&Expr> = ps.iter().flat_map(|(k, v)| [k, v]).collect();
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = flat.into_iter().zip(n.kids.iter()).collect();
+            occ_seq(&kids, sym, left)
+        }
+        _ => None,
+    }
+}
+
+/// Walk a sequence of forms in order, skipping `:- type` annotations.
+fn occ_seq(
+    kids: &[(&crate::ast::Expr, &crate::reader::SpanNode)],
+    sym: &str,
+    left: &mut usize,
+) -> Option<Span> {
+    let mut i = 0;
+    while i < kids.len() {
+        let (k, kn) = kids[i];
+        if matches!(k, crate::ast::Expr::LitSym(t) if t == ":-") {
+            i += 2;
+            continue;
+        }
+        if let Some(at) = occ_walk(k, kn, sym, left) {
+            return Some(at);
+        }
+        i += 1;
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
 

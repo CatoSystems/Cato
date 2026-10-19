@@ -123,13 +123,14 @@ pub fn build_program_located(
             env.insert(pname.clone(), *pty);
         }
         let ret = raw.ret;
+        crate::diagnostics::site_clear();
         let body = match &raw.body {
             Expr::List(items) if matches!(items.first(), Some(Expr::LitSym(h)) if h == "do") => {
                 lower_body_forms(items, &env, &ctx, Some(ret))
             }
             _ => lower_expect(&raw.body, &env, &ctx, Some(ret)),
         }
-        .map_err(|e| locate(*span, &e))?;
+        .map_err(|e| locate(crate::diagnostics::refine(*span), &e))?;
         out.push(Defn {
             name: raw.name.clone(),
             params: raw.params.clone(),
@@ -233,7 +234,7 @@ pub fn build_program_located(
                 .get(d.name.as_str())
                 .copied()
                 .unwrap_or_default();
-            locate(span, &e)
+            locate(crate::diagnostics::refine_occurrence(span), &e)
         })?;
     }
     for lam in lambdas.iter_mut() {

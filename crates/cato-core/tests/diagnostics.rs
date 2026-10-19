@@ -8,32 +8,32 @@ const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/errors");
 /// (file, expected code, expected 1-based line of the offending form,
 ///  message substring)
 const CASES: &[(&str, &str, usize, &str)] = &[
-    ("use_moved.cato", "E301", 3, "use of moved value xs"),
+    ("use_moved.cato", "E301", 4, "use of moved value xs"),
     (
         "exclusive_sigil.cato",
         "E202",
         3,
         "unsupported borrow sigil `&!`",
     ),
-    ("nonexhaustive_match.cato", "E401", 5, "does not cover: Circle"),
+    ("nonexhaustive_match.cato", "E401", 6, "does not cover: Circle"),
     ("bad_arity.cato", "E201", 2, "expects 2 operands"),
     ("bad_type.cato", "E202", 2, "conj source must be a vector"),
     (
         "generics_ambiguous.cato",
         "E203",
-        8,
+        9,
         "neither is more specific",
     ),
     (
         "generics_uncovered.cato",
         "E204",
-        7,
+        8,
         "no method hit for this variant combination",
     ),
     (
         "generics_uncovered_vector.cato",
         "E204",
-        5,
+        6,
         "no method size for ((Vector str))",
     ),
     (
@@ -42,8 +42,8 @@ const CASES: &[(&str, &str, usize, &str)] = &[
         8,
         "can never be selected",
     ),
-    ("unbound_variable.cato", "E206", 2, "unbound variable undefined-var"),
-    ("unknown_function.cato", "E207", 2, "unknown function mystery-fn"),
+    ("unbound_variable.cato", "E206", 3, "unbound variable undefined-var"),
+    ("unknown_function.cato", "E207", 3, "unknown function mystery-fn"),
     (
         "unknown_type_name.cato",
         "E208",
@@ -53,7 +53,7 @@ const CASES: &[(&str, &str, usize, &str)] = &[
     (
         "move_borrowed.cato",
         "E303",
-        8,
+        9,
         "cannot move b: it is a borrowed parameter",
     ),
 ];
@@ -78,7 +78,12 @@ fn errors_suite_reports_code_location_and_caret() {
             err
         );
         // Caret snippet: the source line echoed under a location line.
-        assert!(err.contains("| ^"), "{}: expected caret snippet in:\n{}", file, err);
+        assert!(
+            err.lines().any(|l| l.trim_start().starts_with('|') && l.trim_end().ends_with('^')),
+            "{}: expected caret snippet in:\n{}",
+            file,
+            err
+        );
     }
 }
 
@@ -118,8 +123,8 @@ fn required_file_errors_render_against_the_required_file() {
     assert!(err.contains("E207"), "got: {}", err);
     assert!(err.contains("mystery-fn"), "got: {}", err);
     assert!(
-        err.contains(&format!("--> {}:83:1", child_path)),
-        "expected the error in the required file at line 82, got:\n{}",
+        err.contains(&format!("--> {}:83:27", child_path)),
+        "expected the error at the call in the required file (83:27), got:\n{}",
         err
     );
     assert!(

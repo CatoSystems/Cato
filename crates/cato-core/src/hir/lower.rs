@@ -71,6 +71,23 @@ pub(crate) fn lower_expect(
     ctx: &Ctx,
     expected: Option<Ty>,
 ) -> Result<HExpr, String> {
+    // Record the error site (see diagnostics::refine): a failure pushes this
+    // expression; a success drops what a recovered attempt below pushed.
+    let mark = crate::diagnostics::site_mark();
+    let r = lower_expect_node(expr, env, ctx, expected);
+    match &r {
+        Ok(_) => crate::diagnostics::site_reset(mark),
+        Err(_) => crate::diagnostics::site_push(expr),
+    }
+    r
+}
+
+fn lower_expect_node(
+    expr: &Expr,
+    env: &Env,
+    ctx: &Ctx,
+    expected: Option<Ty>,
+) -> Result<HExpr, String> {
     match expr {
         Expr::LitI64(v) => Ok(HExpr::ConstI64(*v)),
         Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),

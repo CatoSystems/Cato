@@ -175,6 +175,18 @@ pub(crate) struct BCheck<'a> {
     freeable_alias: HashMap<String, bool>,
     /// Names minted for hoisted call-argument temps (`~a0`, `~a1`, …).
     tmp_counter: usize,
+    /// Error sites (see `diagnostics::refine_occurrence`): per symbol, how
+    /// many of its source occurrences the walk has reached — a variable's
+    /// value-position reads, a closure capture (one per `fn` form), a
+    /// call's head, a `match` head.
+    occ: HashMap<String, usize>,
+    /// The occurrence being processed (a move re-reads its argument after
+    /// the whole call was checked, so the walk sets this explicitly).
+    cur: Option<(String, usize)>,
+    /// Where each binding was last moved (for errors raised later).
+    moved_at: HashMap<String, (String, usize)>,
+    /// The first error's site, if it has one.
+    site: Option<(String, usize)>,
 }
 
 /// Check move semantics and plan drops for one body. With
@@ -284,6 +296,10 @@ pub(crate) fn plan_drops(
         dname: name.to_string(),
         freeable_alias: HashMap::new(),
         tmp_counter: 0,
+        occ: HashMap::new(),
+        cur: None,
+        moved_at: HashMap::new(),
+        site: None,
     };
     let mut tys: HashMap<String, Ty> = HashMap::new();
     let mut st: HashMap<String, VState> = HashMap::new();
@@ -323,6 +339,9 @@ pub(crate) fn plan_drops(
     if bc.errs.is_empty() {
         Ok(())
     } else {
+        if let Some((sym, k)) = bc.site.take() {
+            crate::diagnostics::set_occurrence(&sym, k);
+        }
         Err(format!(
             "ownership check failed in {}: {}",
             name,
@@ -695,6 +714,32 @@ impl<'a> BCheck<'a> {
         }
     }
 
+    /// The next source occurrence of `sym` is being processed.
+    fn bump(&mut self, sym: &str) -> (String, usize) {
+        let k = self.occ.entry(sym.to_string()).or_insert(0);
+        *k += 1;
+        let site = (sym.to_string(), *k);
+        self.cur = Some(site.clone());
+        site
+    }
+
+    /// The site of the occurrence of `v` being processed: the current one
+    /// when it is `v`'s, else `v`'s latest.
+    fn site_for(&self, v: &str) -> (String, usize) {
+        match &self.cur {
+            Some((n, k)) if n == v => (n.clone(), *k),
+            _ => (v.to_string(), self.occ.get(v).copied().unwrap_or(0)),
+        }
+    }
+
+    /// Record an error; the first one's site locates the diagnostic.
+    fn err(&mut self, msg: String, site: Option<(String, usize)>) {
+        if self.errs.is_empty() {
+            self.site = site;
+        }
+        self.errs.push(msg);
+    }
+
     pub(crate) fn use_var(
         &mut self,
         v: &str,
@@ -709,7 +754,8 @@ impl<'a> BCheck<'a> {
                 && !self.loop_copy.contains(v)
                 && st.get(v) == Some(&VState::Moved)
             {
-                self.errs.push(format!("use of moved value {}", v));
+                let site = self.site_for(v);
+                self.err(format!("use of moved value {}", v), Some(site));
             }
         }
     }
@@ -724,12 +770,18 @@ impl<'a> BCheck<'a> {
         owns: &mut HashMap<String, bool>,
     ) {
         if self.no_move.contains(v) {
-            self.errs.push(format!(
-                "cannot move {}: it is a borrowed parameter and still belongs to the caller",
-                v
-            ));
+            let site = self.site_for(v);
+            self.err(
+                format!(
+                    "cannot move {}: it is a borrowed parameter and still belongs to the caller",
+                    v
+                ),
+                Some(site),
+            );
             return;
         }
+        let at = self.site_for(v);
+        self.moved_at.insert(v.to_string(), at);
         // Moving a watched scrutinee retires its arm's aliasing binders:
         // their values live in (or own through) the box that just left.
         // The state map carries the retirement — a later use is the
@@ -785,7 +837,11 @@ impl<'a> BCheck<'a> {
             self.hoist_arg_temps(e, tys);
         }
         match e {
-            HExpr::Var(v) => self.use_var(v, tys, st),
+            HExpr::Var(v) => {
+                let v = v.clone();
+                self.bump(&v);
+                self.use_var(&v, tys, st);
+            }
             HExpr::StrLit(_) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::ConstB(..)
             | HExpr::CharStr(..) => {}
             HExpr::StrNth { s, idx, .. } => {
@@ -1063,6 +1119,8 @@ impl<'a> BCheck<'a> {
                 ..
             } => {
                 for ((name, ty), own_bit) in captures.iter_mut().zip(capture_owns.iter_mut()) {
+                    // A capture is one occurrence: the `fn` form itself.
+                    self.bump(name);
                     self.use_var(name, tys, st);
                     *own_bit = owns.get(name).copied().unwrap_or(false);
                     if is_non_copy(*ty) {
@@ -1096,11 +1154,20 @@ impl<'a> BCheck<'a> {
             }
             HExpr::Count(v) => self.check(v, tys, st, owns),
             HExpr::Call(name, args) => {
+                self.bump(name);
+                let mut arg_sites: Vec<Option<(String, usize)>> = Vec::new();
                 for a in args.iter_mut() {
                     self.check(a, tys, st, owns);
+                    arg_sites.push(match a {
+                        HExpr::Var(v) => Some(self.site_for(v)),
+                        _ => None,
+                    });
                 }
                 let kinds = self.kinds_of(name, args.len());
-                for (arg, kind) in args.iter().zip(kinds.iter()) {
+                for ((arg, kind), asite) in args.iter().zip(kinds.iter()).zip(arg_sites) {
+                    if asite.is_some() {
+                        self.cur = asite;
+                    }
                     if let HExpr::Var(v) = arg {
                         let non_copy = tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false);
                         if !non_copy {
@@ -1116,10 +1183,13 @@ impl<'a> BCheck<'a> {
                         // parameter would let the callee free a value that
                         // still belongs to the borrow's origin.
                         if *kind == Borrow::Owned && self.ret_borrowed_names.contains(callee) {
-                            self.errs.push(format!(
-                                "cannot move the borrowed result of {} into an owned parameter of {}: it belongs to the caller",
-                                callee, name
-                            ));
+                            self.err(
+                                format!(
+                                    "cannot move the borrowed result of {} into an owned parameter of {}: it belongs to the caller",
+                                    callee, name
+                                ),
+                                Some(self.site_for(callee)),
+                            );
                         }
                     }
                 }
@@ -1139,6 +1209,7 @@ impl<'a> BCheck<'a> {
                 }
             }
             HExpr::Match { scrut, arms, .. } => {
+                let match_site = self.bump("match");
                 self.check(scrut, tys, st, owns);
                 // A let-wrapped scrutinee owns its box in a scope the
                 // binder-escape suppression below cannot reach (the
@@ -1154,8 +1225,9 @@ impl<'a> BCheck<'a> {
                     _ => false,
                 };
                 if user_let {
-                    self.errs.push(
+                    self.err(
                         "match scrutinee must not be a `let`/`do` form: bind it to a name first (its buffer would be freed before the arms run)".to_string(),
+                        Some(match_site.clone()),
                     );
                 }
                 // Every arm starts from the same post-scrutinee state: a
@@ -1356,16 +1428,24 @@ impl<'a> BCheck<'a> {
                                         // binder back to the caller: that is
                                         // the borrow.
                                         if arm_escaped.contains(b) && !self.ret_borrowed {
-                                            self.errs.push(format!(
-                                                "cannot return {}: it aliases a field of the matched value — clone it first",
-                                                b
-                                            ));
+                                            let site = self.site_for(b);
+                                            self.err(
+                                                format!(
+                                                    "cannot return {}: it aliases a field of the matched value — clone it first",
+                                                    b
+                                                ),
+                                                Some(site),
+                                            );
                                         }
                                         if arm_st.get(b) == Some(&VState::Moved) {
-                                            self.errs.push(format!(
-                                                "cannot move {}: it aliases a field of the matched value — clone it first",
-                                                b
-                                            ));
+                                            let site = self.moved_at.get(b).cloned();
+                                            self.err(
+                                                format!(
+                                                    "cannot move {}: it aliases a field of the matched value — clone it first",
+                                                    b
+                                                ),
+                                                site,
+                                            );
                                         }
                                     }
                                 }
@@ -1545,8 +1625,16 @@ impl<'a> BCheck<'a> {
                 // Scope exit: every binding that still owns a heap buffer
                 // and was not moved, consumed, returned, or shadowed frees
                 // here. This is the whole destruction rule.
-                let mut out = Vec::new();
-                for (name, _, ty) in binds.iter() {
+                // A name re-bound within this let (`[a x a (conj a y)]`)
+                // is checked once, for its last binding: the state maps
+                // describe only that binding, and a second entry would free
+                // the same buffer twice. The shadowed buffer is not freed
+                // (a leak, the same contract as `rebound_in_body`).
+                let mut out: Vec<String> = Vec::new();
+                for (i, (name, _, ty)) in binds.iter().enumerate() {
+                    if binds[i + 1..].iter().any(|(n, _, _)| n == name) {
+                        continue;
+                    }
                     if heap_owning(*ty, self.facts)
                         && owns.get(name).copied().unwrap_or(false)
                         && st.get(name) == Some(&VState::Owned)
@@ -1690,10 +1778,11 @@ impl<'a> BCheck<'a> {
                 && tys.get(k).map(|t| is_non_copy(*t)).unwrap_or(false)
                 && reported.insert(k.clone())
             {
-                self.errs.push(format!(
-                    "cannot move {} inside {}: the body runs once per element",
-                    k, what
-                ));
+                let site = self.moved_at.get(k).cloned();
+                self.err(
+                    format!("cannot move {} inside {}: the body runs once per element", k, what),
+                    site,
+                );
             }
         }
     }

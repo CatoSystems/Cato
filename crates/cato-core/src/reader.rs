@@ -14,6 +14,22 @@ fn rerr(msg: impl Into<String>, span: Span) -> ReadErr {
     }
 }
 
+/// The byte span of every node of a form, in the shape of its `Expr`:
+/// `kids` follow the children in order (a map literal's pairs flattened
+/// key, value, key, value). Read only on the error path (`read_span_trees`)
+/// to point a diagnostic at a sub-form.
+#[derive(Debug, Clone)]
+pub struct SpanNode {
+    pub span: Span,
+    pub kids: Vec<SpanNode>,
+}
+
+/// Read a program into its forms and each form's span tree.
+pub fn read_span_trees(input: &str) -> Result<Vec<(Expr, SpanNode)>, ReadErr> {
+    let (forms, _, trees) = read_core(input, true)?;
+    Ok(forms.into_iter().zip(trees).collect())
+}
+
 pub fn read_all(input: &str) -> Result<Vec<Expr>, String> {
     read_all_spanned(input).map(|(forms, _)| forms).map_err(|e| e.msg)
 }
@@ -21,10 +37,16 @@ pub fn read_all(input: &str) -> Result<Vec<Expr>, String> {
 /// Read a program, returning the forms with the byte span of each top-level
 /// form (used for diagnostic attribution). Reader errors carry an exact span.
 pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> {
+    read_core(input, false).map(|(forms, spans, _)| (forms, spans))
+}
+
+/// The reader. With `trees`, also builds each top-level form's span tree.
+fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<SpanNode>), ReadErr> {
     let bytes = input.as_bytes();
     let mut i = 0usize;
     let mut top = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
+    let mut st = Trees { on: trees, stack: Vec::new(), top: Vec::new() };
     let mut stack: Vec<Vec<Expr>> = Vec::new();
     let mut kind_stack: Vec<char> = Vec::new();
     let mut start_stack: Vec<usize> = Vec::new();
@@ -43,12 +65,14 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 kind_stack.push(c);
                 start_stack.push(i);
                 stack.push(Vec::new());
+                st.open();
                 i += 1;
             }
             '#' if bytes.get(i + 1) == Some(&b'{') => {
                 kind_stack.push('#');
                 start_stack.push(i);
                 stack.push(Vec::new());
+                st.open();
                 i += 2;
             }
             ')' | ']' | '}' => {
@@ -68,7 +92,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 let items = stack.pop().unwrap();
                 if is_set {
                     let node = Expr::SetLit(items);
-                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
+                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
                     i += 1;
                     continue;
                 }
@@ -84,7 +108,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                         .map(|p| (p[0].clone(), p[1].clone()))
                         .collect();
                     let node = Expr::MapLit(pairs);
-                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
+                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
                     i += 1;
                     continue;
                 }
@@ -93,7 +117,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 } else {
                     Expr::Vector(items)
                 };
-                push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans);
+                push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
                 i += 1;
             }
             '"' => {
@@ -112,7 +136,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 let raw = &input[start..j];
                 let unescaped = unescape(raw);
                 let span = Span::new(open, j + 1);
-                push_node(Expr::LitStr(unescaped), span, &mut stack, &mut top, &mut spans);
+                push_node(Expr::LitStr(unescaped), span, &mut stack, &mut top, &mut spans, &mut st, false);
                 i = j + 1;
             }
             _ => {
@@ -123,7 +147,7 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
                 let token = &input[start..i];
                 let atom = parse_atom(token).map_err(|e| rerr(e, Span::new(start, i)))?;
                 let span = Span::new(start, i);
-                push_node(atom, span, &mut stack, &mut top, &mut spans);
+                push_node(atom, span, &mut stack, &mut top, &mut spans, &mut st, false);
             }
         }
     }
@@ -134,7 +158,35 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
             Span::new(open, open + 1),
         ));
     }
-    Ok((top, spans))
+    Ok((top, spans, st.top))
+}
+
+/// Span-tree building alongside the reader's Expr stack (inert unless on).
+struct Trees {
+    on: bool,
+    stack: Vec<Vec<SpanNode>>,
+    top: Vec<SpanNode>,
+}
+
+impl Trees {
+    fn open(&mut self) {
+        if self.on {
+            self.stack.push(Vec::new());
+        }
+    }
+
+    /// A finished node: a collection closes its open frame.
+    fn close(&mut self, span: Span, collection: bool) {
+        if !self.on {
+            return;
+        }
+        let kids = if collection { self.stack.pop().unwrap_or_default() } else { Vec::new() };
+        let node = SpanNode { span, kids };
+        match self.stack.last_mut() {
+            Some(par) => par.push(node),
+            None => self.top.push(node),
+        }
+    }
 }
 
 /// Push a finished node; at top level also record its span.
@@ -144,7 +196,10 @@ fn push_node(
     stack: &mut Vec<Vec<Expr>>,
     top: &mut Vec<Expr>,
     spans: &mut Vec<Span>,
+    trees: &mut Trees,
+    collection: bool,
 ) {
+    trees.close(span, collection);
     match stack.last_mut() {
         Some(par) => par.push(e),
         None => {
