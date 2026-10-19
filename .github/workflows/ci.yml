@@ -14,3 +14,106 @@ jobs:
         run: choco install llvm -y
       - run: cargo build --workspace
       - run: cargo test --workspace
+
+  # In-process LLVM codegen + in-process lld: zero external processes.
+  hermetic-inprocess:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, macos-latest, windows-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up MSVC (Windows, shim C++ toolchain)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Cache LLVM prefix
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llvm-prefix
+          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build LLVM+lld prefix
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: tools/build_toolchain.sh
+      - name: Verify cached LLVM prefix
+        if: steps.llvm-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: vendor/llvm-prefix/bin/llvm-config --version
+      - name: Generate / validate assets
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            tools/gen_assets.sh
+          else
+            tools/gen_assets.sh --validate
+            tools/gen_assets.sh --refresh-lld
+          fi
+      - name: Test (in-process lld)
+        run: cargo test -p cato-cli --features in-process-lld
+
+  # static-llvm only: codegen in-process, link via the bundled lld subprocess.
+  # Windows excluded initially (extraction is unit-tested on every host).
+  hermetic-bundled:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, macos-latest] }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache LLVM prefix
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llvm-prefix
+          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build LLVM+lld prefix
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: tools/build_toolchain.sh
+      - name: Verify cached LLVM prefix
+        if: steps.llvm-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: vendor/llvm-prefix/bin/llvm-config --version
+      - name: Generate / validate assets
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            tools/gen_assets.sh
+          else
+            tools/gen_assets.sh --validate
+            tools/gen_assets.sh --refresh-lld
+          fi
+      - name: Test (bundled lld)
+        run: cargo test -p cato-cli --features static-llvm
+
+  # Cross-compile smoke: every non-host target's magic bytes validated from
+  # one host (the hermetic_cross_* integration tests).
+  hermetic-cross-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache LLVM prefix
+        id: llvm-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/llvm-prefix
+          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build LLVM+lld prefix
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: tools/build_toolchain.sh
+      - name: Verify cached LLVM prefix
+        if: steps.llvm-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: vendor/llvm-prefix/bin/llvm-config --version
+      - name: Generate / validate assets
+        shell: bash
+        run: |
+          tools/gen_assets.sh --validate
+          tools/gen_assets.sh --refresh-lld
+      - name: Test (cross smoke)
+        run: cargo test -p cato-cli --features in-process-lld hermetic_cross
