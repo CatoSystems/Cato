@@ -3,3 +3,6 @@ __pycache__/
 /cli
 /mod
 /vendor
+/crates/cato-assets/assets/x86_64-macos/
+/crates/cato-assets/assets/aarch64-macos/
+/crates/cato-assets/assets/lld/
