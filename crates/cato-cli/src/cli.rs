@@ -25,7 +25,7 @@ const FLAGS: &[&str] = &[
 /// Known commands for did-you-mean suggestions (live commands only).
 const COMMANDS: &[&str] = &["compile", "repl", "lsp", "format", "help"];
 
-pub struct Cli {
+#[derive(Clone, Debug)] pub struct Cli {
     pub file: String,
     pub out: Option<String>,
     /// Emit LLVM IR text (`--emit-ir`): stop before linking.
@@ -53,6 +53,7 @@ pub struct Cli {
     pub runtime: Option<String>,
     /// Runtime library (`--rtlib`, default compiler-rt).
     pub rtlib: String,
+    pub rtlib_given: bool,
     /// Everything after `--`, forwarded verbatim to the toolchain.
     pub passthrough: Vec<String>,
 }
@@ -75,6 +76,7 @@ impl Default for Cli {
             debug: false,
             runtime: None,
             rtlib: "compiler-rt".to_string(),
+            rtlib_given: false,
             passthrough: Vec::new(),
         }
     }
@@ -157,6 +159,7 @@ pub fn parse_args(args: &[String]) -> Cli {
             "--rtlib" => match args.get(i + 1) {
                 Some(p) => {
                     cli.rtlib = p.clone();
+                    cli.rtlib_given = true;
                     i += 2;
                 }
                 None => {

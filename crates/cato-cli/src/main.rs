@@ -8,6 +8,8 @@ mod lsp;
 mod native;
 #[cfg(feature = "static-llvm")]
 mod objgen;
+#[cfg(feature = "static-llvm")]
+mod hermetic;
 mod repl;
 mod ui;
 

@@ -96,6 +96,12 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
 /// otherwise a temp file that is deleted after linking. All toolchain
 /// argv is assembled by `driver::link_invocations`.
 pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf, String> {
+    #[cfg(feature = "static-llvm")]
+    {
+        if cli.target.flavor == Flavor::Native {
+            return crate::hermetic::build_hermetic(program, cli, out);
+        }
+    }
     let backend = LlvmBackend {
         fast: cli.fast,
         threads: cli.threads,
@@ -192,4 +198,19 @@ fn link(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(format!("{}.runtime.o", out.display()));
     }
     Ok(())
+}
+
+pub fn emit_llvm_ir(program: &Program, cli: &Cli) -> Result<String, String> {
+    let backend = LlvmBackend {
+        fast: cli.fast,
+        threads: cli.threads,
+        target: match (cli.target.flavor, cli.target.triple) {
+            (Flavor::Wasm, _) => LlvmTarget::Wasm32,
+            (Flavor::Native, Some(t)) => LlvmTarget::Triple(t),
+            (Flavor::Native, None) => LlvmTarget::Native,
+        },
+    };
+    backend
+        .emit(program)
+        .map_err(|e| format!("backend error: {}", e))
 }

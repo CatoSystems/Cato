@@ -25,6 +25,10 @@ extern "C" int cato_lld_link(int flavor,
                             const char* const* argv,
                             int argc,
                             char** out_err) {
+    if (argc <= 0) {
+        *out_err = strdup("lld: no input files");
+        return 1;
+    }
     std::vector<const char*> args(argv, argv + argc);
     std::string diag;
     llvm::raw_string_ostream os(diag);

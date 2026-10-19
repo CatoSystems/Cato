@@ -31,12 +31,7 @@ pub fn link(flavor: Flavor, argv: &[&CStr]) -> Result<(), String> {
         Flavor::Darwin => 2i32,
     };
     let mut out_err: *mut c_char = std::ptr::null_mut();
-    let mut cargv: Vec<*const c_char> = Vec::with_capacity(argv.len() + 1);
-    let prog = CStr::from_bytes_with_nul(b"ld.lld\0").unwrap();
-    cargv.push(prog.as_ptr());
-    for a in argv {
-        cargv.push(a.as_ptr());
-    }
+    let cargv: Vec<*const c_char> = argv.iter().map(|a| a.as_ptr()).collect();
     let rc = unsafe {
         cato_lld_link(
             flavor,

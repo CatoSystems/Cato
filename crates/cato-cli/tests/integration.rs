@@ -94,6 +94,9 @@ fn compile_keeps_ir_with_emit_ll() {
 }
 
 // `-O` levels and `--asan` flow through to the C compiler.
+// Hermetic (static-llvm/in-process-lld) builds reject --asan outright, so this
+// only applies to the legacy cc-based path.
+#[cfg(not(feature = "static-llvm"))]
 #[test]
 fn compile_honors_opt_level_and_asan_flags() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));

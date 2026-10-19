@@ -3,7 +3,7 @@
 //! `driver::link_invocations`, captured through a fake `--cc` whose path
 //! contains a SPACE (proves argv arrays, not shell strings).
 
-#![cfg(unix)]
+#![cfg(all(unix, not(feature = "static-llvm")))]
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
