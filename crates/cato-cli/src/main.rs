@@ -6,6 +6,8 @@ mod driver;
 mod fmt;
 mod lsp;
 mod native;
+#[cfg(feature = "static-llvm")]
+mod objgen;
 mod repl;
 mod ui;
 

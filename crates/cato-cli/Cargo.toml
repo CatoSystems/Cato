@@ -13,6 +13,13 @@ cato-core = { path = "../cato-core" }
 cato-backend-llvm = { path = "../cato-backend-llvm" }
 cato-fmt = { path = "../cato-fmt" }
 cato-interp = { path = "../cato-backend-interp" }
+llvm-sys = { version = "231", optional = true, features = ["prefer-static", "strict-versioning"] }
+cato-assets = { path = "../cato-assets", optional = true }
+cato-lld-sys = { path = "../cato-lld-sys", optional = true, default-features = false }
+
+[features]
+static-llvm = ["dep:llvm-sys", "dep:cato-assets"]
+in-process-lld = ["static-llvm", "dep:cato-lld-sys", "cato-lld-sys/link"]
 
 [dev-dependencies]
 cato-fmt = { path = "../cato-fmt" }

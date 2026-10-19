@@ -1,0 +1,10 @@
+[package]
+name = "cato-lld-sys"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+link = []
+
+[dependencies]

@@ -7,6 +7,7 @@ members = [
     "crates/cato-backend-interp",
     "crates/cato-fmt",
     "crates/cato-assets",
+    "crates/cato-lld-sys",
 ]
 
 [workspace.package]
