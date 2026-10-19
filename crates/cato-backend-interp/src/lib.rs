@@ -215,6 +215,97 @@ impl<'p> Interpreter<'p> {
                     return Ok(Value::Int((code as i64) << 8));
                 }
             }
+            "cato-spawn" => {
+                if let Value::Vec(v) = &args[0] {
+                    let argv: Vec<String> =
+                        v.iter().map(|x| match x { Value::Str(s) => s.to_string(), _ => String::new() }).collect();
+                    if argv.is_empty() {
+                        return Ok(Value::Int(-1));
+                    }
+                    // Same statuses as runtime.c's cato_spawn: the exit
+                    // code, 128+signal when killed, 127 when the program
+                    // cannot be executed.
+                    let _ = std::io::Write::flush(&mut std::io::stdout());
+                    let status = std::process::Command::new(&argv[0])
+                        .args(&argv[1..])
+                        .status();
+                    let code = match status {
+                        Ok(s) => match s.code() {
+                            Some(c) => c as i64,
+                            None => {
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::process::ExitStatusExt;
+                                    s.signal().map(|sig| 128 + sig as i64).unwrap_or(-1)
+                                }
+                                #[cfg(not(unix))]
+                                {
+                                    -1
+                                }
+                            }
+                        },
+                        Err(_) => 127,
+                    };
+                    return Ok(Value::Int(code));
+                }
+            }
+            "cato-getenv" => {
+                if let Value::Str(name) = &args[0] {
+                    let v = std::env::var(name.as_str()).unwrap_or_default();
+                    return Ok(Value::Str(Rc::new(v)));
+                }
+            }
+            "cato-remove-file" => {
+                if let Value::Str(p) = &args[0] {
+                    let ok = std::fs::remove_file(p.as_str()).is_ok();
+                    return Ok(Value::Int(if ok { 0 } else { -1 }));
+                }
+            }
+            "cato-file-exists" => {
+                if let Value::Str(p) = &args[0] {
+                    return Ok(Value::Bool(std::path::Path::new(p.as_str()).exists()));
+                }
+            }
+            "stdin-getline" => {
+                let mut line = String::new();
+                let n = std::io::stdin().read_line(&mut line).unwrap_or(0);
+                if n == 0 && line.is_empty() {
+                    return Ok(Value::Str(Rc::new(String::new())));
+                }
+                if line.ends_with('\n') { line.pop(); }
+                if line.ends_with('\r') { line.pop(); }
+                return Ok(Value::Str(Rc::new(line)));
+            }
+            "stdin-read-exact" => {
+                if let Value::Int(n) = &args[0] {
+                    let n = if *n < 0 { 0usize } else { *n as usize };
+                    let mut buf = vec![0u8; n];
+                    let mut got = 0usize;
+                    use std::io::Read;
+                    while got < n {
+                        match std::io::stdin().read(&mut buf[got..]) {
+                            Ok(0) => break,
+                            Ok(k) => got += k,
+                            Err(_) => break,
+                        }
+                    }
+                    let s = String::from_utf8_lossy(&buf[..got]).to_string();
+                    return Ok(Value::Str(Rc::new(s)));
+                }
+            }
+            "stdout-flush" => {
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                return Ok(Value::Int(0));
+            }
+            "cato-stderr" => {
+                if let Value::Str(s) = &args[0] {
+                    use std::io::Write;
+                    let _ = std::io::stderr().write_all(s.as_bytes());
+                    let _ = std::io::stderr().flush();
+                    return Ok(Value::Int(0));
+                }
+            }
             // Shared append-only symbol table (`lib/sym.cato`). A handle is
             // an index into `self.stabs`; entries are never removed.
             "cato-stab-new" => {

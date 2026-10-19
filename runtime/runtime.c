@@ -466,3 +466,123 @@ char **cato_args(long long *out_n) {
 }
 
 void cato_exit(long long status) { exit((int)status); }
+
+// ---------------------------------------------------------------------------
+// Kernel CLI primitives: process spawn, environment, files, stdio.
+// runtime.c links into every Cato program, so the POSIX process calls are
+// guarded: Windows and wasm32 builds get stubs (spawn reports -1).
+// ---------------------------------------------------------------------------
+#include <stdbool.h>
+#if defined(_WIN32)
+#include <io.h>
+#define cato_access _access
+#elif !defined(__wasm__)
+#include <unistd.h>
+#include <sys/wait.h>
+#define cato_access access
+#endif
+
+// Run argv[0] with argv (PATH lookup, no shell) and wait. Returns the exit
+// status; 128+signal when killed; 127 when the program cannot be executed;
+// -1 when no process could be started (or on unsupported platforms).
+int64_t cato_spawn(char **argv_data, int64_t n) {
+#if defined(_WIN32) || defined(__wasm__)
+    (void)argv_data; (void)n;
+    return -1;
+#else
+    if (n <= 0) return -1;
+    char **argv = (char **)malloc(sizeof(char *) * ((size_t)n + 1));
+    if (!argv) return -1;
+    for (int64_t i = 0; i < n; i++) argv[i] = argv_data[i];
+    argv[n] = NULL;
+    fflush(stdout);
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid < 0) { free(argv); return -1; }
+    if (pid == 0) {
+        execvp(argv[0], argv);
+        _exit(127);
+    }
+    int status = 0;
+    pid_t w;
+    do { w = waitpid(pid, &status, 0); } while (w < 0 && errno == EINTR);
+    free(argv);
+    if (w < 0) return -1;
+    if (WIFEXITED(status)) return (int64_t)WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return (int64_t)(128 + WTERMSIG(status));
+    return -1;
+#endif
+}
+
+static char *cato_dup_or_empty(const char *s) {
+    char *r = strdup(s ? s : "");
+    if (!r) { fputs("cato: out of memory\n", stderr); exit(1); }
+    return r;
+}
+
+// The variable's value, or "" when unset.
+char *cato_getenv(const char *name) {
+#if defined(__wasm__)
+    (void)name;
+    return cato_dup_or_empty("");
+#else
+    return cato_dup_or_empty(getenv(name));
+#endif
+}
+
+bool cato_file_exists(const char *path) {
+#if defined(__wasm__)
+    (void)path;
+    return false;
+#else
+    return cato_access(path, 0) == 0;
+#endif
+}
+
+// 0 on success, -1 on failure.
+int64_t cato_remove_file(const char *path) {
+    return remove(path) == 0 ? 0 : -1;
+}
+
+// One line from stdin without its "\n" / "\r\n"; "" at end of input (an
+// empty line and EOF are indistinguishable by design of the API).
+char *stdin_getline(void) {
+    size_t cap = 128, n = 0;
+    char *line = malloc(cap);
+    if (!line) { fputs("cato: out of memory\n", stderr); exit(1); }
+    int c;
+    while ((c = fgetc(stdin)) != EOF && c != '\n') {
+        if (n + 1 >= cap) {
+            cap *= 2;
+            char *grown = realloc(line, cap);
+            if (!grown) { free(line); fputs("cato: out of memory\n", stderr); exit(1); }
+            line = grown;
+        }
+        line[n++] = (char)c;
+    }
+    if (n > 0 && line[n - 1] == '\r') n--;
+    line[n] = '\0';
+    return line;
+}
+
+char *stdin_read_exact(int64_t n) {
+    if (n < 0) n = 0;
+    char *buf = malloc((size_t)n + 1);
+    if (!buf) { fputs("cato: out of memory\n", stderr); exit(1); }
+    size_t got = 0;
+    while (got < (size_t)n) {
+        size_t r = fread(buf + got, 1, (size_t)n - got, stdin);
+        if (r == 0) break;
+        got += r;
+    }
+    buf[got] = '\0';
+    return buf;
+}
+
+int64_t stdout_flush(void) { fflush(stdout); return 0; }
+
+int64_t cato_stderr(const char *s) {
+    fputs(s, stderr);
+    fflush(stderr);
+    return 0;
+}

@@ -5,17 +5,18 @@
 //! loader wires into one program. Its `main` is the S8 CLI skeleton:
 //!
 //! ```text
-//! cato1 build <file.cato> [out] [runtime.c]
+//! cato1 compile <file.cato> [-o out] [--emit-ll F] [options] [-- cc-args]
 //! ```
 //!
-//! read → compile → write `<out>.ll` → spawn `cc` (the `system` extern,
-//! wait status decoded by an arithmetic shift) → native binary, with
-//! real exit codes (0 success, 1 compile/cc error, 2 usage).
+//! read → compile → write the IR → spawn `cc` (the `cato-spawn` extern,
+//! an argv vector, no shell) → native binary, with real exit codes (0
+//! success, 1 compile/cc error, 2 usage). Diagnostics go to stderr;
+//! compile errors read `cato1: error: <file>:<line>:<col>: <msg>`.
 //!
 //! Two acceptance layers:
 //!
-//! 1. The CLI, driven through the seed interpreter (`cato run
-//!    selfhost/cato/cli.cato build ...` — the engine room while the seed's
+//! 1. The CLI, driven through the seed interpreter (`cato-interp-run
+//!    selfhost/cato/cli.cato compile ...` — the engine room while the seed's
 //!    own emitter still miscompiles the full kernel at runtime, see the
 //!    S8 spec), builds every fixture; the produced binaries run and
 //!    byte-match `cato run` of the same fixture.
@@ -67,27 +68,30 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
             continue;
         }
         let out = out_dir.join(&name);
+        let ll = out_dir.join(format!("{}.ll", name));
 
         // 1. The kernel CLI (through the seed interp) builds the fixture.
         let build = Command::new(root.join("target/debug/cato-interp-run"))
             .arg(&entry)
-            .arg("build")
+            .arg("compile")
             .arg(file)
+            .arg("-o")
             .arg(&out)
-            .arg("runtime/runtime.c")
+            .arg("--emit-ll")
+            .arg(&ll)
             .current_dir(&root)
             .output()
             .expect("kernel cli run");
-        let build_out = String::from_utf8_lossy(&build.stdout).to_string();
-        if build_out.starts_with("err ") {
+        let build_out = String::from_utf8_lossy(&build.stderr).to_string();
+        if build_out.starts_with("cato1: error:") {
             // Out-of-contract fixture (build error) — no binary contract,
             // same rule as the S7 emit differential.
             continue;
         }
         // Dump-mode fixtures (no `main`) cannot link: the kernel emits
-        // `<out>.ll` either way, so check it clang-validates and skip the
-        // link/run parity that needs an entry point.
-        let ll = out_dir.join(format!("{}.ll", name));
+        // the IR (kept via --emit-ll) either way, so check it
+        // clang-validates and skip the link/run parity that needs an entry
+        // point.
         let ir = std::fs::read_to_string(&ll).unwrap_or_default();
         let has_main = ir.contains("define i32 @main");
         if !has_main {
@@ -108,7 +112,7 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
         }
         assert!(
             build.status.success(),
-            "cato1 build failed for {}: {}",
+            "cato1 compile failed for {}: {}",
             name,
             build_out
         );
@@ -172,11 +176,10 @@ fn bootstrap_chain_cato1_builds_cato2() {
     // cato1 → cato2.
     let cato2 = root.join("target/cato2");
     let build2 = Command::new(&cato1)
-        .arg("build")
+        .arg("compile")
         .arg(root.join("selfhost/cato/cli.cato"))
         .arg("-o")
         .arg(&cato2)
-        .arg(root.join("runtime/runtime.c"))
         .current_dir(&root)
         .status()
         .expect("cato1 run");
