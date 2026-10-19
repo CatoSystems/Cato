@@ -7,4 +7,7 @@ edition.workspace = true
 default = []
 link = []
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
