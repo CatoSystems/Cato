@@ -2082,11 +2082,12 @@
           owns))]
       (owns-prop adts n (+ t 1) owns2))))
 
+; Does any variant of t have an owning field?
 (defn own-via [adts :- &AdtTab t :- i64 vi :- i64 owns :- &Sids] :- bool
   (if
     (>= vi (vlist-depth (adts-variants-at adts t)))
     false
-    (own-via-fs (varnt-fields-at adts t vi) owns)))
+    (or (own-via-fs (varnt-fields-at adts t vi) owns) (own-via adts t (+ vi 1) owns))))
 
 (defn own-via-fs [fs :- TyList owns :- &Sids] :- bool
   (match fs
