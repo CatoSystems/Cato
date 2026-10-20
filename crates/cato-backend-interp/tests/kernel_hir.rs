@@ -559,7 +559,9 @@ fn oracle_hir(src: &str) -> String {
     };
     let located: Vec<(cato_core::Expr, Span)> = expanded.into_iter().zip(ss).collect();
     let (adts, defns, lambdas, fn_sigs) =
-        match cato_core::hir::build_program_located(&located) {
+        // The kernel's checker does not infer parameter modes: its oracle
+        // is the explicit-annotation language.
+        match cato_core::hir::build_program_located_with(&located, false) {
             Ok(r) => r,
             Err(e) => return format!("BUILD-ERROR: {}", e),
         };

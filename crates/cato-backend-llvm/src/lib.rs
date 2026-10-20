@@ -8,11 +8,10 @@ mod llvm;
 pub use llvm::{emit_module, emit_module_fast, LlvmBackend, Target};
 
 /// Attach a function attribute to every definition in emitted IR (e.g.
-/// `sanitize_address`). Clang instruments only the functions that carry
-/// `sanitize_address` when its input is `.ll`: without it,
-/// `-fsanitize=address` checked nothing but the allocator and the C
-/// runtime — out-of-bounds and use-after-free accesses in generated code
-/// went unseen.
+/// `sanitize_address`). Clang instruments only the `.ll` functions that
+/// carry `sanitize_address`: the attribute is what makes
+/// `-fsanitize=address` check the generated code itself, not just the
+/// allocator and the C runtime.
 pub fn with_function_attribute(ir: &str, attr: &str) -> String {
     let mut out = String::with_capacity(ir.len() + 64);
     let mut tagged = false;

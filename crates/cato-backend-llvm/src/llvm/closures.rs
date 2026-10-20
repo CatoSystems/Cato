@@ -136,9 +136,9 @@ fn store_capture(
                 Ty::F64 => c.line(&format!("  store double {}, ptr {}, align 8", v, g0)),
                 Ty::F32 => c.line(&format!("  store float {}, ptr {}, align 8", v, g0)),
                 // The env keeps its own copy (the str store rule, as for
-                // constructor fields): storing the binding's pointer made
-                // the env and the binding's scope free one buffer, and a
-                // closure outliving the binding read freed memory.
+                // constructor fields): the env frees its copy, the binding's
+                // scope frees the original, and the closure may outlive the
+                // binding.
                 Ty::Str => {
                     mdl.ensure_decl("declare ptr @strdup(ptr)");
                     let d = c.temp();
@@ -408,8 +408,8 @@ pub(crate) fn emit_lambda(
                     c.line(&format!("  store ptr {}, ptr {}, align 8", v, dst));
                 }
                 c.scalar.insert(cname.clone(), (slot, *ty));
-                // Three words, as packed (`capture_slots`): advancing by two
-                // made every later capture read the wrong env slot.
+                // A captured closure occupies three env words, as packed
+                // (`capture_slots`).
                 at += capture_slots(ty);
                 continue;
             }

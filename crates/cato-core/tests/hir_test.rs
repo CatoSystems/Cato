@@ -498,14 +498,17 @@ fn rejects_incompatible_generic_instantiation() {
 
 // --- Phase 7: ownership & borrows ---
 
-const BOX_DEFTYPE: &str = "(deftype Box (Box [v :- i64]))";
+// A heap-owning box: an all-scalar inline ADT is a plain copy, and a
+// callee that only reads its parameter lends it — neither moves.
+const BOX_DEFTYPE: &str = "(deftype Box (Box [v :- str]))";
 
 #[test]
 fn use_after_move_is_rejected() {
     let err = build_err(&format!(
-        "{}\n(defn consume [b :- Box] :- i64 (match b (Box [v] v) (_ 0)))
+        "{}\n(deftype Hold (Hold [b :- Box]))
+         (defn consume [b :- Box] :- Hold (Hold b))
          (defn main []
-           (let [b (Box 1)]
+           (let [b (Box \"x\")]
              (do (consume b) (consume b))))",
         BOX_DEFTYPE
     ));
@@ -516,13 +519,13 @@ fn use_after_move_is_rejected() {
 fn double_move_in_one_call_is_rejected() {
     // Distinct values are fine...
     let ok = format!(
-        "{}\n(defn take2 [a :- Box b :- Box] :- i64 a)\n(defn main [] (take2 (Box 1) (Box 2)))",
+        "{}\n(defn take2 [a :- Box b :- Box] :- Box a)\n(defn main [] (match (take2 (Box \"1\") (Box \"2\")) (Box [v] (count v))))",
         BOX_DEFTYPE
     );
     assert!(build(&read_all(&ok).unwrap()).is_ok());
     // ...the same binding twice is not.
     let bad = format!(
-        "{}\n(defn take2 [a :- Box b :- Box] :- i64 a)\n(defn bad [b :- Box] :- i64 (take2 b b))",
+        "{}\n(defn take2 [a :- Box b :- Box] :- Box a)\n(defn bad [b :- Box] :- Box (take2 b b))",
         BOX_DEFTYPE
     );
     let err = build(&read_all(&bad).unwrap()).unwrap_err();
@@ -532,10 +535,10 @@ fn double_move_in_one_call_is_rejected() {
 #[test]
 fn shared_borrows_keep_the_value_usable() {
     let exprs = read_all(&format!(
-        "{}\n(defn peek [b :- &Box] :- i64 (match b (Box [v] v) (_ 0)))
+        "{}\n(defn peek [b :- &Box] :- i64 (match b (Box [v] (count v)) (_ 0)))
          (defn main []
-           (let [b (Box 1)]
-             (do (peek b) (peek b) (print-i64 (match b (Box [v] v) (_ 0))))))",
+           (let [b (Box \"1\")]
+             (do (peek b) (peek b) (print-i64 (match b (Box [v] (count v)) (_ 0))))))",
         BOX_DEFTYPE
     ))
     .unwrap();
@@ -558,9 +561,10 @@ fn exclusive_borrow_sigil_is_rejected() {
 #[test]
 fn clone_keeps_the_source_usable() {
     let exprs = read_all(&format!(
-        "{}\n(defn consume [b :- Box] :- i64 (match b (Box [v] v) (_ 0)))
+        "{}\n(deftype Hold (Hold [b :- Box]))
+         (defn consume [b :- Box] :- Hold (Hold b))
          (defn main []
-           (let [b (Box 1)]
+           (let [b (Box \"1\")]
              (do (consume (clone b)) (consume b))))",
         BOX_DEFTYPE
     ))
@@ -572,8 +576,8 @@ fn clone_keeps_the_source_usable() {
 fn drop_ends_a_binding() {
     let err = build_err(&format!(
         "{}\n(defn main []
-           (let [b (Box 1)]
-             (do (drop b) (match b (Box [v] v) (_ 0)))))",
+           (let [b (Box \"1\")]
+             (do (drop b) (match b (Box [v] (count v)) (_ 0)))))",
         BOX_DEFTYPE
     ));
     assert!(err.contains("use of moved value b"), "got: {}", err);

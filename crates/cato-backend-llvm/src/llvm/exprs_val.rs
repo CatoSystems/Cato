@@ -695,8 +695,8 @@ pub(crate) fn emit_strnth_opt(
 
 /// The element address for a bounds-checked read: in bounds, `d[i]`;
 /// out of bounds, a zeroed constant — never `d[0]`, which an empty vector
-/// does not have (that read was out of bounds; the value is discarded by
-/// the caller's select, but the load itself was not). Branchless.
+/// does not have: the caller's select discards the value, but the load
+/// itself must stay in bounds. Branchless.
 pub(crate) fn oob_safe_elem_ptr(
     inb: &str,
     safe: &str,

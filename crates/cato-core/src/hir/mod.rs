@@ -618,8 +618,7 @@ pub struct HArm {
 pub enum HReduce {
     /// `acc_ty` (both variants): the accumulator's type, `I64` or `F64`,
     /// decided once at lowering from the init's real type. Consumers read
-    /// it — never re-derive it from the shape of `init` (an f64 *variable*
-    /// init once typed as i64 and produced invalid IR).
+    /// it — never re-derive it from the shape of `init`.
     Pipeline {
         combine: BinOp,
         init: HExpr,
@@ -752,7 +751,7 @@ mod parse;
 mod pipeline;
 mod stagefn;
 
-pub use build::{build_program, build_program_located};
+pub use build::{build_program, build_program_located, build_program_located_with};
 pub(crate) use ctl::*;
 pub(crate) use forms::*;
 pub(crate) use generics::*;

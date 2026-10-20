@@ -1,13 +1,12 @@
-;; E301: a loop variable is an owned binding like any other. Passing it to
-;; an owned parameter hands it over (the callee frees it); reading it again
-;; afterwards — here in the same `recur` — is a use after move. (Before v3,
-;; loop variables were silently treated as Copy: this compiled, and the
-;; callee's free left the loop reading freed memory.)
+;; E301: a loop variable is an owned binding like any other. Handing it to
+;; a function that keeps it (here: stores it) ends the binding; reading it
+;; again in the same `recur` is a use after move.
 (deftype Pair (P [a :- str b :- i64]))
-(defn eat [p :- Pair] :- i64 (match p (P [a b] (+ b (count a)))))
+(deftype Hold (H [p :- Pair]))
+(defn stash [p :- Pair] :- Hold (H p))
 (defn pb [p :- &Pair] :- i64 (match p (P [a b] (count a))))
 (defn bad [n :- i64] :- i64
   (loop [i :- i64 0 p :- Pair (P (str "s" 7) 7) k :- i64 0]
     (if (>= i n) k
-      (recur (+ i 1) p (+ k (+ (eat p) (pb p)))))))
+      (recur (+ i 1) p (+ k (match (stash p) (H [q] (pb p))))))))
 (defn main [] :- i64 0)

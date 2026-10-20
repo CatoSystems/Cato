@@ -271,9 +271,7 @@ pub(crate) fn emit_subvec(
     let nbytes = c.temp();
     c.line(&format!("  {} = mul i64 {}, {}", nbytes, n, elem.bytes()));
     let np = emit_malloc(c, mdl, &nbytes);
-    // Copy the n elements from `start` on. (This used to copy start*8
-    // bytes from the beginning of the source: wrong elements, and a heap
-    // overflow of the n-element buffer whenever start > n.)
+    // Copy the n elements from `start` on.
     let src = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds {}, ptr {}, i64 {}",

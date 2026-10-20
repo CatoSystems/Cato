@@ -1587,8 +1587,7 @@
         (if
           (= variant -1)
           st
-          ; the variant locates the skipped fields (the seed's argument
-          ; checks caught this call omitting it: offsets came from garbage)
+          ; the variant locates the skipped fields
           (aef-fields binders 0 skip st scrut name ai variant))]
         (em-line st1 (str "  call void @drop__" name "(ptr " scrut ")")))
     )))

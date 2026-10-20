@@ -495,8 +495,7 @@ pub(crate) fn emit_vec_pair(
         }
         // A slice or the process arguments in value position — returned,
         // passed, counted — through the same machinery as their let-bound
-        // forms (both used to panic here: `(defn f [v n] (subvec v 0 n))`,
-        // `(count (args))`).
+        // forms.
         HExpr::Subvec { v, start, end, elem } => {
             let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
             read_grow_slot(&slot, *elem, c)

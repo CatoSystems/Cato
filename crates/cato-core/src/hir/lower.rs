@@ -11,8 +11,7 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
 pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
     match e {
         Expr::LitSym(s) => match s.as_str() {
-            // The same names every other annotation accepts (this used to
-            // know only five, so `(loop [b :- u8 ...])` was "unknown").
+            // The same names every other annotation accepts.
             other if super::parse::builtin_ty_name(other).is_some() => {
                 Ok(super::parse::builtin_ty_name(other).unwrap())
             }

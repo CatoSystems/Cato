@@ -1,11 +1,11 @@
-; loop_drops.cato — `recur` is a scope exit (memory model v3).
+; loop_drops.cato — `recur` is a scope exit.
 ;
-; Each loop below used to leak once per iteration: a `let` in a body that
-; recurs, a matched box handed on through `recur`, a loop variable replaced
-; by `recur`, and the loop's last values. The last two shapes are the
-; kernel reader's: a binder moved into a constructor inside a nested match
-; whose only arm recurs, and a vector swap (which also printed the wrong
-; result before every recur argument was evaluated ahead of the stores).
+; Each iteration frees what it owned: a `let` in a body that recurs, a
+; matched box handed on through `recur`, a loop variable replaced by
+; `recur`, and the loop's last values. Two shapes from the kernel reader:
+; a binder moved into a constructor inside a nested match whose only arm
+; recurs, and a vector swap (every recur argument is evaluated before any
+; loop variable is rebound).
 
 (deftype Cell (CNil) (CCons [h :- str t :- Cell]))
 (deftype Pair (P [a :- str b :- i64]))

@@ -1,4 +1,3 @@
-;; E201: a call must supply exactly the callee's parameters (this used to
-;; compile and read an undefined register for the missing argument).
+;; E201: a call must supply exactly the callee's parameters.
 (defn f [x :- i64 y :- i64] :- i64 (+ x y))
 (defn main [] :- i64 (f 5))

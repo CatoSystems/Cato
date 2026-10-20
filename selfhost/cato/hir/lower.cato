@@ -1681,9 +1681,6 @@
       (arms-all-recur (arms-of e))
       false)))
 
-; The seed's argument checks caught this walk testing an HExprs list with
-; `expand/asts-null` (an Asts predicate): it only worked because both cons
-; types put their nil tag at 0.
 (defn seq-all-recur [es :- HExprs] :- bool
   (if
     (hexpr/hes-null es)
@@ -5010,9 +5007,7 @@
         (hexpr/hes-rev acc (HENil))
         nparams
         subs
-        ; the expected type (this passed `env`, a TyEnv, until the seed's
-        ; argument checks caught it — generic ctors then inferred their
-        ; type arguments from the wrong structure)
+        ; the expected type pins a generic constructor's type arguments
         expected
         tab
         adts

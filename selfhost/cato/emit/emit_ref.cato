@@ -36,7 +36,7 @@
     (
       POk
       [tab2 adts defs lams sigs]
-      (let [facts (forms/facts-compute (forms/adts-templates (clone adts)))]
+      (let [facts (forms/facts-compute (clone adts))]
         (match
           (moveck/check-program defs lams facts (clone tab2) (clone adts))
           (CKErr [msg] (print-string (str "err " (span/err-text msg))))

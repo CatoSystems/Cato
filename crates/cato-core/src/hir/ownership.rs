@@ -4,7 +4,7 @@ use std::sync::OnceLock;
 
 /// Debug toggles (bisection aids for planner changes): CATO_NO_HOIST,
 /// CATO_NO_ARMFREE, CATO_NO_BRANCHFREE, CATO_NO_ESCTRANSFER, CATO_NO_LOOPOWN,
-/// CATO_NO_LOOPDROP (v3 recur/loop-exit drops) disable one rule each; CATO_PLAN_LOG/ARMFREE trace decisions.
+/// CATO_NO_LOOPDROP (recur and loop-exit drops) disable one rule each; CATO_PLAN_LOG/ARMFREE trace decisions.
 fn flag(name: &str) -> bool {
     static CACHE: OnceLock<std::collections::HashMap<String, bool>> = OnceLock::new();
     CACHE
@@ -257,6 +257,7 @@ pub(crate) struct BCheck<'a> {
 /// `with_param_frees`, owned move-type parameters that still hold their
 /// buffer at body exit get a scope-exit free (an empty-binds `Let` wrapper,
 /// which the backends already emit).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn plan_drops(
     name: &str,
     params: &[(String, Ty)],
@@ -271,6 +272,59 @@ pub(crate) fn plan_drops(
     adts: &[AdtDef],
     with_param_frees: bool,
     alias_ret: &HashSet<String>,
+) -> Result<(), String> {
+    plan_drops_inner(
+        name, params, borrows, ret, ret_borrowed, body, sigs, ret_borrowed_names, rets, facts,
+        adts, with_param_frees, alias_ret, None,
+    )
+}
+
+/// Parameter-mode inference's oracle: which parameters does
+/// this body *keep* — move anywhere (a callee that keeps it, a constructor
+/// field, a closure capture, a `let` rebinding, `drop`), return, or let a
+/// derived value reach the result? Every parameter is checked as owned; a
+/// parameter the body does not keep can be lent by every caller instead.
+/// Errors are ignored here (the real check reports them).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn kept_params(
+    name: &str,
+    params: &[(String, Ty)],
+    ret: Ty,
+    ret_borrowed: bool,
+    body: &HExpr,
+    sigs: &HashMap<String, Vec<Borrow>>,
+    ret_borrowed_names: &HashSet<String>,
+    rets: &HashMap<String, Ty>,
+    facts: &AdtFacts,
+    adts: &[AdtDef],
+    alias_ret: &HashSet<String>,
+) -> Vec<bool> {
+    let mut kept = vec![true; params.len()];
+    let mut scratch = body.clone();
+    let owned = vec![Borrow::Owned; params.len()];
+    let _ = plan_drops_inner(
+        name, params, &owned, ret, ret_borrowed, &mut scratch, sigs, ret_borrowed_names, rets,
+        facts, adts, false, alias_ret, Some(&mut kept),
+    );
+    kept
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_drops_inner(
+    name: &str,
+    params: &[(String, Ty)],
+    borrows: &[Borrow],
+    ret: Ty,
+    ret_borrowed: bool,
+    body: &mut HExpr,
+    sigs: &HashMap<String, Vec<Borrow>>,
+    ret_borrowed_names: &HashSet<String>,
+    rets: &HashMap<String, Ty>,
+    facts: &AdtFacts,
+    adts: &[AdtDef],
+    with_param_frees: bool,
+    alias_ret: &HashSet<String>,
+    kept_out: Option<&mut Vec<bool>>,
 ) -> Result<(), String> {
     let mut escaped = HashSet::new();
     tail_escape(body, &mut escaped);
@@ -379,6 +433,20 @@ pub(crate) fn plan_drops(
         owns.insert(n.clone(), b.is_owned() && moves_by_value);
     }
     bc.check(body, &mut tys, &mut st, &mut owns);
+    if let Some(kept) = kept_out {
+        for (i, (n, _)) in params.iter().enumerate() {
+            let mut one = HashSet::new();
+            one.insert(n.clone());
+            kept[i] = bc.moved_at.contains_key(n)
+                || bc.escaped.contains(n)
+                || st.get(n) == Some(&VState::Moved)
+                // A result derived from the parameter (a field binder, a
+                // `&T` call over it) keeps it too: lending it would make
+                // the result a borrow of a caller's value.
+                || (!ret.is_copy_ty() && tail_may_alias(body, &one, &bc.alias_calls))
+                || (!ret.is_copy_ty() && tail_borrow_ok(body, &one, sigs, ret_borrowed_names));
+        }
+    }
 
     if with_param_frees {
         // Owned move-type parameters whose buffer is still here free at body
@@ -1047,7 +1115,7 @@ impl<'a> BCheck<'a> {
                 self.check(s, tys, st, owns);
                 self.check(idx, tys, st, owns);
             }
-            // Loop variables are owned bindings like any other (v3). The
+            // Loop variables are owned bindings like any other. The
             // body is checked once, as one iteration: `recur` is that
             // iteration's scope exit — it drops what the iteration still
             // owns and hands its arguments to the next one — and a
@@ -1454,6 +1522,31 @@ impl<'a> BCheck<'a> {
                     });
                 }
                 let kinds = self.kinds_of(name, args.len());
+                // One value handed over *and* lent in the same call: the
+                // callee could free (or keep) it through the owned parameter
+                // while it still reads it through the other. The same
+                // value at two owned positions is the second-move error
+                // below; this is the mixed case (an explicit `&` or an
+                // inferred lent parameter next to an owned one).
+                for (i, (a, k)) in args.iter().zip(kinds.iter()).enumerate() {
+                    let HExpr::Var(v) = a else { continue };
+                    if *k != Borrow::Owned || !tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) {
+                        continue;
+                    }
+                    let lent_too = args.iter().zip(kinds.iter()).enumerate().any(|(j, (b, kb))| {
+                        j != i && *kb != Borrow::Owned && matches!(b, HExpr::Var(w) if w == v)
+                    });
+                    if lent_too {
+                        let site = self.site_for(v);
+                        self.err(
+                            format!(
+                                "use of moved value {}: it is handed to an owned parameter of {} and lent to another parameter of the same call",
+                                v, name
+                            ),
+                            Some(site),
+                        );
+                    }
+                }
                 for ((arg, kind), asite) in args.iter().zip(kinds.iter()).zip(arg_sites) {
                     if asite.is_some() {
                         self.cur = asite;
@@ -1468,6 +1561,10 @@ impl<'a> BCheck<'a> {
                             self.use_var(&v, tys, st);
                             self.move_var(&v, st, owns);
                         }
+                    } else if *kind == Borrow::Owned
+                        && matches!(arg, HExpr::If(..) | HExpr::Match { .. } | HExpr::Let(..) | HExpr::Seq(_))
+                    {
+                        self.move_value_roots(arg, tys, st, owns);
                     } else if let HExpr::Call(callee, _) = arg {
                         // A borrowed (`&T`) call result handed to an owned
                         // parameter would let the callee free a value that
@@ -1494,6 +1591,8 @@ impl<'a> BCheck<'a> {
                     if owns_box {
                         if let HExpr::Var(v) = a {
                             self.move_if_non_copy(v, tys, st, owns);
+                        } else {
+                            self.move_value_roots(a, tys, st, owns);
                         }
                     }
                 }
@@ -1997,6 +2096,14 @@ impl<'a> BCheck<'a> {
                     st.insert(name.clone(), VState::Owned);
                 }
                 self.check(body, tys, st, owns);
+                // The let's value may *be* (or point into) its bindings:
+                // their duty goes with the value to its receiver — freeing
+                // them here left the receiver (a constructor field, an
+                // outer binding) holding freed memory.
+                // (A planner-hoisted `~aN` temp is exempt: it is hoisted only
+                // where freeing it after the node is safe.)
+                let value_roots: HashSet<String> =
+                    self.roots_of(body).into_iter().filter(|n| !n.starts_with('~')).collect();
                 if let (Some(m), Some(f)) = (scope_mark, self.loops.last_mut()) {
                     f.scope.truncate(m);
                 }
@@ -2028,6 +2135,7 @@ impl<'a> BCheck<'a> {
                         && st.get(name) == Some(&VState::Owned)
                         && !self.escaped.contains(name)
                         && !self.consumed.contains(name)
+                        && !value_roots.contains(name)
                         // Suppressed only when this very body rebinds the
                         // name (the one shape where slot sharing is real).
                         // Sibling-branch lets of the same name are distinct
@@ -2638,6 +2746,62 @@ impl<'a> BCheck<'a> {
         }
     }
 
+    /// A non-Copy value stored by pointer (a constructor field, an owned
+    /// parameter) that is not a bare variable — an `if`/`match` merge, a
+    /// `let`, a `do` — hands over every binding it may be: each tail leaf
+    /// that is a non-Copy variable moves, and so do the non-Copy variables
+    /// an alias-returning call leaf is given. A binder reaching a field
+    /// through an `if` must count as moved, or its box's exit free would
+    /// release it under the new holder.
+    fn move_value_roots(
+        &mut self,
+        a: &HExpr,
+        tys: &mut HashMap<String, Ty>,
+        st: &mut HashMap<String, VState>,
+        owns: &mut HashMap<String, bool>,
+    ) {
+        let mut leaves = Vec::new();
+        tail_leaves(a, &mut leaves);
+        // Direct references only: the field (or the variable) moves, never
+        // the box it was read from — that box belongs to its match's exit
+        // free and alias-escape rules (moving it would also retire the
+        // scrutinee's other binders).
+        let mut movers: Vec<String> = Vec::new();
+        let non_copy = |v: &String, tys: &HashMap<String, Ty>| tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false);
+        for l in leaves {
+            match l {
+                HExpr::Var(v) if non_copy(v, tys) => {
+                    if !movers.contains(v) {
+                        movers.push(v.clone());
+                    }
+                }
+                // An alias-returning call over a variable hands that variable
+                // over with its result.
+                HExpr::Call(f, cargs)
+                    if self.alias_calls.contains(f)
+                        && self.rets.get(f).map(|t| is_non_copy(*t)).unwrap_or(false) =>
+                {
+                    for ca in cargs {
+                        if let HExpr::Var(v) = ca {
+                            if non_copy(v, tys) && !movers.contains(v) {
+                                movers.push(v.clone());
+                            }
+                        }
+                    }
+                }
+                // Constructors move their own arguments when checked; calls
+                // to keeping callees move theirs; everything else is fresh
+                // or a copy.
+                _ => {}
+            }
+        }
+        for r in movers {
+            if st.get(&r) != Some(&VState::Moved) && !self.no_move.contains(&r) {
+                self.move_var(&r, st, owns);
+            }
+        }
+    }
+
     /// Move `v` into the next iteration (a bare `recur` argument). Like
     /// `move_var`, except that the duty has a receiver inside this very
     /// scope: it is not "consumed" (a completing path that never took
@@ -2756,10 +2920,20 @@ impl<'a> BCheck<'a> {
     /// well (under its own type), and the hoist stops at an argument it
     /// cannot bind.
     fn hoist_arg_temps(&mut self, e: &mut HExpr, tys: &HashMap<String, Ty>) {
+        // Under an alias-returning callee (its str/collection result may be
+        // one of its arguments) only fresh *boxes* on lent parameters may be
+        // hoisted and freed after the call: a lent parameter is one the
+        // callee never lets reach its result (`kept_params`), and a box is
+        // not the str/collection it returns. A `&T` callee's result is
+        // derived from its borrowed arguments: never hoisted.
+        let mut boxes_only = false;
         let (args_view, kinds): (Vec<&HExpr>, Vec<Borrow>) = match e {
             HExpr::Call(name, args) => {
-                if self.alias_calls.contains(name) {
+                if self.ret_borrowed_names.contains(name) {
                     return;
+                }
+                if self.alias_calls.contains(name) {
+                    boxes_only = true;
                 }
                 let kinds = self.kinds_of(name, args.len());
                 (args.iter().collect(), kinds)
@@ -2776,6 +2950,11 @@ impl<'a> BCheck<'a> {
         for (i, (a, k)) in args_view.iter().zip(kinds.iter()).enumerate() {
             if Self::order_free(a) {
                 continue;
+            }
+            if boxes_only && !(*k != Borrow::Owned && self.fresh_temp_ty(a, tys, true).is_some()) {
+                // Anything else would have to be hoisted (and freed) too to
+                // keep evaluation order — and might be the result. Stop.
+                break;
             }
             let leaks = self.fresh_temp_ty(a, tys, false).is_some()
                 || (*k != Borrow::Owned && self.fresh_temp_ty(a, tys, true).is_some());
@@ -2932,7 +3111,7 @@ impl<'a> BCheck<'a> {
                 return Err("scrutinee-moved");
             }
         }
-        // A recurring arm exits at its `recur` (v3): the backend runs this
+        // A recurring arm exits at its `recur`: the backend runs this
         // free there, after the arguments are computed and before the jump.
         if tail_has_recur(&arm.body) && flag("CATO_NO_LOOPDROP") {
             return Err("recur");
@@ -3049,6 +3228,10 @@ impl<'a> BCheck<'a> {
 /// Total occurrences of every name in the body (exact, all positions — a
 /// missed occurrence would make in-place update unsound, so this walks
 /// everything, including fused-loop bodies and closure captures).
+pub(crate) fn count_vars_pub(e: &HExpr, counts: &mut HashMap<String, i64>) {
+    count_vars(e, counts)
+}
+
 fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
     let mut bump = |name: &str| *counts.entry(name.to_string()).or_insert(0) += 1;
     match e {

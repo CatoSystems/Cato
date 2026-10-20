@@ -285,13 +285,16 @@ fn ownership_errors_point_at_the_occurrence() {
         .join("target/ux_errloc_move.cato");
     std::fs::write(
         &bad,
-        "(defn take [v :- (Vector i64)] :- i64 (count v))\n\
-         (defn main [] :- i64\n  (let [xs (vec-i64 1 2)]\n    (+ (take xs) (count xs))))\n",
+        // `take` keeps (stores) its argument: a callee that only read it
+        // would just lend it, and the program would be valid.
+        "(deftype Bx (Bx [v :- (Vector i64)]))\n\
+         (defn take [v :- (Vector i64)] :- Bx (Bx v))\n\
+         (defn main [] :- i64\n  (let [xs (vec-i64 1 2)]\n    (do (take xs) (count xs))))\n",
     )
     .expect("write bad");
     let out = cato().arg("compile").arg(&bad).output().expect("run cato");
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("use of moved value xs"), "got: {}", stderr);
-    assert!(stderr.contains("ux_errloc_move.cato:4:25"), "got: {}", stderr);
+    assert!(stderr.contains("ux_errloc_move.cato:5:26"), "got: {}", stderr);
 }

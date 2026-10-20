@@ -3,9 +3,8 @@ use super::*;
 /// The typed bindings visible at a node (parameters, then every `let`,
 /// `loop`, `for`, match binder in scope — innermost last) plus the ADT
 /// table for binder field types. A hoisted reduce helper takes its
-/// captures' and base vectors' types from here: before, only the defn's
-/// parameters were known and everything else was *guessed* (a `let`-bound
-/// i64 capture became a `double` parameter — invalid IR).
+/// captures' and base vectors' types from here, so every binding in scope —
+/// not only the defn's parameters — keeps its real type.
 pub(crate) struct Scope<'a> {
     pub(crate) vars: Vec<(String, Ty)>,
     pub(crate) adts: &'a [AdtDef],

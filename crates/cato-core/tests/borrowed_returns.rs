@@ -80,11 +80,14 @@ fn borrowed_return_must_derive_from_borrow_param() {
 
 #[test]
 fn borrowed_result_to_owned_param_is_e303() {
+    // `take` keeps (stores) its parameter; one that only read it would be
+    // inferred lent, and lending a borrowed result is fine.
     let src = r#"
 (deftype N (Leaf) (Node [l :- N r :- N]))
 (defn get-l [n :- &N] :- &N (match n (Node [l r] l) (_ n)))
-(defn take [n :- N] :- i64 0)
-(defn main [] :- i64 (take (get-l (Node (Leaf) (Leaf)))))
+(deftype Hd (Hd [n :- N]))
+(defn take [n :- N] :- Hd (Hd n))
+(defn main [] :- i64 (match (take (get-l (Node (Leaf) (Leaf)))) (Hd [x] 0)))
 "#;
     let e = compile_to_program(src).unwrap_err().to_string();
     assert!(e.contains("E303"), "got: {e}");

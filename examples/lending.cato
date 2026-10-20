@@ -1,0 +1,24 @@
+; lending.cato — a parameter that only reads its argument lends it.
+;
+; No annotation is needed: `total` and `longest` only read their vector, so
+; the caller keeps `xs` and may use it again (the compiler infers the mode;
+; writing `&` is still allowed, as a checked promise). `wrap` stores its
+; argument, so calling it hands the value over — using it afterwards is
+; the move error E301. No clones are needed to read a value twice.
+
+(deftype Box (B [xs :- (Vector i64)]))
+
+(defn total [xs :- (Vector i64)] :- i64 (reduce + 0 xs))
+(defn longest [a :- (Vector i64) b :- (Vector i64)] :- i64
+  (if (> (count a) (count b)) (count a) (count b)))
+(defn wrap [xs :- (Vector i64)] :- Box (B xs))
+(defn unwrap-count [b :- Box] :- i64 (match b (B [xs] (count xs))))
+
+(defn main []
+  (let [xs (conj (conj [1 2] 3) 4)
+        ys [10 20]]
+    (do
+      (print-i64 (total xs))          ; 10
+      (print-i64 (total xs))          ; 10 — xs was only lent
+      (print-i64 (longest xs ys))     ; 4
+      (print-i64 (unwrap-count (wrap xs))))))  ; 4 — xs handed over here

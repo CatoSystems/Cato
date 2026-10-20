@@ -30,6 +30,7 @@ const EXAMPLES: &[&str] = &[
     "intops",
     "narrow_vectors",
     "closures_escape",
+    "lending",
     "ffi",
     "generics",
 ];

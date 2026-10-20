@@ -448,7 +448,7 @@ fn compiles_widths2_to_expected_output() {
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
-    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape"] {
+    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape", "lending"] {
         // (mem/ cases are covered by their own sanitizer tests below)
         let src = manifest.join("../../examples").join(format!("{}.cato", name));
         let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
@@ -749,7 +749,7 @@ fn let_rebinding_an_owned_str_vec_frees_once() {
 }
 
 // The reduce accumulator's type comes from the init's real type, not its
-// syntax: an f64 *variable* init used to type the loop as i64 (invalid IR).
+// syntax: an f64 *variable* init accumulates in f64.
 #[test]
 fn reduce_with_f64_variable_init() {
     let src = "(defn total [x0 :- f64 xs :- (Vector f64)] :- f64 (reduce + x0 xs))\n\
@@ -797,7 +797,7 @@ fn narrow_vectors_store_at_element_width() {
 
 // `recur` is a scope exit: every loop shape in loop_drops.cato frees what
 // each iteration owned. Sanitizer-clean at -O0 (no double free, no use
-// after free) and the right answers (the swap used to print 22).
+// after free) and the right answers (the vector swap prints 21).
 #[test]
 fn loop_drops_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -823,7 +823,6 @@ fn loop_drops_are_sanitizer_clean() {
 
 // ...and leak-free: 200 rounds of every shape leave nothing live at exit
 // beyond the C runtime's own startup allocations (stdio buffers, ~80 KB).
-// Before v3 each round leaked thousands of blocks.
 #[cfg(target_os = "macos")]
 #[test]
 fn loop_drops_leave_nothing_live() {
@@ -858,9 +857,9 @@ fn compiles_closures_escape_to_expected_output() {
     assert_eq!(compile_and_run("closures_escape", &src), "8\n111\n5\n");
 }
 
-// Values that used to panic the backend: a slice returned directly, the
+// Vector values in value position: a slice returned directly, the
 // argument vector counted in place, an out-of-range read of an empty
-// vector (which loaded element 0 before discarding it).
+// vector (which must not load element 0).
 #[test]
 fn vector_values_in_value_position() {
     let src = "(defn cut [v :- &(Vector i64) n :- i64] :- (Vector i64) (subvec v 0 n))\n\
@@ -870,8 +869,7 @@ fn vector_values_in_value_position() {
     assert_eq!(compile_and_run("vec_values", src), "0\n42\n2\n");
 }
 
-// Integer division by zero traps (natively it was LLVM UB and printed
-// garbage); the interpreter traps too.
+// Integer division by zero traps natively, as in the interpreter.
 #[test]
 fn integer_division_by_zero_traps() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -888,8 +886,7 @@ fn integer_division_by_zero_traps() {
 }
 
 // `--asan` instruments the generated code itself: clang only instruments
-// `.ll` functions that carry `sanitize_address`, so without it the
-// sanitizer saw only the allocator and the C runtime.
+// `.ll` functions that carry `sanitize_address`.
 #[test]
 fn asan_ir_carries_sanitize_address() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -902,4 +899,11 @@ fn asan_ir_carries_sanitize_address() {
     let ir = std::fs::read_to_string(&out_ll).unwrap();
     assert!(ir.contains("sanitize_address"));
     assert!(ir.lines().filter(|l| l.starts_with("define ")).all(|l| l.contains("#9001")));
+}
+
+#[test]
+fn compiles_lending_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/lending.cato")).unwrap();
+    assert_eq!(compile_and_run("lending", &src), "10\n10\n4\n4\n");
 }

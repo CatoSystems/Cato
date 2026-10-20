@@ -1,11 +1,12 @@
-;; E303: a borrowed parameter moved into an owned callee — the callee's
-;; scope-exit free would release a buffer the caller still reads.
-(deftype Box (Box [v :- i64]))
+;; E303: a borrowed parameter moved into a callee that keeps it — the
+;; holder would free a buffer the caller still owns. (A callee that only
+;; read it would merely lend it: that is not an error.)
+(deftype Box (Box [v :- str]))
+(deftype Hold (Hold [b :- Box]))
 
-(defn consume [b :- Box] :- i64
-  (match b (Box [v] v) (_ 0)))
+(defn consume [b :- Box] :- Hold (Hold b))
 
 (defn peek-and-lose [b :- &Box] :- i64
-  (consume b))
+  (match (consume b) (Hold [x] 0)))
 
 (defn main [] :- i64 0)

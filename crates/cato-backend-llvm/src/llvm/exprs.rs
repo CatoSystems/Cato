@@ -646,9 +646,9 @@ pub(crate) fn emit_int_binop(
         BinOp::Sub => simple(c, "sub", av, bv),
         BinOp::Mul => simple(c, "mul", av, bv),
         BinOp::Div | BinOp::Rem | BinOp::Mod => {
-            // A zero divisor traps (LLVM leaves division by zero undefined:
-            // natively `(/ 7 0)` printed garbage while the interpreter
-            // trapped). The branch folds away for constant divisors.
+            // A zero divisor traps, as in the interpreter (LLVM leaves
+            // division by zero undefined). The branch folds away for
+            // constant divisors.
             let z = c.temp();
             c.line(&format!("  {} = icmp eq {} {}, 0", z, ll, bv));
             let bad = c.block_name();

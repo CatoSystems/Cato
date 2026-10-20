@@ -1,5 +1,8 @@
-;; E301: a moved vector binding is used again.
-(defn first-of [xs :- (Vector i64)] :- i64 (get xs 0))
+;; E301: a moved vector binding is used again. `keep` stores its argument
+;; (a parameter that only read it would merely lend it), so the first call
+;; hands xs over and the second uses it after the move.
+(deftype Box (B [xs :- (Vector i64)]))
+(defn keep [xs :- (Vector i64)] :- Box (B xs))
 (defn bad [xs :- (Vector i64)] :- i64
-  (+ (first-of xs) (first-of xs)))
+  (do (keep xs) (count xs)))
 (defn main [] :- i64 0)

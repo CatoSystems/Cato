@@ -1943,28 +1943,6 @@
     boxed0 (facts-diag edge0 n 0 (SNil))]
     (Facts (facts-owns-rounds adts n (+ n 2) (types/sids-rev boxed0 (SNil))))))
 
-; The declared-template prefix of the combined table. The seed's
-; build-stage plan_drops runs on facts computed BEFORE ADT instances
-; exist, so instance indices read out of bounds (owns=false) — the
-; kernel mirrors that by computing facts over templates only.
-(defn adts-templates [ts :- AdtTab] :- AdtTab
-  (match ts
-    (
-      ATCons
-      [h t]
-      (match
-        (clone h)
-        (
-          AdtInfo
-          [name tps variants tpl tplargs]
-          (if
-            (= tpl -1)
-            (ATCons h (adts-templates t))
-            (ATNil))
-        ))
-    )
-    (ATNil [] (ATNil))))
-
 (defn facts-edges [adts :- &AdtTab n :- i64 t :- i64 edge :- Mat] :- Mat
   (if
     (>= t n)
