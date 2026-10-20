@@ -9,3 +9,6 @@ __pycache__/
 
 # local tooling / agent state
 .commandcode/
+.zcode/
+.opencode/
+.claude/
