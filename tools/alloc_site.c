@@ -34,7 +34,12 @@
 #include <sys/mman.h>
 
 #define FRAMES 2
-#define PTAB_BITS 25 /* 32M slots */
+/* Pointer-table size: 32M slots by default. A live set near or above that
+   makes open addressing degrade sharply; rebuild with e.g. -DPTAB_BITS=28
+   (the table is mmap'd lazily, so unused slots cost nothing). */
+#ifndef PTAB_BITS
+#define PTAB_BITS 25
+#endif
 #define PTAB (1u << PTAB_BITS)
 #define STAB_BITS 20
 #define STAB (1u << STAB_BITS)

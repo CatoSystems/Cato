@@ -18,7 +18,7 @@ use std::process::Command;
 
 struct Paths {
     root: std::path::PathBuf,
-    entry: std::path::PathBuf,
+    bin: std::path::PathBuf,
 }
 
 fn setup() -> Paths {
@@ -30,21 +30,19 @@ fn setup() -> Paths {
     // modules; its `main` defines the only entry point.
     let entry = root.join("selfhost/cato/hir/hir_ref.cato");
 
-    // Compile check only: the S6 driver runs through the seed interpreter
-    // (native codegen of the full kernel hits a seed emitter bug recorded
-    // in the S6 spec notes; revisit with S7).
-    let ll = root.join("target/selfhost_hir.ll");
+    // The driver is compiled natively once (the same kernel source the
+    // interpreter would run, ~100x faster per fixture).
+    let bin = root.join("target/selfhost_hir_ref");
     let status = Command::new(&cato)
         .arg("compile")
         .arg(&entry)
-        .arg("--emit-ir")
         .arg("-o")
-        .arg(&ll)
+        .arg(&bin)
         .status()
-        .expect("cato emit");
-    assert!(status.success(), "seed failed to compile the kernel hir");
+        .expect("cato compile");
+    assert!(status.success(), "seed failed to compile the kernel hir driver");
 
-    Paths { root, entry }
+    Paths { root, bin }
 }
 
 impl Paths {
@@ -69,8 +67,7 @@ impl Paths {
     }
 
     fn run_kernel(&self, file: &std::path::Path, mode: &str) -> String {
-        let out = Command::new(self.root.join("target/debug/cato-interp-run"))
-            .arg(&self.entry)
+        let out = Command::new(&self.bin)
             .arg(file)
             .arg(mode)
             .output()
@@ -83,6 +80,20 @@ impl Paths {
         );
         String::from_utf8_lossy(&out.stdout).to_string()
     }
+}
+
+/// The differing lines of two dumps (one top-level form per line), as
+/// `kernel:`/`seed:` pairs: whole dumps are too long to compare by eye.
+fn line_diff(got: &str, want: &str) -> String {
+    let (g, w): (Vec<&str>, Vec<&str>) = (got.lines().collect(), want.lines().collect());
+    let mut out = String::new();
+    for i in 0..g.len().max(w.len()) {
+        let (a, b) = (g.get(i).copied().unwrap_or("<none>"), w.get(i).copied().unwrap_or("<none>"));
+        if a != b {
+            out.push_str(&format!("kernel: {}\nseed:   {}\n", a, b));
+        }
+    }
+    out
 }
 
 fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
@@ -676,10 +687,11 @@ fn kernel_hir_dump_matches_the_seed_over_the_fixtures() {
             continue;
         }
         let got = paths.run_kernel(&file, "hir");
-        assert_eq!(
-            got, want,
-            "kernel typed-IR dump disagrees with the seed on {}",
-            file.display()
+        assert!(
+            got == want,
+            "kernel typed-IR dump disagrees with the seed on {}:\n{}",
+            file.display(),
+            line_diff(&got, &want)
         );
         ran += 1;
     }
