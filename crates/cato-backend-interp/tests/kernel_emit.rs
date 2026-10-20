@@ -16,7 +16,18 @@ fn setup() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
     let cato = root.join("target/debug/cato");
 
-    let entry = root.join("selfhost/cato/emit/emit_ref.cato");
+    // The kernel driver runs natively: the same kernel source the
+    // interpreter would run, compiled once by the seed.
+    let src = root.join("selfhost/cato/emit/emit_ref.cato");
+    let entry = root.join("target/selfhost_emit_ref");
+    let status = Command::new(&cato)
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&entry)
+        .status()
+        .expect("cato compile");
+    assert!(status.success(), "seed failed to compile the kernel emit driver");
 
     (root, entry, cato)
 }
@@ -51,8 +62,7 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         }
 
         // 1. The kernel emits IR for the fixture.
-        let out = Command::new(root.join("target/debug/cato-interp-run"))
-            .arg(&entry)
+        let out = Command::new(&entry)
             .arg(file)
             .arg("emit")
             .output()
