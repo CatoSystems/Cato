@@ -3,6 +3,7 @@
 (require ["forms.cato" :as forms])
 (require ["lower.cato" :as lower])
 (require ["hexpr.cato" :as hexpr])
+(require ["alias.cato" :as alias])
 (require ["expand.cato" :as expand])
 (require ["../lib/span.cato" :as span])
 
@@ -33,15 +34,6 @@
 (deftype DParams
   (DPNil)
   (DPCons [name :- i64 ps :- PList next :- DParams]))
-
-; callee name -> return kind and return type. rb: 1 when the defn's
-; return is `&T` (a call yields a borrow: the binding does not own it);
-; 2 when its string/collection result may alias a parameter, runtime
-; memory or static data (the seed's alias_ret — never fresh, never the
-; caller's to free); 0 otherwise. ret feeds the R5 hoist (hoist_ty).
-(deftype RBTable
-  (RBNil)
-  (RBCons [name :- i64 rb :- i64 ret :- Ty next :- RBTable]))
 
 ; nomove: the borrowed (&) parameter names of the defn under check —
 ; moving one anywhere in the body is an error (the caller still owns the
@@ -624,32 +616,6 @@
         (dparams-get next name))
     )))
 
-; return-borrowed lookup: 1 when the callee's return is a `&T` borrow
-(defn rb-get [rb :- &RBTable name :- i64] :- i64
-  (match rb
-    (RBNil [] 0)
-    (
-      RBCons
-      [n v _ret next]
-      (if
-        (= n name)
-        v
-        (rb-get next name))
-    )))
-
-; The callee's return type; t-none for builtins (no defn).
-(defn rb-ret-get [rb :- &RBTable name :- i64] :- Ty
-  (match rb
-    (RBNil [] (types/t-none))
-    (
-      RBCons
-      [n _v ret next]
-      (if
-        (= n name)
-        (clone ret)
-        (rb-ret-get next name))
-    )))
-
 (defn b-mark-borrowed [ps :- PList] :- PList
   (match ps
     (PNil [] (PNil))
@@ -704,76 +670,6 @@
     )))
 
 ; --- alias-returning functions (the seed's compute_alias_ret) -----------------
-
-(defn b-coll-ty [t :- &Ty] :- bool
-  (let [g (types/ty-tag t)] (or (= g 12) (= g 13) (= g 14) (= g 15))))
-
-; May the value of e point into memory reachable from the names in alias?
-; (the seed's tail_may_alias)
-(defn b-tail-may-alias [e :- &HExpr alias :- &Sids calls :- &Sids] :- bool
-  (match e
-    (HVar [v] (types/sids-has alias v))
-    (HCall [name args] (and (types/sids-has calls name) (b-tma-any args alias calls)))
-    (HLet [binds body _] (let [inner (b-tma-binds binds (clone alias) calls)] (b-tail-may-alias body inner calls)))
-    (HSeq [es] (b-tma-last es alias calls))
-    (HIf [_c t2 e2 _] (or (b-tail-may-alias t2 alias calls) (b-tail-may-alias e2 alias calls)))
-    (HMatch [scrut arms _] (b-tma-arms arms (b-tail-may-alias scrut alias calls) alias calls))
-    (
-      HGet
-      [src _idx dflt ty res]
-      (or
-        (and
-          (or (= (types/ty-tag ty) 12) (not (lower/ty-noneq res)))
-          (b-tail-may-alias src alias calls))
-        (b-tma-any dflt alias calls))
-    )
-    (HLoop [binds _ty body] (or (b-tma-inits binds alias calls) (b-tail-may-alias body alias calls)))
-    (_ false)))
-
-(defn b-tma-any [es :- &HExprs alias :- &Sids calls :- &Sids] :- bool
-  (match es
-    (HENil [] false)
-    (HECons [k next] (or (b-tail-may-alias k alias calls) (b-tma-any next alias calls)))))
-
-(defn b-tma-last [es :- &HExprs alias :- &Sids calls :- &Sids] :- bool
-  (match es
-    (HENil [] false)
-    (
-      HECons
-      [k next]
-      (if
-        (hexpr/hes-null next)
-        (b-tail-may-alias k alias calls)
-        (b-tma-last next alias calls))
-    )))
-
-(defn b-tma-binds [binds :- &Binds alias :- Sids calls :- &Sids] :- Sids
-  (match binds
-    (BNil [] alias)
-    (
-      BCons
-      [n v _ty next]
-      (if
-        (b-tail-may-alias v (clone alias) calls)
-        (b-tma-binds next (SCons n alias) calls)
-        (b-tma-binds next alias calls))
-    )))
-
-(defn b-tma-inits [binds :- &Binds alias :- &Sids calls :- &Sids] :- bool
-  (match binds
-    (BNil [] false)
-    (BCons [_n v _ty next] (or (b-tail-may-alias v alias calls) (b-tma-inits next alias calls)))))
-
-(defn b-tma-arms [arms :- &HArms scrut-alias :- bool alias :- &Sids calls :- &Sids] :- bool
-  (match arms
-    (HANil [] false)
-    (
-      HACons
-      [_v binders body _fr next]
-      (or
-        (let [inner (if scrut-alias (sids-into binders (clone alias)) (clone alias))] (b-tail-may-alias body inner calls))
-        (b-tma-arms next scrut-alias alias calls))
-    )))
 
 ; Is the value of e not fresh: a call to a nonfresh function, a var bound
 ; to such a value, or a static vec literal? (the seed's tail_nonfresh)
@@ -859,7 +755,7 @@
         (
           Param
           [n ty _b]
-          (b-coll-param-names rest (if (b-coll-ty ty) (SCons n acc) acc))
+          (b-coll-param-names rest (if (alias/coll-ty ty) (SCons n acc) acc))
         ))
     )))
 
@@ -877,7 +773,7 @@
           [name _ps ret isextern _body _rb]
           ; An extern's str/collection result is borrowed (never freed)
           ; unless it is declared `(own T)` (ret-borrowed 2).
-          (b-ar-seed t (if (and (= isextern 1) (b-coll-ty ret) (not (= _rb 2))) (SCons name out) out))
+          (b-ar-seed t (if (and (= isextern 1) (alias/coll-ty ret) (not (= _rb 2))) (SCons name out) out))
         ))
     )))
 
@@ -907,11 +803,11 @@
           Defn
           [name ps ret isextern body _rb]
           (if
-            (or (= isextern 1) (types/sids-has out name) (not (b-coll-ty ret)))
+            (or (= isextern 1) (types/sids-has out name) (not (alias/coll-ty ret)))
             (b-ar-pass t out calls changed)
             (if
               (let [cps (b-coll-param-names ps (SNil)) none (SNil)]
-                (or (b-tail-may-alias body cps calls) (b-tail-nonfresh body out none)))
+                (or (alias/tail-may-alias body cps calls (RBNil)) (b-tail-nonfresh body out none)))
               (b-ar-pass t (SCons name out) (SCons name calls) 1)
               (b-ar-pass t out calls changed)))
         ))
@@ -1227,7 +1123,7 @@
 
 (defn b-borrowed-call [v :- &HExpr retb :- &RBTable] :- bool
   (match v
-    (HCall [name args] (= (rb-get retb name) 1))
+    (HCall [name args] (= (alias/rb-get retb name) 1))
     (_ false)))
 
 ; scope-exit frees: heap-owning ∧ still-owned ∧ not escaped ∧ not
@@ -1509,14 +1405,14 @@
         (clone facts)
         (clone tab)
         (clone shared)
-        (sids-into names (clone _lc))
+        (alias/sids-into names (clone _lc))
         (clone adts)
         (clone dp)
         (clone retb)
         (clone _nm)
         _crb
         -1
-        (sids-into seed (clone _lseed))
+        (alias/sids-into seed (clone _lseed))
       )
     )))
 
@@ -1873,20 +1769,6 @@
 
 ; The ADT index of a named match scrutinee for the boxed-alias analysis
 ; (the seed's scrutinee_adt); -1 when there is no binding to retire.
-(defn fp-scrut-adt [s :- &HExpr tys :- &TyEnv] :- i64
-  (match s
-    (
-      HVar
-      [v]
-      (let [t (forms/te-get tys v)]
-        (if
-          (= (types/ty-tag t) 16)
-          (types/ty-arg t)
-          -1))
-    )
-    (HCtor [adt variant args] adt)
-    (_ -1)))
-
 ; Does a match binder over field type fty alias the scrutinee's one heap
 ; box? str/vec/map/set/fn fields and boxed-ADT children do; scalars and
 ; inline-ADT children copy by value.
@@ -2027,6 +1909,8 @@
   boxed :- i64
   esc :- i64
   scrid :- i64
+  freeable :- i64
+  sv :- i64
 ] :- BArmsRes
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc))
@@ -2087,6 +1971,8 @@
                       bcx
                       esc
                     )
+                    plan
+                    (b-arm-plan-of freeable variant binders fields body2 st2 escaped sv bcx)
                     borrowed-hit
                     (
                       b-borrowed-scrut-hit
@@ -2116,15 +2002,78 @@
                         bcx
                         wsc
                         wbs
-                        (HACons variant binders body2 (AFNone) acc)
+                        (HACons variant binders body2 plan acc)
                         adtidx
                         boxed
                         esc2
                         scrid
+                        freeable
+                        sv
                       )))
                 )))
           )))
     )))
+
+; The arm's exit-free plan, computed only when the match may free its
+; scrutinee (see b-scrut-freeable).
+(defn b-arm-plan-of [freeable :- i64
+  variant :- i64
+  binders :- &Sids
+  fields :- &TyList
+  body :- &HExpr
+  st :- &IMap
+  escaped :- &Sids
+  sv :- i64
+  bcx :- &BCtx
+] :- ArmFree
+  (if
+    (= freeable 0)
+    (AFNone)
+    (match bcx
+      (
+        BCtx
+        [_e _s facts _t _sh _lc _adts _dp retb _nm _crb _rok _lseed]
+        (alias/arm-plan variant binders fields body st escaped sv facts retb)
+      ))))
+
+; Which box may this match free at its arms' exits? 1: a fresh temp (a
+; call result, constructor or clone nobody else holds) — always freed
+; there. 2: an owned, unmoved boxed variable — freed there only when some
+; arm moves an aliasing binder out (its scope free is then suppressed). 0:
+; neither (a borrowed parameter, a loop variable, an alias, an inline ADT).
+(defn b-scrut-freeable [scrut :- &HExpr boxed :- i64 st :- &IMap owns :- &IMap bcx :- &BCtx] :- i64
+  (if
+    (= boxed 0)
+    0
+    (match scrut
+      (
+        HVar
+        [v]
+        (if
+          (
+            and
+            (= (forms/im-get owns v 0) 1)
+            (= (forms/im-get st v -1) 0)
+            (not (types/sids-has (b-nomove-of bcx) v))
+            (not (types/sids-has (b-loopcopy-of bcx) v))
+          )
+          2
+          0)
+      )
+      (_ (if (b-fresh-box-of scrut bcx) 1 0)))))
+
+(defn b-fresh-box-of [scrut :- &HExpr bcx :- &BCtx] :- bool
+  (match bcx
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (alias/fresh-box scrut retb))))
+
+(defn b-scrut-adt-of [scrut :- &HExpr tys :- &TyEnv bcx :- &BCtx] :- i64
+  (match bcx
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (alias/scrut-adt scrut tys retb))))
+
+(defn arms-no-free [arms :- HArms] :- HArms
+  (match arms
+    (HANil [] (HANil))
+    (HACons [variant binders body _ef next] (HACons variant binders body (AFNone) (arms-no-free next)))))
 
 (defn hes-rev-arms [arms :- HArms acc :- HArms] :- HArms
   (match arms
@@ -2132,7 +2081,7 @@
     (
       HACons
       [variant binders body ef next]
-      (hes-rev-arms next (HACons variant binders body (AFNone) acc))
+      (hes-rev-arms next (HACons variant binders body ef acc))
     )))
 
 ; closure captures: use, record the heap-ownership bit, then move the
@@ -2240,11 +2189,11 @@
 
 (defn b-rb-at [bcx :- &BCtx name :- i64] :- i64
   (match bcx
-    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (rb-get retb name))))
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (alias/rb-get retb name))))
 
 (defn b-ret-at [bcx :- &BCtx name :- i64] :- Ty
   (match bcx
-    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (rb-ret-get retb name))))
+    (BCtx [_e _s _f _t _sh _lc _adts _dp retb _nm _crb _rok _lseed] (alias/rb-ret-get retb name))))
 
 ; Is the callee's i-th parameter owned? Borrowed (`&`) parameters and
 ; extern parameters are not; builtins without a defn are owned except the
@@ -2295,7 +2244,7 @@
   (if
     boxed
     (and (= (types/ty-tag t) 16) (= (b-facts-boxed-at bcx (types/ty-arg t)) 1))
-    (b-coll-ty t)))
+    (alias/coll-ty t)))
 
 (defn hz-filter [t :- Ty boxed :- bool bcx :- &BCtx] :- Ty
   (if (hz-want t boxed bcx) t (types/t-none)))
@@ -3147,7 +3096,7 @@
     (
       HMatch
       [scrut arms ty]
-      (let [adtidx (fp-scrut-adt scrut tys)
+      (let [adtidx (b-scrut-adt-of scrut tys bcx)
         boxed
         (if
           (and (>= adtidx 0) (= (b-facts-boxed-at bcx adtidx) 1))
@@ -3166,6 +3115,12 @@
               (if
                 (and (= (lower/h-tag scrut) 3) (forms/im-has st1 (lower/name-of (clone scrut))))
                 (lower/name-of (clone scrut))
+                -1)
+              fk (b-scrut-freeable c1 boxed st1 owns1 bcx)
+              svar
+              (if
+                (= (lower/h-tag c1) 3)
+                (lower/name-of (clone c1))
                 -1)]
               (match
                 (
@@ -3186,18 +3141,25 @@
                   boxed
                   0
                   scrid
+                  (if (= fk 0) 0 1)
+                  svar
                 )
                 (BArmsErr [msg] (BErr msg))
                 (
                   BArmsRes
-                  [st2 owns2 rem2 cons2 arms2 esc2]
+                  [st2 owns2 rem2 cons2 arms1 esc2]
                   ; An aliasing binder left the arm: the box's drop duty
                   ; transfers, so the scrutinee's own scope free is suppressed.
                   ; A borrowed-parameter scrutinee keeps its box with the
                   ; caller — the transfer move would be the borrowed-param
                   ; error — and a loop variable never frees anyway. Both skip
                   ; the transfer (the seed's `!loop_copy && !scrut_borrowed_param`).
-                  (let [sv
+                  (let [arms2
+                    (if
+                      (or (= fk 1) (and (= fk 2) (= esc2 1)))
+                      arms1
+                      (arms-no-free arms1))
+                    sv
                     (if
                       (= (lower/h-tag scrut) 3)
                       (lower/name-of (clone scrut))
@@ -3425,11 +3387,6 @@
     )))
 
 ; union src into dst
-(defn sids-into [src :- &Sids dst :- Sids] :- Sids
-  (match src
-    (SNil [] dst)
-    (SCons [h t] (sids-into t (SCons h dst)))))
-
 ; is the callee's return a borrow? Mirrors the seed's tail_borrow_ok. The
 ; test is conservative: an unmodelled form returns false (reject).
 (defn b-tail-borrow-ok [e :- &HExpr borrows :- &Sids dparams :- &DParams retb :- &RBTable] :- bool
@@ -3439,7 +3396,7 @@
       HCall
       [name args]
       (if
-        (= (rb-get retb name) 1)
+        (= (alias/rb-get retb name) 1)
         (match
           (dparams-get dparams name)
           (DFound [ps] (b-tail-args-ok args ps borrows dparams retb))
@@ -3517,7 +3474,7 @@
       (let [arb
         (if
           (= sc 1)
-          (sids-into binders (clone borrows))
+          (alias/sids-into binders (clone borrows))
           (clone borrows))]
         (if
           (b-tail-borrow-ok body arb dparams retb)

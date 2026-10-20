@@ -1,0 +1,47 @@
+; fixture: arm-exit frees — matching an owned boxed value frees its box at
+; each arm's exit, with the slots of binders that leave the arm nulled.
+
+(deftype Pair
+  (P [a :- str b :- str])
+  (Q [n :- i64]))
+
+(deftype Chain
+  (Link [v :- (Vector i64) rest :- Chain])
+  (End))
+
+(defn make [x :- str] :- Pair
+  (P x (str x "!")))
+
+; a binder is the arm's value: the box frees with that slot skipped
+(defn first-of [p :- Pair] :- str
+  (match p
+    (P [a _] a)
+    (Q [_] "none")))
+
+; nothing escapes: the parameter keeps its scope-exit free
+(defn width [p :- Pair] :- i64
+  (match p
+    (P [a b] (+ (count a) (count b)))
+    (Q [n] n)))
+
+; a fresh call temp frees at every arm's exit
+(defn temp-width [x :- str] :- i64
+  (match (make x)
+    (P [a _] (count a))
+    (Q [n] n)))
+
+; a boxed child moved on: skipped, its siblings freed with the box
+(defn tail-of [c :- Chain] :- Chain
+  (match c
+    (Link [_ rest] rest)
+    (End [] (End))))
+
+(defn main [] :- i64
+  (let [w (width (make "ab"))
+    f (first-of (make "cd"))
+    t (temp-width "efg")
+    c (tail-of (Link (vec-i64 1 2) (Link (vec-i64 3) (End))))
+    k (match c
+        (Link [v _] (count v))
+        (End [] 0))]
+    (+ w (+ (count f) (+ t k)))))

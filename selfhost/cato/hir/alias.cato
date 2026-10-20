@@ -1,0 +1,382 @@
+(ns cato.hir.alias)
+(require ["types.cato" :as types])
+(require ["forms.cato" :as forms])
+(require ["hexpr.cato" :as hexpr])
+(require ["lower.cato" :as lower])
+
+; alias.cato — what a value may point into, and the arm-exit free plan.
+;
+; The drop planner may free a matched box at an arm's exit only when no
+; surviving value points into it. These queries answer that conservatively
+; over the typed IR: an unmodelled shape is assumed to alias (the box then
+; leaks rather than being freed under a live pointer).
+
+; callee name -> return kind and return type. rb: 1 when the defn's
+; return is `&T` (a call yields a borrow: the binding does not own it);
+; 2 when its string/collection result may alias a parameter, runtime
+; memory or static data (never fresh, never the caller's to free); 0
+; otherwise. A callee with rb >= 1 is an alias call: its result may be
+; (part of) an argument.
+(deftype RBTable
+  (RBNil)
+  (RBCons [name :- i64 rb :- i64 ret :- Ty next :- RBTable]))
+
+(defn rb-get [rb :- &RBTable name :- i64] :- i64
+  (match rb
+    (RBNil [] 0)
+    (RBCons [n v _ret next] (if (= n name) v (rb-get next name)))))
+
+; The callee's return type; t-none for builtins (no defn).
+(defn rb-ret-get [rb :- &RBTable name :- i64] :- Ty
+  (match rb
+    (RBNil [] (types/t-none))
+    (RBCons [n _v ret next] (if (= n name) (clone ret) (rb-ret-get next name)))))
+
+(defn coll-ty [t :- &Ty] :- bool
+  (let [g (types/ty-tag t)] (or (= g 12) (= g 13) (= g 14) (= g 15))))
+
+(defn sids-into [src :- &Sids dst :- Sids] :- Sids
+  (match src
+    (SNil [] dst)
+    (SCons [h t] (sids-into t (SCons h dst)))))
+
+; --- may-alias ---------------------------------------------------------------
+
+; Is a call to `name` an alias call: in `calls` (the alias-return
+; fixpoint's growing set), or marked in the return table?
+(defn alias-call [name :- i64 calls :- &Sids retb :- &RBTable] :- bool
+  (or (types/sids-has calls name) (>= (rb-get retb name) 1)))
+
+; May the value of e point into memory reachable from the names in alias?
+; A bare alias, an alias call over one, a `let` alias of one, an element
+; load from an aliased collection, a loop seeded from one. Fresh values
+; (constructors, clones, owned calls, literals) do not.
+(defn tail-may-alias [e :- &HExpr alias :- &Sids calls :- &Sids retb :- &RBTable] :- bool
+  (match e
+    (HVar [v] (types/sids-has alias v))
+    (HCall [name args] (and (alias-call name calls retb) (tma-any args alias calls retb)))
+    (
+      HLet
+      [binds body _]
+      (let [inner (tma-binds binds (clone alias) calls retb)] (tail-may-alias body inner calls retb))
+    )
+    (HSeq [es] (tma-last es alias calls retb))
+    (HIf [_c t2 e2 _] (or (tail-may-alias t2 alias calls retb) (tail-may-alias e2 alias calls retb)))
+    (HMatch [scrut arms _] (tma-arms arms (tail-may-alias scrut alias calls retb) alias calls retb))
+    (
+      HGet
+      [src _idx dflt ty res]
+      (or
+        (and
+          (or (= (types/ty-tag ty) 12) (not (lower/ty-noneq res)))
+          (tail-may-alias src alias calls retb))
+        (tma-any dflt alias calls retb))
+    )
+    (HLoop [binds _ty body] (or (tma-inits binds alias calls retb) (tail-may-alias body alias calls retb)))
+    (_ false)))
+
+(defn tma-any [es :- &HExprs alias :- &Sids calls :- &Sids retb :- &RBTable] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (or (tail-may-alias k alias calls retb) (tma-any next alias calls retb)))))
+
+(defn tma-last [es :- &HExprs alias :- &Sids calls :- &Sids retb :- &RBTable] :- bool
+  (match es
+    (HENil [] false)
+    (
+      HECons
+      [k next]
+      (if (hexpr/hes-null next) (tail-may-alias k alias calls retb) (tma-last next alias calls retb))
+    )))
+
+(defn tma-binds [binds :- &Binds alias :- Sids calls :- &Sids retb :- &RBTable] :- Sids
+  (match binds
+    (BNil [] alias)
+    (
+      BCons
+      [n v _ty next]
+      (if
+        (tail-may-alias v alias calls retb)
+        (tma-binds next (SCons n alias) calls retb)
+        (tma-binds next alias calls retb))
+    )))
+
+(defn tma-inits [binds :- &Binds alias :- &Sids calls :- &Sids retb :- &RBTable] :- bool
+  (match binds
+    (BNil [] false)
+    (BCons [_n v _ty next] (or (tail-may-alias v alias calls retb) (tma-inits next alias calls retb)))))
+
+(defn tma-arms [arms :- &HArms scrut-alias :- bool alias :- &Sids calls :- &Sids retb :- &RBTable] :- bool
+  (match arms
+    (HANil [] false)
+    (
+      HACons
+      [_v binders body _fr next]
+      (or
+        (let [inner (if scrut-alias (sids-into binders (clone alias)) (clone alias))]
+          (tail-may-alias body inner calls retb))
+        (tma-arms next scrut-alias alias calls retb))
+    )))
+
+; Is every value e can produce a bare name from alias? The one aliasing
+; shape precise enough for the arm-exit free to skip exactly that slot.
+(defn leaves-all-alias [e :- &HExpr alias :- &Sids] :- bool
+  (match e
+    (HVar [v] (types/sids-has alias v))
+    (HLet [_b body _f] (leaves-all-alias body alias))
+    (HSeq [es] (la-last es alias))
+    (HIf [_c t2 e2 _] (and (leaves-all-alias t2 alias) (leaves-all-alias e2 alias)))
+    (HMatch [_s arms _] (la-arms arms alias))
+    (_ false)))
+
+(defn la-last [es :- &HExprs alias :- &Sids] :- bool
+  (match es
+    (HENil [] true)
+    (HECons [k next] (if (hexpr/hes-null next) (leaves-all-alias k alias) (la-last next alias)))))
+
+(defn la-arms [arms :- &HArms alias :- &Sids] :- bool
+  (match arms
+    (HANil [] true)
+    (HACons [_v _b body _fr next] (and (leaves-all-alias body alias) (la-arms next alias)))))
+
+; Does the tail of e jump back to a loop head? Such an arm has no exit of
+; its own to free at (a nested loop's recur belongs to that loop).
+(defn tail-has-recur [e :- &HExpr] :- bool
+  (match e
+    (HRecur [_] true)
+    (HLet [_b body _f] (tail-has-recur body))
+    (HSeq [es] (thr-last es))
+    (HIf [_c t2 e2 _] (or (tail-has-recur t2) (tail-has-recur e2)))
+    (HMatch [_s arms _] (thr-arms arms))
+    (_ false)))
+
+(defn thr-last [es :- &HExprs] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (if (hexpr/hes-null next) (tail-has-recur k) (thr-last next)))))
+
+(defn thr-arms [arms :- &HArms] :- bool
+  (match arms
+    (HANil [] false)
+    (HACons [_v _b body _fr next] (or (tail-has-recur body) (thr-arms next)))))
+
+; --- through-call --------------------------------------------------------------
+
+; Is `name` passed bare to a callee that may hand it straight back: a user
+; function returning a string or collection (`(defn f [s :- str] :- str s)`),
+; or a closure? The caller then owns that result and frees it, so a box
+; holding the same buffer must not free it too.
+(defn through-call [e :- &HExpr name :- i64 retb :- &RBTable] :- bool
+  (match e
+    (HCall [c args] (or (and (coll-ty (rb-ret-get retb c)) (tc-bare args name)) (tc-kids args name retb)))
+    (HClosureCall [f args _] (or (tc-bare args name) (through-call f name retb) (tc-kids args name retb)))
+    (HBinW [_ a b _] (or (through-call a name retb) (through-call b name retb)))
+    (HBinF [_ a b] (or (through-call a name retb) (through-call b name retb)))
+    (HCmpW [_ a b _] (or (through-call a name retb) (through-call b name retb)))
+    (HStrCmp [_ a b] (or (through-call a name retb) (through-call b name retb)))
+    (HStrOrd [_ a b] (or (through-call a name retb) (through-call b name retb)))
+    (HAnd [a b] (or (through-call a name retb) (through-call b name retb)))
+    (HOr [a b] (or (through-call a name retb) (through-call b name retb)))
+    (HMin [a b _] (or (through-call a name retb) (through-call b name retb)))
+    (HMax [a b _] (or (through-call a name retb) (through-call b name retb)))
+    (HConj [v x _ _] (or (through-call v name retb) (through-call x name retb)))
+    (HSubs [s a b] (or (through-call s name retb) (through-call a name retb) (through-call b name retb)))
+    (HSplit [s sep] (or (through-call s name retb) (through-call sep name retb)))
+    (HJoin [sep xs] (or (through-call sep name retb) (through-call xs name retb)))
+    (HStrNth [s idx _] (or (through-call s name retb) (through-call idx name retb)))
+    (HSpit [p d] (or (through-call p name retb) (through-call d name retb)))
+    (HIf [c t e2 _] (or (through-call c name retb) (through-call t name retb) (through-call e2 name retb)))
+    (HICast [x _ _] (through-call x name retb))
+    (HAbs [x _] (through-call x name retb))
+    (HNot [x] (through-call x name retb))
+    (HClone [x] (through-call x name retb))
+    (HDrop [x] (through-call x name retb))
+    (HCount [x] (through-call x name retb))
+    (HCharStr [x] (through-call x name retb))
+    (HToStr [x _] (through-call x name retb))
+    (HParseNum [s _ _] (through-call s name retb))
+    (HSlurp [p] (through-call p name retb))
+    (HExit [x] (through-call x name retb))
+    (HStrCat [args] (tc-kids args name retb))
+    (HCtor [_ _ args] (tc-kids args name retb))
+    (HSeq [es] (tc-kids es name retb))
+    (HRecur [args] (tc-kids args name retb))
+    (
+      HGet
+      [src idx dflt _ _]
+      (or (through-call src name retb) (through-call idx name retb) (tc-kids dflt name retb))
+    )
+    (HClosure [_ _ _ _caps body] (through-call body name retb))
+    (HMatch [scrut arms _] (or (through-call scrut name retb) (tc-arms arms name retb)))
+    (HLoop [binds _ body] (or (tc-binds binds name retb) (through-call body name retb)))
+    (HLet [binds body _] (or (tc-binds binds name retb) (through-call body name retb)))
+    (_ false)))
+
+(defn tc-bare [args :- &HExprs name :- i64] :- bool
+  (match args
+    (HENil [] false)
+    (
+      HECons
+      [k next]
+      (or
+        (match k
+          (HVar [v] (= v name))
+          (_ false))
+        (tc-bare next name))
+    )))
+
+(defn tc-kids [es :- &HExprs name :- i64 retb :- &RBTable] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (or (through-call k name retb) (tc-kids next name retb)))))
+
+(defn tc-arms [arms :- &HArms name :- i64 retb :- &RBTable] :- bool
+  (match arms
+    (HANil [] false)
+    (HACons [_v _b body _fr next] (or (through-call body name retb) (tc-arms next name retb)))))
+
+(defn tc-binds [binds :- &Binds name :- i64 retb :- &RBTable] :- bool
+  (match binds
+    (BNil [] false)
+    (BCons [_n v _t next] (or (through-call v name retb) (tc-binds next name retb)))))
+
+; --- the arm-exit free ------------------------------------------------------------
+
+; The ADT index of a match scrutinee: a named var from the binding map,
+; anything else from its static type (a callee's return, a constructor, a
+; nested match/if result). -1 = not an ADT.
+(defn scrut-adt [s :- &HExpr tys :- &TyEnv retb :- &RBTable] :- i64
+  (let [t
+    (match s
+      (HVar [v] (forms/te-get tys v))
+      (HCtor [adt _v _a] (types/t-adt adt))
+      (HCall [c _a] (rb-ret-get retb c))
+      (HMatch [_s _a ty] (clone ty))
+      (HIf [_c _t _e ty] (clone ty))
+      (HClone [x] (types/t-adt (scrut-adt x tys retb)))
+      (HLet [_b body _f] (types/t-adt (scrut-adt body tys retb)))
+      (_ (types/t-none)))]
+    (if (= (types/ty-tag t) 16) (types/ty-arg t) -1)))
+
+; A box nobody else holds: an owned call result, a constructor, a clone
+; (or the planner's hoisted-temp `let` around one). Matching it frees it.
+(defn fresh-box [s :- &HExpr retb :- &RBTable] :- bool
+  (match s
+    (HCall [c _a] (not (= (rb-get retb c) 1)))
+    (HCtor [_adt _v _a] true)
+    (HClone [_x] true)
+    (HLet [_b body _f] (fresh-box body retb))
+    (_ false)))
+
+; Binders whose field aliases the box's heap: boxed children, closures,
+; strings and collections point at separately allocated objects; an inline
+; child is the field's own address inside the box.
+(defn alias-binders [binders :- &Sids fields :- &TyList facts :- &Facts acc :- Sids] :- Sids
+  (match binders
+    (SNil [] acc)
+    (
+      SCons
+      [b rest]
+      (match fields
+        (TyNil [] acc)
+        (
+          TyCons
+          [fty frest]
+          (alias-binders
+            rest
+            frest
+            facts
+            (if
+              (or (binder-aliases fty facts) (= (types/ty-tag fty) 16))
+              (SCons b acc)
+              acc))
+        ))
+    )))
+
+; str/vec/map/set/fn fields and boxed-ADT children alias the box's heap.
+(defn binder-aliases [fty :- &Ty facts :- &Facts] :- bool
+  (let [t (types/ty-tag fty)]
+    (cond
+      (and (>= t 12) (<= t 15))
+      true
+      (= t 17)
+      true
+      (= t 16)
+      (= (forms/facts-boxed-at facts (types/ty-arg fty)) 1)
+      false)))
+
+; The arm's exit free: AFSkip with the binders whose objects left the arm
+; (their slots are nulled before the box's drop glue runs), or AFNone when
+; the box must stay — the arm hands the scrutinee itself on, jumps back to
+; a loop head, or its value may point into the box other than as a bare
+; binder. `st`/`escaped` are the arm's states after its body; sv is the
+; scrutinee var, or -1 for a temp.
+(defn arm-plan [variant :- i64
+  binders :- &Sids
+  fields :- &TyList
+  body :- &HExpr
+  st :- &IMap
+  escaped :- &Sids
+  sv :- i64
+  facts :- &Facts
+  retb :- &RBTable
+] :- ArmFree
+  (cond
+    (and (>= sv 0) (or (= (forms/im-get st sv 0) 1) (types/sids-has escaped sv)))
+    (AFNone)
+    (tail-has-recur body)
+    (AFNone)
+    (= variant -1)
+    (AFSkip (SNil))
+    (let [alias (alias-binders binders fields facts (SNil)) none (SNil)]
+      (if
+        (and (tail-may-alias body alias none retb) (not (leaves-all-alias body alias)))
+        (AFNone)
+        (plan-skip binders fields body st escaped facts retb (SNil))))))
+
+; Per binder: a boxed child or closure moved on or returned is skipped; an
+; inline child leaving the arm is the box's own memory (no plan); a string
+; or collection is skipped when it is the arm's value or may come back out
+; of a call (callees never free those and constructors copy them).
+(defn plan-skip [binders :- &Sids
+  fields :- &TyList
+  body :- &HExpr
+  st :- &IMap
+  escaped :- &Sids
+  facts :- &Facts
+  retb :- &RBTable
+  acc :- Sids
+] :- ArmFree
+  (match binders
+    (SNil [] (AFSkip acc))
+    (
+      SCons
+      [b rest]
+      (match fields
+        (TyNil [] (AFSkip acc))
+        (
+          TyCons
+          [fty frest]
+          (let [t (types/ty-tag fty)
+            esc (types/sids-has escaped b)
+            gone (or esc (= (forms/im-get st b 0) 1))]
+            (cond
+              (and (= t 16) (= (forms/facts-boxed-at facts (types/ty-arg fty)) 1))
+              (plan-skip rest frest body st escaped facts retb (if gone (SCons b acc) acc))
+              (= t 16)
+              (if gone (AFNone) (plan-skip rest frest body st escaped facts retb acc))
+              (= t 17)
+              (plan-skip rest frest body st escaped facts retb (if gone (SCons b acc) acc))
+              (and (>= t 12) (<= t 15))
+              (plan-skip
+                rest
+                frest
+                body
+                st
+                escaped
+                facts
+                retb
+                (if (or esc (through-call body b retb)) (SCons b acc) acc))
+              (plan-skip rest frest body st escaped facts retb acc)))
+        ))
+    )))
