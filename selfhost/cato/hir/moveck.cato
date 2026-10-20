@@ -2716,6 +2716,30 @@
             (hz-plan next (+ i 1) callee tys bcx (HPCons i ht (hz-leaks-bit a i callee tys bcx) acc)))))
     )))
 
+; The seed's plan loop breaks out at an argument it cannot type (a hoist
+; there would reorder every argument after it under the known plan); the
+; accumulator carries the stop as a done bit so the walk reads once.
+(deftype HZPlanStep (HZPlanStep [acc :- HPlan stop :- i64]))
+
+(defn hz-plan-step [args :- &HExprs i :- i64 callee :- i64 tys :- &TyEnv bcx :- &BCtx acc :- HPlan stop :- i64] :- HZPlanStep
+  (if
+    (= stop 1)
+    (HZPlanStep acc 1)
+    (match args
+      (HENil [] (HZPlanStep acc 0))
+      (
+        HECons
+        [a next]
+        (if
+          (hz-order-free a)
+          (hz-plan-step next (+ i 1) callee tys bcx acc 0)
+          (let [ht (hz-hoist-ty a tys bcx)]
+            (if
+              (hz-none ht)
+              (HZPlanStep acc 1)
+              (hz-plan-step next (+ i 1) callee tys bcx (HPCons i ht (hz-leaks-bit a i callee tys bcx) acc) 0)))))
+      )))
+
 ; Trailing hoists that free nothing only add noise: drop them (the plan is
 ; newest-first, so trailing entries are at the head).
 (defn hz-trim [p :- HPlan] :- HPlan
@@ -2763,9 +2787,13 @@
 (defn b-tab-at [bcx :- &BCtx] :- i64
   (match bcx (BCtx [_e _s _f tab _sh _lc _adts _dp _retb _nm _crb _rok _lseed] tab)))
 
+; The plan from a step result, so `hz-trim` reads an HPlan.
+(defn hz-step-plan [s :- HZPlanStep] :- HPlan
+  (match s (HZPlanStep [p _stop] p)))
+
 ; Hoist args; rebuild yields the node over the rewritten args.
 (defn hz-apply [args :- HExprs callee :- i64 rem :- IMap tys :- &TyEnv bcx :- &BCtx] :- HZArgs
-  (let [p (hz-trim (hz-plan args 0 callee tys bcx (HPNil)))]
+  (let [p (hz-trim (hz-step-plan (hz-plan-step args 0 callee tys bcx (HPNil) 0)))]
     (match p
       (HPNil [] (HZArgs args (BNil) rem))
       (_ (hz-rewrite args 0 p rem (b-tab-at bcx) (HENil) (BNil))))))

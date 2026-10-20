@@ -6124,11 +6124,6 @@
         (_ acc))
     )))
 
-(defn hs-one [es :- &HExprs] :- bool
-  (match es
-    (HECons [_ next] (hexpr/hes-null next))
-    (HENil [] false)))
-
 (defn lower-str [items :- Asts
   env :- TyEnv
   tab :- i64
@@ -6177,12 +6172,9 @@
     (expand/asts-null els)
     (let [args (hexpr/hes-rev acc (HENil))]
       (if
-        (hs-one args)
-        (lok tab adts insts sigs lams rets ncached defs (hes-head-hes args))
-        (if
-          (hs-all-lit args)
-          (lok tab adts insts sigs lams rets ncached defs (HStrLit (hs-join-lit args "")))
-          (lok tab adts insts sigs lams rets ncached defs (HStrCat (clone args))))))
+        (hs-all-lit args)
+        (lok tab adts insts sigs lams rets ncached defs (HStrLit (hs-join-lit args "")))
+        (lok tab adts insts sigs lams rets ncached defs (HStrCat (clone args)))))
     (let [r
       (
         lower-1
