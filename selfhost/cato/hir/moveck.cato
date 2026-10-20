@@ -151,13 +151,14 @@
 
 ; The enclosing arms' watches, innermost first: the matched box's
 ; scrutinee variable (-1 for a temp), the arm's binders that alias the
-; box's heap, and whether this match may free the box (free = 1). Moving a
-; watched scrutinee retires its binders; a watched scrutinee is never freed
-; by a branch (its binders still point into it); a binder of a freeable box
-; that one branch moves is freed by the branches that kept it.
+; box's heap, and the non-Copy ones among them that a branch may free —
+; empty unless this match may free the box. Moving a watched scrutinee
+; retires its binders; a watched scrutinee is never freed by a branch (its
+; binders still point into it); a freeable binder that one branch moves is
+; freed by the branches that kept it.
 (deftype Watches
   (WNil)
-  (WCons [sc :- i64 bs :- Sids free :- i64 next :- Watches]))
+  (WCons [sc :- i64 bs :- Sids fbs :- Sids next :- Watches]))
 
 ; move_var: state goes Moved; the drop duty leaves the binding. A borrowed
 ; parameter cannot move — the caller still owns it, and an owned callee
@@ -206,7 +207,7 @@
 (defn freeable-alias [ws :- &Watches b :- i64] :- bool
   (match ws
     (WNil [] false)
-    (WCons [_sc bs free next] (if (types/sids-has bs b) (= free 1) (freeable-alias next b)))))
+    (WCons [_sc bs fbs next] (if (types/sids-has bs b) (types/sids-has fbs b) (freeable-alias next b)))))
 
 ; retire the aliasing binders of every enclosing watch on v
 (defn retire-watched [ws :- &Watches v :- i64 st :- IMap owns :- IMap cons :- IMap] :- MoveRes
@@ -299,74 +300,6 @@
     )))
 
 ; --- merge rules (the if/match branch merges) --------------------------------------
-
-; a value moved in any branch counts as moved afterwards
-(defn b-merge-st [m1 :- IMap m2 :- IMap st :- IMap] :- IMap
-  (match m1
-    (
-      MCons
-      [k v next]
-      (
-        b-merge-st
-        next
-        m2
-        (if
-          (= v 1)
-          (forms/im-put st k 1)
-          st)
-      )
-    )
-    (MNil [] (b-merge-st-2 m2 st))))
-
-(defn b-merge-st-2 [m2 :- IMap st :- IMap] :- IMap
-  (match m2
-    (
-      MCons
-      [k v next]
-      (
-        b-merge-st-2
-        next
-        (if
-          (= v 1)
-          (forms/im-put st k 1)
-          st)
-      )
-    )
-    (MNil [] st)))
-
-; a name that failed to own in any branch never owns afterwards
-(defn b-merge-owns [m1 :- IMap m2 :- IMap owns :- IMap] :- IMap
-  (match m1
-    (
-      MCons
-      [k v next]
-      (
-        b-merge-owns
-        next
-        m2
-        (if
-          (= v 0)
-          (forms/im-put owns k 0)
-          owns)
-      )
-    )
-    (MNil [] (b-merge-owns-2 m2 owns))))
-
-(defn b-merge-owns-2 [m2 :- IMap owns :- IMap] :- IMap
-  (match m2
-    (
-      MCons
-      [k v next]
-      (
-        b-merge-owns-2
-        next
-        (if
-          (= v 0)
-          (forms/im-put owns k 0)
-          owns)
-      )
-    )
-    (MNil [] owns)))
 
 ; --- the seed's predicate helpers ---------------------------------------------------
 
@@ -1983,7 +1916,13 @@
               (if
                 (types/sids-null armwbs)
                 (clone ws)
-                (WCons (if named scrid -1) armwbs freeable (clone ws)))
+                (
+                  WCons
+                  (if named scrid -1)
+                  (clone armwbs)
+                  (if (= freeable 1) (non-copy-binders armwbs tys1) (SNil))
+                  (clone ws)
+                ))
             ]
               (match
                 (bcheck body (clone st1) (clone owns1) rem1 cons1 tys1 bcx aws)
@@ -2018,8 +1957,10 @@
                       scrid
                       rem2
                     )
-                    st3 (b-merge-st st1 st2 st)
-                    owns3 (b-merge-owns owns1 owns2 owns)]
+                    ; a value moved in any arm is moved afterwards; a name
+                    ; that failed to own in any arm never owns afterwards
+                    st3 (statemap/merge-into st st2 (statemap/prefix-len st2 pst) 1)
+                    owns3 (statemap/merge-into owns owns2 (statemap/prefix-len owns2 powns) 0)]
                     (if
                       (> (count borrowed-hit) 0)
                       (BArmsErr borrowed-hit)
@@ -2110,8 +2051,8 @@
 ; its scope free is gone; the branches that kept it free it at their exit.
 ; Eligible: a non-Copy value this function owns before the branch, or a
 ; binder of a box this match may free (see Watches) — never a borrowed
-; parameter, a loop copy, a name bound twice in the defn (the state maps
-; are flat, so a shadowed name's state is not its own), a watched
+; parameter, a loop copy, a planner temp, a name bound twice in the defn
+; (the state maps are flat, so a shadowed name's state is not its own), a watched
 ; scrutinee, the match's own scrutinee, the arm's own binders, or a value
 ; the branch's result may point into. A branch that jumps back to a loop
 ; head has no exit of its own.
@@ -2119,19 +2060,34 @@
 (defn b-non-copy [t :- &Ty] :- bool
   (let [g (types/ty-tag t)] (and (>= g 13) (<= g 17))))
 
+; The binders whose (registered) type is non-Copy: a str binder aliases the
+; box too but is never moved on its own.
+(defn non-copy-binders [bs :- Sids tys :- &TyEnv] :- Sids
+  (match bs
+    (SNil [] (SNil))
+    (
+      SCons
+      [b rest]
+      (if
+        (b-non-copy (forms/te-get tys b))
+        (SCons b (non-copy-binders rest tys))
+        (non-copy-binders rest tys))
+    )))
+
 (defn b-branch-free-ok [n :- i64
   body :- &HExpr
   powns :- &IMap
-  tys :- &TyEnv
   bcx :- &BCtx
   ws :- &Watches
 ] :- bool
   (match bcx
     (
       BCtx
-      [_e shadowed _f _t _sh loopcopy _adts _dp retb nomove _crb _rok _lseed]
+      [_e shadowed _f tab _sh loopcopy _adts _dp retb nomove _crb _rok _lseed]
       (and
-        (b-non-copy (forms/te-get tys n))
+        ; a planner-hoisted `~aN` temp is freed by its own let (and its
+        ; name is reused across nodes, so it names no single binding)
+        (not (= (subs (forms/sym-str tab n) 0 1) "~"))
         (not (types/sids-has nomove n))
         (not (types/sids-has loopcopy n))
         (not (types/sids-has shadowed n))
@@ -2146,7 +2102,6 @@
   exclude :- i64
   body :- &HExpr
   powns :- &IMap
-  tys :- &TyEnv
   bcx :- &BCtx
   ws :- &Watches
   acc :- Sids
@@ -2163,7 +2118,6 @@
         exclude
         body
         powns
-        tys
         bcx
         ws
         (if
@@ -2172,7 +2126,7 @@
             (not (= n exclude))
             (not (types/sids-has moved n))
             (not (types/sids-has shadow n))
-            (b-branch-free-ok n body powns tys bcx ws)
+            (b-branch-free-ok n body powns bcx ws)
           )
           (SCons n acc)
           acc))
@@ -2185,14 +2139,13 @@
   shadow :- &Sids
   exclude :- i64
   powns :- &IMap
-  tys :- &TyEnv
   bcx :- &BCtx
   ws :- &Watches
 ] :- HExpr
   (if
     (or (types/sids-null union) (alias/tail-has-recur body))
     body
-    (let [fs (b-branch-free-names union moved shadow exclude body powns tys bcx ws (SNil))]
+    (let [fs (b-branch-free-names union moved shadow exclude body powns bcx ws (SNil))]
       (if
         (types/sids-null fs)
         body
@@ -2203,7 +2156,6 @@
   un :- &Sids
   exclude :- i64
   powns :- &IMap
-  tys :- &TyEnv
   bcx :- &BCtx
   ws :- &Watches
 ] :- HArms
@@ -2220,9 +2172,9 @@
           (HACons
             variant
             (clone binders)
-            (b-branch-frees body un m binders exclude powns tys bcx ws)
+            (b-branch-frees body un m binders exclude powns bcx ws)
             ef
-            (arms-branch-frees next mrest un exclude powns tys bcx ws))
+            (arms-branch-frees next mrest un exclude powns bcx ws))
         ))
     )))
 
@@ -3141,7 +3093,7 @@
               BOk
               [stT ownsT remT consT c2]
               (match
-                (bcheck e2 (clone st1) (clone owns1) remT consT (clone tys) bcx ws)
+                (bcheck e2 (clone st1) (clone owns1) remT consT tys bcx ws)
                 (BErr [msg] (BErr msg))
                 (
                   BOk
@@ -3149,10 +3101,14 @@
                   (let [mt (statemap/moved-in stT st1)
                     me (statemap/moved-in stE st1)
                     un (statemap/union mt (clone me))
-                    c2b (b-branch-frees c2 un mt (SNil) -1 owns1 tys bcx ws)
-                    c3b (b-branch-frees c3 un me (SNil) -1 owns1 tys bcx ws)
-                    st4 (b-merge-st stT stE st1)
-                    owns4 (b-merge-owns ownsT ownsE owns1)]
+                    c2b (b-branch-frees c2 un mt (SNil) -1 owns1 bcx ws)
+                    c3b (b-branch-frees c3 un me (SNil) -1 owns1 bcx ws)
+                    nst (statemap/prefix-len stT st1)
+                    nse (statemap/prefix-len stE st1)
+                    nwt (statemap/prefix-len ownsT owns1)
+                    noe (statemap/prefix-len ownsE owns1)
+                    st4 (statemap/merge-into (statemap/merge-into st1 stT nst 1) stE nse 1)
+                    owns4 (statemap/merge-into (statemap/merge-into owns1 ownsT nwt 0) ownsE noe 0)]
                     (BOk st4 owns4 remE consE (HIf c1 c2b c3b ty)))
                 ))
             ))
@@ -3319,7 +3275,7 @@
                       arms0
                       (arms-no-free arms0))
                     un (ml-union mvs (SNil))
-                    arms2 (arms-branch-frees arms1 mvs un svar powns0 tys bcx ws)
+                    arms2 (arms-branch-frees arms1 mvs un svar powns0 bcx ws)
                     sv
                     (if
                       (= (lower/h-tag scrut) 3)

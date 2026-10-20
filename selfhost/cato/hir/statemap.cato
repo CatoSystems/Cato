@@ -77,3 +77,31 @@
         (SCons x (SCons h t))
         (SCons h (insert-by-name x t tab)))
     )))
+
+; The merge of one branch into acc: every name the branch set to val (its
+; current value among the n entries it put in front of its pre-branch map,
+; see prefix-len) gets val in acc. Only the branch's own entries are
+; walked, and a name already at val is not re-added, so merged maps grow by
+; the branch's changes only.
+(defn merge-into [acc :- IMap m :- &IMap n :- i64 val :- i64] :- IMap
+  (merge-walk acc m m n val))
+
+(defn merge-walk [acc :- IMap m :- &IMap top :- &IMap n :- i64 val :- i64] :- IMap
+  (if
+    (<= n 0)
+    acc
+    (match m
+      (MNil [] acc)
+      (
+        MCons
+        [k v next]
+        (merge-walk
+          (if
+            (and (= v val) (= (forms/im-get top k -1) val) (not (= (forms/im-get acc k -1) val)))
+            (forms/im-put acc k val)
+            acc)
+          next
+          top
+          (- n 1)
+          val)
+      ))))
