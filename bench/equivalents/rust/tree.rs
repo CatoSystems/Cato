@@ -20,5 +20,5 @@ fn sum(t: &Tree) -> i64 {
 }
 
 fn main() {
-    println!("{}", sum(&build(0, 100_000)));
+    println!("{}", sum(&build(0, 1_000_000)));
 }
