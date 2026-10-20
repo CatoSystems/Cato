@@ -92,7 +92,13 @@ Tooling:
    the O(n^2) `subs`-tail helpers `sub_place`/`mangle_raw` was tried and
    **regressed** (k2 allocs 109.9M -> 113.4M, peak_live 168 -> 197 MiB): the
    lines are short, so the tail `subs` cost is negligible while the StrBuf
-   per-char cons + final join is not. Do not redo that.
+   per-char cons + final join is not. That rewrite is preserved, not
+   discarded, on branch **`mem-v3-strbuf-subplace`** (commit `b0ebeaa`):
+   `sub-place-walk` / `mangle-raw-walk` walk by index into a `StrBuf`
+   (asymptotically O(n)). It passes `tools/kernel_gate.sh`, so it is a valid
+   alternative if longer emitted lines ever make the quadratic tail bite;
+   do not merge it into `mem-v3-next` and do not redo it from scratch — pull
+   it from that branch instead.
 4. **Cleanup**: drop the now-unused `BCtx` fields (`loopcopy`, `rok`,
    `lseed`) and their 32 destructuring sites; `moveck.cato` (~4.4k lines),
    `lower.cato` and `ownership.rs` exceed the 400-line guideline — split.
@@ -103,6 +109,15 @@ Tooling:
    emitter; kernel emitter `str_bytes` 6× slowdown; the seed's backend
    decides in-place loop appends itself while the kernel emitter relies on
    the planner's bit (a literal-seeded self-update differs in the HIR dump).
+
+## Branches
+
+- `mem-v3-next` — the working branch (never merged to `main`).
+- `mem-v3-strbuf-subplace` (commit `b0ebeaa`) — **preserved experiment**:
+  index-forward `StrBuf` rewrites `sub-place-walk` / `mangle-raw-walk` of
+  the O(n^2) `subs`-tail emitter helpers. Passes `tools/kernel_gate.sh`, but
+  regresses k2 (allocs 109.9M -> 113.4M, peak_live 168 -> 197 MiB) on short
+  emitted lines. Kept for reuse if line lengths grow; not merged.
 
 ## How to verify
 
