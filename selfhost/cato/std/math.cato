@@ -1,0 +1,37 @@
+(ns cato.std.math)
+(require ["core.cato" :as core])
+(require ["num.cato" :as num])
+
+; math.cato — Layer F: floating point + integer math.
+
+(extern cato-sqrt  [x :- f64] :- f64)
+(extern cato-pow   [x :- f64 y :- f64] :- f64)
+(extern cato-floor [x :- f64] :- f64)
+(extern cato-ceil  [x :- f64] :- f64)
+(extern cato-round [x :- f64] :- f64)
+
+(defn sqrt [x :- f64] :- f64 (cato-sqrt x))
+(defn pow  [x :- f64 y :- f64] :- f64 (cato-pow x y))
+(defn floor [x :- f64] :- f64 (cato-floor x))
+(defn ceil  [x :- f64] :- f64 (cato-ceil x))
+(defn round [x :- f64] :- f64 (cato-round x))
+
+(defn abs-f64 [x :- f64] :- f64 (if (< x 0.0) (- 0.0 x) x))
+
+(defn gcd [a :- i64 b :- i64] :- i64
+  (if (= b 0) (if (< a 0) (- 0 a) a)
+    (gcd b (num/rem a b))))
+
+(defn lcm [a :- i64 b :- i64] :- i64
+  (if (or (= a 0) (= b 0)) 0
+    (/ (* a b) (gcd a b))))
+
+(defn factorial [n :- i64] :- i64
+  (if (<= n 1) 1 (* n (factorial (- n 1)))))
+
+(defn min-i64 [a :- i64 b :- i64] :- i64 (if (< a b) a b))
+(defn max-i64 [a :- i64 b :- i64] :- i64 (if (> a b) a b))
+
+; integer division helpers
+(defn divmod-q [a :- i64 b :- i64] :- i64 (/ a b))
+(defn divmod-r [a :- i64 b :- i64] :- i64 (num/rem a b))

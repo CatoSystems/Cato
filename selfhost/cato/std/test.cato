@@ -1,0 +1,10 @@
+(ns cato.std.test)
+(require ["io.cato" :as io])
+
+; test.cato — Layer K: minimal test helpers.
+
+(defn check [name :- str cond :- bool] :- i64
+  (if cond (io/println (str "PASS " name)) (io/println (str "FAIL " name))))
+
+(defn assert-eq-i64 [name :- str a :- i64 b :- i64] :- i64
+  (check name (= a b)))

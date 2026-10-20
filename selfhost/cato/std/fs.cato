@@ -1,0 +1,17 @@
+(ns cato.std.fs)
+
+; fs.cato — Layer G: filesystem helpers.
+
+(extern cato-slurp [path :- str] :- str)
+(extern cato-spit [path :- str content :- str] :- i64)
+(extern cato-file-exists [path :- str] :- bool)
+(extern cato-remove-file [path :- str] :- i64)
+
+(defn read-file [path :- str] :- str (cato-slurp path))
+(defn write-file [path :- str content :- str] :- i64 (cato-spit path content))
+(defn append-file [path :- str content :- str] :- i64
+  (write-file path (str (read-file path) content)))
+(defn file-exists? [path :- str] :- bool (cato-file-exists path))
+(defn delete-file [path :- str] :- i64 (cato-remove-file path))
+(defn copy-file [src :- str dst :- str] :- i64
+  (write-file dst (read-file src)))

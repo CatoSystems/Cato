@@ -1,0 +1,103 @@
+(ns cato.std.vec)
+
+; vec.cato — Layer B: vector helpers (i64-focused).
+
+(defn vec-empty [] :- (Vector i64) [])
+(defn vec-of1 [a :- i64] :- (Vector i64) (conj [] a))
+(defn vec-count [v :- (Vector i64)] :- i64 (count v))
+(defn first [v :- (Vector i64)] :- i64 (get v 0 0))
+(defn last [v :- (Vector i64)] :- i64 (get v (- (count v) 1) 0))
+(defn rest-vec [v :- (Vector i64)] :- (Vector i64)
+  (if (<= (count v) 1) []
+    (let [r (subvec v 1 (count v))] r)))
+(defn nth-or [v :- (Vector i64) i :- i64 d :- i64] :- i64 (get v i d))
+(defn set-at [v :- (Vector i64) i :- i64 x :- i64] :- (Vector i64)
+  (let [n (count v)]
+    (if (or (< i 0) (>= i n)) v
+      (loop [acc :- (Vector i64) [] j :- i64 0]
+        (if (>= j n) acc
+          (recur (conj acc (if (= j i) x (get v j 0))) (+ j 1)))))))
+
+(defn contains? [v :- (Vector i64) x :- i64] :- bool
+  (let [n (count v)]
+    (loop [i :- i64 0]
+      (if (>= i n) false
+        (if (= (get v i 0) x) true (recur (+ i 1)))))))
+
+(defn index-of [v :- (Vector i64) x :- i64] :- i64
+  (let [n (count v)]
+    (loop [i :- i64 0]
+      (if (>= i n) -1
+        (if (= (get v i 0) x) i (recur (+ i 1)))))))
+
+(defn reverse-vec [v :- (Vector i64)] :- (Vector i64)
+  (let [n (count v)]
+    (loop [acc :- (Vector i64) [] i :- i64 (- n 1)]
+      (if (< i 0) acc
+        (recur (conj acc (get v i 0)) (- i 1))))))
+
+(defn concat [a :- (Vector i64) b :- (Vector i64)] :- (Vector i64)
+  (loop [acc :- (Vector i64) a i :- i64 0 bn :- i64 (count b)]
+    (if (>= i bn) acc
+      (recur (conj acc (get b i 0)) (+ i 1) bn))))
+
+(defn take [v :- (Vector i64) n :- i64] :- (Vector i64)
+  (let [m (if (< n 0) 0 (if (> n (count v)) (count v) n)) r (subvec v 0 m)] r))
+
+(defn drop [v :- (Vector i64) n :- i64] :- (Vector i64)
+  (let [c (count v)]
+    (if (<= n 0) v
+      (if (>= n c) []
+        (let [r (subvec v n c)] r)))))
+
+(defn slice [v :- (Vector i64) s :- i64 e :- i64] :- (Vector i64)
+  (let [c (count v) ss (if (< s 0) 0 s) ee (if (> e c) c e)]
+    (if (>= ss ee) [] (let [r (subvec v ss ee)] r))))
+
+(defn sort-asc [v :- (Vector i64)] :- (Vector i64)
+  ; insertion sort
+  (let [n (count v)]
+    (loop [acc :- (Vector i64) [] i :- i64 0]
+      (if (>= i n) acc
+        (let [x (get v i 0)]
+          (recur (insert-sorted acc x) (+ i 1)))))))
+
+(defn insert-sorted [v :- (Vector i64) x :- i64] :- (Vector i64)
+  (let [n (count v)]
+    (loop [acc :- (Vector i64) [] i :- i64 0 placed :- bool false]
+      (cond
+        (and (not placed) (>= i n)) (conj acc x)
+        (and (not placed) (> x (get v i 0))) (recur (conj acc (get v i 0)) (+ i 1) false)
+        (and (not placed)) (recur (conj acc x) i true)
+        (>= i n) acc
+        (recur (conj acc (get v i 0)) (+ i 1) placed)))))
+
+(defn dedup [v :- (Vector i64)] :- (Vector i64)
+  (let [n (count v)]
+    (loop [acc :- (Vector i64) [] i :- i64 0]
+      (if (>= i n) acc
+        (let [x (get v i 0)]
+          (if (contains? (clone acc) x) (recur acc (+ i 1))
+            (recur (conj acc x) (+ i 1))))))))
+
+(defn sum-vec [v :- (Vector i64)] :- i64
+  (loop [acc :- i64 0 i :- i64 0 n :- i64 (count v)]
+    (if (>= i n) acc (recur (+ acc (get v i 0)) (+ i 1) n))))
+
+(defn min-vec [v :- (Vector i64)] :- i64
+  (let [n (count v)]
+    (if (= n 0) 0
+      (loop [m :- i64 (get v 0 0) i :- i64 1]
+        (if (>= i n) m
+          (recur (if (< (get v i 0) m) (get v i 0) m) (+ i 1)))))))
+
+(defn max-vec [v :- (Vector i64)] :- i64
+  (let [n (count v)]
+    (if (= n 0) 0
+      (loop [m :- i64 (get v 0 0) i :- i64 1]
+        (if (>= i n) m
+          (recur (if (> (get v i 0) m) (get v i 0) m) (+ i 1)))))))
+
+(defn range-vec [a :- i64 b :- i64] :- (Vector i64)
+  (loop [acc :- (Vector i64) [] i :- i64 a]
+    (if (>= i b) acc (recur (conj acc i) (+ i 1)))))

@@ -1,0 +1,9 @@
+(ns cato.std.error)
+(require ["../lib/result.cato" :as res])
+
+; error.cato — Layer D: error helpers. Reuses lib/result.cato.
+
+(defn err? [r :- (Result i64)] :- bool (res/is-ok r) )
+; placeholder: actual boolean negation
+(defn is-err [r :- (Result i64)] :- bool
+  (match r (Ok [v] false) (Err [msg] true)))

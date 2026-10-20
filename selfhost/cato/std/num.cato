@@ -1,0 +1,79 @@
+(ns cato.std.num)
+(require ["core.cato" :as core])
+
+; num.cato — Layer F: numeric utilities (i64 focus; f64 where noted).
+
+; --- checked arithmetic (Option i64) ---------------------------------------
+(defn add-checked [a :- i64 b :- i64] :- (Option i64)
+  (let [r (+ a b)]
+    (if (and (< a 0) (< b 0))
+      (if (>= r 0) (core/none-i64) (core/some-i64 r))
+      (if (and (>= a 0) (>= b 0))
+        (if (< r 0) (core/none-i64) (core/some-i64 r))
+        (core/some-i64 r)))))
+
+(defn sub-checked [a :- i64 b :- i64] :- (Option i64)
+  (add-checked a (- 0 b)))
+
+(defn mul-checked [a :- i64 b :- i64] :- (Option i64)
+  (if (= a 0) (core/some-i64 0)
+    (let [r (* a b)]
+      (if (/= (/ r a) b) (core/none-i64) (core/some-i64 r)))))
+
+; --- saturating arithmetic --------------------------------------------------
+(defn sat-add [a :- i64 b :- i64] :- i64
+  (let [r (+ a b)]
+    (cond
+      (and (> a 0) (> b 0) (< r 0)) (core/i64-max)
+      (and (< a 0) (< b 0) (> r 0)) (core/i64-min)
+      r)))
+
+(defn sat-sub [a :- i64 b :- i64] :- i64 (sat-add a (- 0 b)))
+
+(defn sat-mul [a :- i64 b :- i64] :- i64
+  (match (mul-checked a b)
+    (Some [v] v)
+    (None [] (if (or (and (> a 0) (> b 0)) (and (< a 0) (< b 0))) (core/i64-max) (core/i64-min)))))
+
+; --- wrapping (named, built-ins already wrap) -------------------------------
+(defn wrapping-add [a :- i64 b :- i64] :- i64 (+ a b))
+(defn wrapping-sub [a :- i64 b :- i64] :- i64 (- a b))
+(defn wrapping-mul [a :- i64 b :- i64] :- i64 (* a b))
+
+; --- externs for bit ops (runtime.c) ---------------------------------------
+(extern cato-bit-and [a :- i64 b :- i64] :- i64)
+(extern cato-bit-or  [a :- i64 b :- i64] :- i64)
+(extern cato-bit-xor [a :- i64 b :- i64] :- i64)
+(extern cato-bit-not [a :- i64] :- i64)
+(extern cato-shl     [a :- i64 n :- i64] :- i64)
+(extern cato-shr     [a :- i64 n :- i64] :- i64)
+(extern cato-ushr    [a :- i64 n :- i64] :- i64)
+(extern cato-popcount [a :- i64] :- i64)
+(extern cato-clz     [a :- i64] :- i64)
+(extern cato-ctz     [a :- i64] :- i64)
+(extern cato-rotl    [a :- i64 n :- i64] :- i64)
+(extern cato-rotr    [a :- i64 n :- i64] :- i64)
+(extern cato-bswap   [a :- i64] :- i64)
+
+; --- bit operations (wrappers) ---------------------------------------------
+(defn bit-and [a :- i64 b :- i64] :- i64 (cato-bit-and a b))
+(defn bit-or  [a :- i64 b :- i64] :- i64 (cato-bit-or a b))
+(defn bit-xor [a :- i64 b :- i64] :- i64 (cato-bit-xor a b))
+(defn bit-not [a :- i64] :- i64 (cato-bit-not a))
+(defn shl [a :- i64 n :- i64] :- i64 (cato-shl a n))
+(defn shr [a :- i64 n :- i64] :- i64 (cato-shr a n))
+(defn ushr [a :- i64 n :- i64] :- i64 (cato-ushr a n))
+(defn popcount [a :- i64] :- i64 (cato-popcount a))
+(defn clz [a :- i64] :- i64 (cato-clz a))
+(defn ctz [a :- i64] :- i64 (cato-ctz a))
+(defn rotl [a :- i64 n :- i64] :- i64 (cato-rotl a n))
+(defn rotr [a :- i64 n :- i64] :- i64 (cato-rotr a n))
+(defn bswap [a :- i64] :- i64 (cato-bswap a))
+
+; --- remainder (no % operator in language) ---------------------------------
+(defn rem [a :- i64 b :- i64] :- i64
+  (if (= b 0) 0
+    (let [q (/ a b)]
+      (- a (* q b)))))
+
+; end of num.cato

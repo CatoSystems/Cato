@@ -1,0 +1,11 @@
+(ns cato.std.map)
+
+; map.cato — Layer B: map helpers (i64 -> i64). Enumeration (keys/vals/merge)
+; is deferred pending runtime helpers; see architecture plan.
+
+(defn map-empty [] :- map {})
+(defn map-count [m :- map] :- i64 (count m))
+(defn map-contains? [m :- map k :- i64] :- bool
+  (match (get m k) (Some [v] true) (None [] false)))
+(defn map-get-or [m :- map k :- i64 d :- i64] :- i64 (get m k d))
+(defn map-assoc [m :- map k :- i64 v :- i64] :- map (assoc m k v))

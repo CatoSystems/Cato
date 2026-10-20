@@ -1,0 +1,52 @@
+(ns cato.std.core)
+
+; core.cato — Layer A: ubiquitous, dependency-light primitives.
+
+; --- constants / limits -----------------------------------------------------
+(defn i64-min [] :- i64 -9223372036854775808)
+(defn i64-max [] :- i64 9223372036854775807)
+(defn f64-pi [] :- f64 3.141592653589793)
+(defn f64-e [] :- f64 2.718281828459045)
+(defn f64-tau [] :- f64 6.283185307179586)
+
+; --- identity / composition --------------------------------------------------
+(defn identity [x :- i64] :- i64 x)
+; constantly-i64 omitted: backend cannot return closures yet.
+
+; --- assertions (programmer errors -> abort) --------------------------------
+(defn assert [cond :- bool msg :- str] :- i64
+  (if cond 0 (do (print-string (str "assertion failed: " msg)) (exit 1) 0)))
+
+(defn assert-eq-i64 [a :- i64 b :- i64 msg :- str] :- i64
+  (assert (= a b) msg))
+
+(defn assert-eq-str [a :- str b :- str msg :- str] :- i64
+  (assert (= a b) msg))
+
+(defn unreachable [msg :- str] :- i64
+  (do (print-string (str "unreachable: " msg)) (exit 1) 0))
+
+; --- option helpers (Option i64, since prelude Option is generic) -----------
+; The prelude defines (Option a). Here we provide i64-specialized helpers.
+(defn some-i64 [v :- i64] :- (Option i64) (Some v))
+(defn none-i64 [] :- (Option i64) (None))
+(defn is-some-i64 [o :- (Option i64)] :- bool
+  (match o (Some [v] true) (None [] false)))
+(defn is-none-i64 [o :- (Option i64)] :- bool
+  (match o (Some [v] false) (None [] true)))
+(defn unwrap-or-i64 [o :- (Option i64) d :- i64] :- i64
+  (match o (Some [v] v) (None [] d)))
+(defn map-option-i64 [o :- (Option i64) f :- (Fn [i64] i64)] :- (Option i64)
+  (match o (Some [v] (Some (f v))) (None [] (none-i64))))
+
+; --- result helpers (re-export style for i64) -------------------------------
+(defn ok-i64 [v :- i64] :- (Result i64) (Ok v))
+(defn err-i64 [msg :- str] :- (Result i64) (Err msg))
+(defn is-ok-i64 [r :- (Result i64)] :- bool
+  (match r (Ok [v] true) (Err [msg] false)))
+(defn is-err-i64 [r :- (Result i64)] :- bool
+  (match r (Ok [v] false) (Err [msg] true)))
+(defn unwrap-or-result-i64 [r :- (Result i64) d :- i64] :- i64
+  (match r (Ok [v] v) (Err [msg] d)))
+(defn err-msg-result [r :- (Result i64)] :- str
+  (match r (Ok [v] "") (Err [msg] msg)))

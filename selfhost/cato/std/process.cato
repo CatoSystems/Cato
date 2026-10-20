@@ -1,0 +1,7 @@
+(ns cato.std.process)
+
+; process.cato — Layer H: process control.
+
+(extern cato-spawn [argv :- (Vector str)] :- i64)
+
+(defn spawn [argv :- (Vector str)] :- i64 (cato-spawn argv))

@@ -1,0 +1,42 @@
+(ns cato.std.path)
+
+; path.cato — Layer G: lexical path manipulation (no filesystem access).
+
+(defn path-sep [] :- str "/")
+
+(defn path-join [a :- str b :- str] :- str
+  (if (or (= a "") (= a "/"))
+    (if (= a "/") (str "/" b) b)
+    (str a "/" b)))
+
+(defn path-base [p :- str] :- str
+  (let [n (count p) i (last-index-of-char p 47)]
+    (if (< i 0) p (subs p (+ i 1) n))))
+
+(defn last-index-of-char [s :- str code :- i64] :- i64
+  (let [n (count s)]
+    (loop [i :- i64 (- n 1) found :- i64 -1]
+      (if (< i 0) found
+        (if (= (cato-str-byte s i) code)
+          (recur (- i 1) i)
+          (recur (- i 1) found))))))
+
+; cato-str-byte extern provided by str.cato
+
+(defn path-dir [p :- str] :- str
+  (let [i (last-index-of-char p 47)]
+    (if (< i 0) ""
+      (if (= i 0) "/" (subs p 0 i)))))
+
+(defn path-ext [p :- str] :- str
+  (let [base (path-base p) n (count base) i (last-index-of-char base 46)]
+    (if (< i 0) "" (subs base (+ i 1) n))))
+
+(defn path-stem [p :- str] :- str
+  (let [base (path-base p) i (last-index-of-char base 46)]
+    (if (< i 0) base (subs base 0 i))))
+
+(defn path-is-absolute? [p :- str] :- bool
+  (and (> (count p) 0) (= (subs p 0 1) "/")))
+
+(defn path-normalize [p :- str] :- str p) ; identity placeholder

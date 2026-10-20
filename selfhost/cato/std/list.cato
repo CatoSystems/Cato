@@ -1,0 +1,33 @@
+(ns cato.std.list)
+
+; list.cato — Layer B: persistent cons lists.
+
+(deftype Lst
+  (LNil)
+  (LCons [h :- i64 t :- Lst]))
+
+(defn lst-nil [] :- Lst (LNil))
+(defn lst-cons [h :- i64 t :- Lst] :- Lst (LCons h t))
+(defn lst-is-nil? [l :- Lst] :- bool
+  (match l (LNil [] true) (LCons [h t] false)))
+(defn lst-head [l :- Lst] :- i64
+  (match l (LNil [] 0) (LCons [h t] h)))
+(defn lst-tail [l :- Lst] :- Lst
+  (match l (LNil [] (LNil)) (LCons [h t] t)))
+(defn lst-count [l :- Lst] :- i64
+  (match l (LNil [] 0) (LCons [h t] (+ 1 (lst-count t)))))
+(defn lst-nth [l :- Lst i :- i64] :- i64
+  (if (<= i 0) (lst-head l) (lst-nth (lst-tail l) (- i 1))))
+(defn lst-reverse [l :- Lst] :- Lst
+  (loop [acc :- Lst (LNil) cur :- Lst l]
+    (if (lst-is-nil? (clone cur)) acc
+      (let [h (lst-head (clone cur)) t (lst-tail (clone cur))]
+        (recur (LCons h acc) t)))))
+(defn lst-append [a :- Lst b :- Lst] :- Lst
+  (if (lst-is-nil? (clone a)) b
+    (let [h (lst-head (clone a)) t (lst-tail (clone a))]
+      (LCons h (lst-append t b)))))
+(defn vec-to-lst [v :- (Vector i64)] :- Lst
+  (let [n (count v)]
+    (loop [acc :- Lst (LNil) i :- i64 (- n 1)]
+      (if (< i 0) acc (recur (LCons (get v i 0) acc) (- i 1))))))

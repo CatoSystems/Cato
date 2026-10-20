@@ -1,0 +1,9 @@
+(ns cato.std.set)
+
+; set.cato — Layer B: set helpers (i64).
+
+(defn set-empty [] :- set #{})
+(defn set-count [s :- set] :- i64 (count s))
+(defn set-contains? [s :- set x :- i64] :- bool (contains? s x))
+(defn set-add [s :- set x :- i64] :- set (conj s x))
+(defn set-remove [s :- set x :- i64] :- set (disj s x))

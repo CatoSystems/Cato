@@ -1,0 +1,16 @@
+(ns cato.std.io)
+
+; io.cato — Layer G: console I/O helpers.
+
+(defn println [s :- str] :- i64 (print-string s))
+(defn print-err [s :- str] :- i64 (cato-stderr s))
+
+(extern cato-stderr [s :- str] :- i64)
+(extern stdout-flush [] :- i64)
+
+(defn flush [] :- i64 (stdout-flush))
+(defn read-line [] :- str (stdin-getline))
+(extern stdin-getline [] :- str)
+(extern stdin-read-exact [n :- i64] :- str)
+
+(defn read-exact [n :- i64] :- str (stdin-read-exact n))

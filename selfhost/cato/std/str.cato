@@ -1,0 +1,132 @@
+(ns cato.std.str)
+
+; str.cato — Layer C: string utilities (ASCII-focused; Unicode deferred).
+
+(defn empty? [s :- str] :- bool (= (count s) 0))
+
+(defn blank? [s :- str] :- bool
+  (let [n (count s)]
+    (loop [i :- i64 0]
+      (if (>= i n) true
+        (let [c (subs s i (+ i 1))]
+          (if (or (= c " ") (= c "\t") (= c "\n") (= c "\r"))
+            (recur (+ i 1)) false))))))
+
+(defn starts-with? [s :- str pre :- str] :- bool
+  (let [np (count pre)]
+    (if (> np (count s)) false (= (subs s 0 np) pre))))
+
+(defn ends-with? [s :- str suf :- str] :- bool
+  (let [ns (count s) nu (count suf)]
+    (if (> nu ns) false (= (subs s (- ns nu) ns) suf))))
+
+(defn includes? [s :- str sub :- str] :- bool
+  (let [ns (count s) nu (count sub)]
+    (if (= nu 0) true
+      (loop [i :- i64 0]
+        (if (> (+ i nu) ns) false
+          (if (= (subs s i (+ i nu)) sub) true (recur (+ i 1))))))))
+
+(defn index-of [s :- str sub :- str] :- i64
+  (let [ns (count s) nu (count sub)]
+    (if (= nu 0) 0
+      (loop [i :- i64 0]
+        (if (> (+ i nu) ns) -1
+          (if (= (subs s i (+ i nu)) sub) i (recur (+ i 1))))))))
+
+(defn last-index-of [s :- str sub :- str] :- i64
+  (let [ns (count s) nu (count sub)]
+    (if (= nu 0) ns
+      (loop [i :- i64 (- ns nu) found :- i64 -1]
+        (if (< i 0) found
+          (if (= (subs s i (+ i nu)) sub)
+            (recur (- i 1) i)
+            (recur (- i 1) found)))))))
+
+(defn replace-first [s :- str old :- str new :- str] :- str
+  (let [i (index-of s old)]
+    (if (< i 0) s
+      (str (subs s 0 i) new (subs s (+ i (count old)) (count s))))))
+
+(defn replace [s :- str old :- str new :- str] :- str
+  (let [n (count old)]
+    (if (= n 0) s
+      (loop [acc :- str "" i :- i64 0]
+        (if (>= i (count s)) acc
+          (if (and (<= (+ i n) (count s)) (= (subs s i (+ i n)) old))
+            (recur (str acc new) (+ i n))
+            (recur (str acc (subs s i (+ i 1))) (+ i 1))))))))
+
+(defn repeat-str [s :- str n :- i64] :- str
+  (loop [acc :- str "" i :- i64 0]
+    (if (>= i n) acc (recur (str acc s) (+ i 1)))))
+
+(defn reverse-str [s :- str] :- str
+  (let [n (count s)]
+    (loop [acc :- str "" i :- i64 (- n 1)]
+      (if (< i 0) acc
+        (recur (str acc (subs s i (+ i 1))) (- i 1))))))
+
+(defn triml [s :- str] :- str
+  (let [n (count s)]
+    (loop [i :- i64 0]
+      (if (>= i n) ""
+        (let [c (subs s i (+ i 1))]
+          (if (or (= c " ") (= c "\t") (= c "\n") (= c "\r"))
+            (recur (+ i 1))
+            (subs s i n)))))))
+
+(defn trimr [s :- str] :- str
+  (let [n (count s)]
+    (loop [i :- i64 (- n 1)]
+      (if (< i 0) ""
+        (let [c (subs s i (+ i 1))]
+          (if (or (= c " ") (= c "\t") (= c "\n") (= c "\r"))
+            (recur (- i 1))
+            (subs s 0 (+ i 1))))))))
+
+(defn trim [s :- str] :- str (trimr (triml s)))
+
+; ASCII case conversion via byte values
+(defn upper-char [c :- str] :- str
+  (if (= (count c) 1)
+    (let [b (cato-str-byte c 0)]
+      (if (and (>= b 97) (<= b 122)) (char->str (- b 32)) c))
+    c))
+
+(defn lower-char [c :- str] :- str
+  (if (= (count c) 1)
+    (let [b (cato-str-byte c 0)]
+      (if (and (>= b 65) (<= b 90)) (char->str (+ b 32)) c))
+    c))
+
+(defn upper [s :- str] :- str
+  (let [n (count s)]
+    (loop [acc :- str "" i :- i64 0]
+      (if (>= i n) acc
+        (recur (str acc (upper-char (subs s i (+ i 1)))) (+ i 1))))))
+
+(defn lower [s :- str] :- str
+  (let [n (count s)]
+    (loop [acc :- str "" i :- i64 0]
+      (if (>= i n) acc
+        (recur (str acc (lower-char (subs s i (+ i 1)))) (+ i 1))))))
+
+(defn pad-left [s :- str width :- i64 ch :- str] :- str
+  (let [n (count s)]
+    (if (>= n width) s
+      (str (repeat-str ch (- width n)) s))))
+
+(defn pad-right [s :- str width :- i64 ch :- str] :- str
+  (let [n (count s)]
+    (if (>= n width) s
+      (str s (repeat-str ch (- width n))))))
+
+(defn parse-bool [s :- str] :- (Option bool)
+  (cond
+    (= s "true") (Some true)
+    (= s "false") (Some false)
+    (let [n :- (Option bool) (None)] n)))
+
+; extern for cato-str-byte already primitive function? It's an extern-like builtin.
+(extern cato-str-byte [s :- str i :- i64] :- i64)

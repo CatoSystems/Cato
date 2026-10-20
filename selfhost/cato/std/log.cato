@@ -1,0 +1,8 @@
+(ns cato.std.log)
+(require ["io.cato" :as io])
+
+; log.cato — Layer K: structured-ish logging to stderr.
+
+(defn log-info [msg :- str] :- i64 (io/print-err (str "INFO  " msg)))
+(defn log-warn [msg :- str] :- i64 (io/print-err (str "WARN  " msg)))
+(defn log-error [msg :- str] :- i64 (io/print-err (str "ERROR " msg)))
