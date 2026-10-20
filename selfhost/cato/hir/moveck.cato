@@ -404,7 +404,7 @@
     (HCall [_ args] (b-count-vars-kids args counts))
     (HCtor [_ _ args] (b-count-vars-kids args counts))
     (HSeq [es] (b-count-vars-kids es counts))
-    (HRecur [args] (b-count-vars-kids args counts))
+    (HRecur [args _drops] (b-count-vars-kids args counts))
     (
       HGet
       [src idx dflt _ _]
@@ -447,7 +447,7 @@
     (HLet [binds body _] (b-count-binds body (b-count-binds-binds binds counts)))
     (HSeq [es] (b-count-binds-kids es counts))
     (HStrCat [args] (b-count-binds-kids args counts))
-    (HRecur [args] (b-count-binds-kids args counts))
+    (HRecur [args _drops] (b-count-binds-kids args counts))
     (HLoop [binds _ body] (b-count-binds body (b-count-binds-binds binds counts)))
     (HIf [c t e _] (b-count-binds e (b-count-binds t (b-count-binds c counts))))
     (HToStr [e _] (b-count-binds e counts))
@@ -688,7 +688,7 @@
     (HSeq [es] (b-tnf-leaves-last es nonfresh vars))
     (HIf [_c t2 e2 _] (or (b-tnf-leaves t2 nonfresh (clone vars)) (b-tnf-leaves e2 nonfresh vars)))
     (HMatch [_s arms _] (b-tnf-leaves-arms arms nonfresh vars))
-    (HRecur [_args] false)
+    (HRecur [_args _drops] false)
     (_ (b-tail-nonfresh e nonfresh (clone vars)))))
 
 (defn b-tnf-leaves-last [es :- &HExprs nonfresh :- &Sids vars :- Sids] :- bool
@@ -1162,7 +1162,7 @@
     (HCall [_ args] (b-mentions-kids args name))
     (HCtor [_ _ args] (b-mentions-kids args name))
     (HSeq [es] (b-mentions-kids es name))
-    (HRecur [args] (b-mentions-kids args name))
+    (HRecur [args _drops] (b-mentions-kids args name))
     (
       HGet
       [src idx dflt _ _]
@@ -1220,7 +1220,7 @@
     )
     (HSeq [es] (b-rebound-kids es name))
     (HStrCat [args] (b-rebound-kids args name))
-    (HRecur [args] (b-rebound-kids args name))
+    (HRecur [args _drops] (b-rebound-kids args name))
     (HIf [c t e2 _] (or (b-rebound c name) (b-rebound t name) (b-rebound e2 name)))
     (
       HMatch
@@ -3002,7 +3002,7 @@
     )
     (
       HRecur
-      [args]
+      [args drops]
       ; `all` is walked for sibling reads while the owned copy's elements are
       ; moved into bcheck one by one: the borrowed position needs its own list
       ; (one value in two parameter positions is an alias, and the reads would
@@ -3010,7 +3010,7 @@
       (match
         (b-recur-kids args st owns rem cons tys bcx ws (HENil) (clone args) 0)
         (BKErr [msg] (BErr msg))
-        (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HRecur c1))))
+        (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HRecur c1 drops))))
     )
     (
       HGet

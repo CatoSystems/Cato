@@ -35,8 +35,17 @@
 (deftype GroVal (GroVal [slot :- str el :- i64]))
 
 ; slots: the loop variables' slots in source order (scalars.cato's
-; EMLSlots); recur zips positionally.
-(deftype LoopFr (LoopFr [slots :- EMLSlots head :- str]))
+; EMLSlots); recur zips positionally. exits: the arms open between the
+; loop head and the current point whose matched box is freed at the arm's
+; exit — a `recur` inside one exits it too, so it runs those frees
+; (innermost first) before jumping.
+(deftype LoopFr (LoopFr [slots :- EMLSlots head :- str exits :- PExits]))
+
+; One open arm's exit free: its plan, variant and binders, the box's
+; register and ADT name and index (scalars.cato's arm-exit-free).
+(deftype PExits
+  (PXNil)
+  (PXCons [ef :- ArmFree variant :- i64 binders :- Sids scrut :- str name :- str ai :- i64 next :- PExits]))
 
 (deftype EScTab
   (EScNil)
@@ -167,7 +176,7 @@
     (EScNil)
     (EVcNil)
     (EGrNil)
-    (LoopFr (ESlotsNil) "")
+    (LoopFr (ESlotsNil) "" (PXNil))
   ))
 
 ; --- per-node results ---------------------------------------------------------

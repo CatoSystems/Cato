@@ -305,7 +305,7 @@
     )
     (
       HRecur
-      [args]
+      [args drops]
       (do
         (state/cg-fail-i "expected an ADT value")
         -1)
@@ -525,7 +525,7 @@
     (HAbs [x ty] (scalars/sf st "expected a string expression"))
     (HMin [a b ty] (scalars/sf st "expected a string expression"))
     (HMax [a b ty] (scalars/sf st "expected a string expression"))
-    (HRecur [args] (scalars/sf st "recur outside loop"))
+    (HRecur [args _drops] (scalars/sf st "recur outside loop"))
     (HCtor [adt variant args] (scalars/sf st "expected a string expression"))
     (HDrop [x] (scalars/sf st "expected a string expression"))
     (HClosure [sig mangled params caps body] (scalars/sf st "closure value must be bound with let"))
@@ -1355,7 +1355,7 @@
             (ET2Res [st2 p l] (EVRes st2 p l (vec-elem-of lty))))
         ))
     )
-    (HRecur [args] (scalars/vf st (str "unsupported vector value site26 tag " (lower/h-tag e))))
+    (HRecur [args _drops] (scalars/vf st (str "unsupported vector value site26 tag " (lower/h-tag e))))
     (
       HCtor
       [adt variant args]

@@ -143,7 +143,7 @@
 ; its own to free at (a nested loop's recur belongs to that loop).
 (defn tail-has-recur [e :- &HExpr] :- bool
   (match e
-    (HRecur [_] true)
+    (HRecur [_ _] true)
     (HLet [_b body _f] (tail-has-recur body))
     (HSeq [es] (thr-last es))
     (HIf [_c t2 e2 _] (or (tail-has-recur t2) (tail-has-recur e2)))
@@ -200,7 +200,7 @@
     (HStrCat [args] (tc-kids args name retb))
     (HCtor [_ _ args] (tc-kids args name retb))
     (HSeq [es] (tc-kids es name retb))
-    (HRecur [args] (tc-kids args name retb))
+    (HRecur [args _drops] (tc-kids args name retb))
     (
       HGet
       [src idx dflt _ _]

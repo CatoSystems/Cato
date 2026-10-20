@@ -113,6 +113,33 @@
 (defn em-with-lfr [st :- Emit lfr :- LoopFr] :- Emit
   (match st (Emit [c mdl sigs] (Emit (state/fc-with-lfr c lfr) mdl sigs))))
 
+(defn em-lfr [st :- &Emit] :- LoopFr
+  (match st (Emit [c _m _s] (state/fc-lfr c))))
+
+; Open an arm whose box is freed at its exit: a recur inside it must run
+; that free (see LoopFr's exits).
+(defn with-pending-exit [st :- Emit
+  ef :- ArmFree
+  variant :- i64
+  binders :- Sids
+  scrut :- str
+  name :- str
+  ai :- i64
+] :- Emit
+  (match ef
+    (AFNone [] st)
+    (
+      AFSkip
+      [_skip]
+      (match
+        (em-lfr st)
+        (
+          LoopFr
+          [slots head exits]
+          (em-with-lfr st (LoopFr slots head (PXCons ef variant binders scrut name ai exits)))
+        ))
+    )))
+
 (defn fc-cur-of [c :- &FnCtx] :- str
   (match c (FnCtx [tmpc blkc cur body pre sc ve gr lfr] (clone cur))))
 
@@ -821,7 +848,7 @@
           )))
     )
     (HClosureCall [f args sig] (closures/emit-closure-call f (clone args) sig st))
-    (HRecur [_] (sf st "recur outside loop (validation bug)"))
+    (HRecur [_ _] (sf st "recur outside loop (validation bug)"))
     (HVecLit [el vals] (sf st "vec literal in i64 context"))
     (HStrLit [v] (sf st "string literal in i64 context"))
     (HStrCat [args] (sf st "str result must be bound with let"))
@@ -1644,12 +1671,17 @@
             (if
               (= variant -1)
               st1
-              (arm-field-loads binders ai variant 0 st1 scrut name))]
+              (arm-field-loads binders ai variant 0 st1 scrut name))
+            ; a recur inside this arm leaves it: the loop frame carries
+            ; the arm's exit free to the jump
+            saved (em-lfr st2)
+            st2b (with-pending-exit st2 (clone ef) variant (clone binders2) (clone scrut) (clone name) ai)]
             (match
-              (emit-loop-tail body (clone ty) st2)
+              (emit-loop-tail body (clone ty) st2b)
               (
                 ETRRes
-                [st3 v done]
+                [st3a v done]
+                (let [st3 (em-with-lfr st3a saved)]
                 (if done
                   (match
                     (pin-arm v (clone ty) st3)
@@ -1674,7 +1706,7 @@
                           true
                         ))
                     ))
-                  (loop-arm-bodies next lrest st3 merged scrut ai name ty env acc anydone))
+                  (loop-arm-bodies next lrest st3 merged scrut ai name ty env acc anydone)))
               )))
         )
         (_ (LMBRes st acc anydone)))
@@ -1772,7 +1804,7 @@
                   (
                     Emit
                     [c6 m6 s6]
-                    (let [saved (state/fc-lfr c6) st7 (em-with-lfr st6 (LoopFr slots head))]
+                    (let [saved (state/fc-lfr c6) st7 (em-with-lfr st6 (LoopFr slots head (PXNil)))]
                       (match
                         (emit-loop-tail body ty st7)
                         (
@@ -1928,20 +1960,26 @@
   (match e
     (
       HRecur
-      [args]
-      (match st
+      [args drops]
+      ; `recur` is the iteration's scope exit. Every argument is computed
+      ; first (a later argument may read a loop variable an earlier store
+      ; would replace); then the open arms' boxes are freed, innermost
+      ; first, and the planner's drop list runs; only then are the
+      ; variables rebound and control jumps to the head.
+      (match
+        (em-lfr st)
         (
-          Emit
-          [c mdl sigs]
-          (let [lfr (state/fc-lfr c)]
-            (match lfr
-              (
-                LoopFr
-                [slots head]
-                (match
-                  (recur-stores args slots st)
-                  (EURes [st2] (ETRRes (em-line st2 (str "  br label %" head)) "" false)))
-              )))
+          LoopFr
+          [slots head exits]
+          (match
+            (recur-vals args slots st (RVNil))
+            (
+              RVRes
+              [st2 vals]
+              (match
+                (adt/emit-frees drops (emit-pending-exits exits st2))
+                (EURes [st3] (ETRRes (em-line (recur-store-vals vals st3) (str "  br label %" head)) "" false)))
+            ))
         ))
     )
     (
@@ -2123,18 +2161,52 @@
         (ESRes [st2 v] (ETRRes st2 v true)))
     )))
 
-; Positional zip: the k-th recur arg stores into the k-th slot.
-; Positional zip: the k-th recur arg stores into the k-th slot.
-(defn recur-store-vec [d :- str l :- str slot :- str st :- Emit] :- EURes
-  (match
-    (loop-slot-vec-init d l st)
-    (ESRes [st1 hdr] (EURes (em-line st1 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))))))
+; Positional zip: the k-th recur arg is the k-th slot's next value.
+(deftype RVals
+  (RVNil)
+  (RVCons [v :- str lt :- str slot :- str next :- RVals]))
 
-; Store a vector recur arg into its loop slot. A conj already produced a
-; slot holding {ptr, len, cap}; copy it whole so capacity (offset 2)
-; survives the recur instead of being reset to len (which would force a
-; grow every iteration — the quadratic kernel conj).
-(defn store-recur-vec-arg [kid :- HExpr slot :- str st :- Emit] :- EURes
+(deftype RVRes (RVRes [st :- Emit vals :- RVals]))
+
+(defn recur-vals [args :- HExprs slots :- EMLSlots st :- Emit acc :- RVals] :- RVRes
+  (match args
+    (HENil [] (RVRes st acc))
+    (
+      HECons
+      [kid next]
+      (match slots
+        (
+          ESlots2
+          [_name slot sty snext]
+          (if
+            (state/loop-slot-vec sty)
+            (match
+              (recur-vec-val kid st)
+              (ESRes [st1 hdr] (recur-vals next snext st1 (RVCons hdr "%VecI64" slot acc))))
+            (match
+              (emit-typed kid (clone sty) st)
+              (
+                ESRes
+                [st1 v]
+                (let [lt (match st1 (Emit [_c m1 _s1] (state/ll-loop-slot-ty sty m1)))]
+                  (recur-vals next snext st1 (RVCons v lt slot acc)))
+              )))
+        )
+        (
+          _
+          (RVRes
+            (do
+              (state/cg-fail-i "recur arg/slot mismatch")
+              st)
+            acc)
+        ))
+    )))
+
+; A vector recur argument as a whole {ptr, len, cap} header. A conj already
+; produced a slot holding one: its capacity survives the recur instead of
+; being reset to len (which would force a grow every iteration — the
+; quadratic kernel conj).
+(defn recur-vec-val [kid :- HExpr st :- Emit] :- ESRes
   (match kid
     (
       HConj
@@ -2146,143 +2218,31 @@
           [st1 cslot]
           (match
             (em-temp st1)
-            (
-              ETRes
-              [st2 t]
-              (let [st3 (em-line st2 (str t " = load %VecI64, ptr " cslot ", align 8"))
-                st4 (em-line st3 (str "  store %VecI64 " t ", ptr " slot ", align 8"))]
-                (EURes st4))
-            ))
+            (ETRes [st2 t] (ESRes (em-line st2 (str t " = load %VecI64, ptr " cslot ", align 8")) t)))
         ))
     )
     (
       _
       (match
         (heap/emit-vec-pair kid st)
-        (
-          EVRes
-          [st1 d l el]
-          (match
-            (recur-store-vec d l slot st1)
-            (EURes [st2] (EURes st2)))
-        ))
+        (EVRes [st1 d l el] (loop-slot-vec-init d l st1)))
     )))
 
-(defn recur-stores [args :- HExprs slots :- EMLSlots st :- Emit] :- EURes
-  (match args
-    (HENil [] (EURes st))
+(defn recur-store-vals [vals :- RVals st :- Emit] :- Emit
+  (match vals
+    (RVNil [] st)
     (
-      HECons
-      [kid next]
-      (match slots
-        (
-          ESlots2
-          [name slot sty snext]
-          (if
-            (state/loop-slot-vec sty)
-            (match
-              (store-recur-vec-arg kid slot st)
-              (EURes [st1] (recur-stores2 next snext st1)))
-            (match
-              (emit-typed kid (clone sty) st)
-              (
-                ESRes
-                [st1 v]
-                (match st1
-                  (
-                    Emit
-                    [c1 m1 _s1]
-                    (match
-                      (
-                        recur-stores2
-                        next
-                        snext
-                        (
-                          em-line
-                          st1
-                          (
-                            str
-                            "  store "
-                            (state/ll-loop-slot-ty sty m1)
-                            " "
-                            v
-                            ", ptr "
-                            slot
-                            ", align 8"
-                          )
-                        )
-                      )
-                      (EURes [st2] (EURes st2)))
-                  ))
-              )))
-        )
-        (
-          _
-          (
-            EURes
-            (do
-              (state/cg-fail-i "recur arg/slot mismatch")
-              st)
-          )
-        ))
+      RVCons
+      [v lt slot next]
+      (recur-store-vals next (em-line st (str "  store " lt " " v ", ptr " slot ", align 8")))
     )))
 
-; The tail walk after the first store (state already carries the store).
-(defn recur-stores2 [args :- HExprs slots :- EMLSlots st :- Emit] :- EURes
-  (match args
-    (HENil [] (EURes st))
+; The open arms' exit frees, innermost first.
+(defn emit-pending-exits [exits :- PExits st :- Emit] :- Emit
+  (match exits
+    (PXNil [] st)
     (
-      HECons
-      [kid next]
-      (match slots
-        (
-          ESlots2
-          [name slot sty snext]
-          (if
-            (state/loop-slot-vec sty)
-            (match
-              (store-recur-vec-arg kid slot st)
-              (EURes [st1] (recur-stores2 next snext st1)))
-            (match
-              (emit-typed kid (clone sty) st)
-              (
-                ESRes
-                [st1 v]
-                (match st1
-                  (
-                    Emit
-                    [c1 m1 _s1]
-                    (match
-                      (
-                        recur-stores2
-                        next
-                        snext
-                        (
-                          em-line
-                          st1
-                          (
-                            str
-                            "  store "
-                            (state/ll-loop-slot-ty sty m1)
-                            " "
-                            v
-                            ", ptr "
-                            slot
-                            ", align 8"
-                          )
-                        )
-                      )
-                      (EURes [st2] (EURes st2)))
-                  ))
-              )))
-        )
-        (
-          _
-          (
-            EURes
-            (do
-              (state/cg-fail-i "recur arg/slot mismatch")
-              st)
-          )
-        ))
+      PXCons
+      [ef variant binders scrut name ai next]
+      (emit-pending-exits next (arm-exit-free ef variant binders st scrut name ai))
     )))

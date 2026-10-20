@@ -155,7 +155,7 @@
     ; a loop completing with a boxed ADT (the reader's scan returns the
     ; RRes from its loop): the loop machinery's completing register
     (HLoop [binds ty body] (scalars/emit-loop-node binds ty body st))
-    (HRecur [args] (scalars/sf st "recur outside loop"))
+    (HRecur [args _drops] (scalars/sf st "recur outside loop"))
     (HDrop [x] (scalars/sf st "drop produces no ADT value"))
     (HClosure [sig mangled params caps body] (scalars/sf st "closure value must be bound with let"))
     (HClosureCall [f args sig] (scalars/sf st "expected an ADT expression"))
@@ -936,7 +936,7 @@
     (HSeq [es] (types/t-none))
     (HLet [binds body frees] (types/t-none))
     (HLoop [binds ty body] (types/t-none))
-    (HRecur [args] (types/t-none))
+    (HRecur [args _drops] (types/t-none))
     (HCtor [adt variant args] (types/t-none))
     (HMatch [scrut arms ty] (types/t-none))
     (HClone [x] (types/t-none))

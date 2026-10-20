@@ -203,7 +203,7 @@
       [binds ty body]
       (str "(loop " (d-loop-binds binds (clone tab)) " " (d-ty ty) " " (d-e body (clone tab)) ")")
     )
-    (HRecur [args] (str "(recur" (d-args args (clone tab)) ")"))
+    (HRecur [args _drops] (str "(recur" (d-args args (clone tab)) ")"))
     (HCtor [adt variant args] (str "(ctor " adt " " variant (d-args args (clone tab)) ")"))
     (
       HMatch
