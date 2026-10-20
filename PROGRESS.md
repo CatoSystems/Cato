@@ -83,9 +83,16 @@ Tooling:
      (`transfer_merge_tails`);
    - parameter-mode inference (kernel parity currently runs the seed with
      inference off: `build_program_located_with(prog, false)`).
-3. **Kernel performance**: k2 is ~0.6 s slower than k1 on the same source.
-   `sample` showed `clone__TyEnv`/`drop__TyEnv` (type env copied per child
-   in `bcheck`) and `cato_stab_find`/`strcmp` (linear symbol lookup).
+3. **Kernel performance**: k2 is ~0.6-0.8 s slower than k1 on the same
+   source. The old `clone__TyEnv`/`drop__TyEnv` hotspots were removed by
+   borrowing the type env in `bcheck`, and `cato_stab_find` is now a hash
+   table; the current `sample` profile is flat — generic `drop__*`/`clone__*`
+   glue spread across many ADTs, plus emit-line churn (`strbuf__sb_str`,
+   `em_ins`/`fc_temp` per instruction group). A per-index StrBuf rewrite of
+   the O(n^2) `subs`-tail helpers `sub_place`/`mangle_raw` was tried and
+   **regressed** (k2 allocs 109.9M -> 113.4M, peak_live 168 -> 197 MiB): the
+   lines are short, so the tail `subs` cost is negligible while the StrBuf
+   per-char cons + final join is not. Do not redo that.
 4. **Cleanup**: drop the now-unused `BCtx` fields (`loopcopy`, `rok`,
    `lseed`) and their 32 destructuring sites; `moveck.cato` (~4.4k lines),
    `lower.cato` and `ownership.rs` exceed the 400-line guideline — split.
