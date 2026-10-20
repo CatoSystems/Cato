@@ -1,6 +1,6 @@
 (ns cato.lib.driver)
 
-(extern cato-getenv [name :- str] :- str)
+(extern cato-getenv [name :- str] :- (own str))
 (extern cato-file-exists [path :- str] :- bool)
 (extern cato-spawn [argv :- (Vector str)] :- i64)
 (extern cato-stderr [s :- str] :- i64)

@@ -875,7 +875,9 @@
         (
           Defn
           [name _ps ret isextern _body _rb]
-          (b-ar-seed t (if (and (= isextern 1) (b-coll-ty ret)) (SCons name out) out))
+          ; An extern's str/collection result is borrowed (never freed)
+          ; unless it is declared `(own T)` (ret-borrowed 2).
+          (b-ar-seed t (if (and (= isextern 1) (b-coll-ty ret) (not (= _rb 2))) (SCons name out) out))
         ))
     )))
 
@@ -2487,6 +2489,48 @@
         (hz-apply (HECons path (hz-one data)) -1 rem tys bcx)
         (HZArgs [a2 bs rem2] (hz-wrap bs (HSpit (hz-first (clone a2)) (hz-second a2)) rem2)))
     )
+    ; Builtins that only read their operands and return a scalar or a
+    ; fresh copy: a fresh operand is bound and freed after the read.
+    (HCount [a] (match (hz-apply (hz-one a) -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HCount (hz-first a2)) rem2))))
+    (HSlurp [a] (match (hz-apply (hz-one a) -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HSlurp (hz-first a2)) rem2))))
+    (
+      HStrCmp
+      [pol a b]
+      (match
+        (hz-apply (HECons a (hz-one b)) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HStrCmp pol (hz-first (clone a2)) (hz-second a2)) rem2)))
+    )
+    (
+      HStrOrd
+      [op a b]
+      (match
+        (hz-apply (HECons a (hz-one b)) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HStrOrd op (hz-first (clone a2)) (hz-second a2)) rem2)))
+    )
+    (
+      HSubs
+      [s a b]
+      (match (hz-apply (hz-one s) -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HSubs (hz-first a2) a b) rem2)))
+    )
+    (
+      HStrNth
+      [s idx res]
+      (match (hz-apply (hz-one s) -1 rem tys bcx) (HZArgs [a2 bs rem2] (hz-wrap bs (HStrNth (hz-first a2) idx res) rem2)))
+    )
+    (
+      HSplit
+      [s sep]
+      (match
+        (hz-apply (HECons s (hz-one sep)) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HSplit (hz-first (clone a2)) (hz-second a2)) rem2)))
+    )
+    (
+      HJoin
+      [sep xs]
+      (match
+        (hz-apply (HECons sep (hz-one xs)) -1 rem tys bcx)
+        (HZArgs [a2 bs rem2] (hz-wrap bs (HJoin (hz-first (clone a2)) (hz-second a2)) rem2)))
+    )
     (_ (HZOut e rem))))
 
 ; The plan step for one argument, without building the plan: 0 keep going
@@ -2536,10 +2580,23 @@
     (
       HSpit
       [path data]
-      (let [k (hz-arg-step path 0 -1 tys bcx)]
-        (or (= k 1) (and (= k 0) (= (hz-arg-step data 1 -1 tys bcx) 1))))
+      (hz-pair-leaky path data tys bcx)
     )
+    (HCount [a] (= (hz-arg-step a 0 -1 tys bcx) 1))
+    (HSlurp [a] (= (hz-arg-step a 0 -1 tys bcx) 1))
+    (HSubs [s _a _b] (= (hz-arg-step s 0 -1 tys bcx) 1))
+    (HStrNth [s _i _r] (= (hz-arg-step s 0 -1 tys bcx) 1))
+    (HStrCmp [_p a b] (hz-pair-leaky a b tys bcx))
+    (HStrOrd [_o a b] (hz-pair-leaky a b tys bcx))
+    (HSplit [s sep] (hz-pair-leaky s sep tys bcx))
+    (HJoin [sep xs] (hz-pair-leaky sep xs tys bcx))
     (_ false)))
+
+; Two operands, in evaluation order: the first leaks, or it is order-free
+; and the second leaks (the plan's stop rule, as in hz-leaky).
+(defn hz-pair-leaky [a :- &HExpr b :- &HExpr tys :- &TyEnv bcx :- &BCtx] :- bool
+  (let [k (hz-arg-step a 0 -1 tys bcx)]
+    (or (= k 1) (and (= k 0) (= (hz-arg-step b 1 -1 tys bcx) 1)))))
 
 ; Every node is hoisted before it is checked (the seed's check entry); the
 ; planner-made let is then planned like any other.

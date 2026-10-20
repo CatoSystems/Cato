@@ -144,6 +144,24 @@ pub(crate) fn call_user(
         mangle(name),
         ll_args.join(", ")
     ));
+    // C may return NULL for a `char*`; Cato strings are never null. A NULL
+    // borrowed result reads as a static "", a NULL owned one as a fresh ""
+    // (so the caller's free stays valid). One compare, no allocation on the
+    // common path.
+    if let Some(owned) = mdl.extern_str.get(name).copied() {
+        if owned {
+            mdl.ensure_decl("declare ptr @cato_own_or_empty(ptr)");
+            let r = c.temp();
+            c.line(&format!("  {} = call ptr @cato_own_or_empty(ptr {})", r, t));
+            return r;
+        }
+        mdl.ensure_decl("@cato_empty_str = private constant [1 x i8] zeroinitializer");
+        let z = c.temp();
+        c.line(&format!("  {} = icmp eq ptr {}, null", z, t));
+        let r = c.temp();
+        c.line(&format!("  {} = select i1 {}, ptr @cato_empty_str, ptr {}", r, z, t));
+        return r;
+    }
     if matches!(ret_ty, Ty::Fn(_)) {
         // A returned closure arrives by value; the caller holds closures
         // in %Closure slots (as let-bound ones and params).

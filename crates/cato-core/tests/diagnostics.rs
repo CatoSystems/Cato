@@ -13,6 +13,7 @@ const CASES: &[(&str, &str, usize, &str)] = &[
     ("literal_does_not_fit.cato", "E202", 4, "integer literal 300 does not fit u8"),
     ("call_arity.cato", "E201", 3, "f expects exactly 2 arguments, got 1"),
     ("call_arg_type.cato", "E202", 3, "f: argument 1 must be str, got i64"),
+    ("own_scalar.cato", "E202", 3, "an (own T) result must be a str or a vector"),
     (
         "exclusive_sigil.cato",
         "E202",

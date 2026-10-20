@@ -695,9 +695,11 @@ fn for_requires_control_flow_free_body() {
 
 #[test]
 fn map_literals_sort_keys_at_compile_time() {
+    // The fresh literal is bound (and freed) around the read.
     let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1 0))");
-    let HExpr::MapGet { src, .. } = body else { panic!("mapget") };
-    let HExpr::MapLit(pairs) = &*src else { panic!("maplit") };
+    let HExpr::Let(binds, inner, _) = body else { panic!("hoisting let") };
+    assert!(matches!(*inner, HExpr::MapGet { .. }), "mapget");
+    let HExpr::MapLit(pairs) = &binds[0].1 else { panic!("maplit") };
     let keys: Vec<i64> = pairs
         .iter()
         .map(|(k, _)| if let HExpr::ConstI64(c) = k { *c } else { panic!() })
@@ -723,9 +725,11 @@ fn set_literals_sort_and_dedupe() {
     )
     .unwrap();
     let fns = build(&exprs).unwrap();
-    let body = &fns[0].body;
-    match body {
-        HExpr::Count(inner) => match &**inner {
+    // The fresh literal is bound (and freed) around the count.
+    let HExpr::Let(binds, body, _) = &fns[0].body else { panic!("hoisting let") };
+    assert!(matches!(**body, HExpr::Count(_)), "count");
+    {
+        match &binds[0].1 {
             HExpr::SetLit(vs) => {
                 let vals: Vec<i64> = vs
                     .iter()
@@ -737,8 +741,7 @@ fn set_literals_sort_and_dedupe() {
                 assert_eq!(vals, vec![1, 2, 3]);
             }
             other => panic!("expected set literal, got {:?}", other),
-        },
-        other => panic!("expected count, got {:?}", other),
+        }
     }
 }
 

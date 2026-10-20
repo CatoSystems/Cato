@@ -527,6 +527,12 @@ static char *cato_dup_or_empty(const char *s) {
     return r;
 }
 
+/* An owned C string result: itself, or a fresh "" for NULL (Cato strings
+   are never null, and the caller frees what an owned extern returns). */
+char *cato_own_or_empty(char *s) {
+    return s ? s : cato_dup_or_empty("");
+}
+
 // The variable's value, or "" when unset.
 char *cato_getenv(const char *name) {
 #if defined(__wasm__)

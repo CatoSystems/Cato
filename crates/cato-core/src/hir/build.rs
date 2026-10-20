@@ -155,6 +155,7 @@ pub fn build_program_located_with(
             borrows: raw.borrows.clone(),
             is_extern: raw.is_extern,
             ret_borrowed: raw.ret_borrowed,
+            ret_owned: false,
         });
     }
     // FFI declarations: no lowering, all params borrow (C reads them).
@@ -168,6 +169,7 @@ pub fn build_program_located_with(
                 borrows: vec![Borrow::Shared; raw.params.len()],
                 is_extern: true,
                 ret_borrowed: false,
+                ret_owned: raw.ret_owned,
             });
         }
     }

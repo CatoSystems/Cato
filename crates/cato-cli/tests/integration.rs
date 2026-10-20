@@ -448,11 +448,12 @@ fn compiles_widths2_to_expected_output() {
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
-    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape", "lending"] {
+    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape", "lending", "mem/ffi_own"] {
         // (mem/ cases are covered by their own sanitizer tests below)
         let src = manifest.join("../../examples").join(format!("{}.cato", name));
-        let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
-        let exe = manifest.join("../../target").join(format!("frees_{}_bin", name));
+        let stem = name.replace('/', "_");
+        let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", stem));
+        let exe = manifest.join("../../target").join(format!("frees_{}_bin", stem));
 
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
             .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
@@ -825,7 +826,7 @@ fn loop_drops_are_sanitizer_clean() {
 // beyond the C runtime's own startup allocations (stdio buffers, ~80 KB).
 #[cfg(target_os = "macos")]
 #[test]
-fn loop_drops_leave_nothing_live() {
+fn mem_examples_leave_nothing_live() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let root = manifest.join("../..");
     let dylib = root.join("target/alloc_live_test.dylib");
@@ -834,20 +835,22 @@ fn loop_drops_leave_nothing_live() {
         .arg(root.join("tools/alloc_live.c"))
         .status().expect("build alloc_live");
     assert!(cc.success());
-    let exe = root.join("target/loop_drops_live_bin");
-    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(root.join("examples/mem/loop_drops.cato")).arg("-o").arg(&exe)
-        .status().expect("cato compile");
-    assert!(status.success());
-    let out = Command::new(&exe)
-        .env("DYLD_INSERT_LIBRARIES", &dylib)
-        .output().expect("run");
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let live: i64 = stderr
-        .lines()
-        .find_map(|l| l.strip_prefix("LIVE_EXIT ").map(|v| v.trim().parse().unwrap()))
-        .unwrap_or_else(|| panic!("no LIVE_EXIT line:\n{}", stderr));
-    assert!(live < 200_000, "{} bytes still live at exit", live);
+    for name in ["loop_drops", "ffi_own"] {
+        let exe = root.join(format!("target/{}_live_bin", name));
+        let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+            .arg("compile").arg(root.join(format!("examples/mem/{}.cato", name))).arg("-o").arg(&exe)
+            .status().expect("cato compile");
+        assert!(status.success());
+        let out = Command::new(&exe)
+            .env("DYLD_INSERT_LIBRARIES", &dylib)
+            .output().expect("run");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let live: i64 = stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("LIVE_EXIT ").map(|v| v.trim().parse().unwrap()))
+            .unwrap_or_else(|| panic!("{}: no LIVE_EXIT line:\n{}", name, stderr));
+        assert!(live < 200_000, "{}: {} bytes still live at exit", name, live);
+    }
 }
 
 #[test]
@@ -906,4 +909,13 @@ fn compiles_lending_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/lending.cato")).unwrap();
     assert_eq!(compile_and_run("lending", &src), "10\n10\n4\n4\n");
+}
+
+// Extern string results: borrowed by default, owned with `(own str)`, and a
+// NULL `char*` reads as "" (getenv of an unset variable).
+#[test]
+fn compiles_ffi_own_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/mem/ffi_own.cato")).unwrap();
+    assert_eq!(compile_and_run("ffi_own", &src), "3100\n0\n");
 }

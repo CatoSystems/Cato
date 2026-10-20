@@ -23,6 +23,9 @@ pub(crate) struct Mdl {
     pub(crate) lambdas: Vec<Lambda>,
     /// Thread count for `(parallel ...)` loops (`--threads`).
     pub(crate) threads: usize,
+    /// Externs returning `str`: name -> is the result owned (`(own str)`)?
+    /// A NULL `char*` from C reads as the empty string (see `call_user`).
+    pub(crate) extern_str: HashMap<String, bool>,
 }
 
 impl Mdl {
@@ -47,11 +50,27 @@ impl Mdl {
             fn_sigs: fn_sigs.into_iter().map(|(p, r)| (r, p)).collect(),
             lambdas,
             threads,
+            extern_str: HashMap::new(),
         }
     }
     /// Emit a `declare` once per symbol (deduplicated by line).
+    /// Add a module-level declaration once. Function declarations are
+    /// keyed by symbol: a user `extern` and a runtime helper the backend
+    /// itself calls (`strdup`, `strlen`, …) share one `declare`.
     pub(crate) fn declare(&mut self, line: String) {
-        if !self.decls.contains(&line) {
+        let sym = |l: &str| -> Option<String> {
+            if !l.starts_with("declare ") {
+                return None;
+            }
+            let at = l.find('@')?;
+            let end = l[at..].find('(')? + at;
+            Some(l[at..end].to_string())
+        };
+        let dup = match sym(&line) {
+            Some(s) => self.decls.iter().any(|d| sym(d).as_deref() == Some(s.as_str())),
+            None => self.decls.contains(&line),
+        };
+        if !dup {
             self.decls.push(line);
         }
     }

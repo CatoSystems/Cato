@@ -247,6 +247,7 @@ pub(crate) fn instantiate(
             borrows: raw.borrows.clone(),
             is_extern: false,
             ret_borrowed: raw.ret_borrowed,
+            ret_owned: false,
         });
     }
     Ok((mangled, ret))

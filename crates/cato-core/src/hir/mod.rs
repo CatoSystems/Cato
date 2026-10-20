@@ -541,6 +541,10 @@ pub struct Defn {
     /// Returned value is a borrow (`&T`): non-owning, non-droppable,
     /// non-movable at the call site.
     pub ret_borrowed: bool,
+    /// Extern only: the C function hands its string/collection result over
+    /// (`:- (own T)`, a `malloc`ed value the caller frees). Without it an
+    /// extern result is borrowed: Cato never frees foreign memory.
+    pub ret_owned: bool,
 }
 
 type Env = HashMap<String, Ty>;
@@ -558,6 +562,8 @@ pub(crate) struct RawDefn {
     pub(crate) body: Expr,
     /// Returned value is a borrow (`&T`); see `Defn::ret_borrowed`.
     pub(crate) ret_borrowed: bool,
+    /// Extern result ownership (see `Defn::ret_owned`).
+    pub(crate) ret_owned: bool,
 }
 
 /// Monomorphization state shared across lowering: instantiated generics are

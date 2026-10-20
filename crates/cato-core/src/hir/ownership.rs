@@ -631,7 +631,7 @@ pub fn compute_alias_ret(defns: &[Defn]) -> HashSet<String> {
         .collect();
     let mut out: HashSet<String> = defns
         .iter()
-        .filter(|d| d.is_extern && coll(d.ret))
+        .filter(|d| d.is_extern && coll(d.ret) && !d.ret_owned)
         .map(|d| d.name.clone())
         .collect();
     loop {
@@ -2343,6 +2343,19 @@ impl<'a> BCheck<'a> {
             }
             HExpr::Conj { x, .. } => (vec![&**x], vec![Borrow::Owned]),
             HExpr::Spit { path, data } => (vec![&**path, &**data], vec![Borrow::Owned; 2]),
+            // Builtins that only read their operands and return a scalar or
+            // a fresh copy: a fresh operand has no other owner, so it is
+            // bound and freed after the node (`(count (f x))`). Element
+            // `get` is not here: a str element points into its vector.
+            HExpr::Count(a) | HExpr::Slurp(a) => (vec![&**a], vec![Borrow::Shared]),
+            HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => {
+                (vec![&**a, &**b], vec![Borrow::Shared; 2])
+            }
+            HExpr::Subs { s, .. } | HExpr::StrNth { s, .. } => (vec![&**s], vec![Borrow::Shared]),
+            HExpr::Split { s, sep } => (vec![&**s, &**sep], vec![Borrow::Shared; 2]),
+            HExpr::Join { sep, xs } => (vec![&**sep, &**xs], vec![Borrow::Shared; 2]),
+            HExpr::SetContains { s, .. } => (vec![&**s], vec![Borrow::Shared]),
+            HExpr::MapGet { src, .. } => (vec![&**src], vec![Borrow::Shared]),
             _ => return,
         };
         let mut plan: Vec<(usize, Ty)> = Vec::new();
@@ -2404,6 +2417,36 @@ impl<'a> BCheck<'a> {
                 HExpr::Spit { path, data } => {
                     for (i, t) in plan {
                         slot(if i == 0 { path } else { data }, t);
+                    }
+                }
+                HExpr::Count(a) | HExpr::Slurp(a) => {
+                    for (_, t) in plan {
+                        slot(a, t);
+                    }
+                }
+                HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => {
+                    for (i, t) in plan {
+                        slot(if i == 0 { a } else { b }, t);
+                    }
+                }
+                HExpr::Split { s, sep } => {
+                    for (i, t) in plan {
+                        slot(if i == 0 { s } else { sep }, t);
+                    }
+                }
+                HExpr::Join { sep, xs } => {
+                    for (i, t) in plan {
+                        slot(if i == 0 { sep } else { xs }, t);
+                    }
+                }
+                HExpr::Subs { s, .. } | HExpr::StrNth { s, .. } | HExpr::SetContains { s, .. } => {
+                    for (_, t) in plan {
+                        slot(s, t);
+                    }
+                }
+                HExpr::MapGet { src, .. } => {
+                    for (_, t) in plan {
+                        slot(src, t);
                     }
                 }
                 _ => {}

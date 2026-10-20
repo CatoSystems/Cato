@@ -40,11 +40,31 @@ pub(crate) fn parse_extern(
         return Err("extern declarations must have concrete types".into());
     }
     let mut ret = Ty::I64;
+    let mut ret_owned = false;
     let mut body_start = 3;
     if items.len() > body_start + 1 {
         if let Expr::LitSym(sep) = &items[body_start] {
             if sep == ":-" {
-                ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
+                // `:- (own T)`: the C side hands the result over (a
+                // `malloc`ed string or buffer the caller frees). A plain
+                // `:- T` result is borrowed and never freed by Cato.
+                let ann = &items[body_start + 1];
+                let inner = match ann {
+                    Expr::List(xs)
+                        if xs.len() == 2 && matches!(&xs[0], Expr::LitSym(h) if h == "own") =>
+                    {
+                        ret_owned = true;
+                        &xs[1]
+                    }
+                    other => other,
+                };
+                ret = parse_ty(inner, tcx, &mut ty_params, fnsigs)?;
+                if ret_owned && !matches!(ret, Ty::Str | Ty::Vec(_)) {
+                    return Err(format!(
+                        "extern {}: an (own T) result must be a str or a vector",
+                        name
+                    ));
+                }
                 body_start += 2;
             }
         }
@@ -61,6 +81,7 @@ pub(crate) fn parse_extern(
         is_extern: true,
         body: Expr::List(Vec::new()),
         ret_borrowed: false,
+        ret_owned,
     })
 }
 
@@ -358,6 +379,7 @@ pub(crate) fn parse_raw(
         is_extern: false,
         body,
         ret_borrowed,
+        ret_owned: false,
     })
 }
 

@@ -11,7 +11,7 @@
 
 (extern cato-stab-new [] :- i64)
 (extern cato-stab-count [h :- i64] :- i64)
-(extern cato-stab-get [h :- i64 i :- i64] :- str)
+(extern cato-stab-get [h :- i64 i :- i64] :- (own str))
 (extern cato-stab-find [h :- i64 v :- str] :- i64)
 (extern cato-stab-conj [h :- i64 v :- str] :- i64)
 (extern cato-stab-add [h :- i64 v :- str] :- i64)

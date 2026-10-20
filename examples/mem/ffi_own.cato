@@ -1,0 +1,20 @@
+; ffi_own.cato — who frees what crosses the C boundary.
+;
+; An extern's string result is borrowed by default: Cato never frees memory
+; it did not allocate (`getenv` returns the environment's own storage).
+; `:- (own str)` declares that the C function hands its result over — a
+; malloc'ed string the caller frees (`strdup`). Fresh values read by
+; builtins (`count`, `=`) are freed after the read.
+
+(extern strdup [s :- str] :- (own str))
+(extern getenv [name :- str] :- str)
+
+(defn label [i :- i64] :- str (str "item" i))
+
+(defn main []
+  (loop [i :- i64 0 k :- i64 0]
+    (if (>= i 1000)
+      (do (print-i64 k) (print-i64 (count (getenv "CATO_FFI_OWN_UNSET_VAR_ZZ"))))
+      (recur (+ i 1)
+             (+ k (+ (count (strdup "abc"))
+                     (if (= (label i) "item7") 100 0)))))))

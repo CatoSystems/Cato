@@ -1771,7 +1771,10 @@
                   (RawRes ps2 (RawDefn -1 (PNil) (types/t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
                   (parse-defn-body items n (+ i 2) params name-sid ret 1 isextern ps2))
               )))
-          (let [rt (parse-ty (clone ret-node) ps)]
+          ; `:- (own T)` on an extern: the C side hands its result over
+          ; (recorded as ret-borrowed 2; only `1` means a borrowed return).
+          (let [own (own-ann ret-node (ps-tab ps))
+            rt (parse-ty (if own (own-inner ret-node) ret-node) ps)]
             (match rt
               (
                 PTyRes
@@ -1779,9 +1782,27 @@
                 (if
                   (ps-failed ps2)
                   (RawRes ps2 (RawDefn -1 (PNil) (types/t-none) (SNil) 0 (ANil (Span 0 0 0)) 0))
-                  (parse-defn-body items n (+ i 2) params name-sid ret 0 isextern ps2))
+                  (parse-defn-body items n (+ i 2) params name-sid ret (if (and own (= isextern 1)) 2 0) isextern ps2))
               )))))
       (parse-defn-body items n i params name-sid (types/t-i64) 0 isextern ps))))
+
+; An `(own T)` return annotation: a two-element list headed by `own`.
+(defn own-ann [a :- &Ast tab :- i64] :- bool
+  (match a
+    (
+      AList
+      [kids at]
+      (if
+        (= (ast/asts-depth kids) 2)
+        (= (node-str (expand/asts-idx (clone kids) 0) tab) "own")
+        false))
+    (_ false)))
+
+; The annotated type inside `(own T)`.
+(defn own-inner [a :- Ast] :- Ast
+  (match a
+    (AList [kids at] (expand/asts-idx kids 1))
+    (_ a)))
 
 (defn parse-defn-body [items :- Asts
   n :- i64

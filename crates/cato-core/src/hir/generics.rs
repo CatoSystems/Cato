@@ -863,6 +863,7 @@ pub(crate) fn generic_call(
         borrows: vec![Borrow::Owned; arity],
         is_extern: false,
         ret_borrowed: false,
+        ret_owned: false,
     });
     ctx.gens.borrow_mut().dispatch_cache.insert(key.clone(), key.clone());
     ctx.gens.borrow_mut().call_rets.insert(key.clone(), ret);
@@ -1043,6 +1044,7 @@ fn resolve_method_instance(
         borrows: vec![Borrow::Owned; names.len()],
         is_extern: false,
         ret_borrowed: false,
+        ret_owned: false,
     });
     ctx.gens
         .borrow_mut()

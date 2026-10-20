@@ -73,6 +73,9 @@ pub fn emit_module_fast(
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
     let mut mdl = Mdl::new(adts.to_vec(), fast, fn_sigs.to_vec(), lambdas.to_vec(), threads);
+    for d in fns.iter().filter(|d| d.is_extern && d.ret == Ty::Str) {
+        mdl.extern_str.insert(d.name.clone(), d.ret_owned);
+    }
 
     for d in fns {
         if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
@@ -150,7 +153,8 @@ pub fn emit_module_fast(
     for defn in &plain {
         output.push(String::new());
         if defn.is_extern {
-            output.push(emit_extern_decl(defn, &mut mdl));
+            let decl = emit_extern_decl(defn, &mut mdl);
+            mdl.declare(decl.trim_end().to_string());
         } else {
             output.push(emit_plain(defn, &mut mdl, &sigs));
         }

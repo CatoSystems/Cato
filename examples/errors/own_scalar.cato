@@ -1,0 +1,4 @@
+;; E202: (own T) declares a C result handed over to the caller; only
+;; strings and vectors carry an ownership duty.
+(extern f [n :- i64] :- (own i64))
+(defn main [] :- i64 0)
