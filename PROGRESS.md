@@ -52,6 +52,11 @@ Kernel (`selfhost/cato`), Stage 4 so far:
   `recur` after evaluating all arguments.
 - Context: the checker threads a `Scope` (watches, iteration frame, roots,
   in-place accumulators) instead of rebuilding `BCtx` per loop/recur arg.
+- Value-flow moves (`move_value_roots`): a non-Var owned argument (an
+  if/match/let/seq merge, or any constructor field) hands over every
+  non-Copy binding it may be — each tail leaf that is a non-Copy variable
+  moves, and so do the non-Copy variables an alias-returning call leaf is
+  given (moveck's `mvr-*` helpers).
 - Bugs fixed: deftypes numbered in reverse; ADT ownership facts read only
   the first variant (accepted reuse of a moved value); merges re-added
   shadowed history; branch free of a reused `~aN` temp name (double free);
@@ -74,8 +79,6 @@ Tooling:
 2. **Port the rest of the seed planner to the kernel**:
    - `div_moved` / `always_recurs` in if/match merges (precision; kernel is
      conservative today);
-   - let `value_roots` and `move_value_roots` (value-flow rules from
-     Stage 3);
    - escape transfer (`CATO_NO_ESCTRANSFER` rule) and merge ownership
      (`transfer_merge_tails`);
    - parameter-mode inference (kernel parity currently runs the seed with

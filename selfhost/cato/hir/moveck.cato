@@ -893,7 +893,25 @@
                       [st2 owns2 rem2 cons2]
                       (b-call-move-ps next pt st2 owns2 rem2 cons2 tys bcx scp)
                     ))
-                  (b-call-move-ps next pt st owns rem cons tys bcx scp)))
+                  (if
+                    (and
+                      (= pb 0)
+                      (or
+                        (= (lower/h-tag kid) 22)
+                        (= (lower/h-tag kid) 29)
+                        (= (lower/h-tag kid) 30)
+                        (= (lower/h-tag kid) 34)))
+                    (match
+                      (move-value-roots kid st owns cons tys bcx scp)
+                      (
+                        MoveRes
+                        [st2 owns2 cons2 m2]
+                        (if
+                          (> (count m2) 0)
+                          (B4Err m2)
+                          (b-call-move-ps next pt st2 owns2 rem cons2 tys bcx scp)))
+                    )
+                    (b-call-move-ps next pt st owns rem cons tys bcx scp))))
             ))
         ))
     )))
@@ -2475,6 +2493,90 @@
 ; Is the callee's i-th parameter owned? Borrowed (`&`) parameters and
 ; extern parameters are not; builtins without a defn are owned except the
 ; seed's never-consuming set.
+; move_value_roots: a non-Var owned argument (an if/match/let/seq merge,
+; or any constructor field) hands over every non-Copy binding it may be:
+; each tail leaf that is a non-Copy variable moves, and so do the
+; non-Copy variables an alias-returning call leaf is given. Direct
+; references only: the box a binder was read from stays with its match's
+; exit free.
+(defn mvr-hes-last [ks :- HExprs] :- HExpr
+  (match ks
+    (HECons [kid next] (if (hexpr/hes-null next) kid (mvr-hes-last next)))
+    (HENil [] (HConstI64 0))))
+
+(defn mvr-arm-bodies [arms :- HArms tys :- &TyEnv bcx :- &BCtx acc :- Sids] :- Sids
+  (match arms
+    (HANil [] acc)
+    (HACons [_variant _binders body _fr next] (mvr-arm-bodies next tys bcx (mvr-collect body tys bcx acc)))))
+
+(defn mvr-collect [e :- HExpr tys :- &TyEnv bcx :- &BCtx acc :- Sids] :- Sids
+  (match e
+    (HVar [v]
+      (let [t (forms/te-get tys v)]
+        (if
+          (and (types/is-non-copy-ty t) (not (types/sids-has acc v)))
+          (types/sids-append acc v)
+          acc)))
+    (HLet [_binds body _frees] (mvr-collect body tys bcx acc))
+    (HSeq [vs] (if (hexpr/hes-null vs) acc (mvr-collect (mvr-hes-last vs) tys bcx acc)))
+    (HIf [_c t f _ty] (mvr-collect f tys bcx (mvr-collect t tys bcx acc)))
+    (HMatch [_scrut arms _ty] (mvr-arm-bodies arms tys bcx acc))
+    (HCall [name args]
+      (let [ret (b-ret-at bcx name)]
+        (if
+          (and (= (b-rb-at bcx name) 1) (types/is-non-copy-ty ret))
+          (mvr-call-args args tys bcx acc)
+          acc)))
+    (_ acc)))
+
+(defn mvr-call-args [args :- HExprs tys :- &TyEnv bcx :- &BCtx acc :- Sids] :- Sids
+  (match args
+    (HENil [] acc)
+    (HECons [kid next]
+      (if
+        (= (lower/h-tag kid) 3)
+        (let [v (lower/name-of kid)]
+          (let [t (forms/te-get tys v)]
+            (if
+              (and (types/is-non-copy-ty t) (not (types/sids-has acc v)))
+              (mvr-call-args next tys bcx (types/sids-append acc v))
+              (mvr-call-args next tys bcx acc))))
+        (mvr-call-args next tys bcx acc)))))
+
+(defn mvr-move-all [ms :- Sids
+  st :- IMap
+  owns :- IMap
+  cons :- IMap
+  bcx :- &BCtx
+  scp :- &Scope
+] :- MoveRes
+  (match ms
+    (SNil [] (MoveRes st owns cons ""))
+    (SCons [v rest]
+      (if
+        (or (types/sids-has (b-nomove-of bcx) v) (= (forms/im-get st v 0) 1))
+        (mvr-move-all rest st owns cons bcx scp)
+        (match
+          (move-var v st owns cons bcx scp)
+          (MoveRes [st2 owns2 cons2 m]
+            (if
+              (> (count m) 0)
+              (MoveRes st2 owns2 cons2 m)
+              (mvr-move-all rest st2 owns2 cons2 bcx scp))))))))
+
+; The move sites (b-call-move-ps, b-ctor-move) hand a non-Var owned
+; argument here so the buffers it may be flow to the new holder instead
+; of being freed a second time by the caller's drop glue.
+(defn move-value-roots [e :- HExpr
+  st :- IMap
+  owns :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  scp :- &Scope
+] :- MoveRes
+  (mvr-move-all (mvr-collect e tys bcx (SNil)) st owns cons bcx scp))
+
 (defn plist-owned-at [ps :- &PList i :- i64] :- i64
   (match ps
     (PNil [] 1)
@@ -3607,7 +3709,16 @@
           (move-if-nc (lower/name-of kid) st owns rem cons tys bcx scp)
           (MncErr [msg] (B4Err msg))
           (MncRes [st2 owns2 rem2 cons2] (b-ctor-move next st2 owns2 rem2 cons2 tys bcx scp)))
-        (b-ctor-move next st owns rem cons tys bcx scp))
+        (match
+          (move-value-roots kid st owns cons tys bcx scp)
+          (
+            MoveRes
+            [st2 owns2 cons2 m2]
+            (if
+              (> (count m2) 0)
+              (B4Err m2)
+              (b-ctor-move next st2 owns2 rem cons2 tys bcx scp)))
+        ))
     )))
 
 ; --- plan_drops: the per-defn wrapper ------------------------------------------------
