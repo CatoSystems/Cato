@@ -728,3 +728,47 @@
     (HSpit [_ _] (types/t-none))
     (HArgs [] (types/t-none))
     (HExit [_] (types/t-none))))
+
+; A user fn's returned str is owned by the caller (str results are
+; caller-freed), so a borrowed-shape tail — a literal, or a str element
+; load — must materialize an owned copy (strdup) at the return boundary.
+; The emitter applies it to every str-returning function body (as the
+; seed's backend does): recurse into the tail of Seq, both
+; If branches, a Let's body, and every Match arm; wrap the borrowed
+; leaves in clone and pass everything else through.
+(defn own-str-return [e :- HExpr] :- HExpr
+  (match e
+    (HStrLit [_] (HClone e))
+    (
+      HGet
+      [src idx dflt ty res]
+      (if
+        (= (types/ty-tag ty) 12)
+        (HClone e)
+        e)
+    )
+    (HSeq [es] (HSeq (osr-seq es)))
+    (HIf [c t f ty] (HIf c (own-str-return t) (own-str-return f) ty))
+    (HLet [binds body frees] (HLet binds (own-str-return body) frees))
+    (HMatch [scrut arms ty] (HMatch scrut (osr-arms arms) ty))
+    (_ (clone e))))
+
+(defn osr-seq [es :- HExprs] :- HExprs
+  (match es
+    (HENil [] (HENil))
+    (
+      HECons
+      [kid next]
+      (match next
+        (HENil [] (HECons (own-str-return kid) (HENil)))
+        (HECons [k2 n2] (HECons kid (osr-seq next))))
+    )))
+
+(defn osr-arms [as :- HArms] :- HArms
+  (match as
+    (HANil [] (HANil))
+    (
+      HACons
+      [variant binders body ef next]
+      (HACons variant binders (own-str-return body) ef (osr-arms next))
+    )))

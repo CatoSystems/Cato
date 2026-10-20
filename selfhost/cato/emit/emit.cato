@@ -820,6 +820,14 @@
       (str header "entry:\n" (strbuf/sb-str pre) (strbuf/sb-str body) tail)
     )))
 
+; A returned str is caller-freed, so a str-returning body's borrowed-shape
+; leaves (literals, element loads) materialize an owned copy at the return.
+(defn str-ret-body [body :- HExpr ret :- &Ty] :- HExpr
+  (if
+    (types/ty-eq (clone ret) (types/t-str))
+    (hexpr/own-str-return body)
+    body))
+
 (defn emit-defns [ds :- Defns st :- Emit out :- EOut] :- EORes
   (match ds
     (DNil [] (EORes st out))
@@ -851,7 +859,7 @@
                   )]
                   (emit-defns t (scalars/em-decl st line) out))
                 (match
-                  (emit-plain name params (clone ret) body (Emit (state/fn-new) mdl sigs))
+                  (emit-plain name params (clone ret) (str-ret-body body ret) (Emit (state/fn-new) mdl sigs))
                   (
                     EDRes
                     [st2 text]
@@ -1458,7 +1466,7 @@
               Emit
               [c mdl sigs]
               (match
-                (emit-lambda-pair mangled caps params ret body mdl (clone sigs))
+                (emit-lambda-pair mangled caps params (clone ret) (str-ret-body body ret) mdl (clone sigs))
                 (
                   ELPR
                   [mdl2 text drop-text]
