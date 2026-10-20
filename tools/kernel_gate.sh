@@ -3,6 +3,11 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 SEED=./target/debug/cato
+# Scratch directory for kernel binaries and fixture artifacts. Defaults to
+# /tmp; set CATO_GATE_TMP to a private directory when another checkout may
+# run the gate concurrently (the fixed paths would clobber each other).
+T="${CATO_GATE_TMP:-/tmp}"
+mkdir -p "$T"
 FX=selfhost/fixtures/kernel
 fail=0
 
@@ -11,14 +16,14 @@ fail=0
 # run_* too: kb() verifies acceptance by artifact existence, so a stale
 # fixture binary from an earlier run fakes an OK (this cost a debugging
 # cycle — the gate reported PASS while k1 rejected bk1/bk3).
-rm -f /tmp/k1 /tmp/k2 /tmp/k2.ll /tmp/k3 /tmp/k3.ll /tmp/k2build.log /tmp/run_*
+rm -f $T/k1 $T/k2 $T/k2.ll $T/k3 $T/k3.ll $T/k2build.log $T/run_*
 
 # Every kernel build is also verified by its artifact (exit codes alone
 # once hid a stale binary, see above).
-"$SEED" compile selfhost/cato/cli.cato -o /tmp/k1 || { echo "SEED BUILD FAIL"; exit 2; }
+"$SEED" compile selfhost/cato/cli.cato -o $T/k1 || { echo "SEED BUILD FAIL"; exit 2; }
 
 kb() { # src out   (kernel build; true iff artifact exists)
-  /tmp/k1 compile "$1" -o "$2" >/tmp/kb.log 2>&1
+  $T/k1 compile "$1" -o "$2" >$T/kb.log 2>&1
   [ -x "$2" ]
 }
 
@@ -27,27 +32,27 @@ kb() { # src out   (kernel build; true iff artifact exists)
 # instead interpose malloc/realloc in the kernel process only. The seed-built
 # k1 is not hardened, so DYLD_INSERT_LIBRARIES loads; clang is hardened, so its
 # child allocations are stripped. ALLOC_BYTES is byte-stable across runs.
-clang -dynamiclib -O2 -o /tmp/alloc_count.dylib tools/alloc_count.c \
+clang -dynamiclib -O2 -o $T/alloc_count.dylib tools/alloc_count.c \
   || { echo "ALLOC COUNTER BUILD FAIL"; exit 2; }
 
 # The k2 self-build is where churn is measured.
-DYLD_INSERT_LIBRARIES=/tmp/alloc_count.dylib /tmp/k1 compile selfhost/cato/cli.cato -o /tmp/k2 --emit-ll /tmp/k2.ll >/tmp/k2build.log 2>&1
-[ -x /tmp/k2 ] || { echo "KERNEL BUILD k2 FAIL"; tail -2 /tmp/k2build.log; exit 2; }
-read -r ALLOC CALLS <<<"$(awk '/ALLOC_BYTES/{b=$2;c=$4} END{print b, c}' /tmp/k2build.log)"
+DYLD_INSERT_LIBRARIES=$T/alloc_count.dylib $T/k1 compile selfhost/cato/cli.cato -o $T/k2 --emit-ll $T/k2.ll >$T/k2build.log 2>&1
+[ -x $T/k2 ] || { echo "KERNEL BUILD k2 FAIL"; tail -2 $T/k2build.log; exit 2; }
+read -r ALLOC CALLS <<<"$(awk '/ALLOC_BYTES/{b=$2;c=$4} END{print b, c}' $T/k2build.log)"
 
 # k3 is built by the kernel-generated k2 — the self-hosting fixpoint.
-/tmp/k2 compile selfhost/cato/cli.cato -o /tmp/k3 --emit-ll /tmp/k3.ll >/tmp/k3build.log 2>&1
-[ -x /tmp/k3 ] || { echo "KERNEL BUILD k3 FAIL"; tail -2 /tmp/k3build.log; exit 2; }
+$T/k2 compile selfhost/cato/cli.cato -o $T/k3 --emit-ll $T/k3.ll >$T/k3build.log 2>&1
+[ -x $T/k3 ] || { echo "KERNEL BUILD k3 FAIL"; tail -2 $T/k3build.log; exit 2; }
 
-if [ -f /tmp/k2.ll ] && [ -f /tmp/k3.ll ] && cmp -s /tmp/k2.ll /tmp/k3.ll; then
+if [ -f $T/k2.ll ] && [ -f $T/k3.ll ] && cmp -s $T/k2.ll $T/k3.ll; then
   echo "FIXPOINT: OK"
 else
   echo "FIXPOINT: DIFF"; fail=1
 fi
 
 check_out() { # file expected
-  kb "$FX/$1.cato" "/tmp/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
-  got="$(/tmp/run_$1)"; [ "$got" = "$2" ] && echo "OK $1" || { echo "OUTPUT FAIL $1: '$got' != '$2'"; fail=1; }
+  kb "$FX/$1.cato" "$T/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
+  got="$($T/run_$1)"; [ "$got" = "$2" ] && echo "OK $1" || { echo "OUTPUT FAIL $1: '$got' != '$2'"; fail=1; }
 }
 check_out t1 "la=X"; check_out t2 "X"; check_out t3 "7"
 check_out t4 "3";    check_out t5 "3"; check_out t6 "3"
@@ -60,8 +65,8 @@ check_out cycle "5"
 # len each recur needs ~2n^2*8 bytes here and is killed long before the
 # bound; the fixed one finishes in milliseconds.
 check_out_bounded() { # file expected maxsec
-  kb "$FX/$1.cato" "/tmp/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
-  "/tmp/run_$1" >/tmp/run_$1.out 2>/dev/null &
+  kb "$FX/$1.cato" "$T/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
+  "$T/run_$1" >$T/run_$1.out 2>/dev/null &
   pid=$!
   waited=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -72,13 +77,13 @@ check_out_bounded() { # file expected maxsec
     fi
   done
   wait "$pid"
-  got="$(cat /tmp/run_$1.out)"
+  got="$(cat $T/run_$1.out)"
   [ "$got" = "$2" ] && echo "OK $1" || { echo "OUTPUT FAIL $1: '$got' != '$2'"; fail=1; }
 }
 check_out_bounded vec_loop "$(printf '300000\n299999\n0')" 20
 
-check_ok()  { kb "$FX/$1.cato" "/tmp/run_$1" && echo "OK $1" || { echo "ACCEPT FAIL $1"; fail=1; }; }
-check_bad() { kb "$FX/$1.cato" "/tmp/run_$1" && { echo "REJECT FAIL $1"; fail=1; } || echo "OK $1(rejected)"; }
+check_ok()  { kb "$FX/$1.cato" "$T/run_$1" && echo "OK $1" || { echo "ACCEPT FAIL $1"; fail=1; }; }
+check_bad() { kb "$FX/$1.cato" "$T/run_$1" && { echo "REJECT FAIL $1"; fail=1; } || echo "OK $1(rejected)"; }
 check_ok bk1; check_bad bk2; check_ok bk3; check_bad bk4
 # Loader contract (parity with the seed): duplicate ns, an unbound alias,
 # and a malformed require spec are all build errors in the kernel too.
@@ -86,9 +91,9 @@ check_bad dupns; check_bad badalias; check_bad malreq
 
 # Diagnostics name the failing sub-form (file:line:col), not the defn.
 check_loc() { # file expected-location
-  /tmp/k1 compile "$FX/$1.cato" -o "/tmp/run_$1" >/tmp/kb.log 2>&1
-  grep -q "$FX/$1.cato:$2: " /tmp/kb.log && echo "OK $1" \
-    || { echo "LOCATION FAIL $1: $(head -1 /tmp/kb.log)"; fail=1; }
+  $T/k1 compile "$FX/$1.cato" -o "$T/run_$1" >$T/kb.log 2>&1
+  grep -q "$FX/$1.cato:$2: " $T/kb.log && echo "OK $1" \
+    || { echo "LOCATION FAIL $1: $(head -1 $T/kb.log)"; fail=1; }
 }
 check_loc errloc 5:10
 check_loc errloc_move 7:25

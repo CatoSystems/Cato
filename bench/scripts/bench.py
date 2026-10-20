@@ -98,7 +98,7 @@ def targets_for(name, tier):
     add("cato-seed-o2", [SEED, "compile", src, "-o", BIN_DIR / f"{name}.seed-o2"], BIN_DIR / f"{name}.seed-o2")
     add("cato-seed-o3", [SEED, "compile", src, "-O3", "-o", BIN_DIR / f"{name}.seed-o3"], BIN_DIR / f"{name}.seed-o3")
     if tier == "shared" and KERNEL.exists():
-        add("cato-kernel", [KERNEL, "build", src, BIN_DIR / f"{name}.kernel", RUNTIME],
+        add("cato-kernel", [KERNEL, "compile", src, "-O2", "-o", BIN_DIR / f"{name}.kernel", "--runtime", RUNTIME],
             BIN_DIR / f"{name}.kernel", cwd=ROOT)
     rs = BENCH_DIR / "equivalents" / "rust" / f"{name}.rs"
     if rs.exists():
