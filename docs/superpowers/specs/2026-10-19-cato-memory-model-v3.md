@@ -539,3 +539,48 @@ hand-hoisted lengths), not a measured hotspot. Recorded follow-ups:
 out-of-bounds read); `(count (args))` and a closure calling `count` on a
 captured `str` crash the backend; integer division by zero is LLVM UB
 natively (the interpreter traps).
+
+### Stage 3 — inferred parameter modes (seed)
+
+Rule: a parameter that only reads its argument lends it; the caller keeps
+the value. Worklist fixpoint (`hir/infer.rs`) over the program with the
+planner as oracle (`kept_params`: moved, returned, or a derived value
+reaching the result ⇒ owned). `(f (clone x))` into a lent parameter passes
+`x` when no other argument mentions it. The kernel's checker keeps the
+explicit-annotation language (its parity oracle builds with inference off).
+
+Soundness holes exposed and fixed (all pre-existing, ASAN-confirmed): a
+value reaching a constructor field or owned parameter through `if`/`let`
+(binder through an `if`; an inner `let`'s value; a merge of two locals);
+one value passed to an owned *and* a lent parameter of one call (also
+reachable with explicit `&`); build-stage ownership facts that ignored
+monomorphized ADT instances (seed *and* kernel — the kernel had mirrored
+the seed's gap deliberately).
+
+### Stage 2 — FFI ownership (seed + kernel parser/planner)
+
+`:- (own str)` marks an extern result the caller frees; plain extern
+results are borrowed. A NULL `char*` reads as "" (it crashed). User externs
+and backend-internal declarations share one `declare`. Fresh operands of
+read-only builtins are freed after the read (seed and kernel).
+
+### Bugs fixed on the spot (instrumentation and codegen)
+
+ASAN never instrumented generated code (`.ll` functions need
+`sanitize_address`; `--asan` now emits it — every earlier sanitizer
+result covered only the allocator and the C runtime). Out-of-bounds `get`
+load on empty vectors; captured closure advanced the env offset by 2 of 3
+words (wrong values); captured `str` freed twice / crashed the backend;
+closures could not be returned; `subvec`/`args` in value position
+panicked; integer division by zero was UB natively.
+
+| k1 self-compile | baseline | stage 1 | stage 3 | stage 2 |
+|---|---|---|---|---|
+| peak live | 212 MiB | 133 MiB | 127 MiB | **112 MiB** |
+| leaked at exit | 202 MiB | 122 MiB | 117 MiB | **102 MiB** |
+| churn | 3.80 GB | 3.80 GB | 3.40 GB | 3.42 GB |
+| allocations | 101.5 M | 101.5 M | 89.5 M | 90.1 M |
+| wall | 3.34 s | 3.36 s | 3.04 s | 3.01 s |
+
+k2 (kernel-generated kernel) is unchanged at 3.46 GB: the kernel's planner
+still lacks the arm-exit and loop rules (Stage 4).
