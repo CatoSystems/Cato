@@ -5379,7 +5379,7 @@
       (
         lower-do
         (expand/asts-tail (clone kids))
-        (clone env)
+        env
         (clone expected)
         tab
         adts
@@ -5392,12 +5392,12 @@
         raws
       )
       (= h (expand/s-fn))
-      (lower-closure (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-closure (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-let))
       (
         lower-let
         (expand/asts-tail (clone kids))
-        (clone env)
+        env
         (clone expected)
         tab
         adts
@@ -5410,20 +5410,20 @@
         raws
       )
       (= h (expand/s-if))
-      (lower-if (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-if (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-notform))
-      (lower-not (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-not (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-abs))
-      (lower-abs (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-abs (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-min))
-      (lower-minmax 0 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-minmax 0 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-max))
-      (lower-minmax 1 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-minmax 1 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-match))
       (
         lower-match
         (clone kids)
-        (clone env)
+        env
         (clone expected)
         tab
         adts
@@ -5436,12 +5436,12 @@
         raws
       )
       (= h (expand/s-loop))
-      (lower-loop (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-loop (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-recur))
       (
         lower-recur
         (expand/asts-tail (clone kids))
-        (clone env)
+        env
         tab
         adts
         insts
@@ -5453,9 +5453,9 @@
         raws
       )
       (= h (expand/s-and))
-      (lower-andor 0 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-andor 0 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-or))
-      (lower-andor 1 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-andor 1 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (
         or
         (= h (expand/s-eq))
@@ -5469,7 +5469,7 @@
         lower-cmp
         (cmp-op h)
         (clone kids)
-        (clone env)
+        env
         tab
         adts
         insts
@@ -5485,7 +5485,7 @@
         lower-arith
         (arith-op h)
         (clone kids)
-        (clone env)
+        env
         tab
         adts
         insts
@@ -5510,41 +5510,41 @@
         (= h (expand/s-u64))
         (= h (expand/s-usize))
       )
-      (lower-cast h (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-cast h (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-getform))
-      (lower-get (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-get (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-conjform))
-      (lower-conj (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-conj (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-count))
-      (lower-count (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-count (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-strform))
-      (lower-str (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-str (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-subs))
-      (lower-subs (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-subs (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-split))
-      (lower-split (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-split (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-join))
-      (lower-join (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-join (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-nth))
-      (lower-nth (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-nth (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-charstr))
-      (lower-charstr (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-charstr (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-clone))
-      (lower-clone (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-clone (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-dropform))
-      (lower-drop (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-drop (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-slurp))
-      (lower-slurp (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-slurp (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-spit))
-      (lower-spit (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-spit (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-args))
       (lok tab adts insts sigs lams rets ncached defs (HArgs))
       (= h (expand/s-exit))
-      (lower-exit (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-exit (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-parsei64))
-      (lower-parse 1 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-parse 1 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (= h (expand/s-parsef64))
-      (lower-parse 0 (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-parse 0 (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (
         or
         (= h (expand/s-printstr))
@@ -5552,7 +5552,7 @@
         (= h (expand/s-printf64))
         (= h (expand/s-printi64))
       )
-      (lower-print h (clone kids) (clone env) tab adts insts sigs lams rets ncached defs raws)
+      (lower-print h (clone kids) env tab adts insts sigs lams rets ncached defs raws)
       (or (= h (expand/s-veci64)) (= h (expand/s-vecf64)))
       (lower-vec-builtin h (clone kids) tab adts insts sigs lams rets ncached defs)
       (
