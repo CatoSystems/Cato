@@ -166,7 +166,7 @@
 ; scrutinee retires its aliasing binders: their values live in (or own
 ; through) the box that just left, so a later use is the standard
 ; use-of-moved error. The watches ride beside bcx, not in the context.
-(defn move-var [v :- i64 st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx ws :- &Watches] :- MoveRes
+(defn move-var [v :- i64 st :- IMap owns :- IMap cons :- IMap bcx :- &BCtx scp :- &Scope] :- MoveRes
   (if
     (types/sids-has (b-nomove-of bcx) v)
     (match bcx
@@ -187,9 +187,9 @@
         )
       ))
     (if
-      (watched ws v)
+      (watched (scope-ws scp) v)
       (match
-        (retire-watched ws v st owns cons)
+        (retire-watched (scope-ws scp) v st owns cons)
         (
           MoveRes
           [st2 owns2 cons2 _m]
@@ -197,21 +197,47 @@
         ))
       (MoveRes (forms/im-put st v 1) (forms/im-put owns v 0) (forms/im-put cons v 1) ""))))
 
+; What the walk knows about the enclosing code, threaded downward beside
+; bcx (each child sees its own extension; nothing flows back up):
+; - ws: the enclosing arms' watches (see Watches);
+; - inloop / frame: inside a loop body, the bindings the current iteration
+;   made, innermost first, with whether a recur may drop them (loop
+;   variables that own their value, `let`s not re-bound in their own
+;   scope; match binders shadow but are never dropped);
+; - roots: inside a loop body, what each binding's value may point into
+;   (see roots-of) — a recur never drops what an argument may reach.
+(deftype Scope (Scope [ws :- Watches inloop :- i64 frame :- VScope roots :- Roots]))
+
+(deftype VScope
+  (IVNil)
+  (IVCons [name :- i64 drop :- i64 next :- VScope]))
+
+(deftype Roots
+  (RtNil)
+  (RtCons [name :- i64 rs :- Sids next :- Roots]))
+
+(defn scope-new [] :- Scope (Scope (WNil) 0 (IVNil) (RtNil)))
+
+(defn scope-ws [scp :- &Scope] :- &Watches (match scp (Scope [ws _i _f _r] ws)))
+
+(defn scope-with-ws [scp :- &Scope ws :- Watches] :- Scope
+  (match scp (Scope [_w i f r] (Scope ws i (clone f) (clone r)))))
+
 ; Is v the scrutinee of an enclosing match whose arm has aliasing binders?
-(defn watched [ws :- &Watches v :- i64] :- bool
-  (match ws
+(defn watched [wl :- &Watches v :- i64] :- bool
+  (match wl
     (WNil [] false)
     (WCons [sc _bs _f next] (or (and (>= sc 0) (= sc v)) (watched next v)))))
 
 ; Does the innermost watch binding b say its box may be freed here?
-(defn freeable-alias [ws :- &Watches b :- i64] :- bool
-  (match ws
+(defn freeable-alias [wl :- &Watches b :- i64] :- bool
+  (match wl
     (WNil [] false)
     (WCons [_sc bs fbs next] (if (types/sids-has bs b) (types/sids-has fbs b) (freeable-alias next b)))))
 
 ; retire the aliasing binders of every enclosing watch on v
-(defn retire-watched [ws :- &Watches v :- i64 st :- IMap owns :- IMap cons :- IMap] :- MoveRes
-  (match ws
+(defn retire-watched [wl :- &Watches v :- i64 st :- IMap owns :- IMap cons :- IMap] :- MoveRes
+  (match wl
     (WNil [] (MoveRes st owns cons ""))
     (
       WCons
@@ -251,7 +277,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- MncRes
   (let [t (forms/te-get tys v)]
     (if
@@ -274,7 +300,7 @@
                   (types/sids-has loopcopy v)
                   (MncRes st owns rem2 cons)
                   (match
-                    (move-var v st owns cons bcx ws)
+                    (move-var v st owns cons bcx scp)
                     (
                       MoveRes
                       [st2 owns2 cons2 m2]
@@ -524,7 +550,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- HExprs
 ] :- BKRes
   (match es
@@ -533,12 +559,12 @@
       HECons
       [kid next]
       (match
-        (bcheck kid st owns rem cons (clone tys) bcx ws)
+        (bcheck kid st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BKErr msg))
         (
           BOk
           [st2 owns2 rem2 cons2 c2]
-          (b-kids next st2 owns2 rem2 cons2 tys bcx ws (HECons c2 acc))
+          (b-kids next st2 owns2 rem2 cons2 tys bcx scp (HECons c2 acc))
         ))
     )))
 
@@ -550,7 +576,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- BKRes
   (match dflt
     (HENil [] (BKOk st owns rem cons (HENil)))
@@ -558,7 +584,7 @@
       HECons
       [kid next]
       (match
-        (b-kids dflt st owns rem cons tys bcx ws (HENil))
+        (b-kids dflt st owns rem cons tys bcx scp (HENil))
         (BKErr [msg] (BKErr msg))
         (BKOk [st2 owns2 rem2 cons2 c2] (BKOk st2 owns2 rem2 cons2 c2)))
     )))
@@ -795,7 +821,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- B4
   (match bcx
     (
@@ -806,8 +832,8 @@
         (B4 st owns rem cons)
         (match
           (dparams-get dp name)
-          (DFound [ps] (b-call-move-ps args ps st owns rem cons tys bcx ws))
-          (DMissing [] (b-call-move-walk args st owns rem cons tys bcx ws))))
+          (DFound [ps] (b-call-move-ps args ps st owns rem cons tys bcx scp))
+          (DMissing [] (b-call-move-walk args st owns rem cons tys bcx scp))))
     )))
 
 (defn b-call-move-ps [args :- HExprs
@@ -818,7 +844,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -826,7 +852,7 @@
       HECons
       [kid next]
       (match ps
-        (PNil [] (b-call-move-walk args st owns rem cons tys bcx ws))
+        (PNil [] (b-call-move-walk args st owns rem cons tys bcx scp))
         (
           PCons
           [h pt]
@@ -861,14 +887,14 @@
                 (if
                   (and (= pb 0) (= (lower/h-tag kid) 3))
                   (match
-                    (move-if-nc (lower/name-of kid) st owns rem cons tys bcx ws)
+                    (move-if-nc (lower/name-of kid) st owns rem cons tys bcx scp)
                     (MncErr [msg] (B4Err msg))
                     (
                       MncRes
                       [st2 owns2 rem2 cons2]
-                      (b-call-move-ps next pt st2 owns2 rem2 cons2 tys bcx ws)
+                      (b-call-move-ps next pt st2 owns2 rem2 cons2 tys bcx scp)
                     ))
-                  (b-call-move-ps next pt st owns rem cons tys bcx ws)))
+                  (b-call-move-ps next pt st owns rem cons tys bcx scp)))
             ))
         ))
     )))
@@ -880,7 +906,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -891,14 +917,14 @@
         (= (lower/h-tag kid) 3)
         ; the seed's kinds loop: use + move only NON-COPY Var args
         (match
-          (move-if-nc (lower/name-of kid) st owns rem cons tys bcx ws)
+          (move-if-nc (lower/name-of kid) st owns rem cons tys bcx scp)
           (MncErr [msg] (B4Err msg))
           (
             MncRes
             [st2 owns2 rem2 cons2]
-            (b-call-move-walk next st2 owns2 rem2 cons2 tys bcx ws)
+            (b-call-move-walk next st2 owns2 rem2 cons2 tys bcx scp)
           ))
-        (b-call-move-walk next st owns rem cons tys bcx ws))
+        (b-call-move-walk next st owns rem cons tys bcx scp))
     )))
 
 ; let bindings: sequential; the transfer-on-Var-init ownership rule
@@ -913,7 +939,7 @@
   cons :- IMap
   tys :- TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- Binds
 ] :- BLRes
   (match binds
@@ -922,7 +948,7 @@
       BCons
       [name value ty next]
       (match
-        (bcheck value st owns rem cons (clone tys) bcx ws)
+        (bcheck value st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BLErr msg))
         (
           BOk
@@ -939,7 +965,7 @@
               ; consume it.
               (let [src-owns (forms/im-get owns1 vn 0)]
                 (match
-                  (move-var vn st1 owns1 cons1 bcx ws)
+                  (move-var vn st1 owns1 cons1 bcx scp)
                   (
                     MoveRes
                     [st2 owns2 cons2 m2]
@@ -955,7 +981,7 @@
                         (im-remove cons2 name)
                         (forms/te-put tys name ty)
                         bcx
-                        ws
+                        scp
                         (BCons name v2 ty acc)
                       ))
                   )))
@@ -987,7 +1013,7 @@
                   (im-remove cons1 name)
                   (forms/te-put tys name ty)
                   bcx
-                  ws
+                  scp
                   (BCons name v2 ty acc)
                 ))))
         ))
@@ -1491,7 +1517,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- HExprs
   all :- &HExprs
   ai :- i64
@@ -1503,12 +1529,12 @@
       [kid next]
       (let [bcx2 (bcx-with-recur-ok bcx (recur-cand-of (clone kid) all ai bcx))]
         (match
-          (bcheck kid st owns rem cons (clone tys) bcx2 ws)
+          (bcheck kid st owns rem cons (clone tys) bcx2 scp)
           (BErr [msg] (BKErr msg))
           (
             BOk
             [st2 owns2 rem2 cons2 c2]
-            (b-recur-kids next st2 owns2 rem2 cons2 tys bcx ws (HECons c2 acc) all (+ ai 1))
+            (b-recur-kids next st2 owns2 rem2 cons2 tys bcx scp (HECons c2 acc) all (+ ai 1))
           )))
     )))
 
@@ -1633,7 +1659,7 @@
   cons :- IMap
   tys :- TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- Binds
   saved :- IMap
   savedo :- IMap
@@ -1645,7 +1671,7 @@
       BCons
       [name init ty next]
       (match
-        (bcheck init st owns rem cons (clone tys) bcx ws)
+        (bcheck init st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BLoopErr msg))
         (
           BOk
@@ -1665,7 +1691,7 @@
               ; ownership BEFORE the move clears it
               (let [src (lower/name-of (clone init2)) src-owns (forms/im-get owns1 src 0)]
                 (match
-                  (move-var src st1 owns1 cons1 bcx ws)
+                  (move-var src st1 owns1 cons1 bcx scp)
                   (
                     MoveRes
                     [st2 owns2 cons2 m2]
@@ -1681,7 +1707,7 @@
                         cons2
                         (forms/te-put tys name ty)
                         bcx
-                        ws
+                        scp
                         (BCons name init2 ty acc)
                         (forms/im-put saved name sval)
                         (forms/im-put savedo name soval)
@@ -1710,7 +1736,7 @@
                   cons1
                   (forms/te-put tys name ty)
                   bcx
-                  ws
+                  scp
                   (BCons name init2 ty acc)
                   (forms/im-put saved name sval)
                   (forms/im-put savedo name soval)
@@ -1874,7 +1900,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- HArms
   adtidx :- i64
   boxed :- i64
@@ -1915,13 +1941,17 @@
               aws
               (if
                 (types/sids-null armwbs)
-                (clone ws)
+                (clone scp)
                 (
-                  WCons
-                  (if named scrid -1)
-                  (clone armwbs)
-                  (if (= freeable 1) (non-copy-binders armwbs tys1) (SNil))
-                  (clone ws)
+                  scope-with-ws
+                  scp
+                  (
+                    WCons
+                    (if named scrid -1)
+                    (clone armwbs)
+                    (if (= freeable 1) (non-copy-binders armwbs tys1) (SNil))
+                    (clone (scope-ws scp))
+                  )
                 ))
             ]
               (match
@@ -1975,7 +2005,7 @@
                         cons2
                         tys
                         bcx
-                        ws
+                        scp
                         (HACons variant binders body2 plan acc)
                         adtidx
                         boxed
@@ -2078,7 +2108,7 @@
   body :- &HExpr
   powns :- &IMap
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- bool
   (match bcx
     (
@@ -2091,8 +2121,8 @@
         (not (types/sids-has nomove n))
         (not (types/sids-has loopcopy n))
         (not (types/sids-has shadowed n))
-        (not (watched ws n))
-        (or (= (forms/im-get powns n 0) 1) (freeable-alias ws n))
+        (not (watched (scope-ws scp) n))
+        (or (= (forms/im-get powns n 0) 1) (freeable-alias (scope-ws scp) n))
         (let [one (SCons n (SNil)) none (SNil)] (not (alias/tail-may-alias body one none retb))))
     )))
 
@@ -2103,7 +2133,7 @@
   body :- &HExpr
   powns :- &IMap
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
   acc :- Sids
 ] :- Sids
   (match union
@@ -2119,14 +2149,14 @@
         body
         powns
         bcx
-        ws
+        scp
         (if
           (
             and
             (not (= n exclude))
             (not (types/sids-has moved n))
             (not (types/sids-has shadow n))
-            (b-branch-free-ok n body powns bcx ws)
+            (b-branch-free-ok n body powns bcx scp)
           )
           (SCons n acc)
           acc))
@@ -2140,12 +2170,12 @@
   exclude :- i64
   powns :- &IMap
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- HExpr
   (if
     (or (types/sids-null union) (alias/tail-has-recur body))
     body
-    (let [fs (b-branch-free-names union moved shadow exclude body powns bcx ws (SNil))]
+    (let [fs (b-branch-free-names union moved shadow exclude body powns bcx scp (SNil))]
       (if
         (types/sids-null fs)
         body
@@ -2157,7 +2187,7 @@
   exclude :- i64
   powns :- &IMap
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- HArms
   (match arms
     (HANil [] (HANil))
@@ -2172,9 +2202,9 @@
           (HACons
             variant
             (clone binders)
-            (b-branch-frees body un m binders exclude powns bcx ws)
+            (b-branch-frees body un m binders exclude powns bcx scp)
             ef
-            (arms-branch-frees next mrest un exclude powns bcx ws))
+            (arms-branch-frees next mrest un exclude powns bcx scp))
         ))
     )))
 
@@ -2205,7 +2235,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- BCapRes
   (match caps
     (CNil [] (BCapRes st owns rem cons (CNil)))
@@ -2224,7 +2254,7 @@
               (if
                 (types/is-non-copy-ty ty)
                 (match
-                  (move-var name st owns cons bcx ws)
+                  (move-var name st owns cons bcx scp)
                   (
                     MoveRes
                     [st2 owns2 cons2 m2]
@@ -2232,7 +2262,7 @@
                       (> (count m2) 0)
                       (BCapErr (occ-tag m2 rem2 name))
                       (match
-                        (b-caps next st2 owns2 rem2 cons2 tys bcx ws)
+                        (b-caps next st2 owns2 rem2 cons2 tys bcx scp)
                         (BCapErr [msg] (BCapErr msg))
                         (
                           BCapRes
@@ -2241,7 +2271,7 @@
                         )))
                   ))
                 (match
-                  (b-caps next st owns rem2 cons tys bcx ws)
+                  (b-caps next st owns rem2 cons tys bcx scp)
                   (BCapErr [msg] (BCapErr msg))
                   (
                     BCapRes
@@ -2663,12 +2693,12 @@
   cons :- IMap
   tys :- TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- BRes
   (if
     (hz-needed e tys bcx)
-    (match (b-hoist e rem tys bcx) (HZOut [e2 rem2] (bcheck-node e2 st owns rem2 cons tys bcx ws)))
-    (bcheck-node e st owns rem cons tys bcx ws)))
+    (match (b-hoist e rem tys bcx) (HZOut [e2 rem2] (bcheck-node e2 st owns rem2 cons tys bcx scp)))
+    (bcheck-node e st owns rem cons tys bcx scp)))
 
 ; --- the checker body ----------------------------------------------------------------
 
@@ -2679,7 +2709,7 @@
   cons :- IMap
   tys :- TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- BRes
   (match e
     (HConstI64 [v] (BOk st owns rem cons e))
@@ -2706,13 +2736,13 @@
       HBinW
       [op a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HBinW op c1 c2 ty))))
         ))
@@ -2721,13 +2751,13 @@
       HBinF
       [op a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HBinF op c1 c2))))
         ))
@@ -2736,13 +2766,13 @@
       HCmpW
       [op a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HCmpW op c1 c2 ty))))
         ))
@@ -2751,13 +2781,13 @@
       HStrCmp
       [p a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HStrCmp p c1 c2))))
         ))
@@ -2766,13 +2796,13 @@
       HStrOrd
       [op a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HStrOrd op c1 c2))))
         ))
@@ -2781,13 +2811,13 @@
       HAnd
       [a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HAnd c1 c2))))
         ))
@@ -2796,13 +2826,13 @@
       HOr
       [a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HOr c1 c2))))
         ))
@@ -2811,13 +2841,13 @@
       HMin
       [a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HMin c1 c2 ty))))
         ))
@@ -2826,13 +2856,13 @@
       HMax
       [a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx ws)
+        (bcheck a st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck b st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck b st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HMax c1 c2 ty))))
         ))
@@ -2841,13 +2871,13 @@
       HSplit
       [s sep]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx ws)
+        (bcheck s st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck sep st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck sep st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HSplit c1 c2))))
         ))
@@ -2856,13 +2886,13 @@
       HJoin
       [sep xs]
       (match
-        (bcheck sep st owns rem cons (clone tys) bcx ws)
+        (bcheck sep st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck xs st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck xs st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HJoin c1 c2))))
         ))
@@ -2871,13 +2901,13 @@
       HStrNth
       [s idx res]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx ws)
+        (bcheck s st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck idx st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck idx st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HStrNth c1 c2 res))))
         ))
@@ -2886,19 +2916,19 @@
       HSubs
       [s a b]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx ws)
+        (bcheck s st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck a st1 owns1 rem1 cons1 (clone tys) bcx ws)
+            (bcheck a st1 owns1 rem1 cons1 (clone tys) bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
               [st2 owns2 rem2 cons2 c2]
               (match
-                (bcheck b st2 owns2 rem2 cons2 tys bcx ws)
+                (bcheck b st2 owns2 rem2 cons2 tys bcx scp)
                 (BErr [msg] (BErr msg))
                 (BOk [st3 owns3 rem3 cons3 c3] (BOk st3 owns3 rem3 cons3 (HSubs c1 c2 c3))))
             ))
@@ -2908,7 +2938,7 @@
       HICast
       [x from to]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HICast c1 from to))))
     )
@@ -2916,7 +2946,7 @@
       HCount
       [x]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HCount c1))))
     )
@@ -2924,7 +2954,7 @@
       HToStr
       [x ty]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HToStr c1 ty))))
     )
@@ -2932,7 +2962,7 @@
       HCharStr
       [x]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HCharStr c1))))
     )
@@ -2940,7 +2970,7 @@
       HNot
       [x]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HNot c1))))
     )
@@ -2948,7 +2978,7 @@
       HAbs
       [x ty]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HAbs c1 ty))))
     )
@@ -2956,7 +2986,7 @@
       HClone
       [x]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HClone c1))))
     )
@@ -2964,7 +2994,7 @@
       HSlurp
       [p]
       (match
-        (bcheck p st owns rem cons tys bcx ws)
+        (bcheck p st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HSlurp c1))))
     )
@@ -2972,7 +3002,7 @@
       HExit
       [x]
       (match
-        (bcheck x st owns rem cons tys bcx ws)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HExit c1))))
     )
@@ -2980,7 +3010,7 @@
       HParseNum
       [s intf res]
       (match
-        (bcheck s st owns rem cons tys bcx ws)
+        (bcheck s st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (BOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HParseNum c1 intf res))))
     )
@@ -2988,7 +3018,7 @@
       HStrCat
       [args]
       (match
-        (b-kids args st owns rem cons tys bcx ws (HENil))
+        (b-kids args st owns rem cons tys bcx scp (HENil))
         (BKErr [msg] (BErr msg))
         (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HStrCat c1))))
     )
@@ -2996,7 +3026,7 @@
       HSeq
       [es]
       (match
-        (b-kids es st owns rem cons tys bcx ws (HENil))
+        (b-kids es st owns rem cons tys bcx scp (HENil))
         (BKErr [msg] (BErr msg))
         (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HSeq c1))))
     )
@@ -3008,7 +3038,7 @@
       ; (one value in two parameter positions is an alias, and the reads would
       ; hit consumed elements).
       (match
-        (b-recur-kids args st owns rem cons tys bcx ws (HENil) (clone args) 0)
+        (b-recur-kids args st owns rem cons tys bcx scp (HENil) (clone args) 0)
         (BKErr [msg] (BErr msg))
         (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HRecur c1 drops))))
     )
@@ -3016,19 +3046,19 @@
       HGet
       [src idx dflt ty res]
       (match
-        (bcheck src st owns rem cons (clone tys) bcx ws)
+        (bcheck src st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck idx st1 owns1 rem1 cons1 (clone tys) bcx ws)
+            (bcheck idx st1 owns1 rem1 cons1 (clone tys) bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
               [st2 owns2 rem2 cons2 c2]
               (match
-                (b-default dflt st2 owns2 rem2 cons2 tys bcx ws)
+                (b-default dflt st2 owns2 rem2 cons2 tys bcx scp)
                 (BKErr [msg] (BErr msg))
                 (BKOk [st3 owns3 rem3 cons3 c3] (BOk st3 owns3 rem3 cons3 (HGet c1 c2 c3 ty res))))
             ))
@@ -3038,7 +3068,7 @@
       HConj
       [v x el inplace]
       (match
-        (bcheck v st owns rem cons (clone tys) bcx ws)
+        (bcheck v st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3059,11 +3089,11 @@
             (if
               (not lastq)
               (match
-                (bcheck x st1 owns1 rem1 cons1 tys bcx ws)
+                (bcheck x st1 owns1 rem1 cons1 tys bcx scp)
                 (BErr [msg] (BErr msg))
                 (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HConj c1 c2 el 0))))
               (match
-                (move-var vn st1 owns1 cons1 bcx ws)
+                (move-var vn st1 owns1 cons1 bcx scp)
                 (
                   MoveRes
                   [st2 owns2 cons2 m2]
@@ -3071,7 +3101,7 @@
                     (> (count m2) 0)
                     (BErr m2)
                     (match
-                      (bcheck x st2 owns2 rem1 cons2 tys bcx ws)
+                      (bcheck x st2 owns2 rem1 cons2 tys bcx scp)
                       (BErr [msg] (BErr msg))
                       (BOk [st3 owns3 rem2 cons3 c2] (BOk st3 owns3 rem2 cons3 (HConj c1 c2 el 1)))))
                 ))))
@@ -3081,19 +3111,19 @@
       HIf
       [c t2 e2 ty]
       (match
-        (bcheck c st owns rem cons (clone tys) bcx ws)
+        (bcheck c st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck t2 (clone st1) (clone owns1) rem1 cons1 (clone tys) bcx ws)
+            (bcheck t2 (clone st1) (clone owns1) rem1 cons1 (clone tys) bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
               [stT ownsT remT consT c2]
               (match
-                (bcheck e2 (clone st1) (clone owns1) remT consT tys bcx ws)
+                (bcheck e2 (clone st1) (clone owns1) remT consT tys bcx scp)
                 (BErr [msg] (BErr msg))
                 (
                   BOk
@@ -3101,8 +3131,8 @@
                   (let [mt (statemap/moved-in stT st1)
                     me (statemap/moved-in stE st1)
                     un (statemap/union mt (clone me))
-                    c2b (b-branch-frees c2 un mt (SNil) -1 owns1 bcx ws)
-                    c3b (b-branch-frees c3 un me (SNil) -1 owns1 bcx ws)
+                    c2b (b-branch-frees c2 un mt (SNil) -1 owns1 bcx scp)
+                    c3b (b-branch-frees c3 un me (SNil) -1 owns1 bcx scp)
                     nst (statemap/prefix-len stT st1)
                     nse (statemap/prefix-len stE st1)
                     nwt (statemap/prefix-len ownsT owns1)
@@ -3118,7 +3148,7 @@
       HLet
       [binds body frees]
       (match
-        (b-let-binds binds st owns rem cons tys bcx ws (BNil))
+        (b-let-binds binds st owns rem cons tys bcx scp (BNil))
         (BLErr [msg] (BErr msg))
         ; b-let-binds prepends while walking, so restore source order —
         ; frees are collected in binding order over the restored chain
@@ -3126,7 +3156,7 @@
           BLRes
           [st1 owns1 rem1 cons1 tys1 binds2]
           (match
-            (bcheck body st1 owns1 rem1 cons1 tys1 bcx ws)
+            (bcheck body st1 owns1 rem1 cons1 tys1 bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
@@ -3149,7 +3179,7 @@
       HLoop
       [binds ty body]
       (match
-        (b-loop-binds binds st owns rem cons tys bcx ws (BNil) (MNil) (MNil) (SNil))
+        (b-loop-binds binds st owns rem cons tys bcx scp (BNil) (MNil) (MNil) (SNil))
         (BLoopErr [msg] (BErr msg))
         (
           BLoopRes
@@ -3169,7 +3199,7 @@
                 (binds-loopcopy (hexpr/binds-rev (clone binds2) (BNil)) (SNil))
                 seed1
               )
-              ws
+              scp
             )
             (BErr [msg] (BErr msg))
             (
@@ -3193,7 +3223,7 @@
       HCtor
       [adt variant args]
       (match
-        (b-kids args st owns rem cons tys bcx ws (HENil))
+        (b-kids args st owns rem cons tys bcx scp (HENil))
         (BKErr [msg] (BErr msg))
         (
           BKOk
@@ -3201,7 +3231,7 @@
           (if
             (= (b-facts-owns-at bcx adt) 1)
             (match
-              (b-ctor-move (clone c1) st1 owns1 rem1 cons1 tys bcx ws)
+              (b-ctor-move (clone c1) st1 owns1 rem1 cons1 tys bcx scp)
               (B4Err [msg] (BErr msg))
               (B4 [st2 owns2 rem2 cons2] (BOk st2 owns2 rem2 cons2 (HCtor adt variant c1))))
             (BOk st1 owns1 rem1 cons1 (HCtor adt variant c1)))
@@ -3217,7 +3247,7 @@
           1
           0)]
         (match
-          (bcheck (clone scrut) st owns rem cons (clone tys) bcx ws)
+          (bcheck (clone scrut) st owns rem cons (clone tys) bcx scp)
           (BErr [msg] (BErr msg))
           (
             BOk
@@ -3249,7 +3279,7 @@
                   cons1
                   tys
                   bcx
-                  ws
+                  scp
                   (HANil)
                   adtidx
                   boxed
@@ -3275,7 +3305,7 @@
                       arms0
                       (arms-no-free arms0))
                     un (ml-union mvs (SNil))
-                    arms2 (arms-branch-frees arms1 mvs un svar powns0 bcx ws)
+                    arms2 (arms-branch-frees arms1 mvs un svar powns0 bcx scp)
                     sv
                     (if
                       (= (lower/h-tag scrut) 3)
@@ -3290,7 +3320,7 @@
                         (not (types/sids-has (b-loopcopy-of bcx) sv))
                       )
                       (match
-                        (move-var sv st2 owns2 cons2 bcx ws)
+                        (move-var sv st2 owns2 cons2 bcx scp)
                         (
                           MoveRes
                           [st3 owns3 cons3 m3]
@@ -3307,7 +3337,7 @@
       HDrop
       [x]
       (match
-        (bcheck x st owns rem cons (clone tys) bcx ws)
+        (bcheck x st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3315,7 +3345,7 @@
           (if
             (= (lower/h-tag c1) 3)
             (match
-              (move-if-nc (lower/name-of (clone c1)) st1 owns1 rem1 cons1 tys bcx ws)
+              (move-if-nc (lower/name-of (clone c1)) st1 owns1 rem1 cons1 tys bcx scp)
               (MncErr [msg] (BErr msg))
               (MncRes [st2 owns2 rem2 cons2] (BOk st2 owns2 rem2 cons2 (HDrop c1))))
             (BOk st1 owns1 rem1 cons1 (HDrop c1)))
@@ -3327,7 +3357,7 @@
       ; captures use+move here (non-Copy); the BODY is checked separately
       ; over the lambda table (check-lams) — the seed's split
       (match
-        (b-caps caps st owns rem cons tys bcx ws)
+        (b-caps caps st owns rem cons tys bcx scp)
         (BCapErr [msg] (BErr msg))
         (
           BCapRes
@@ -3339,13 +3369,13 @@
       HClosureCall
       [f args sig]
       (match
-        (bcheck f st owns rem cons (clone tys) bcx ws)
+        (bcheck f st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (b-kids args st1 owns1 rem1 cons1 tys bcx ws (HENil))
+            (b-kids args st1 owns1 rem1 cons1 tys bcx scp (HENil))
             (BKErr [msg] (BErr msg))
             (BKOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HClosureCall c1 c2 sig))))
         ))
@@ -3354,13 +3384,13 @@
       HSpit
       [path data]
       (match
-        (bcheck path st owns rem cons (clone tys) bcx ws)
+        (bcheck path st owns rem cons (clone tys) bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck data st1 owns1 rem1 cons1 tys bcx ws)
+            (bcheck data st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (BOk [st2 owns2 rem2 cons2 c2] (BOk st2 owns2 rem2 cons2 (HSpit c1 c2))))
         ))
@@ -3369,13 +3399,13 @@
       HCall
       [name args]
       (match
-        (b-kids args st owns (occ-bump rem name) cons tys bcx ws (HENil))
+        (b-kids args st owns (occ-bump rem name) cons tys bcx scp (HENil))
         (BKErr [msg] (BErr msg))
         (
           BKOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (b-call-move name (clone c1) st1 owns1 rem1 cons1 tys bcx ws)
+            (b-call-move name (clone c1) st1 owns1 rem1 cons1 tys bcx scp)
             (B4Err [msg] (BErr msg))
             (B4 [st2 owns2 rem2 cons2] (BOk st2 owns2 rem2 cons2 (HCall name c1))))
         ))
@@ -3386,7 +3416,7 @@
   cons :- IMap
   tys :- &TyEnv
   bcx :- &BCtx
-  ws :- &Watches
+  scp :- &Scope
 ] :- B4
   (match args
     (HENil [] (B4 st owns rem cons))
@@ -3396,10 +3426,10 @@
       (if
         (= (lower/h-tag kid) 3)
         (match
-          (move-if-nc (lower/name-of kid) st owns rem cons tys bcx ws)
+          (move-if-nc (lower/name-of kid) st owns rem cons tys bcx scp)
           (MncErr [msg] (B4Err msg))
-          (MncRes [st2 owns2 rem2 cons2] (b-ctor-move next st2 owns2 rem2 cons2 tys bcx ws)))
-        (b-ctor-move next st owns rem cons tys bcx ws))
+          (MncRes [st2 owns2 rem2 cons2] (b-ctor-move next st2 owns2 rem2 cons2 tys bcx scp)))
+        (b-ctor-move next st owns rem cons tys bcx scp))
     )))
 
 ; --- plan_drops: the per-defn wrapper ------------------------------------------------
@@ -3808,7 +3838,7 @@
                 (SNil)
               )]
               (match
-                (bcheck body st0 owns0 rem0 cons0 tys0 bcx2 (WNil))
+                (bcheck body st0 owns0 rem0 cons0 tys0 bcx2 (scope-new))
                 (
                   BErr
                   [msg]
