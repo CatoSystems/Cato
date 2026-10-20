@@ -66,6 +66,12 @@ fn main() {
             eprintln!("{} backend error: {}", ui::error_lead(), e);
             std::process::exit(1);
         });
+        // `--emit-ir --asan`: IR ready for `clang -fsanitize=address`.
+        let ir = if cli.asan {
+            cato_llvm::with_function_attribute(&ir, "sanitize_address")
+        } else {
+            ir
+        };
         match &cli.out {
             Some(p) => std::fs::write(p, &ir).unwrap_or_else(|e| {
                 eprintln!("{} cannot write {}: {}", ui::error_lead(), p, e);

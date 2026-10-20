@@ -163,6 +163,13 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         ));
         let _ = e;
         c.line(&format!("  ret %VecI64 {}", s1));
+    } else if let Ty::Fn(_) = defn.ret {
+        // Closure return: the {code, env, drop} triple goes back by value;
+        // the env's ownership moves to the caller.
+        let slot = emit_closure_val(&defn.body, &mut c, mdl, sigs);
+        let lv = c.temp();
+        c.line(&format!("  {} = load %Closure, ptr {}, align 8", lv, slot));
+        c.line(&format!("  ret %Closure {}", lv));
     } else if matches!(defn.ret, Ty::Map | Ty::Set) {
         // Map/set return: the header goes back by value in the same
         // %VecI64 shape — maps with the representation tag in field 2,
@@ -226,6 +233,8 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
         }
     } else if matches!(defn.ret, Ty::Vec(_) | Ty::Map | Ty::Set) {
         "%VecI64".to_string()
+    } else if matches!(defn.ret, Ty::Fn(_)) {
+        "%Closure".to_string()
     } else if defn.ret.is_int() || defn.ret.is_float() {
         Mdl::ll_scalar(defn.ret).to_string()
     } else {
@@ -482,6 +491,24 @@ pub(crate) fn emit_vec_pair(
         HExpr::Call(..) => emit_vec_call(e, c, mdl, sigs),
         HExpr::Split { s, sep } => {
             let (arr, l) = emit_split(s, sep, c, mdl, sigs);
+            (arr, l, Elem::Str)
+        }
+        // A slice or the process arguments in value position — returned,
+        // passed, counted — through the same machinery as their let-bound
+        // forms (both used to panic here: `(defn f [v n] (subvec v 0 n))`,
+        // `(count (args))`).
+        HExpr::Subvec { v, start, end, elem } => {
+            let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
+            read_grow_slot(&slot, *elem, c)
+        }
+        HExpr::Args => {
+            let lptr = c.temp();
+            c.prelude.push(format!("  {} = alloca i64, align 8", lptr));
+            mdl.ensure_decl("declare ptr @cato_args(ptr)");
+            let arr = c.temp();
+            c.line(&format!("  {} = call ptr @cato_args(ptr {})", arr, lptr));
+            let l = c.temp();
+            c.line(&format!("  {} = load i64, ptr {}, align 8", l, lptr));
             (arr, l, Elem::Str)
         }
         HExpr::Conj { v, x, elem, in_place } => {

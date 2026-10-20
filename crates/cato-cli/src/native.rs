@@ -114,6 +114,11 @@ pub fn build_native(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf,
     let ir = backend
         .emit(program)
         .map_err(|e| format!("backend error: {}", e))?;
+    let ir = if cli.asan {
+        cato_llvm::with_function_attribute(&ir, "sanitize_address")
+    } else {
+        ir
+    };
 
     let keep_ll = cli.emit_ll.clone();
     let ll_path: PathBuf = keep_ll

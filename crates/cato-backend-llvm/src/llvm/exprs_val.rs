@@ -272,11 +272,7 @@ pub(crate) fn emit_get(
     c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
     let safe = c.temp();
     c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
-    let p = c.temp();
-    c.line(&format!(
-        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
-        p, ll, d, safe
-    ));
+    let p = oob_safe_elem_ptr(&inb, &safe, ll, &d, c, mdl);
     let v = c.temp();
     c.line(&mdl.elem_load(elem, &v, &p));
     match default {
@@ -320,11 +316,7 @@ pub(crate) fn emit_get_opt(
     c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
     let safe = c.temp();
     c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
-    let p = c.temp();
-    c.line(&format!(
-        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
-        p, ll, d, safe
-    ));
+    let p = oob_safe_elem_ptr(&inb, &safe, ll, &d, c, mdl);
     let payload = match elem {
         Elem::I64 | Elem::F64 => {
             let v = c.temp();
@@ -660,6 +652,13 @@ pub(crate) fn emit_closure_val(
             }
             emit_closure_val(vs.last().unwrap(), c, mdl, sigs)
         }
+        // A closure binding (its slot) or a call returning a closure.
+        HExpr::Var(v) => c
+            .scalar
+            .get(v)
+            .map(|(r, _)| r.clone())
+            .unwrap_or_else(|| panic!("codegen: {} is not a closure binding", v)),
+        HExpr::Call(name, args) => call_user(name, args, c, mdl, sigs),
         o => panic!("codegen: expected a closure value, got {:?}", o),
     }
 }
@@ -692,4 +691,27 @@ pub(crate) fn emit_strnth_opt(
     let z = c.temp();
     c.line(&format!("  {} = zext i8 {} to i64", z, b));
     materialize_option(c, mdl, adt, &inb, &z)
+}
+
+/// The element address for a bounds-checked read: in bounds, `d[i]`;
+/// out of bounds, a zeroed constant — never `d[0]`, which an empty vector
+/// does not have (that read was out of bounds; the value is discarded by
+/// the caller's select, but the load itself was not). Branchless.
+pub(crate) fn oob_safe_elem_ptr(
+    inb: &str,
+    safe: &str,
+    ll: &str,
+    d: &str,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+) -> String {
+    mdl.ensure_decl("@cato_oob_zero = private constant [2 x i64] zeroinitializer, align 16");
+    let p = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        p, ll, d, safe
+    ));
+    let q = c.temp();
+    c.line(&format!("  {} = select i1 {}, ptr {}, ptr @cato_oob_zero", q, inb, p));
+    q
 }

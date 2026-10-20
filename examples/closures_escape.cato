@@ -1,0 +1,25 @@
+; closures_escape.cato — closures as values that outlive their scope.
+;
+; A function may return a closure ({code, env, drop} by value; the env's
+; ownership moves to the caller). A captured string is the env's own copy,
+; so the closure may outlive the binding it captured. A closure that
+; captures another closure keeps every later capture in its own slot.
+
+(defn mk-greeter [n :- i64] :- (Fn [i64] i64)
+  (let [w (str "hello" n)] (fn [x :- i64] (+ x (count w)))))
+
+(defn compose [k :- i64] :- i64
+  (let [f (fn [x :- i64] (+ x k))
+        m (+ k 100)
+        g (fn [y :- i64] (+ (f y) m))]
+    (g 1)))
+
+(defn local-str [] :- i64
+  (let [w (str "cap" 1) f (fn [x :- i64] (+ x (count w)))] (f 1)))
+
+(defn main []
+  (let [g (mk-greeter 42)]
+    (do
+      (print-i64 (g 1))          ; 8
+      (print-i64 (compose 5))    ; 111
+      (print-i64 (local-str))))) ; 5

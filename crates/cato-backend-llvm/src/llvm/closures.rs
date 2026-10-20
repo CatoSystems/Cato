@@ -135,7 +135,16 @@ fn store_capture(
             match ty {
                 Ty::F64 => c.line(&format!("  store double {}, ptr {}, align 8", v, g0)),
                 Ty::F32 => c.line(&format!("  store float {}, ptr {}, align 8", v, g0)),
-                Ty::Str => c.line(&format!("  store ptr {}, ptr {}, align 8", v, g0)),
+                // The env keeps its own copy (the str store rule, as for
+                // constructor fields): storing the binding's pointer made
+                // the env and the binding's scope free one buffer, and a
+                // closure outliving the binding read freed memory.
+                Ty::Str => {
+                    mdl.ensure_decl("declare ptr @strdup(ptr)");
+                    let d = c.temp();
+                    c.line(&format!("  {} = call ptr @strdup(ptr {})", d, v));
+                    c.line(&format!("  store ptr {}, ptr {}, align 8", d, g0));
+                }
                 t if t.is_int() => c.line(&format!(
                     "  store {} {}, ptr {}, align 8",
                     Mdl::ll_scalar(t),
@@ -399,7 +408,9 @@ pub(crate) fn emit_lambda(
                     c.line(&format!("  store ptr {}, ptr {}, align 8", v, dst));
                 }
                 c.scalar.insert(cname.clone(), (slot, *ty));
-                at += 2;
+                // Three words, as packed (`capture_slots`): advancing by two
+                // made every later capture read the wrong env slot.
+                at += capture_slots(ty);
                 continue;
             }
             _ => {}
@@ -413,6 +424,8 @@ pub(crate) fn emit_lambda(
         let v = c.temp();
         let scalar_ty = match ty {
             Ty::Bool => "i8",
+            // Strings and boxed ADTs ride as one pointer word.
+            Ty::Str | Ty::Adt(_) => "ptr",
             t => Mdl::ll_scalar(*t),
         };
         c.line(&format!("  {} = load {}, ptr {}, align 8", v, scalar_ty, f));

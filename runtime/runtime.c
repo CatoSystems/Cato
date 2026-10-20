@@ -467,6 +467,13 @@ char **cato_args(long long *out_n) {
 
 void cato_exit(long long status) { exit((int)status); }
 
+/* Integer division, rem or mod by zero: a defined trap (the interpreter
+   traps too), never LLVM's undefined `sdiv` by zero. */
+void cato_div_by_zero(void) {
+    fputs("cato: integer division by zero\n", stderr);
+    abort();
+}
+
 // ---------------------------------------------------------------------------
 // Kernel CLI primitives: process spawn, environment, files, stdio.
 // runtime.c links into every Cato program, so the POSIX process calls are

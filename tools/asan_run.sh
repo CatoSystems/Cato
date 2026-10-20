@@ -8,7 +8,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC=$1; CC=${2:-$ROOT/target/release/cato}
 T=$(mktemp -d)
-"$CC" compile "$SRC" --emit-ir -o "$T/p.ll" >/dev/null || { echo "COMPILE FAIL"; rm -rf "$T"; exit 1; }
+"$CC" compile "$SRC" --emit-ir --asan -o "$T/p.ll" >/dev/null || { echo "COMPILE FAIL"; rm -rf "$T"; exit 1; }
 clang -O0 -g -w -fsanitize=address "$T/p.ll" "$ROOT/runtime/runtime.c" -o "$T/p" || { echo "LINK FAIL"; rm -rf "$T"; exit 1; }
 "$T/p" >"$T/out" 2>"$T/err"; rc=$?
 cat "$T/out"

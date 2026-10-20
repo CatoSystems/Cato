@@ -131,6 +131,8 @@ pub(crate) fn call_user(
         "ptr".to_string()
     } else if matches!(ret_ty, Ty::Vec(_) | Ty::Map | Ty::Set) {
         "%VecI64".to_string()
+    } else if matches!(ret_ty, Ty::Fn(_)) {
+        "%Closure".to_string()
     } else {
         "i64".to_string()
     };
@@ -142,6 +144,14 @@ pub(crate) fn call_user(
         mangle(name),
         ll_args.join(", ")
     ));
+    if matches!(ret_ty, Ty::Fn(_)) {
+        // A returned closure arrives by value; the caller holds closures
+        // in %Closure slots (as let-bound ones and params).
+        let slot = c.temp();
+        c.prelude.push(format!("  {} = alloca %Closure, align 8", slot));
+        c.line(&format!("  store %Closure {}, ptr {}, align 8", t, slot));
+        return slot;
+    }
     if !adt_ret {
         return t;
     }

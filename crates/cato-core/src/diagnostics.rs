@@ -368,7 +368,7 @@ pub fn classify(msg: &str) -> &'static str {
         "E004"
     } else if m.contains("unsupported borrow sigil") || m.contains("mixed widths")
         || m.contains("must share a width") || m.contains("in arithmetic")
-        || m.contains("does not fit")
+        || m.contains("does not fit") || m.contains("ascribed")
     {
         // Width/sigil misuse: an explicit cast or syntax fix is required.
         "E202"

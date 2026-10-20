@@ -448,14 +448,14 @@ fn compiles_widths2_to_expected_output() {
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
-    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops"] {
+    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape"] {
         // (mem/ cases are covered by their own sanitizer tests below)
         let src = manifest.join("../../examples").join(format!("{}.cato", name));
         let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
         let exe = manifest.join("../../target").join(format!("frees_{}_bin", name));
 
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-            .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+            .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
             .status().expect("cato compile");
         assert!(status.success(), "{}: cato compile failed", name);
 
@@ -507,7 +507,7 @@ fn strvec_is_sanitizer_clean() {
     let exe = manifest.join("../../target/strvec_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
         .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
@@ -532,7 +532,7 @@ fn vec_field_adt_is_sanitizer_clean() {
     let exe = manifest.join("../../target/vec_field_adt_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
         .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
@@ -558,7 +558,7 @@ fn moved_param_return_is_sanitizer_clean_without_opt() {
     let exe = manifest.join("../../target/moved_param_return_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
+        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "--no-opt", "-o"]).arg(&out_ll)
         .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
@@ -806,7 +806,7 @@ fn loop_drops_are_sanitizer_clean() {
     let out_ll = manifest.join("../../target/loop_drops.ll");
     let exe = manifest.join("../../target/loop_drops_bin");
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
         .status().expect("cato compile");
     assert!(status.success(), "cato compile failed");
     let cc = Command::new("clang")
@@ -849,4 +849,57 @@ fn loop_drops_leave_nothing_live() {
         .find_map(|l| l.strip_prefix("LIVE_EXIT ").map(|v| v.trim().parse().unwrap()))
         .unwrap_or_else(|| panic!("no LIVE_EXIT line:\n{}", stderr));
     assert!(live < 200_000, "{} bytes still live at exit", live);
+}
+
+#[test]
+fn compiles_closures_escape_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/closures_escape.cato")).unwrap();
+    assert_eq!(compile_and_run("closures_escape", &src), "8\n111\n5\n");
+}
+
+// Values that used to panic the backend: a slice returned directly, the
+// argument vector counted in place, an out-of-range read of an empty
+// vector (which loaded element 0 before discarding it).
+#[test]
+fn vector_values_in_value_position() {
+    let src = "(defn cut [v :- &(Vector i64) n :- i64] :- (Vector i64) (subvec v 0 n))\n\
+               (defn first-or [v :- &(Vector i64) d :- i64] :- i64 (get v 5 d))\n\
+               (defn main [] (let [src (conj [7] 8) e (cut src 0) f (cut src 2)]\n\
+                 (do (print-i64 (count (args))) (print-i64 (first-or e 42)) (print-i64 (count f)))))\n";
+    assert_eq!(compile_and_run("vec_values", src), "0\n42\n2\n");
+}
+
+// Integer division by zero traps (natively it was LLVM UB and printed
+// garbage); the interpreter traps too.
+#[test]
+fn integer_division_by_zero_traps() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../target/div0_trap.cato");
+    std::fs::write(&src, "(defn d [a :- i64 b :- i64] :- i64 (/ a b))\n(defn main [] (print-i64 (d 7 0)))\n").unwrap();
+    let exe = manifest.join("../../target/div0_trap_bin");
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(&src).arg("-o").arg(&exe)
+        .status().expect("cato compile");
+    assert!(status.success());
+    let out = Command::new(&exe).output().expect("run");
+    assert!(!out.status.success(), "division by zero must not exit 0");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("integer division by zero"));
+}
+
+// `--asan` instruments the generated code itself: clang only instruments
+// `.ll` functions that carry `sanitize_address`, so without it the
+// sanitizer saw only the allocator and the C runtime.
+#[test]
+fn asan_ir_carries_sanitize_address() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let out_ll = manifest.join("../../target/asan_attr.ll");
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(manifest.join("../../examples/heap.cato"))
+        .args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success());
+    let ir = std::fs::read_to_string(&out_ll).unwrap();
+    assert!(ir.contains("sanitize_address"));
+    assert!(ir.lines().filter(|l| l.starts_with("define ")).all(|l| l.contains("#9001")));
 }

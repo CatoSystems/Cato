@@ -1409,7 +1409,10 @@ impl<'a> BCheck<'a> {
                     // A capture is one occurrence: the `fn` form itself.
                     self.bump(name);
                     self.use_var(name, tys, st);
-                    *own_bit = owns.get(name).copied().unwrap_or(false);
+                    // A str capture is the env's own copy (backend strdup),
+                    // so the env always frees it; other captures move the
+                    // binding's duty (or own nothing: literals, aliases).
+                    *own_bit = *ty == Ty::Str || owns.get(name).copied().unwrap_or(false);
                     if is_non_copy(*ty) {
                         self.move_var(name, st, owns);
                     }
