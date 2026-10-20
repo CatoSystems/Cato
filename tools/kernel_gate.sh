@@ -50,6 +50,23 @@ else
   echo "FIXPOINT: DIFF"; fail=1
 fi
 
+# Memory safety of the kernel's own planner: k2's IR (planned and emitted
+# by the kernel) rebuilt with AddressSanitizer at -O0, compiling the kernel.
+# The allocator alone does not reliably abort on a double free, so a
+# planner bug can otherwise pass the fixpoint. The -O0 frames are large:
+# the main thread gets a 512 MiB stack. CATO_GATE_NO_ASAN=1 skips it.
+if [ -z "${CATO_GATE_NO_ASAN:-}" ]; then
+  sed -E 's/^(define .*\)) \{$/\1 #97 {/' $T/k2.ll > $T/k2asan.ll
+  echo 'attributes #97 = { sanitize_address }' >> $T/k2asan.ll
+  if clang -O0 -w -fsanitize=address -Wl,-stack_size,0x20000000 $T/k2asan.ll runtime/runtime.c -o $T/k2asan \
+     && $T/k2asan compile selfhost/cato/cli.cato --emit-ir -o $T/k3asan.ll >/dev/null 2>$T/k2asan.err \
+     && cmp -s $T/k3asan.ll $T/k3.ll; then
+    echo "ASAN k2: OK"
+  else
+    echo "ASAN k2: FAIL ($(grep -m1 'ERROR: AddressSanitizer' $T/k2asan.err | sed 's/.*AddressSanitizer: //'))"; fail=1
+  fi
+fi
+
 check_out() { # file expected
   kb "$FX/$1.cato" "$T/run_$1" || { echo "BUILD FAIL $1"; fail=1; return; }
   got="$($T/run_$1)"; [ "$got" = "$2" ] && echo "OK $1" || { echo "OUTPUT FAIL $1: '$got' != '$2'"; fail=1; }
