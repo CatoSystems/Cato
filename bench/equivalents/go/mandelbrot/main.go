@@ -19,9 +19,9 @@ func iter(x0, y0 float64) int64 {
 
 func main() {
 	var total int64 = 0
-	for py := int64(0); py < 400; py++ {
-		for px := int64(0); px < 400; px++ {
-			total += iter(float64(px)/200.0-2.0, float64(py)/200.0-1.0)
+	for py := int64(0); py < 800; py++ {
+		for px := int64(0); px < 800; px++ {
+			total += iter(float64(px)/400.0-2.0, float64(py)/400.0-1.0)
 		}
 	}
 	fmt.Println(total)

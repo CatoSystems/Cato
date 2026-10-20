@@ -16,10 +16,10 @@ fn iter(x0: f64, y0: f64) -> i64 {
 fn main() {
     let mut total = 0i64;
     let mut py = 0i64;
-    while py < 400 {
+    while py < 800 {
         let mut px = 0i64;
-        while px < 400 {
-            total += iter(px as f64 / 200.0 - 2.0, py as f64 / 200.0 - 1.0);
+        while px < 800 {
+            total += iter(px as f64 / 400.0 - 2.0, py as f64 / 400.0 - 1.0);
             px += 1;
         }
         py += 1;

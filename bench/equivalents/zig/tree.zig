@@ -31,6 +31,6 @@ fn sum(t: *Tree) i64 {
 }
 
 pub fn main() void {
-    const root = build(0, 100000);
+    const root = build(0, 1000000);
     std.debug.print("{d}\n", .{sum(root)});
 }

@@ -17,10 +17,10 @@ fn iter(x0: f64, y0: f64) i64 {
 pub fn main() void {
     var total: i64 = 0;
     var py: i64 = 0;
-    while (py < 400) : (py += 1) {
+    while (py < 800) : (py += 1) {
         var px: i64 = 0;
-        while (px < 400) : (px += 1) {
-            total += iter(@as(f64, @floatFromInt(px)) / 200.0 - 2.0, @as(f64, @floatFromInt(py)) / 200.0 - 1.0);
+        while (px < 800) : (px += 1) {
+            total += iter(@as(f64, @floatFromInt(px)) / 400.0 - 2.0, @as(f64, @floatFromInt(py)) / 400.0 - 1.0);
         }
     }
     std.debug.print("{d}\n", .{total});

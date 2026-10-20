@@ -24,5 +24,5 @@ func sum(t *Tree) int64 {
 }
 
 func main() {
-	fmt.Println(sum(build(0, 100000)))
+	fmt.Println(sum(build(0, 1000000)))
 }

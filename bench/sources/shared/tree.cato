@@ -13,4 +13,4 @@
     (Leaf [] 0)))
 
 (defn main [] :- i32
-  (do (print-i64 (sum (build 0 100000))) 0))
+  (do (print-i64 (sum (build 0 1000000))) 0))

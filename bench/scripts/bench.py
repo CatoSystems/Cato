@@ -51,10 +51,10 @@ RESULTS_DIR = BENCH_DIR / "results"
 BENCHMARKS = [
     ("fib_rec", "shared", "3524578"),
     ("fib_iter", "shared", "945351196"),
-    ("str_bytes", "shared", "15050000000"),
-    ("vec_append", "shared", "20000"),
-    ("tree", "shared", "5000050000"),
-    ("mandelbrot", "shared", "5274934"),
+    ("str_bytes", "shared", "150500000000"),
+    ("vec_append", "shared", "200000"),
+    ("tree", "shared", "500000500000"),
+    ("mandelbrot", "shared", "21108556"),
     ("fused_sum", "full", "19999999900000000"),
     ("pipe", "full", "4499995500001000000"),
 ]

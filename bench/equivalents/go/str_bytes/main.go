@@ -13,7 +13,7 @@ func sumOnce(s string) int64 {
 func main() {
 	s := "the quick brown fox jumps over the lazy dog 0123456789 abcdefghijklmnopqrstuvwxyz"
 	var acc int64 = 0
-	for k := 0; k < 2000000; k++ {
+	for k := 0; k < 20000000; k++ {
 		acc += sumOnce(s)
 	}
 	fmt.Println(acc)

@@ -10,7 +10,7 @@
     (do
       (print-i64
         (loop [k :- i64 0 acc :- i64 0]
-          (if (< k 2000000)
+          (if (< k 20000000)
             (recur (+ k 1) (+ acc (sum-once s)))
             acc)))
       0)))

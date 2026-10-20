@@ -23,9 +23,9 @@ same workload**; every implementation prints one line that must match exactly.
 | `fib_rec` | shared | recursive calls (`fib 33`) |
 | `fib_iter` | shared | tight integer loop: `fibmod(100000000, 1000000007)` |
 | `str_bytes` | shared | string indexing, inner loop |
-| `vec_append` | shared | growable vector `conj` in a loop (N=20000) |
-| `tree` | shared | ADT allocation + recursive traversal (100000 nodes) |
-| `mandelbrot` | shared | floating point (400x400) |
+| `vec_append` | shared | growable vector `conj` in a loop (N=200000) |
+| `tree` | shared | ADT allocation + recursive traversal (1000000 nodes) |
+| `mandelbrot` | shared | floating point (800x800) |
 | `fused_sum` | full | seed-only: `reduce`/`range` stream fusion |
 | `pipe` | full | seed-only: `filter`/`map` pipeline fusion |
 
@@ -33,7 +33,7 @@ same workload**; every implementation prints one line that must match exactly.
 * **full** — uses macros the kernel does not implement yet, so it is compared
   seed vs Rust/Go/Zig only.
 
-`vec_append` is capped at N=20000 on purpose: the kernel's in-loop `conj` is
+`vec_append` is capped at N=200000 on purpose: the kernel's in-loop `conj` is
 super-linear (see *Known kernel issues*), so larger inputs would just measure
 that pathology rather than collection performance.
 
