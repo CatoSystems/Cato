@@ -558,7 +558,7 @@
       HECons
       [kid next]
       (match
-        (bcheck kid st owns rem cons (clone tys) bcx scp)
+        (bcheck kid st owns rem cons tys bcx scp)
         (BErr [msg] (BKErr msg))
         (
           BOk
@@ -936,18 +936,18 @@
   owns :- IMap
   rem :- IMap
   cons :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   bcx :- &BCtx
   scp :- &Scope
   acc :- Binds
 ] :- BLRes
   (match binds
-    (BNil [] (BLRes st owns rem cons tys acc))
+    (BNil [] (BLRes st owns rem cons (clone tys) acc))
     (
       BCons
       [name value ty next]
       (match
-        (bcheck value st owns rem cons (clone tys) bcx scp)
+        (bcheck value st owns rem cons tys bcx scp)
         (BErr [msg] (BLErr msg))
         (
           BOk
@@ -976,7 +976,7 @@
                         (forms/im-put owns2 name src-owns)
                         rem1
                         (im-remove cons2 name)
-                        (forms/te-put tys name ty)
+                        (forms/te-put (clone tys) name ty)
                         bcx
                         scp
                         (BCons name v2 ty acc)
@@ -1008,7 +1008,7 @@
                   owns2
                   rem1
                   (im-remove cons1 name)
-                  (forms/te-put tys name ty)
+                  (forms/te-put (clone tys) name ty)
                   bcx
                   scp
                   (BCons name v2 ty acc)
@@ -1072,7 +1072,7 @@
   fields :- TyList
   pst :- IMap
   powns :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   bcx :- &BCtx
 ] :- BLRes
   (match bcx
@@ -1676,7 +1676,7 @@
       [kid next]
       (let [scp2 (scope-with-rok scp (recur-cand-of (clone kid) all ai scp))]
         (match
-          (bcheck kid st owns rem cons (clone tys) bcx scp2)
+          (bcheck kid st owns rem cons tys bcx scp2)
           (BErr [msg] (BKErr msg))
           (
             BOk
@@ -1788,7 +1788,7 @@
   owns :- IMap
   rem :- IMap
   cons :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   bcx :- &BCtx
   scp :- &Scope
   acc :- Binds
@@ -1797,12 +1797,12 @@
   seed :- Sids
 ] :- BLoopRes
   (match binds
-    (BNil [] (BLoopRes st owns rem cons tys acc saved savedo seed))
+    (BNil [] (BLoopRes st owns rem cons (clone tys) acc saved savedo seed))
     (
       BCons
       [name init ty next]
       (match
-        (bcheck init st owns rem cons (clone tys) bcx scp)
+        (bcheck init st owns rem cons tys bcx scp)
         (BErr [msg] (BLoopErr msg))
         (
           BOk
@@ -1831,7 +1831,7 @@
                         (forms/im-put owns2 name src-owns)
                         rem1
                         cons2
-                        (forms/te-put tys name ty)
+                        (forms/te-put (clone tys) name ty)
                         bcx
                         scp
                         (BCons name init2 ty acc)
@@ -1860,7 +1860,7 @@
                   (forms/im-put owns1 name iown)
                   rem1
                   cons1
-                  (forms/te-put tys name ty)
+                  (forms/te-put (clone tys) name ty)
                   bcx
                   scp
                   (BCons name init2 ty acc)
@@ -1983,11 +1983,11 @@
   fields :- TyList
   pst :- IMap
   powns :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   facts :- &Facts
 ] :- BLRes
   (match binders
-    (SNil [] (BLRes pst powns (MNil) (MNil) tys (BNil)))
+    (SNil [] (BLRes pst powns (MNil) (MNil) (clone tys) (BNil)))
     (
       SCons
       [b rest]
@@ -2048,7 +2048,7 @@
           (b-varnt-fields-at bcx adtidx variant)
           (TyNil))]
         (match
-          (b-arm-state-of (clone binders) (clone fields) (clone pst) (clone powns) (clone tys) bcx)
+          (b-arm-state-of (clone binders) (clone fields) (clone pst) (clone powns) tys bcx)
           (BLErr [msg] (BArmsErr msg))
           (
             BLRes
@@ -2831,7 +2831,7 @@
   owns :- IMap
   rem :- IMap
   cons :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   bcx :- &BCtx
   scp :- &Scope
 ] :- BRes
@@ -2847,7 +2847,7 @@
   owns :- IMap
   rem :- IMap
   cons :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
   bcx :- &BCtx
   scp :- &Scope
 ] :- BRes
@@ -2876,7 +2876,7 @@
       HBinW
       [op a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2891,7 +2891,7 @@
       HBinF
       [op a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2906,7 +2906,7 @@
       HCmpW
       [op a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2921,7 +2921,7 @@
       HStrCmp
       [p a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2936,7 +2936,7 @@
       HStrOrd
       [op a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2951,7 +2951,7 @@
       HAnd
       [a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2966,7 +2966,7 @@
       HOr
       [a b]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2981,7 +2981,7 @@
       HMin
       [a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -2996,7 +2996,7 @@
       HMax
       [a b ty]
       (match
-        (bcheck a st owns rem cons (clone tys) bcx scp)
+        (bcheck a st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3011,7 +3011,7 @@
       HSplit
       [s sep]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx scp)
+        (bcheck s st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3026,7 +3026,7 @@
       HJoin
       [sep xs]
       (match
-        (bcheck sep st owns rem cons (clone tys) bcx scp)
+        (bcheck sep st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3041,7 +3041,7 @@
       HStrNth
       [s idx res]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx scp)
+        (bcheck s st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3056,13 +3056,13 @@
       HSubs
       [s a b]
       (match
-        (bcheck s st owns rem cons (clone tys) bcx scp)
+        (bcheck s st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck a st1 owns1 rem1 cons1 (clone tys) bcx scp)
+            (bcheck a st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
@@ -3204,13 +3204,13 @@
       HGet
       [src idx dflt ty res]
       (match
-        (bcheck src st owns rem cons (clone tys) bcx scp)
+        (bcheck src st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck idx st1 owns1 rem1 cons1 (clone tys) bcx scp)
+            (bcheck idx st1 owns1 rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
@@ -3226,7 +3226,7 @@
       HConj
       [v x el inplace]
       (match
-        (bcheck v st owns rem cons (clone tys) bcx scp)
+        (bcheck v st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3272,13 +3272,13 @@
       HIf
       [c t2 e2 ty]
       (match
-        (bcheck c st owns rem cons (clone tys) bcx scp)
+        (bcheck c st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
           [st1 owns1 rem1 cons1 c1]
           (match
-            (bcheck t2 (clone st1) (clone owns1) rem1 cons1 (clone tys) bcx scp)
+            (bcheck t2 (clone st1) (clone owns1) rem1 cons1 tys bcx scp)
             (BErr [msg] (BErr msg))
             (
               BOk
@@ -3420,7 +3420,7 @@
           1
           0)]
         (match
-          (bcheck (clone scrut) st owns rem cons (clone tys) bcx scp)
+          (bcheck (clone scrut) st owns rem cons tys bcx scp)
           (BErr [msg] (BErr msg))
           (
             BOk
@@ -3515,7 +3515,7 @@
       HDrop
       [x]
       (match
-        (bcheck x st owns rem cons (clone tys) bcx scp)
+        (bcheck x st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3547,7 +3547,7 @@
       HClosureCall
       [f args sig]
       (match
-        (bcheck f st owns rem cons (clone tys) bcx scp)
+        (bcheck f st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -3562,7 +3562,7 @@
       HSpit
       [path data]
       (match
-        (bcheck path st owns rem cons (clone tys) bcx scp)
+        (bcheck path st owns rem cons tys bcx scp)
         (BErr [msg] (BErr msg))
         (
           BOk
@@ -4042,10 +4042,10 @@
   owns :- IMap
   rem :- IMap
   cons :- IMap
-  tys :- TyEnv
+  tys :- &TyEnv
 ] :- BLRes
   (match params
-    (PNil [] (BLRes st owns rem cons tys (BNil)))
+    (PNil [] (BLRes st owns rem cons (clone tys) (BNil)))
     (
       PCons
       [p rest]
@@ -4069,7 +4069,7 @@
             )
             rem
             cons
-            (forms/te-put tys pname pty)
+            (forms/te-put (clone tys) pname pty)
           )
         ))
     )))

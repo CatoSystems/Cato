@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 void cato_print_f64(double v) { printf("%g\n", v); }
@@ -270,13 +271,46 @@ void cato_str_vec_free(char **arr, int64_t len) {
    shared across every snapshot and never copied or freed, so a compiler
    state copy no longer deep-copies the whole table. Entries are owned by
    the table and live until exit. */
-typedef struct { int64_t len; int64_t cap; char **items; } CatoStab;
+typedef struct {
+    int64_t len;
+    int64_t cap;
+    char **items;
+    /* Open-addressing hash table mapping a string to its (last) sid, so
+       cato_stab_find is O(1) instead of a linear scan. Stores sid or -1. */
+    int64_t hcap;
+    int64_t *hidx;
+} CatoStab;
+
+static uint64_t cato_stab_hash(const char *v) {
+    uint64_t h = 5381;
+    unsigned char c;
+    while ((c = (unsigned char)*v++) != 0) h = ((h << 5) + h) + c;
+    return h;
+}
+
+static void cato_stab_rehash(CatoStab *s) {
+    int64_t oldcap = s->hcap;
+    int64_t *old = s->hidx;
+    s->hcap = oldcap ? oldcap * 2 : 16;
+    s->hidx = calloc((size_t)s->hcap, sizeof(int64_t));
+    for (int64_t i = 0; i < s->hcap; i++) s->hidx[i] = -1;
+    for (int64_t i = 0; i < s->len; i++) {
+        uint64_t h = cato_stab_hash(s->items[i]);
+        int64_t j = (int64_t)(h & (uint64_t)(s->hcap - 1));
+        while (s->hidx[j] != -1) j = (j + 1) & (s->hcap - 1);
+        s->hidx[j] = i;
+    }
+    free(old);
+}
 
 int64_t cato_stab_new(void) {
     CatoStab *s = malloc(sizeof(CatoStab));
     s->len = 0;
     s->cap = 8;
     s->items = malloc(sizeof(char *) * (size_t)s->cap);
+    s->hcap = 16;
+    s->hidx = calloc((size_t)s->hcap, sizeof(int64_t));
+    for (int64_t i = 0; i < s->hcap; i++) s->hidx[i] = -1;
     return (int64_t)(intptr_t)s;
 }
 
@@ -293,12 +327,17 @@ char *cato_stab_get(int64_t h, int64_t i) {
     return strdup(s->items[i]);
 }
 
-/* Back-to-front scan; misses report -1 (matches intern-find). */
+/* Hash lookup; misses report -1 (matches intern-find). */
 int64_t cato_stab_find(int64_t h, const char *v) {
     CatoStab *s = (CatoStab *)(intptr_t)h;
     if (!s) return -1;
-    for (int64_t i = s->len - 1; i >= 0; i--)
-        if (strcmp(s->items[i], v) == 0) return i;
+    uint64_t hh = cato_stab_hash(v);
+    int64_t j = (int64_t)(hh & (uint64_t)(s->hcap - 1));
+    while (s->hidx[j] != -1) {
+        int64_t idx = s->hidx[j];
+        if (strcmp(s->items[idx], v) == 0) return idx;
+        j = (j + 1) & (s->hcap - 1);
+    }
     return -1;
 }
 
@@ -309,7 +348,16 @@ int64_t cato_stab_conj(int64_t h, const char *v) {
         s->cap *= 2;
         s->items = realloc(s->items, sizeof(char *) * (size_t)s->cap);
     }
+    /* keep hash table healthy */
+    if (s->len + 1 > (s->hcap * 7) / 10) cato_stab_rehash(s);
     s->items[s->len] = strdup(v);
+    int64_t idx = s->len;
+    /* insert/update slot for v */
+    uint64_t hh = cato_stab_hash(v);
+    int64_t j = (int64_t)(hh & (uint64_t)(s->hcap - 1));
+    while (s->hidx[j] != -1 && strcmp(s->items[s->hidx[j]], v) != 0)
+        j = (j + 1) & (s->hcap - 1);
+    s->hidx[j] = idx;
     return s->len++;
 }
 
@@ -319,6 +367,56 @@ int64_t cato_stab_add(int64_t h, const char *v) {
     cato_stab_conj(h, v);
     return h;
 }
+
+/* Bit operations (num.cato externs). */
+int64_t cato_bit_and(int64_t a, int64_t b) { return a & b; }
+int64_t cato_bit_or(int64_t a, int64_t b) { return a | b; }
+int64_t cato_bit_xor(int64_t a, int64_t b) { return a ^ b; }
+int64_t cato_bit_not(int64_t a) { return ~a; }
+int64_t cato_shl(int64_t a, int64_t n) {
+    if (n < 0 || n >= 64) return 0;
+    return a << n;
+}
+int64_t cato_shr(int64_t a, int64_t n) {
+    if (n < 0 || n >= 64) return a < 0 ? -1 : 0;
+    return a >> n;
+}
+int64_t cato_ushr(int64_t a, int64_t n) {
+    if (n < 0 || n >= 64) return 0;
+    return (int64_t)((uint64_t)a >> n);
+}
+int64_t cato_popcount(int64_t a) {
+    return (int64_t)__builtin_popcountll((unsigned long long)a);
+}
+int64_t cato_clz(int64_t a) {
+    unsigned long long x = (unsigned long long)a;
+    if (x == 0) return 64;
+    return (int64_t)__builtin_clzll(x);
+}
+int64_t cato_ctz(int64_t a) {
+    unsigned long long x = (unsigned long long)a;
+    if (x == 0) return 64;
+    return (int64_t)__builtin_ctzll(x);
+}
+int64_t cato_rotl(int64_t a, int64_t n) {
+    unsigned long long x = (unsigned long long)a;
+    unsigned int k = (unsigned int)n & 63;
+    return (int64_t)((x << k) | (x >> ((64 - k) & 63)));
+}
+int64_t cato_rotr(int64_t a, int64_t n) {
+    unsigned long long x = (unsigned long long)a;
+    unsigned int k = (unsigned int)n & 63;
+    return (int64_t)((x >> k) | (x << ((64 - k) & 63)));
+}
+int64_t cato_bswap(int64_t a) {
+    return (int64_t)__builtin_bswap64((unsigned long long)a);
+}
+
+double cato_sqrt(double x) { return sqrt(x); }
+double cato_pow(double x, double y) { return pow(x, y); }
+double cato_floor(double x) { return floor(x); }
+double cato_ceil(double x) { return ceil(x); }
+double cato_round(double x) { return round(x); }
 
 /* Release a map's heap: `cap` is the header's cap word (tag bit 1 = HAMT
    root, 0 = flat sorted array). Called by generated drop glue. */

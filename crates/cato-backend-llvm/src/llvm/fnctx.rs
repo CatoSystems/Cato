@@ -194,7 +194,10 @@ pub(crate) fn elem_ty_of(e: Elem) -> Ty {
 }
 
 pub(crate) fn mangle(name: &str) -> String {
-    let m = name.replace('-', "_");
+    // `?` is not a legal character in an unquoted LLVM identifier, so
+    // predicate-style names (`empty?`) are escaped. Keep in sync with
+    // `mangle-raw` in selfhost/cato/emit/state.cato.
+    let m = name.replace('-', "_").replace('?', "_q");
     if reserved_local_shape(&m) {
         // User identifiers and the emitter's synthesized locals share the
         // function's local-value namespace: temps are `%t<n>`, block labels

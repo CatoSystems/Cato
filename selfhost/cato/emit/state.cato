@@ -538,7 +538,10 @@
       (if
         (= c 45)
         (str "_" (mangle-raw (subs name 1 (count name))))
-        (str (char->str c) (mangle-raw (subs name 1 (count name))))))))
+        (if
+          (= c 63)
+          (str "_q" (mangle-raw (subs name 1 (count name))))
+          (str (char->str c) (mangle-raw (subs name 1 (count name)))))))))
 
 ; Number of leading ascii digits of s.
 (defn digit-prefix-len [s :- str] :- i64

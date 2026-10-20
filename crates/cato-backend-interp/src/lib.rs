@@ -349,6 +349,81 @@ impl<'p> Interpreter<'p> {
                 }
                 return Ok(Value::Int(h as i64));
             }
+            // Bit operations (num.cato externs). Mirror runtime.c.
+            "cato-bit-and" => {
+                return Ok(Value::Int(int_of(&args[0]) & int_of(&args[1])));
+            }
+            "cato-bit-or" => {
+                return Ok(Value::Int(int_of(&args[0]) | int_of(&args[1])));
+            }
+            "cato-bit-xor" => {
+                return Ok(Value::Int(int_of(&args[0]) ^ int_of(&args[1])));
+            }
+            "cato-bit-not" => {
+                return Ok(Value::Int(!int_of(&args[0])));
+            }
+            "cato-shl" => {
+                let a = int_of(&args[0]);
+                let n = int_of(&args[1]);
+                let v = if n < 0 || n >= 64 { 0 } else { a << n };
+                return Ok(Value::Int(v));
+            }
+            "cato-shr" => {
+                let a = int_of(&args[0]);
+                let n = int_of(&args[1]);
+                let v = if n < 0 || n >= 64 {
+                    if a < 0 { -1 } else { 0 }
+                } else {
+                    a >> n
+                };
+                return Ok(Value::Int(v));
+            }
+            "cato-ushr" => {
+                let a = int_of(&args[0]) as u64;
+                let n = int_of(&args[1]);
+                let v = if n < 0 || n >= 64 { 0 } else { (a >> n) as i64 };
+                return Ok(Value::Int(v));
+            }
+            "cato-popcount" => {
+                return Ok(Value::Int((int_of(&args[0]) as u64).count_ones() as i64));
+            }
+            "cato-clz" => {
+                let a = int_of(&args[0]) as u64;
+                return Ok(Value::Int(a.leading_zeros() as i64));
+            }
+            "cato-ctz" => {
+                let a = int_of(&args[0]) as u64;
+                return Ok(Value::Int(a.trailing_zeros() as i64));
+            }
+            "cato-rotl" => {
+                let a = int_of(&args[0]) as u64;
+                let n = (int_of(&args[1]) as u32) & 63;
+                return Ok(Value::Int(a.rotate_left(n) as i64));
+            }
+            "cato-rotr" => {
+                let a = int_of(&args[0]) as u64;
+                let n = (int_of(&args[1]) as u32) & 63;
+                return Ok(Value::Int(a.rotate_right(n) as i64));
+            }
+            "cato-bswap" => {
+                let a = int_of(&args[0]) as u64;
+                return Ok(Value::Int(a.swap_bytes() as i64));
+            }
+            "cato-sqrt" => {
+                return Ok(Value::F64(f64_of(&args[0]).sqrt()));
+            }
+            "cato-pow" => {
+                return Ok(Value::F64(f64_of(&args[0]).powf(f64_of(&args[1]))));
+            }
+            "cato-floor" => {
+                return Ok(Value::F64(f64_of(&args[0]).floor()));
+            }
+            "cato-ceil" => {
+                return Ok(Value::F64(f64_of(&args[0]).ceil()));
+            }
+            "cato-round" => {
+                return Ok(Value::F64(f64_of(&args[0]).round()));
+            }
             _ => {}
         }
         let defn: &'p cato_core::Defn = *self
