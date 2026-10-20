@@ -6,3 +6,6 @@ __pycache__/
 /crates/cato-assets/assets/x86_64-macos/
 /crates/cato-assets/assets/aarch64-macos/
 /crates/cato-assets/assets/lld/
+
+# local tooling / agent state
+.commandcode/
