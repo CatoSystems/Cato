@@ -17,11 +17,13 @@ mod funcs;
 mod heap_map;
 mod heap_set;
 mod heap_vec;
+mod intops;
 mod loops_spec;
 mod rewrite;
 mod state;
 
 pub(crate) use adt::*;
+pub(crate) use intops::*;
 pub(crate) use closures::*;
 pub(crate) use comprehension::*;
 pub(crate) use analysis::*;
