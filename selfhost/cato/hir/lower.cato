@@ -6763,19 +6763,20 @@
     (AList [kids at] (expand/asts-head-sid kids))
     (_ -1)))
 
-; pass 0a: deftype headers, in form order
-(defn collect-decls [forms :- Asts i :- i64 n :- i64 decls :- Decls ps :- PS] :- DeclRes
-  ; ndecls starts at 1: adt 0 is the prelude's (Option a). The chain is
-  ; consumed by match — an asts-idx per form deep-cloned the whole
-  ; program per form and made the self-compile quadratic (S8).
+; pass 0a: deftype headers, in form order. Indices are handed out as the
+; forms are visited (`nd` is the next free index), so they follow declaration
+; order exactly as the seed's table does.
+(defn collect-decls [forms :- Asts i :- i64 n :- i64 decls :- Decls nd :- i64 ps :- PS] :- DeclRes
+  ; nd starts at 1: adt 0 is the prelude's (Option a). The chain is consumed
+  ; by match: indexing it per form would deep-clone the program per form.
   (match forms
-    (KNil [] (DeclRes decls 1 ""))
+    (KNil [] (DeclRes decls nd ""))
     (
       KCons
       [f rest]
       (if
         (not (= (form-head-sid f) (expand/s-deftype)))
-        (collect-decls rest (+ i 1) n decls ps)
+        (collect-decls rest (+ i 1) n decls nd ps)
         (let [r (forms/parse-deftype-header f (clone ps))]
           (match r
             (
@@ -6792,40 +6793,34 @@
                     0
                     (str "duplicate deftype " (forms/sym-str (forms/ps-tab ps) name))
                   )
-                  (match
-                    (collect-decls rest (+ i 1) n decls ps2)
-                    (
-                      DeclRes
-                      [d nd msg]
-                      (if
-                        (> (count msg) 0)
-                        (DeclRes (DLNil) 0 msg)
-                        (DeclRes (forms/dl-put d name (Decl nd typarams)) (+ 1 nd) ""))
-                    ))))
+                  (collect-decls rest (+ i 1) n (forms/dl-put decls name (Decl nd typarams)) (+ nd 1) ps2)))
             ))))
     )))
 
 (deftype VarRes (VarRes [adts :- AdtTab msg :- str]))
 
 ; pass 0b: variants, in declaration order; each deftype's own type
-; parameters are in scope while its fields parse
+; parameters are in scope while its fields parse. `adts` is the table the
+; field parser resolves against (the prelude's); `acc` collects the
+; deftypes in form order, matching the indices pass 0a assigned.
 (defn build-variants [forms :- Asts
   i :- i64
   n :- i64
   decls :- Decls
   adts :- AdtTab
+  acc :- AdtTab
   tab :- i64
   sigs :- Sigs
 ] :- VarRes
   ; match-walk, as collect-decls (S8)
   (match forms
-    (KNil [] (VarRes adts ""))
+    (KNil [] (VarRes acc ""))
     (
       KCons
       [f rest]
       (if
         (not (= (form-head-sid f) (expand/s-deftype)))
-        (build-variants rest (+ i 1) n decls adts tab sigs)
+        (build-variants rest (+ i 1) n decls adts acc tab sigs)
         (let [f2 (clone f)
           rh
           (
@@ -6853,20 +6848,17 @@
                       (if
                         (forms/ps-failed ps2)
                         (VarRes (ATNil) (ps-err-msg ps2))
-                        (match
-                          (build-variants rest (+ i 1) n decls adts tab sigs)
-                          (
-                            VarRes
-                            [restv msg]
-                            (if
-                              (> (count msg) 0)
-                              (VarRes (ATNil) msg)
-                              (
-                                VarRes
-                                (forms/adts-append-info restv (AdtInfo name typarams vs -1 (TyNil)))
-                                ""
-                              ))
-                          )))
+                        (
+                          build-variants
+                          rest
+                          (+ i 1)
+                          n
+                          decls
+                          adts
+                          (forms/adts-append-info acc (AdtInfo name typarams vs -1 (TyNil)))
+                          tab
+                          sigs
+                        ))
                     ))))
             ))))
     )))
@@ -7112,7 +7104,7 @@
     (forms/dl-put (DLNil) (expand/s-option) (Decl 0 (SCons (expand/s-aparam) (SNil))))
     ; user deftype indices start at 1: adt 0 is the prelude's Option
     dres
-    (collect-decls (clone forms) 0 n decls0 (clone ps0))
+    (collect-decls (clone forms) 0 n decls0 1 (clone ps0))
   ]
     (match dres
       (
@@ -7128,6 +7120,7 @@
               0
               n
               (clone decls)
+              (forms/ps-adts (clone ps0))
               (forms/ps-adts (clone ps0))
               (forms/ps-tab ps0)
               (SGNil)
