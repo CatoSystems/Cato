@@ -1,0 +1,117 @@
+; snake.cato — a small Snake game using raylib (via raylib_shim.c).
+;
+; Build (from repo root):
+;   cato compile demo/snake/snake.cato -o /tmp/snake -- demo/snake/raylib_shim.c \
+;       -I/opt/homebrew/include -L/opt/homebrew/lib -lraylib
+;   /tmp/snake
+;
+; Requires raylib (brew install raylib on macOS) and the shim in this folder.
+
+(extern rl_init_window [w :- i64 h :- i64 title :- str] :- i64)
+(extern rl_close_window [] :- i64)
+(extern rl_window_should_close [] :- i64)
+(extern rl_begin_drawing [] :- i64)
+(extern rl_end_drawing [] :- i64)
+(extern rl_clear_background [r :- i64 g :- i64 b :- i64] :- i64)
+(extern rl_draw_rect [x :- i64 y :- i64 w :- i64 h :- i64 r :- i64 g :- i64 b :- i64] :- i64)
+(extern rl_draw_text [text :- str x :- i64 y :- i64 size :- i64 r :- i64 g :- i64 b :- i64] :- i64)
+(extern rl_is_key_pressed [key :- i64] :- i64)
+(extern rl_get_random_value [mn :- i64 mx :- i64] :- i64)
+(extern rl_set_target_fps [fps :- i64] :- i64)
+
+(defn encode [x :- i64 y :- i64] :- i64 (+ x (* y 32)))
+
+(defn dir-dx [d :- i64] :- i64
+  (if (= d 0) 1 (if (= d 1) -1 0)))
+
+(defn dir-dy [d :- i64] :- i64
+  (if (= d 2) -1 (if (= d 3) 1 0)))
+
+(defn contains-pos [snake :- (Vector i64) pos :- i64] :- bool
+  (let [n (count snake)]
+    (loop [i :- i64 0]
+      (if (>= i n) false
+        (if (= (get snake i 0) pos) true (recur (+ i 1)))))))
+
+(defn self-hit [snake :- (Vector i64) pos :- i64] :- bool
+  (let [n (count snake)
+        limit (if (<= n 1) 0 (- n 1))]
+    (loop [i :- i64 0]
+      (if (>= i limit) false
+        (if (= (get snake i 0) pos) true (recur (+ i 1)))))))
+
+(defn prepend [snake :- (Vector i64) head :- i64] :- (Vector i64)
+  (let [n (count snake)]
+    (loop [acc :- (Vector i64) (conj [] head) i :- i64 0]
+      (if (>= i n) acc
+        (recur (conj acc (get snake i 0)) (+ i 1))))))
+
+(defn move-snake [snake :- (Vector i64) head :- i64] :- (Vector i64)
+  (let [n (count snake)]
+    (loop [acc :- (Vector i64) (conj [] head) i :- i64 0]
+      (if (>= i (- n 1)) acc
+        (recur (conj acc (get snake i 0)) (+ i 1))))))
+
+(defn new-food [snake :- (Vector i64)] :- i64
+  (loop [pos :- i64 (rl_get_random_value 0 (- (* 32 24) 1))]
+    (if (contains-pos snake pos)
+      (recur (rl_get_random_value 0 (- (* 32 24) 1)))
+      pos)))
+
+(defn read-input [dir :- i64] :- i64
+  (if (and (not (= (rl_is_key_pressed 262) 0)) (not (= dir 1))) 0
+    (if (and (not (= (rl_is_key_pressed 263) 0)) (not (= dir 0))) 1
+      (if (and (not (= (rl_is_key_pressed 265) 0)) (not (= dir 3))) 2
+        (if (and (not (= (rl_is_key_pressed 264) 0)) (not (= dir 2))) 3
+          dir)))))
+
+(defn draw-snake [snake :- (Vector i64)] :- i64
+  (let [n (count snake)]
+    (loop [i :- i64 0 acc :- i64 0]
+      (if (>= i n) acc
+        (let [p (get snake i 0)
+              x (* (rem p 32) 20)
+              y (* (/ p 32) 20)]
+          (recur (+ i 1)
+                 (rl_draw_rect x y 20 20 0 (if (= i 0) 120 180) 0)))))))
+
+(defn main []
+  (do
+    (rl_init_window 640 480 "Cato Snake")
+    (rl_set_target_fps 10)
+    (let [init-snake (conj (conj (conj [] (encode 5 5)) (encode 4 5)) (encode 3 5))]
+      (loop [snake :- (Vector i64) (clone init-snake)
+             dir :- i64 0
+             food :- i64 (new-food init-snake)
+             score :- i64 0
+             alive :- bool true]
+        (if (not (= (rl_window_should_close) 0)) 0
+          (do
+            (rl_begin_drawing)
+            (rl_clear_background 240 240 240)
+            (draw-snake snake)
+            (rl_draw_rect (* (rem food 32) 20) (* (/ food 32) 20) 20 20 200 50 50)
+            (rl_draw_text (str "Score: " score) 10 10 20 0 0 0)
+            (if (not alive) (rl_draw_text "GAME OVER - press SPACE to retry" 120 220 20 200 0 0) 0)
+            (rl_end_drawing)
+            (let [ndir (if alive (read-input dir) dir)]
+              (if (not alive)
+                (if (not (= (rl_is_key_pressed 32) 0))
+                  (let [rs (conj (conj (conj [] (encode 5 5)) (encode 4 5)) (encode 3 5))]
+                    (recur rs 0 (new-food rs) 0 true))
+                  (recur snake ndir food score false))
+                (let [head (get snake 0 0)
+                      hx (rem head 32)
+                      hy (/ head 32)
+                      nx (+ hx (dir-dx ndir))
+                      ny (+ hy (dir-dy ndir))]
+                  (if (or (< nx 0) (>= nx 32) (< ny 0) (>= ny 24))
+                    (recur snake ndir food score false)
+                    (let [new-head (encode nx ny)]
+                      (if (self-hit snake new-head)
+                        (recur snake ndir food score false)
+                        (if (= new-head food)
+                          (let [grown (prepend snake new-head)]
+                            (recur grown ndir (new-food grown) (+ score 10) true))
+                          (recur (move-snake snake new-head) ndir food score true)))))))))))
+    (rl_close_window))))
