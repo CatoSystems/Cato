@@ -584,3 +584,27 @@ panicked; integer division by zero was UB natively.
 
 k2 (kernel-generated kernel) is unchanged at 3.46 GB: the kernel's planner
 still lacks the arm-exit and loop rules (Stage 4).
+
+### Stage 4 — porting the drop planner to the kernel (in progress)
+
+Attribution (tools/alloc_site.c roots over the kernel-built kernel) showed
+k2's 3.4 GB was IR boxes the kernel's checker consumed by matching and never
+freed: the seed's arm-exit and branch-local free rules had never been
+ported. Ported so far, each held to the seed by the HIR differential (new
+fixtures arm_frees, branch_frees) and to memory safety by the gate's new
+ASAN stage (k2, -O0, compiling the kernel):
+
+| k2 self-compile | peak live | frees / allocs |
+|---|---|---|
+| before | 3463 MiB | 61 M / 102 M |
+| arm-exit frees | 1827 MiB | 61 M / 102 M |
+| + branch-local frees, watch stack | 229 MiB | 99 M / 105 M |
+| + prefix merges | 223 MiB | 98 M / 103 M |
+
+Kernel bugs fixed on the way: deftypes numbered last-to-first; ownership
+facts read only a type's first variant (accepted reuse of a moved value);
+state-map merges re-added shadowed history at every if/match; a branch
+free could name another planner temp (double free — caught by the new gate
+stage, missed by the fixpoint). Not yet ported: owned loop variables,
+recur and loop-exit drops, parameter-mode inference. k1 for comparison:
+111 MiB peak, most of it AST clones both planners leak.
