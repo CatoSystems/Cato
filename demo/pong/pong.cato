@@ -1,0 +1,92 @@
+; pong.cato — a small Pong game using SDL3 (via sdl3_shim.c).
+;
+; Build (from repo root):
+;   cato compile demo/pong/pong.cato -o /tmp/pong -- demo/pong/sdl3_shim.c \
+;       $(pkg-config --cflags --libs sdl3)
+;   /tmp/pong
+;
+; Requires SDL3 (brew install sdl3) and the shim in this folder.
+
+(extern sdl_init [] :- i64)
+(extern sdl_create_window [w :- i64 h :- i64 title :- str] :- i64)
+(extern sdl_create_renderer [] :- i64)
+(extern sdl_poll_event [] :- i64)
+(extern sdl_quit_requested [] :- i64)
+(extern sdl_w_down [] :- i64)
+(extern sdl_s_down [] :- i64)
+(extern sdl_up_down [] :- i64)
+(extern sdl_down_down [] :- i64)
+(extern sdl_set_title [title :- str] :- i64)
+(extern sdl_render_clear [r :- i64 g :- i64 b :- i64] :- i64)
+(extern sdl_render_fill_rect [x :- i64 y :- i64 w :- i64 h :- i64 r :- i64 g :- i64 b :- i64] :- i64)
+(extern sdl_render_fill_circle [cx :- i64 cy :- i64 radius :- i64 r :- i64 g :- i64 b :- i64] :- i64)
+(extern sdl_render_present [] :- i64)
+(extern sdl_delay [ms :- i64] :- i64)
+(extern sdl_destroy [] :- i64)
+
+(defn draw-center [] :- i64
+  (loop [y :- i64 0 acc :- i64 0]
+    (if (>= y 600) acc
+      (recur (+ y 20) (sdl_render_fill_rect 397 y 6 10 80 100 160)))))
+
+(defn clamp [v :- i64 lo :- i64 hi :- i64] :- i64
+  (if (< v lo) lo (if (> v hi) hi v)))
+
+(defn pump-events [] :- i64
+  (loop [e :- i64 (sdl_poll_event)]
+    (if (= e 0) 0 (recur (sdl_poll_event)))))
+
+(defn main []
+  (do
+    (sdl_init)
+    (sdl_create_window 800 600 "Cato Pong")
+    (sdl_create_renderer)
+    (loop [ball_x :- i64 400
+           ball_y :- i64 300
+           ball_vx :- i64 3
+           ball_vy :- i64 2
+           left_y :- i64 250
+           right_y :- i64 250
+           score_l :- i64 0
+           score_r :- i64 0]
+      (do
+        (pump-events)
+        (if (not (= (sdl_quit_requested) 0)) 0
+          (do
+            ; input
+            (let [ly (clamp (if (not (= (sdl_w_down) 0)) (- left_y 4)
+                            (if (not (= (sdl_s_down) 0)) (+ left_y 4) left_y)) 0 500)
+                  ry (clamp (if (not (= (sdl_up_down) 0)) (- right_y 4)
+                            (if (not (= (sdl_down_down) 0)) (+ right_y 4) right_y)) 0 500)]
+              ; update ball
+              (let [ny0 (+ ball_y ball_vy)
+                    vy (if (or (<= ny0 0) (>= ny0 590)) (- 0 ball_vy) ball_vy)
+                    ny (+ ball_y vy)
+                    nx (+ ball_x ball_vx)
+                    ; paddle collisions
+                    vx (if (and (< ball_vx 0) (<= nx 30) (>= nx 10)
+                                (>= (+ ball_y 10) ly) (<= ball_y (+ ly 100)))
+                       3
+                       (if (and (> ball_vx 0) (>= nx 760) (<= nx 780)
+                                (>= (+ ball_y 10) ry) (<= ball_y (+ ry 100)))
+                         -3
+                         ball_vx))]
+                ; scoring / reset
+                (if (< nx 0)
+                  (recur 400 300 3 2 ly ry score_l (+ score_r 1))
+                  (if (> nx 790)
+                    (recur 400 300 -3 2 ly ry (+ score_l 1) score_r)
+                    (do
+                      ; render
+                      (sdl_render_clear 18 24 42)
+                      (draw-center)
+                      (sdl_render_fill_rect 0 0 800 4 120 140 180)
+                      (sdl_render_fill_rect 0 596 800 4 120 140 180)
+                      (sdl_render_fill_rect 20 ly 12 100 120 220 255)
+                      (sdl_render_fill_rect 768 ry 12 100 255 140 120)
+                      (sdl_render_fill_circle (+ nx 6) (+ ny 6) 6 255 230 120)
+                      (sdl_set_title (str "Pong  L:" score_l "  R:" score_r))
+                      (sdl_render_present)
+                      (sdl_delay 12)
+                      (recur nx ny vx vy ly ry score_l score_r))))))))))
+    (sdl_destroy)))
