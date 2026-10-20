@@ -1,0 +1,565 @@
+(ns cato.hir.loops)
+(require ["types.cato" :as types])
+(require ["forms.cato" :as forms])
+(require ["hexpr.cato" :as hexpr])
+(require ["alias.cato" :as alias])
+(require ["statemap.cato" :as statemap])
+
+; loops.cato — the drop planner's loop analyses.
+;
+; Loop variables are owned bindings: `recur` is an iteration's scope exit
+; (it drops what the iteration still owns and hands its arguments to the
+; next one) and a completing path drops the loop variables it does not
+; return. Every decision is guarded by a may-alias *roots* analysis:
+; nothing a surviving value may point into is dropped. Uncertainty leaks,
+; it never frees.
+
+; An iteration's bindings, innermost first, with whether a recur may drop
+; them (1) or they only shadow (0).
+(deftype VScope
+  (IVNil)
+  (IVCons [name :- i64 drop :- i64 next :- VScope]))
+
+; name -> the bindings its value may point into, innermost first.
+(deftype Roots
+  (RtNil)
+  (RtCons [name :- i64 rs :- Sids next :- Roots]))
+
+; --- may-alias roots -------------------------------------------------------------
+
+; The roots of e's value: every binding whose memory the value may point
+; into (a variable is its own root; `roots` records what each binding in
+; scope may point into). Fresh values — string builders, clones, owned call
+; results, scalars — have none.
+(defn roots-of [e :- &HExpr roots :- &Roots retb :- &RBTable acc :- Sids] :- Sids
+  (match e
+    (HVar [v] (root-var v roots acc))
+    (HCall [f args] (if (alias/alias-call f (SNil) retb) (roots-kids args roots retb acc) acc))
+    (HCtor [_adt _v args] (roots-kids args roots retb acc))
+    (HConj [v _x _el _ip] (roots-of v roots retb acc))
+    (HGet [src _idx dflt _ty _res] (roots-kids dflt roots retb (roots-of src roots retb acc)))
+    (HLet [binds body _f] (let [inner (roots-binds binds (clone roots) retb)] (roots-of body inner retb acc)))
+    (HSeq [es] (roots-last es roots retb acc))
+    (HIf [_c t f _ty] (roots-of f roots retb (roots-of t roots retb acc)))
+    (
+      HMatch
+      [scrut arms _ty]
+      (let [r (roots-of scrut roots retb (SNil))] (roots-arms arms r roots retb acc))
+    )
+    (HLoop [binds _ty body] (roots-loop binds body (clone roots) retb acc))
+    (HClosure [_s _m _p caps _b] (roots-caps caps roots acc))
+    (HClosureCall [f args _sig] (roots-kids args roots retb (roots-of f roots retb acc)))
+    (_ acc)))
+
+(defn root-var [v :- i64 roots :- &Roots acc :- Sids] :- Sids
+  (statemap/union (roots-get roots v) (if (types/sids-has acc v) acc (SCons v acc))))
+
+(defn roots-get [roots :- &Roots v :- i64] :- Sids
+  (match roots
+    (RtNil [] (SNil))
+    (RtCons [n rs next] (if (= n v) (clone rs) (roots-get next v)))))
+
+(defn roots-kids [es :- &HExprs roots :- &Roots retb :- &RBTable acc :- Sids] :- Sids
+  (match es
+    (HENil [] acc)
+    (HECons [k next] (roots-kids next roots retb (roots-of k roots retb acc)))))
+
+(defn roots-last [es :- &HExprs roots :- &Roots retb :- &RBTable acc :- Sids] :- Sids
+  (match es
+    (HENil [] acc)
+    (HECons [k next] (if (hexpr/hes-null next) (roots-of k roots retb acc) (roots-last next roots retb acc)))))
+
+; A let's bindings, each rooted in what its value may point into.
+(defn roots-binds [binds :- &Binds roots :- Roots retb :- &RBTable] :- Roots
+  (match binds
+    (BNil [] roots)
+    (
+      BCons
+      [n v _ty next]
+      (let [r (roots-of v roots retb (SNil))] (roots-binds next (RtCons n r roots) retb))
+    )))
+
+(defn roots-arms [arms :- &HArms r :- &Sids roots :- &Roots retb :- &RBTable acc :- Sids] :- Sids
+  (match arms
+    (HANil [] acc)
+    (
+      HACons
+      [_v binders body _ef next]
+      (roots-arms next r roots retb (roots-of body (roots-bind-all binders r (clone roots)) retb acc))
+    )))
+
+(defn roots-bind-all [names :- &Sids r :- &Sids roots :- Roots] :- Roots
+  (match names
+    (SNil [] roots)
+    (SCons [n rest] (roots-bind-all rest r (RtCons n (clone r) roots)))))
+
+(defn roots-loop [binds :- &Binds body :- &HExpr roots :- Roots retb :- &RBTable acc :- Sids] :- Sids
+  (match binds
+    (BNil [] (roots-of body roots retb acc))
+    (
+      BCons
+      [n init _ty next]
+      (let [r (roots-of init roots retb (SNil))]
+        (roots-loop next body (RtCons n (clone r) roots) retb (statemap/union r acc)))
+    )))
+
+(defn roots-caps [caps :- &Caps roots :- &Roots acc :- Sids] :- Sids
+  (match caps
+    (CNil [] acc)
+    (CCons [n _ty _own next] (roots-caps next roots (root-var n roots acc)))))
+
+; --- shapes ------------------------------------------------------------------------
+
+; Is `name` bound anywhere inside e — by a let, a loop, a match arm or a
+; closure parameter? The planner names bindings by their source name, so
+; a binding whose name is re-bound inside its own scope is never a drop
+; candidate: below the inner binding the name may describe the other one.
+(defn binds-anywhere [e :- &HExpr name :- i64] :- bool
+  (match e
+    (HLet [binds body _f] (or (ba-binds binds name) (binds-anywhere body name)))
+    (HLoop [binds _ty body] (or (ba-binds binds name) (binds-anywhere body name)))
+    (HMatch [scrut arms _ty] (or (binds-anywhere scrut name) (ba-arms arms name)))
+    (HClosure [_s _m params _caps body] (or (ba-params params name) (binds-anywhere body name)))
+    (HSeq [es] (ba-kids es name))
+    (HIf [c t f _ty] (or (binds-anywhere c name) (binds-anywhere t name) (binds-anywhere f name)))
+    (HCall [_c args] (ba-kids args name))
+    (HCtor [_a _v args] (ba-kids args name))
+    (HStrCat [args] (ba-kids args name))
+    (HRecur [args _d] (ba-kids args name))
+    (HClosureCall [f args _s] (or (binds-anywhere f name) (ba-kids args name)))
+    (HConj [v x _el _ip] (or (binds-anywhere v name) (binds-anywhere x name)))
+    (HGet [src idx dflt _t _r] (or (binds-anywhere src name) (binds-anywhere idx name) (ba-kids dflt name)))
+    (HAnd [a b] (or (binds-anywhere a name) (binds-anywhere b name)))
+    (HOr [a b] (or (binds-anywhere a name) (binds-anywhere b name)))
+    (HBinW [_o a b _t] (or (binds-anywhere a name) (binds-anywhere b name)))
+    (HCmpW [_o a b _t] (or (binds-anywhere a name) (binds-anywhere b name)))
+    (HNot [x] (binds-anywhere x name))
+    (HClone [x] (binds-anywhere x name))
+    (HDrop [x] (binds-anywhere x name))
+    (_ false)))
+
+(defn ba-kids [es :- &HExprs name :- i64] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (or (binds-anywhere k name) (ba-kids next name)))))
+
+(defn ba-binds [binds :- &Binds name :- i64] :- bool
+  (match binds
+    (BNil [] false)
+    (BCons [n v _t next] (or (= n name) (binds-anywhere v name) (ba-binds next name)))))
+
+(defn ba-arms [arms :- &HArms name :- i64] :- bool
+  (match arms
+    (HANil [] false)
+    (
+      HACons
+      [_v binders body _ef next]
+      (or (types/sids-has binders name) (binds-anywhere body name) (ba-arms next name))
+    )))
+
+(defn ba-params [ps :- &PList name :- i64] :- bool
+  (match ps
+    (PNil [] false)
+    (PCons [p rest] (or (match p (Param [n _t _b] (= n name))) (ba-params rest name)))))
+
+; Bare variables handed to a tail `recur` of e: they leave the scope as the
+; next iteration's loop variables (the recur analogue of a tail escape).
+(defn recur-arg-vars [e :- &HExpr acc :- Sids] :- Sids
+  (match e
+    (HRecur [args _d] (rav-args args acc))
+    (HLet [_b body _f] (recur-arg-vars body acc))
+    (HSeq [es] (rav-last es acc))
+    (HIf [_c t f _ty] (recur-arg-vars f (recur-arg-vars t acc)))
+    (HMatch [_s arms _ty] (rav-arms arms acc))
+    (_ acc)))
+
+(defn rav-args [args :- &HExprs acc :- Sids] :- Sids
+  (match args
+    (HENil [] acc)
+    (
+      HECons
+      [a next]
+      (rav-args
+        next
+        (match a
+          (HVar [v] (if (types/sids-has acc v) acc (SCons v acc)))
+          (_ acc)))
+    )))
+
+(defn rav-last [es :- &HExprs acc :- Sids] :- Sids
+  (match es
+    (HENil [] acc)
+    (HECons [k next] (if (hexpr/hes-null next) (recur-arg-vars k acc) (rav-last next acc)))))
+
+(defn rav-arms [arms :- &HArms acc :- Sids] :- Sids
+  (match arms
+    (HANil [] acc)
+    (HACons [_v _b body _ef next] (rav-arms next (recur-arg-vars body acc)))))
+
+(defn sids-minus [a :- &Sids b :- &Sids] :- Sids
+  (match a
+    (SNil [] (SNil))
+    (SCons [h t] (if (types/sids-has b h) (sids-minus t b) (SCons h (sids-minus t b))))))
+
+(defn binds-names [binds :- &Binds] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (BCons [n _v _t next] (SCons n (binds-names next)))))
+
+; --- ownership of values -------------------------------------------------------------
+
+(defn heap-owning [ty :- &Ty facts :- &Facts] :- bool
+  (let [t (types/ty-tag ty)]
+    (cond
+      (and (>= t 12) (<= t 15))
+      true
+      (= t 17)
+      true
+      (= t 16)
+      (= (forms/facts-owns-at facts (types/ty-arg ty)) 1)
+      false)))
+
+; Is e a fresh heap value the receiver alone owns: a string or collection
+; builder, a clone, a closure, an owning constructor, an owned call result
+; (not through a `&T` or alias-returning callee)? A vec literal is a static
+; constant, never fresh.
+(defn fresh-value [e :- &HExpr facts :- &Facts retb :- &RBTable] :- bool
+  (match e
+    (HCall [c _a] (= (alias/rb-get retb c) 0))
+    (HLet [_b body _f] (fresh-value body facts retb))
+    (HSubs [_s _a _b] true)
+    (HSplit [_s _p] true)
+    (HJoin [_s _x] true)
+    (HStrCat [_a] true)
+    (HCharStr [_x] true)
+    (HToStr [_x _t] true)
+    (HConj [_v _x _el _ip] true)
+    (HArgs [] true)
+    (HClosure [_s _m _p _c _b] true)
+    (HClone [_x] true)
+    (HSlurp [_p] true)
+    (HCtor [adt _v _a] (= (forms/facts-owns-at facts adt) 1))
+    (
+      HParseNum
+      [_s _i res]
+      (and (= (types/ty-tag res) 16) (= (forms/facts-owns-at facts (types/ty-arg res)) 1))
+    )
+    (_ false)))
+
+; --- which loop variables own their value -------------------------------------------
+
+; How a name visible at a recur was bound. A match binder records who owns
+; the matched box — a loop variable (its name), this iteration (-2: a fresh
+; let or temp), or nobody (-1) — and whether its field is a heap object.
+(deftype Origin
+  (OLoopVar)
+  (OLet [fresh :- i64])
+  (OBinder [owner :- i64 heap :- i64]))
+
+(deftype OScope
+  (ONil)
+  (OCons [name :- i64 o :- Origin next :- OScope]))
+
+(deftype OLook
+  (OFound [o :- Origin])
+  (OMiss))
+
+(defn resolve [sc :- &OScope name :- i64] :- OLook
+  (match sc
+    (ONil [] (OMiss))
+    (OCons [n o next] (if (= n name) (OFound (clone o)) (resolve next name)))))
+
+; One tail recur of a loop body with the bindings visible at it.
+(deftype Sites
+  (SiNil)
+  (SiCons [args :- HExprs sc :- OScope next :- Sites]))
+
+; The tail recurs of one loop body (a nested loop's recurs are its own).
+(defn collect-sites [e :- &HExpr
+  sc :- &OScope
+  tys :- &TyEnv
+  facts :- &Facts
+  adts :- &AdtTab
+  retb :- &RBTable
+  acc :- Sites
+] :- Sites
+  (match e
+    (HRecur [args _d] (SiCons (clone args) (clone sc) acc))
+    (
+      HLet
+      [binds body _f]
+      (match
+        (sites-binds binds (clone sc) (clone tys) facts retb)
+        (SBRes [sc2 tys2] (collect-sites body sc2 tys2 facts adts retb acc)))
+    )
+    (HSeq [es] (sites-last es sc tys facts adts retb acc))
+    (HIf [_c t f _ty] (collect-sites f sc tys facts adts retb (collect-sites t sc tys facts adts retb acc)))
+    (
+      HMatch
+      [scrut arms _ty]
+      (let [owner
+        (match scrut
+          (
+            HVar
+            [u]
+            (match
+              (resolve sc u)
+              (OFound [o] (match o (OLoopVar [] u) (OLet [fr] (if (= fr 1) -2 -1)) (OBinder [_o _h] -1)))
+              (OMiss [] -1))
+          )
+          (_ (if (alias/fresh-box scrut retb) -2 -1)))
+        adt (alias/scrut-adt scrut tys retb)]
+        (sites-arms arms owner adt sc tys facts adts retb acc))
+    )
+    (_ acc)))
+
+(deftype SBRes (SBRes [sc :- OScope tys :- TyEnv]))
+
+(defn sites-binds [binds :- &Binds sc :- OScope tys :- TyEnv facts :- &Facts retb :- &RBTable] :- SBRes
+  (match binds
+    (BNil [] (SBRes sc tys))
+    (
+      BCons
+      [n v ty next]
+      (let [fresh (if (and (heap-owning ty facts) (fresh-value v facts retb)) 1 0)]
+        (sites-binds next (OCons n (OLet fresh) sc) (forms/te-put tys n (clone ty)) facts retb))
+    )))
+
+(defn sites-last [es :- &HExprs
+  sc :- &OScope
+  tys :- &TyEnv
+  facts :- &Facts
+  adts :- &AdtTab
+  retb :- &RBTable
+  acc :- Sites
+] :- Sites
+  (match es
+    (HENil [] acc)
+    (
+      HECons
+      [k next]
+      (if
+        (hexpr/hes-null next)
+        (collect-sites k sc tys facts adts retb acc)
+        (sites-last next sc tys facts adts retb acc))
+    )))
+
+(defn sites-arms [arms :- &HArms
+  owner :- i64
+  adt :- i64
+  sc :- &OScope
+  tys :- &TyEnv
+  facts :- &Facts
+  adts :- &AdtTab
+  retb :- &RBTable
+  acc :- Sites
+] :- Sites
+  (match arms
+    (HANil [] acc)
+    (
+      HACons
+      [variant binders body _ef next]
+      (let [fields
+        (if
+          (and (>= adt 0) (>= variant 0))
+          (forms/varnt-fields-at adts adt variant)
+          (TyNil))
+        sc2 (sites-binders binders fields owner facts (clone sc))]
+        (sites-arms
+          next
+          owner
+          adt
+          sc
+          tys
+          facts
+          adts
+          retb
+          (collect-sites body sc2 tys facts adts retb acc)))
+    )))
+
+(defn sites-binders [bs :- &Sids fields :- &TyList owner :- i64 facts :- &Facts sc :- OScope] :- OScope
+  (match bs
+    (SNil [] sc)
+    (
+      SCons
+      [b rest]
+      (match fields
+        (TyNil [] (sites-binders rest fields owner facts (OCons b (OBinder owner 0) sc)))
+        (
+          TyCons
+          [fty frest]
+          (let [heap (if (and (alias/binder-aliases fty facts) (not (= (types/ty-tag fty) 17))) 1 0)]
+            (sites-binders rest frest owner facts (OCons b (OBinder owner heap) sc)))
+        ))
+    )))
+
+; Does this recur argument hand the next iteration a value it owns, given
+; the current candidate owning loop variables?
+(defn yields-owned [a :- &HExpr sc :- &OScope cand :- &Sids facts :- &Facts retb :- &RBTable] :- bool
+  (match a
+    (
+      HVar
+      [w]
+      (match
+        (resolve sc w)
+        (
+          OFound
+          [o]
+          (match o
+            (OLoopVar [] (types/sids-has cand w))
+            (OLet [fr] (= fr 1))
+            (
+              OBinder
+              [ow hp]
+              (and
+                (= hp 1)
+                (cond
+                  (>= ow 0)
+                  (types/sids-has cand ow)
+                  (= ow -2)
+                  true
+                  false))
+            ))
+        )
+        (OMiss [] false))
+    )
+    (_ (fresh-value a facts retb))))
+
+; Which loop variables own their value on every iteration? A variable
+; starts as a candidate when its seed handed it an owned value; it stays
+; one only if every recur argument in its position yields an owned value
+; too: a fresh allocation, an owning loop variable (itself, or a swap
+; partner), a fresh let of this iteration, or a heap field moved out of a
+; box this iteration owns (its slot is then skipped by the box's free).
+; Anything else leaves the variable non-owning: never freed by the loop (a
+; leak, never a double free).
+(defn loop-owning [binds :- &Binds
+  body :- &HExpr
+  seed-owned :- &Sids
+  tys :- &TyEnv
+  facts :- &Facts
+  adts :- &AdtTab
+  retb :- &RBTable
+] :- Sids
+  (let [cand (lo-cands binds body seed-owned facts)]
+    (if
+      (types/sids-null cand)
+      cand
+      (match
+        (lo-scope binds (ONil) (clone tys))
+        (
+          SBRes
+          [sc tys2]
+          (let [sites (collect-sites body sc tys2 facts adts retb (SiNil)) names (binds-names binds)]
+            (lo-fix sites names cand facts retb))
+        )))))
+
+(defn lo-cands [binds :- &Binds body :- &HExpr seed-owned :- &Sids facts :- &Facts] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (
+      BCons
+      [n _v ty next]
+      (let [rest (lo-cands next body seed-owned facts)]
+        (if
+          (and (heap-owning ty facts) (types/sids-has seed-owned n) (not (binds-anywhere body n)))
+          (SCons n rest)
+          rest))
+    )))
+
+(defn lo-scope [binds :- &Binds sc :- OScope tys :- TyEnv] :- SBRes
+  (match binds
+    (BNil [] (SBRes sc tys))
+    (BCons [n _v ty next] (lo-scope next (OCons n (OLoopVar) sc) (forms/te-put tys n (clone ty))))))
+
+(defn lo-fix [sites :- &Sites names :- &Sids cand :- Sids facts :- &Facts retb :- &RBTable] :- Sids
+  (let [n0 (types/sids-depth cand) cand2 (lo-pass sites names cand facts retb)]
+    (if (= (types/sids-depth cand2) n0) cand2 (lo-fix sites names cand2 facts retb))))
+
+(defn lo-pass [sites :- &Sites names :- &Sids cand :- Sids facts :- &Facts retb :- &RBTable] :- Sids
+  (match sites
+    (SiNil [] cand)
+    (SiCons [args sc next] (lo-pass next names (lo-site args names sc cand facts retb) facts retb))))
+
+(defn lo-site [args :- &HExprs names :- &Sids sc :- &OScope cand :- Sids facts :- &Facts retb :- &RBTable] :- Sids
+  (match args
+    (HENil [] cand)
+    (
+      HECons
+      [a next]
+      (match names
+        (SNil [] cand)
+        (
+          SCons
+          [n nrest]
+          (lo-site
+            next
+            nrest
+            sc
+            (if
+              (and (types/sids-has cand n) (not (yields-owned a sc cand facts retb)))
+              (sids-minus cand (SCons n (SNil)))
+              cand)
+            facts
+            retb)
+        ))
+    )))
+
+; --- loop exit ----------------------------------------------------------------------
+
+; Wrap each completing leaf of a loop body (every tail path that does not
+; recur) in an empty-binds let that drops `drops` after the leaf's value is
+; computed — minus the variables that value may point into, and minus any
+; name re-bound on the way down.
+(defn wrap-exit [e :- HExpr drops :- &Sids ex :- &Roots retb :- &RBTable] :- HExpr
+  (match e
+    (HRecur [args d] (HRecur args d))
+    (
+      HLet
+      [binds body frees]
+      (let [keep (sids-minus drops (binds-names binds))
+        ex2 (roots-binds binds (clone ex) retb)]
+        (if
+          (types/sids-null keep)
+          (HLet binds body frees)
+          (HLet binds (wrap-exit body keep ex2 retb) frees)))
+    )
+    (HSeq [es] (HSeq (wrap-exit-last es drops ex retb)))
+    (HIf [c t f ty] (HIf c (wrap-exit t drops ex retb) (wrap-exit f drops ex retb) ty))
+    (
+      HMatch
+      [scrut arms ty]
+      (let [r (roots-of scrut ex retb (SNil))] (HMatch scrut (wrap-exit-arms arms drops r ex retb) ty))
+    )
+    (
+      _
+      (let [here (sids-minus drops (roots-of e ex retb (SNil)))]
+        (if (types/sids-null here) e (HLet (BNil) e here)))
+    )))
+
+(defn wrap-exit-last [es :- HExprs drops :- &Sids ex :- &Roots retb :- &RBTable] :- HExprs
+  (match es
+    (HENil [] (HENil))
+    (
+      HECons
+      [k next]
+      (if
+        (hexpr/hes-null next)
+        (HECons (wrap-exit k drops ex retb) next)
+        (HECons k (wrap-exit-last next drops ex retb)))
+    )))
+
+(defn wrap-exit-arms [arms :- HArms drops :- &Sids r :- &Sids ex :- &Roots retb :- &RBTable] :- HArms
+  (match arms
+    (HANil [] (HANil))
+    (
+      HACons
+      [variant binders body ef next]
+      (let [keep (sids-minus drops binders) ex2 (roots-bind-all binders r (clone ex))]
+        (HACons
+          variant
+          binders
+          (if (types/sids-null keep) body (wrap-exit body keep ex2 retb))
+          ef
+          (wrap-exit-arms next drops r ex retb)))
+    )))

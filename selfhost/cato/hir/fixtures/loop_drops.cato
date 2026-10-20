@@ -1,0 +1,47 @@
+; fixture: loop drops — loop variables own their value; a recur drops what
+; the iteration still owns, frees the boxes of the arms it leaves, and a
+; completing path drops the owning variables it does not return.
+
+(deftype Cells
+  (Cell [s :- str rest :- Cells])
+  (Empty))
+
+(defn cells [n :- i64] :- Cells
+  (loop [i :- i64 n acc :- Cells (Empty)]
+    (if (= i 0)
+      acc
+      (recur (- i 1) (Cell (str "c" i) acc)))))
+
+; walking a list it owns: each cell's box is freed at the recur, the tail
+; slot skipped (it becomes the next iteration's variable)
+(defn total [c :- Cells] :- i64
+  (loop [cur :- Cells c n :- i64 0]
+    (match cur
+      (Cell [s rest] (recur rest (+ n (count s))))
+      (Empty [] n))))
+
+; a fresh let of the iteration is dropped at the recur
+(defn churn [k :- i64] :- i64
+  (loop [i :- i64 0 acc :- i64 0]
+    (if (= i k)
+      acc
+      (let [t (str "x" i)]
+        (recur (+ i 1) (+ acc (count t)))))))
+
+; the completing path drops the owning accumulator it does not return
+(defn count-only [k :- i64] :- i64
+  (loop [i :- i64 0 v :- (Vector str) (split "a b" " ")]
+    (if (= i k)
+      (count v)
+      (recur (+ i 1) (conj v "x")))))
+
+; a vec literal seed is a static constant the loop never owns (k = 0 would
+; otherwise free it)
+(defn lit-seed [k :- i64] :- i64
+  (loop [i :- i64 0 v :- (Vector i64) (vec-i64 0)]
+    (if (= i k)
+      (count v)
+      (recur (+ i 1) v))))
+
+(defn main [] :- i64
+  (+ (total (cells 3)) (+ (churn 4) (+ (count-only 5) (+ (lit-seed 3) (lit-seed 0))))))

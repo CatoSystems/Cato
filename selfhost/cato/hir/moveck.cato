@@ -5,6 +5,7 @@
 (require ["hexpr.cato" :as hexpr])
 (require ["alias.cato" :as alias])
 (require ["statemap.cato" :as statemap])
+(require ["loops.cato" :as loops])
 (require ["expand.cato" :as expand])
 (require ["../lib/span.cato" :as span])
 
@@ -123,29 +124,17 @@
 
 ; use_var: one occurrence consumed; a non-Copy read of a Moved value errors
 (defn use-var [v :- i64 rem :- IMap tys :- &TyEnv st :- &IMap bcx :- &BCtx] :- UseRes
-  ; a non-Copy loop variable rides as Copy: reads never see it Moved (S8)
-  (if
-    (types/sids-has (b-loopcopy-of bcx) v)
-    (UseRes (forms/im-put rem v (- (forms/im-get rem v 0) 1)) "")
-    (let [dec (- (forms/im-get rem v 0) 1) rem2 (forms/im-put rem v dec) t (forms/te-get tys v)]
-      (if
-        (and (not (lower/ty-noneq t)) (types/is-non-copy-ty t) (= (forms/im-get st v 0) 1))
-        (match bcx
-          (
-            BCtx
-            [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
-            (let [msg (span/err-occ (str "use of moved value " (forms/sym-str (clone tab) v)) v (occ-at rem2 v))]
-              (UseRes rem2 msg))
-          ))
-        (UseRes rem2 "")))))
-
-(defn b-loopcopy-of [bcx :- &BCtx] :- Sids
-  (match bcx
-    (
-      BCtx
-      [escaped shadowed facts tab shared loopcopy adts dp retb _nm _crb _rok _lseed]
-      (clone loopcopy)
-    )))
+  (let [dec (- (forms/im-get rem v 0) 1) rem2 (forms/im-put rem v dec) t (forms/te-get tys v)]
+    (if
+      (and (not (lower/ty-noneq t)) (types/is-non-copy-ty t) (= (forms/im-get st v 0) 1))
+      (match bcx
+        (
+          BCtx
+          [escaped shadowed facts tab shared _lc _adts _dp _retb _nm _crb _rok _lseed]
+          (let [msg (span/err-occ (str "use of moved value " (forms/sym-str (clone tab) v)) v (occ-at rem2 v))]
+            (UseRes rem2 msg))
+        ))
+      (UseRes rem2 ""))))
 
 (deftype MoveRes (MoveRes [st :- IMap owns :- IMap cons :- IMap msg :- str]))
 
@@ -205,23 +194,43 @@
 ;   variables that own their value, `let`s not re-bound in their own
 ;   scope; match binders shadow but are never dropped);
 ; - roots: inside a loop body, what each binding's value may point into
-;   (see roots-of) — a recur never drops what an argument may reach.
-(deftype Scope (Scope [ws :- Watches inloop :- i64 frame :- VScope roots :- Roots]))
+;   (see loops/roots-of) — a recur never drops what an argument may reach;
+; - lowned: the enclosing loops' variables whose slot never holds an
+;   aliased buffer (loops/loop-owning, a vec literal seed counted as owned)
+;   — the only accumulators whose self-update conj may run in place;
+; - rok: while a recur argument is checked, the accumulator whose conj is
+;   the loop's own self-update (-1 otherwise).
+(deftype Scope (Scope [ws :- Watches inloop :- i64 frame :- VScope roots :- Roots lowned :- Sids rok :- i64]))
 
-(deftype VScope
-  (IVNil)
-  (IVCons [name :- i64 drop :- i64 next :- VScope]))
+(defn scope-new [] :- Scope (Scope (WNil) 0 (IVNil) (RtNil) (SNil) -1))
 
-(deftype Roots
-  (RtNil)
-  (RtCons [name :- i64 rs :- Sids next :- Roots]))
+(defn scope-ws [scp :- &Scope] :- &Watches (match scp (Scope [ws _i _f _r _l _k] ws)))
 
-(defn scope-new [] :- Scope (Scope (WNil) 0 (IVNil) (RtNil)))
+(defn scope-inloop [scp :- &Scope] :- bool (match scp (Scope [_w i _f _r _l _k] (= i 1))))
 
-(defn scope-ws [scp :- &Scope] :- &Watches (match scp (Scope [ws _i _f _r] ws)))
+(defn scope-frame [scp :- &Scope] :- &VScope (match scp (Scope [_w _i f _r _l _k] f)))
+
+(defn scope-roots [scp :- &Scope] :- &Roots (match scp (Scope [_w _i _f r _l _k] r)))
+
+(defn scope-lowned [scp :- &Scope] :- &Sids (match scp (Scope [_w _i _f _r l _k] l)))
+
+(defn scope-rok [scp :- &Scope] :- i64 (match scp (Scope [_w _i _f _r _l k] k)))
 
 (defn scope-with-ws [scp :- &Scope ws :- Watches] :- Scope
-  (match scp (Scope [_w i f r] (Scope ws i (clone f) (clone r)))))
+  (match scp (Scope [_w i f r l k] (Scope ws i (clone f) (clone r) (clone l) k))))
+
+(defn scope-with-rok [scp :- &Scope rok :- i64] :- Scope
+  (match scp (Scope [w i f r l _k] (Scope (clone w) i (clone f) (clone r) (clone l) rok))))
+
+; A loop body: a fresh iteration frame holding the loop variables (a recur
+; may drop the owning ones), no roots yet, and the owning set extended.
+(defn scope-loop [scp :- &Scope frame :- VScope owning :- &Sids] :- Scope
+  (match scp
+    (Scope [w _i _f _r l _k] (Scope (clone w) 1 frame (RtNil) (alias/sids-into owning (clone l)) -1))))
+
+; Inside a loop body, bindings join the iteration's frame with their roots.
+(defn scope-bind [scp :- &Scope names :- VScope roots :- Roots] :- Scope
+  (match scp (Scope [w i _f _r l k] (Scope (clone w) i names roots (clone l) k))))
 
 ; Is v the scrutinee of an enclosing match whose arm has aliasing binders?
 (defn watched [wl :- &Watches v :- i64] :- bool
@@ -290,25 +299,15 @@
           (if
             (> (count msg) 0)
             (MncErr msg)
-            (match bcx
-              ; a non-Copy loop variable rides as Copy: calls and
-              ; constructors borrow it, nothing moves (S8)
+            (match
+              (move-var v st owns cons bcx scp)
               (
-                BCtx
-                [escaped shadowed facts tab shared loopcopy _adts _dp _retb _nm _crb _rok _lseed]
+                MoveRes
+                [st2 owns2 cons2 m2]
                 (if
-                  (types/sids-has loopcopy v)
-                  (MncRes st owns rem2 cons)
-                  (match
-                    (move-var v st owns cons bcx scp)
-                    (
-                      MoveRes
-                      [st2 owns2 cons2 m2]
-                      (if
-                        (> (count m2) 0)
-                        (MncErr (occ-tag m2 rem2 v))
-                        (MncRes st2 owns2 rem2 cons2))
-                    )))
+                  (> (count m2) 0)
+                  (MncErr (occ-tag m2 rem2 v))
+                  (MncRes st2 owns2 rem2 cons2))
               )))
         ))
       (MncRes st owns rem cons))))
@@ -957,12 +956,10 @@
             vn (lower/name-of (clone v2))
             ncopy (types/is-non-copy-ty ty)]
             (if
-              (and isv ncopy (not (types/sids-has (b-loopcopy-of bcx) vn)))
+              (and isv ncopy)
               ; a non-Copy Var init moves the buffer: the drop duty
               ; transfers to the new binding (read the source's ownership
-              ; before the move clears it). A non-Copy loop variable rides
-              ; as Copy: the let aliases the loop's slot, it does not
-              ; consume it.
+              ; before the move clears it)
               (let [src-owns (forms/im-get owns1 vn 0)]
                 (match
                   (move-var vn st1 owns1 cons1 bcx scp)
@@ -1058,12 +1055,10 @@
       (b-allocates v facts)
     )))
 
-; A let binding owns its value only when that value is a fresh heap
-; allocation. Vec literals are not (the seed's allocates_fresh): the
-; emitter mints them as private constants (md-mint-vec), so a let that
-; "owned" one would hand a global to a closure env's drop glue. Loop seeds
-; keep b-allocates-of (the emitter copies a literal seed into the loop's
-; growable slot).
+; A binding (a let, or a loop variable's seed) owns its value only when
+; that value is a fresh heap allocation. Vec literals are not: the emitter
+; mints them as private constants (md-mint-vec) and a loop slot seeded by
+; one points at the constant, so owning one would free a global.
 (defn b-let-allocates-of [v :- &HExpr bcx :- &BCtx] :- bool
   (match v
     ; a call result is fresh unless the callee may return an alias (rb 2;
@@ -1373,68 +1368,221 @@
   )
   (BLoopErr [msg :- str]))
 
-; S8: a non-Copy loop variable rides as Copy — reads and calls never
-; move it, and no scope frees it. Non-Copy bind names collect into a set
-; the body walk consults through the context.
-(defn bcx-with-loopcopy [bcx :- &BCtx names :- Sids seed :- Sids] :- BCtx
+; --- loops ------------------------------------------------------------------
+
+; A let's bindings join the iteration: droppable unless re-bound in their
+; own scope, rooted in what their values may point into.
+(defn b-let-scope [binds :- &Binds body :- &HExpr scp :- &Scope bcx :- &BCtx] :- Scope
   (match bcx
     (
       BCtx
-      [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok _lseed]
-      ; nested loops accumulate: an outer loop variable stays Copy inside
-      ; an inner loop body (the seed keeps one accumulating set). The
-      ; caller resets the watch pair for the body (a new loop body is not
-      ; inside any match arm). A fresh recur-ok context starts here.
-      (
-        BCtx
-        (clone escaped)
-        (clone shadowed)
-        (clone facts)
-        (clone tab)
-        (clone shared)
-        (alias/sids-into names (clone _lc))
-        (clone adts)
-        (clone dp)
-        (clone retb)
-        (clone _nm)
-        _crb
-        -1
-        (alias/sids-into seed (clone _lseed))
-      )
+      [_e _s _f _t _sh _lc _a _dp retb _nm _crb _rok _lseed]
+      (scope-bind
+        scp
+        (frame-push-binds binds body (clone (scope-frame scp)))
+        (loops/roots-binds binds (clone (scope-roots scp)) retb))
     )))
 
-; recur-ok: the accumulator the enclosing HRecur proved a self-update conj
-; for (the seed's recur_ok); -1 outside. loopseed: the loop variables whose
-; seed is a fresh allocation (the seed's loop_seed_fresh) — only those may
-; take the in-place recur path.
-(defn b-recur-ok-of [bcx :- &BCtx] :- i64
-  (match bcx (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb rok _lseed] rok)))
+(defn frame-push-binds [binds :- &Binds body :- &HExpr frame :- VScope] :- VScope
+  (match binds
+    (BNil [] frame)
+    (
+      BCons
+      [n _v _t next]
+      (frame-push-binds next body (IVCons n (if (loops/binds-anywhere body n) 0 1) frame))
+    )))
 
-(defn b-loopseed-of [bcx :- &BCtx] :- Sids
-  (match bcx
-    (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm _crb _rok lseed] (clone lseed))))
+(defn frame-has [frame :- &VScope n :- i64] :- bool
+  (match frame
+    (IVNil [] false)
+    (IVCons [m _d next] (or (= m n) (frame-has next n)))))
 
-(defn bcx-with-recur-ok [bcx :- &BCtx rok :- i64] :- BCtx
+(defn b-hand-over [args :- &HExprs
+  st :- IMap
+  owns :- IMap
+  cons :- IMap
+  tys :- &TyEnv
+  bcx :- &BCtx
+  scp :- &Scope
+] :- MoveRes
+  (match args
+    (HENil [] (MoveRes st owns cons ""))
+    (
+      HECons
+      [a next]
+      (match a
+        (
+          HVar
+          [v]
+          (if
+            (and (types/is-non-copy-ty (forms/te-get tys v)) (frame-has (scope-frame scp) v))
+            ; the move's consumed mark is discarded: the duty stays in scope
+            (match
+              (move-var v st owns (clone cons) bcx scp)
+              (
+                MoveRes
+                [st2 owns2 _cons2 m]
+                (if
+                  (> (count m) 0)
+                  (MoveRes st2 owns2 cons m)
+                  (b-hand-over next st2 owns2 cons tys bcx scp))
+              ))
+            (b-hand-over next st owns cons tys bcx scp))
+        )
+        (_ (b-hand-over next st owns cons tys bcx scp)))
+    )))
+
+; The recur's drop list: the iteration's droppable bindings (innermost
+; binding of each name) that still own a heap value nothing reachable from
+; the arguments points into.
+(defn b-recur-drops [args :- &HExprs st :- &IMap owns :- &IMap tys :- &TyEnv bcx :- &BCtx scp :- &Scope] :- Sids
   (match bcx
     (
       BCtx
-      [escaped shadowed facts tab shared lc adts dp retb nm crb _rok lseed]
-      (
-        BCtx
-        (clone escaped)
-        (clone shadowed)
-        (clone facts)
-        (clone tab)
-        (clone shared)
-        (clone lc)
-        (clone adts)
-        (clone dp)
-        (clone retb)
-        (clone nm)
-        crb
-        rok
-        (clone lseed)
-      )
+      [_e _s facts _t _sh _lc _a _dp retb _nm _crb _rok _lseed]
+      (let [reach (loops/roots-kids args (scope-roots scp) retb (SNil))]
+        (recur-drops-walk (scope-frame scp) reach st owns tys facts (SNil) (SNil)))
+    )))
+
+(defn recur-drops-walk [frame :- &VScope
+  reach :- &Sids
+  st :- &IMap
+  owns :- &IMap
+  tys :- &TyEnv
+  facts :- &Facts
+  seen :- Sids
+  acc :- Sids
+] :- Sids
+  (match frame
+    (IVNil [] (hexpr-sids-rev acc (SNil)))
+    (
+      IVCons
+      [n drop next]
+      (if
+        (types/sids-has seen n)
+        (recur-drops-walk next reach st owns tys facts seen acc)
+        (recur-drops-walk
+          next
+          reach
+          st
+          owns
+          tys
+          facts
+          (SCons n seen)
+          (if
+            (
+              and
+              (= drop 1)
+              (b-heap-owning (forms/te-get tys n) facts)
+              (= (forms/im-get owns n 0) 1)
+              (= (forms/im-get st n -1) 0)
+              (not (types/sids-has reach n))
+            )
+            (SCons n acc)
+            acc)))
+    )))
+
+(defn hexpr-sids-rev [xs :- Sids acc :- Sids] :- Sids
+  (match xs
+    (SNil [] acc)
+    (SCons [h t] (hexpr-sids-rev t (SCons h acc)))))
+
+(defn frame-push-all [names :- &Sids drop :- i64 frame :- VScope] :- VScope
+  (match names
+    (SNil [] frame)
+    (SCons [n rest] (frame-push-all rest drop (IVCons n drop frame)))))
+
+; What e's value may point into, given the iteration's roots.
+(defn b-roots-of [e :- &HExpr scp :- &Scope bcx :- &BCtx] :- Sids
+  (match bcx
+    (
+      BCtx
+      [_e _s _f _t _sh _lc _a _dp retb _nm _crb _rok _lseed]
+      (loops/roots-of e (scope-roots scp) retb (SNil))
+    )))
+
+; The loop variables seeded by a vec literal.
+(defn b-literal-seeded [binds :- &Binds] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (
+      BCons
+      [n v _t next]
+      (match v
+        (HVecLit [_el _vs] (SCons n (b-literal-seeded next)))
+        (_ (b-literal-seeded next)))
+    )))
+
+; The loop variables whose seed handed them an owned value.
+(defn b-owned-names [binds :- &Binds owns :- &IMap] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (
+      BCons
+      [n _v _t next]
+      (if
+        (= (forms/im-get owns n 0) 1)
+        (SCons n (b-owned-names next owns))
+        (b-owned-names next owns))
+    )))
+
+(defn b-loop-owning-of [binds :- &Binds body :- &HExpr seedo :- &Sids tys :- &TyEnv bcx :- &BCtx] :- Sids
+  (match bcx
+    (
+      BCtx
+      [_e _s facts _t _sh _lc adts _dp retb _nm _crb _rok _lseed]
+      (loops/loop-owning binds body seedo tys facts adts retb)
+    )))
+
+; A loop variable owns exactly when it owns on every iteration.
+(defn b-set-loop-owns [binds :- &Binds owning :- &Sids owns :- IMap] :- IMap
+  (match binds
+    (BNil [] owns)
+    (
+      BCons
+      [n _v _t next]
+      (b-set-loop-owns next owning (forms/im-put owns n (if (types/sids-has owning n) 1 0)))
+    )))
+
+; The iteration frame at the loop head: the variables, droppable iff owning.
+(defn b-loop-frame [binds :- &Binds owning :- &Sids] :- VScope
+  (match binds
+    (BNil [] (IVNil))
+    (
+      BCons
+      [n _v _t next]
+      (IVCons n (if (types/sids-has owning n) 1 0) (b-loop-frame next owning))
+    )))
+
+; Owning variables still held when the loop completes.
+(defn b-loop-exit [binds :- &Binds owning :- &Sids st :- &IMap owns :- &IMap bcx :- &BCtx] :- Sids
+  (match binds
+    (BNil [] (SNil))
+    (
+      BCons
+      [n _v ty next]
+      (let [rest (b-loop-exit next owning st owns bcx)]
+        (if
+          (
+            and
+            (types/sids-has owning n)
+            (b-heap-owning-at bcx ty)
+            (= (forms/im-get st n -1) 0)
+            (= (forms/im-get owns n 0) 1)
+          )
+          (SCons n rest)
+          rest))
+    )))
+
+(defn b-heap-owning-at [bcx :- &BCtx ty :- &Ty] :- bool
+  (match bcx (BCtx [_e _s facts _t _sh _lc _a _dp _rb _nm _crb _rok _lseed] (b-heap-owning ty facts))))
+
+(defn b-wrap-exit-of [body :- HExpr exit :- &Sids bcx :- &BCtx] :- HExpr
+  (match bcx
+    (
+      BCtx
+      [_e _s _f _t _sh _lc _a _dp retb _nm _crb _rok _lseed]
+      (let [none (RtNil)] (loops/wrap-exit body exit none retb))
     )))
 
 ; the seed's conj_counts: how many recur args are `(conj n ...)`
@@ -1484,7 +1632,7 @@
 ; candidate)? Only a single conj of a fresh-seeded loop variable counts,
 ; and no sibling arg may read it (a sibling seeing the old header would
 ; observe the append, or the growth's free).
-(defn recur-cand-of [kid :- HExpr all :- &HExprs ai :- i64 bcx :- &BCtx] :- i64
+(defn recur-cand-of [kid :- HExpr all :- &HExprs ai :- i64 scp :- &Scope] :- i64
   (match kid
     (
       HConj
@@ -1496,8 +1644,7 @@
           (if
             (
               and
-              (types/sids-has (b-loopcopy-of bcx) n)
-              (types/sids-has (b-loopseed-of bcx) n)
+              (types/sids-has (scope-lowned scp) n)
               (= (recur-conj-count all n) 1)
               (not (recur-sibling-reads all ai 0 n))
             )
@@ -1527,9 +1674,9 @@
     (
       HECons
       [kid next]
-      (let [bcx2 (bcx-with-recur-ok bcx (recur-cand-of (clone kid) all ai bcx))]
+      (let [scp2 (scope-with-rok scp (recur-cand-of (clone kid) all ai scp))]
         (match
-          (bcheck kid st owns rem cons (clone tys) bcx2 scp)
+          (bcheck kid st owns rem cons (clone tys) bcx scp2)
           (BErr [msg] (BKErr msg))
           (
             BOk
@@ -1636,22 +1783,6 @@
   (match bcx
     (BCtx [escaped shadowed facts tab shared _lc adts dp retb _nm curbrb _rok _lseed] curbrb)))
 
-(defn binds-loopcopy [binds :- Binds acc :- Sids] :- Sids
-  (match binds
-    (BNil [] acc)
-    (
-      BCons
-      [name init ty next]
-      (
-        binds-loopcopy
-        next
-        (if
-          (types/is-non-copy-ty ty)
-          (SCons name acc)
-          acc)
-      )
-    )))
-
 (defn b-loop-binds [binds :- Binds
   st :- IMap
   owns :- IMap
@@ -1681,12 +1812,7 @@
             ; loop slot and no scope ever frees it, so the source's drop
             ; duty ends here (the seed's Loop-init move)
             (if
-              (
-                and
-                (= (lower/h-tag init2) 3)
-                (types/is-non-copy-ty ty)
-                (not (types/sids-has (b-loopcopy-of bcx) (lower/name-of (clone init2))))
-              )
+              (and (= (lower/h-tag init2) 3) (types/is-non-copy-ty ty))
               ; the loop slot inherits the source's duty — read the source's
               ; ownership BEFORE the move clears it
               (let [src (lower/name-of (clone init2)) src-owns (forms/im-get owns1 src 0)]
@@ -1718,7 +1844,7 @@
                 (if
                   (types/is-non-copy-ty ty)
                   (if
-                    (b-allocates-of init2 bcx)
+                    (b-let-allocates-of init2 bcx)
                     1
                     0)
                   0)
@@ -1909,6 +2035,7 @@
   freeable :- i64
   sv :- i64
   macc :- MovedL
+  sroots :- &Sids
 ] :- BArmsRes
   (match arms
     (HANil [] (BArmsRes st owns rem cons (hes-rev-arms acc (HANil)) esc (ml-rev macc (MLNil))))
@@ -1938,7 +2065,7 @@
                 (and (= boxed 1) (or named (= freeable 1)))
                 (aliasing-binders (clone binders) (clone fields) bcx (SNil))
                 (SNil))
-              aws
+              aws0
               (if
                 (types/sids-null armwbs)
                 (clone scp)
@@ -1953,6 +2080,18 @@
                     (clone (scope-ws scp))
                   )
                 ))
+              ; inside a loop the binders shadow (never drop) any iteration
+              ; binding of the same name, and point where the scrutinee does
+              aws
+              (if
+                (scope-inloop aws0)
+                (
+                  scope-bind
+                  aws0
+                  (frame-push-all binders 0 (clone (scope-frame aws0)))
+                  (loops/roots-bind-all binders sroots (clone (scope-roots aws0)))
+                )
+                aws0)
             ]
               (match
                 (bcheck body (clone st1) (clone owns1) rem1 cons1 tys1 bcx aws)
@@ -1962,7 +2101,9 @@
                   [st2 owns2 rem2 cons2 body2]
                   ; a value moved in any arm counts as moved and
                   ; unconsumed-eligible afterwards
-                  (let [escaped (b-tail-escape body2 (SNil))
+                  ; a bare recur argument leaves the arm too: it becomes
+                  ; the next iteration's loop variable
+                  (let [escaped (loops/recur-arg-vars body2 (b-tail-escape body2 (SNil)))
                     esc2
                     (
                       b-arm-esc-of
@@ -2014,6 +2155,7 @@
                         freeable
                         sv
                         (MLCons mv macc)
+                        sroots
                       )))
                 )))
           )))
@@ -2060,7 +2202,6 @@
             (= (forms/im-get owns v 0) 1)
             (= (forms/im-get st v -1) 0)
             (not (types/sids-has (b-nomove-of bcx) v))
-            (not (types/sids-has (b-loopcopy-of bcx) v))
           )
           2
           0)
@@ -2113,13 +2254,12 @@
   (match bcx
     (
       BCtx
-      [_e shadowed _f tab _sh loopcopy _adts _dp retb nomove _crb _rok _lseed]
+      [_e shadowed _f tab _sh _lc _adts _dp retb nomove _crb _rok _lseed]
       (and
         ; a planner-hoisted `~aN` temp is freed by its own let (and its
         ; name is reused across nodes, so it names no single binding)
         (not (= (subs (forms/sym-str tab n) 0 1) "~"))
         (not (types/sids-has nomove n))
-        (not (types/sids-has loopcopy n))
         (not (types/sids-has shadowed n))
         (not (watched (scope-ws scp) n))
         (or (= (forms/im-get powns n 0) 1) (freeable-alias (scope-ws scp) n))
@@ -3040,7 +3180,25 @@
       (match
         (b-recur-kids args st owns rem cons tys bcx scp (HENil) (clone args) 0)
         (BKErr [msg] (BErr msg))
-        (BKOk [st1 owns1 rem1 cons1 c1] (BOk st1 owns1 rem1 cons1 (HRecur c1 drops))))
+        (
+          BKOk
+          [st1 owns1 rem1 cons1 c1]
+          ; Hand-over: a bare non-Copy argument naming one of this
+          ; iteration's bindings moves into the next iteration's variable
+          ; (not consumed: a completing path that never took this recur
+          ; still frees it). Then drop what the iteration still owns,
+          ; unless an argument may still reach it.
+          (match
+            (b-hand-over c1 st1 owns1 cons1 tys bcx scp)
+            (
+              MoveRes
+              [st2 owns2 cons2 m]
+              (if
+                (> (count m) 0)
+                (BErr m)
+                (let [d (b-recur-drops c1 st2 owns2 tys bcx scp)] (BOk st2 owns2 rem1 cons2 (HRecur c1 d))))
+            ))
+        ))
     )
     (
       HGet
@@ -3083,8 +3241,11 @@
               (not (lower/ty-noneq t))
               (types/is-non-copy-ty t)
               (= (forms/im-get st1 vn 0) 0)
-              (= (forms/im-get owns1 vn 0) 1)
-              (or (= (forms/im-get rem1 vn 0) 0) (= (b-recur-ok-of bcx) vn))
+              ; a last use of an owned buffer, or the loop's self-update of
+              ; an accumulator whose slot never holds an aliased buffer
+              (or
+                (and (= (forms/im-get owns1 vn 0) 1) (= (forms/im-get rem1 vn 0) 0))
+                (= (scope-rok scp) vn))
             )]
             (if
               (not lastq)
@@ -3155,15 +3316,18 @@
         (
           BLRes
           [st1 owns1 rem1 cons1 tys1 binds2]
+          (let [binds3 (hexpr/binds-rev binds2 (BNil))]
           (match
-            (bcheck body st1 owns1 rem1 cons1 tys1 bcx scp)
+            ; inside a loop the bindings join the iteration's frame
+            (if
+              (scope-inloop scp)
+              (let [scpb (b-let-scope binds3 body scp bcx)] (bcheck body st1 owns1 rem1 cons1 tys1 bcx scpb))
+              (bcheck body st1 owns1 rem1 cons1 tys1 bcx scp))
             (BErr [msg] (BErr msg))
             (
               BOk
               [st2 owns2 rem2 cons2 body2]
-              (let [binds3
-                (hexpr/binds-rev binds2 (BNil))
-                ; scope-aware shadowing (the seed's rebound_in_body): a
+              (let [; scope-aware shadowing (the seed's rebound_in_body): a
                 ; free stays suppressed only when THIS body rebinds the
                 ; name — sibling-branch lets of the same name are distinct
                 ; bindings in distinct slots, and each frees its own
@@ -3172,7 +3336,7 @@
                 (b-frees-here binds3 body2 st2 owns2 cons2 bcx)
               ]
                 (BOk st2 owns2 rem2 cons2 (HLet binds3 body2 frees2)))
-            ))
+            )))
         ))
     )
     (
@@ -3183,40 +3347,49 @@
         (BLoopErr [msg] (BErr msg))
         (
           BLoopRes
-          [st1 owns1 rem1 cons1 tys1 binds2 saved savedo seed1]
-          (match
-            (
-              bcheck
-              body
-              st1
-              owns1
-              rem1
-              cons1
-              tys1
-              (
-                bcx-with-loopcopy
-                bcx
-                (binds-loopcopy (hexpr/binds-rev (clone binds2) (BNil)) (SNil))
-                seed1
-              )
-              scp
-            )
-            (BErr [msg] (BErr msg))
-            (
-              BOk
-              [st2 owns2 rem2 cons2 body2]
-              ; owns restores with st: a stale owns=1 leaking past the loop
-              ; would let a later conj on the shadowed outer binding fire
-              ; in-place on a buffer it only aliases
+          [st1 owns1 rem1 cons1 tys1 binds2 saved savedo _seed1]
+          ; Loop variables are owned bindings. The body is checked once,
+          ; as one iteration: a recur is that iteration's scope exit (it
+          ; drops what the iteration still owns and hands its arguments to
+          ; the next one), and a completing path drops the owning loop
+          ; variables it does not return. Which variables own their value
+          ; on every iteration is the seed and every recur argument in that
+          ; position (loops/loop-owning).
+          (let [binds3 (hexpr/binds-rev binds2 (BNil))
+            seedo (b-owned-names binds3 owns1)
+            owning (b-loop-owning-of binds3 body seedo tys1 bcx)
+            ; In-place self-update conj needs every value the slot holds to
+            ; be unaliased; a vec literal seed qualifies too (its capacity
+            ; equals its length, so the first append moves to a fresh
+            ; buffer and the constant is never written or freed).
+            inplace
+            (b-loop-owning-of binds3 body (alias/sids-into (b-literal-seeded binds3) (clone seedo)) tys1 bcx)
+            owns1b (b-set-loop-owns binds3 owning owns1)
+            scp2 (scope-loop scp (b-loop-frame binds3 owning) inplace)]
+            (match
+              (bcheck body st1 owns1b rem1 cons1 tys1 bcx scp2)
+              (BErr [msg] (BErr msg))
               (
                 BOk
-                (b-restore-st saved st2)
-                (b-restore-st savedo owns2)
-                rem2
-                cons2
-                (HLoop (hexpr/binds-rev binds2 (BNil)) ty body2)
-              )
-            ))
+                [st2 owns2 rem2 cons2 body2]
+                (let [exit (b-loop-exit binds3 owning st2 owns2 bcx)
+                  body3
+                  (if
+                    (types/sids-null exit)
+                    body2
+                    (b-wrap-exit-of body2 exit bcx))]
+                  ; owns restores with st: a stale owns=1 leaking past the
+                  ; loop would let a later conj on the shadowed outer
+                  ; binding fire in-place on a buffer it only aliases
+                  (
+                    BOk
+                    (b-restore-st saved st2)
+                    (b-restore-st savedo owns2)
+                    rem2
+                    cons2
+                    (HLoop binds3 ty body3)
+                  ))
+              )))
         ))
     )
     (
@@ -3261,6 +3434,11 @@
                 (lower/name-of (clone scrut))
                 -1)
               fk (b-scrut-freeable c1 boxed st1 owns1 bcx)
+              sroots
+              (if
+                (scope-inloop scp)
+                (b-roots-of c1 scp bcx)
+                (SNil))
               powns0 (clone owns1)
               svar
               (if
@@ -3288,6 +3466,7 @@
                   (if (= fk 0) 0 1)
                   svar
                   (MLNil)
+                  sroots
                 )
                 (BArmsErr [msg] (BErr msg))
                 (
@@ -3317,7 +3496,6 @@
                         (= esc2 1)
                         (>= sv 0)
                         (not (types/sids-has (b-nomove-of bcx) sv))
-                        (not (types/sids-has (b-loopcopy-of bcx) sv))
                       )
                       (match
                         (move-var sv st2 owns2 cons2 bcx scp)

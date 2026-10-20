@@ -160,6 +160,62 @@
     (HANil [] false)
     (HACons [_v _b body _fr next] (or (tail-has-recur body) (thr-arms next)))))
 
+; May a tail `recur` of e hand the next iteration something that points
+; into the memory of `alias` other than a bare alias variable? (A bare
+; binder is precise: its box slot is skipped and the loop variable takes
+; the object over. Anything else would dangle once the box is freed at the
+; jump.)
+(defn recur-args-may-alias [e :- &HExpr alias :- &Sids retb :- &RBTable] :- bool
+  (match e
+    (HRecur [args _d] (rama-args args alias retb))
+    (
+      HLet
+      [binds body _f]
+      (let [none (SNil) inner (tma-binds binds (clone alias) none retb)]
+        (recur-args-may-alias body inner retb))
+    )
+    (HSeq [es] (rama-last es alias retb))
+    (HIf [_c t f _ty] (or (recur-args-may-alias t alias retb) (recur-args-may-alias f alias retb)))
+    (
+      HMatch
+      [scrut arms _ty]
+      (let [none (SNil)]
+        (rama-arms arms (tail-may-alias scrut alias none retb) alias retb))
+    )
+    (_ false)))
+
+(defn rama-args [args :- &HExprs alias :- &Sids retb :- &RBTable] :- bool
+  (match args
+    (HENil [] false)
+    (
+      HECons
+      [a next]
+      (or
+        (and
+          (match a
+            (HVar [v] (not (types/sids-has alias v)))
+            (_ true))
+          (let [none (SNil)] (tail-may-alias a alias none retb)))
+        (rama-args next alias retb))
+    )))
+
+(defn rama-last [es :- &HExprs alias :- &Sids retb :- &RBTable] :- bool
+  (match es
+    (HENil [] false)
+    (HECons [k next] (if (hexpr/hes-null next) (recur-args-may-alias k alias retb) (rama-last next alias retb)))))
+
+(defn rama-arms [arms :- &HArms scrut-alias :- bool alias :- &Sids retb :- &RBTable] :- bool
+  (match arms
+    (HANil [] false)
+    (
+      HACons
+      [_v binders body _ef next]
+      (or
+        (let [inner (if scrut-alias (sids-into binders (clone alias)) (clone alias))]
+          (recur-args-may-alias body inner retb))
+        (rama-arms next scrut-alias alias retb))
+    )))
+
 ; --- through-call --------------------------------------------------------------
 
 ; Is `name` passed bare to a callee that may hand it straight back: a user
@@ -307,10 +363,12 @@
 
 ; The arm's exit free: AFSkip with the binders whose objects left the arm
 ; (their slots are nulled before the box's drop glue runs), or AFNone when
-; the box must stay — the arm hands the scrutinee itself on, jumps back to
-; a loop head, or its value may point into the box other than as a bare
-; binder. `st`/`escaped` are the arm's states after its body; sv is the
-; scrutinee var, or -1 for a temp.
+; the box must stay — the arm hands the scrutinee itself on, or its value
+; (or a recur argument) may point into the box other than as a bare
+; binder. A recurring arm exits at its recur: the emitter runs the free
+; there, after the arguments are computed. `st`/`escaped` are the arm's
+; states after its body (escaped includes bare recur arguments); sv is
+; the scrutinee var, or -1 for a temp.
 (defn arm-plan [variant :- i64
   binders :- &Sids
   fields :- &TyList
@@ -324,13 +382,13 @@
   (cond
     (and (>= sv 0) (or (= (forms/im-get st sv 0) 1) (types/sids-has escaped sv)))
     (AFNone)
-    (tail-has-recur body)
-    (AFNone)
     (= variant -1)
     (AFSkip (SNil))
     (let [alias (alias-binders binders fields facts (SNil)) none (SNil)]
       (if
-        (and (tail-may-alias body alias none retb) (not (leaves-all-alias body alias)))
+        (or
+          (and (tail-may-alias body alias none retb) (not (leaves-all-alias body alias)))
+          (recur-args-may-alias body alias retb))
         (AFNone)
         (plan-skip binders fields body st escaped facts retb (SNil))))))
 
