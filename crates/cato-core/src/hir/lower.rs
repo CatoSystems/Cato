@@ -11,11 +11,11 @@ pub(crate) fn lower(expr: &Expr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> 
 pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
     match e {
         Expr::LitSym(s) => match s.as_str() {
-            "i64" => Ok(Ty::I64),
-            "i32" => Ok(Ty::I32),
-            "f64" => Ok(Ty::F64),
-            "bool" => Ok(Ty::Bool),
-            "str" => Ok(Ty::Str),
+            // The same names every other annotation accepts (this used to
+            // know only five, so `(loop [b :- u8 ...])` was "unknown").
+            other if super::parse::builtin_ty_name(other).is_some() => {
+                Ok(super::parse::builtin_ty_name(other).unwrap())
+            }
             other => {
                 // A declared ADT name: concrete passes through; a generic
                 // template needs type arguments.
@@ -40,9 +40,7 @@ pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
             // annotations (S8: loop bindings take full annotation forms).
             if h == "Vector" && items.len() == 2 {
                 let el = match resolve_ann_ty(&items[1], ctx)? {
-                    Ty::I64 => Elem::I64,
-                    Ty::F64 => Elem::F64,
-                    Ty::Str => Elem::Str,
+                    t if Elem::of_ty(t).is_some() => Elem::of_ty(t).unwrap(),
                     other => {
                         return Err(format!(
                             "(Vector {:?}) element must be i64, f64 or str",
@@ -89,8 +87,14 @@ fn lower_expect_node(
     expected: Option<Ty>,
 ) -> Result<HExpr, String> {
     match expr {
-        Expr::LitI64(v) => Ok(HExpr::ConstI64(*v)),
-        Expr::LitF64(v) => Ok(HExpr::ConstF64(*v)),
+        Expr::LitI64(v) => match expected {
+            Some(t) => fit_literal(HExpr::ConstI64(*v), t),
+            None => Ok(HExpr::ConstI64(*v)),
+        },
+        Expr::LitF64(v) => match expected {
+            Some(t) => fit_literal(HExpr::ConstF64(*v), t),
+            None => Ok(HExpr::ConstF64(*v)),
+        },
         Expr::LitBool(v) => Ok(HExpr::ConstB(*v)),
         Expr::LitStr(s) => Ok(HExpr::StrLit(s.clone())),
         Expr::LitSym(s) => {
@@ -141,6 +145,11 @@ fn lower_expect_node(
             Ok(HExpr::SetLit(vs.into_iter().map(HExpr::ConstI64).collect()))
         }
         Expr::Vector(items) => {
+            // A literal where a narrow vector is expected stores at that
+            // width: `[1 2 3]` as a (Vector u8) is three bytes.
+            if let Some(Ty::Vec(Elem::N(n))) = expected {
+                return narrow_vec_lit(items, n);
+            }
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
                 Ok(HExpr::VecLit(VLit::I64(vec_lit_i64(items))))
             } else if items.iter().all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) {
@@ -273,7 +282,7 @@ fn lower_expect_node(
                         .iter()
                         .map(|a| lower(a, env, ctx))
                         .collect::<Result<_, _>>()?;
-                    Ok(HExpr::Recur(args))
+                    Ok(HExpr::Recur(args, Vec::new()))
                 }
                 "get" => lower_get(items, env, ctx),
                 "contains?" => {
@@ -452,7 +461,9 @@ fn lower_expect_node(
                         Ty::Vec(e) => e,
                         other => return Err(format!("conj source must be a vector, got {:?}", other)),
                     };
-                    let x = lower(&items[2], env, ctx)?;
+                    // The element type is the value's expected type: a
+                    // literal takes the vector's width (`(conj bytes 7)`).
+                    let x = lower_expect(&items[2], env, ctx, elem.ty())?;
                     // Fold: conj on a literal vector with a constant element
                     // is a new static literal — zero runtime cost.
                     if let (HExpr::VecLit(vl), xc) = (&v, &x) {
@@ -478,7 +489,11 @@ fn lower_expect_node(
                     let xt = ty_of(&x, env, ctx);
                     let want = elem_ty(elem);
                     if xt != want && !(want == Ty::F64 && xt == Ty::I64) {
-                        return Err(format!("conj element expects {:?}, got {:?}", want, xt));
+                        return Err(format!(
+                            "conj element must be {}, got {}",
+                            ty_name(want, ctx),
+                            ty_name(xt, ctx)
+                        ));
                     }
                     let x = if want == Ty::F64 && xt == Ty::I64 {
                         HExpr::ICast(Box::new(x), Ty::I64, Ty::F64)
@@ -514,6 +529,16 @@ fn lower_expect_node(
                                 let hi = hi.min(vs.len());
                                 let lo = lo.min(hi);
                                 return Ok(HExpr::VecLit(VLit::I64(vs[lo..hi].to_vec())));
+                            }
+                            VLit::N(n, vs) => {
+                                let hi = hi.min(vs.len());
+                                let lo = lo.min(hi);
+                                return Ok(HExpr::VecLit(VLit::N(*n, vs[lo..hi].to_vec())));
+                            }
+                            VLit::F32(vs) => {
+                                let hi = hi.min(vs.len());
+                                let lo = lo.min(hi);
+                                return Ok(HExpr::VecLit(VLit::F32(vs[lo..hi].to_vec())));
                             }
                             VLit::F64(vs) => {
                                 let hi = hi.min(vs.len());
@@ -746,19 +771,39 @@ fn lower_expect_node(
                     let a = lower(&items[1], env, ctx)?;
                     Ok(HExpr::Call("print-i64".into(), vec![a]))
                 }
-                "+" | "-" | "*" | "/" => {
+                // `(bit-not x)` is `(bit-xor x -1)` at x's width.
+                "bit-not" => {
+                    if items.len() != 2 {
+                        return Err("bit-not expects exactly 1 argument".into());
+                    }
+                    let a = lower(&items[1], env, ctx)?;
+                    let t = ty_of(&a, env, ctx);
+                    if !t.is_int() {
+                        return Err(format!("bit-not expects an integer, got {}", ty_name(t, ctx)));
+                    }
+                    let ones = fit_literal(HExpr::ConstI64(-1), t)
+                        .unwrap_or(HExpr::ICast(Box::new(HExpr::ConstI64(-1)), Ty::I64, t));
+                    Ok(HExpr::BinW(BinOp::BitXor, Box::new(a), Box::new(ones), t))
+                }
+                h if BinOp::of_name(h).is_some() => {
                     if items.len() != 3 {
                         return Err(format!("binary op {} expects 2 operands", head));
                     }
-                    let op = match head.as_str() {
-                        "+" => BinOp::Add,
-                        "-" => BinOp::Sub,
-                        "*" => BinOp::Mul,
-                        _ => BinOp::Div,
-                    };
+                    let op = BinOp::of_name(h).unwrap();
                     let a = lower(&items[1], env, ctx)?;
                     let b = lower(&items[2], env, ctx)?;
-                    promote_bin(op, a, b, env, ctx)
+                    let e = promote_bin(op, a, b, env, ctx)?;
+                    if op.int_only() {
+                        let t = ty_of(&e, env, ctx);
+                        if !t.is_int() {
+                            return Err(format!(
+                                "{} expects integer operands, got {}",
+                                head,
+                                ty_name(t, ctx)
+                            ));
+                        }
+                    }
+                    Ok(e)
                 }
                 _ => {
                     // Calling a closure value bound to a local.
@@ -903,9 +948,20 @@ fn lower_expect_node(
                         };
                         return Ok(HExpr::Ctor { adt, variant, args });
                     }
+                    // A concrete callee's parameter types are the arguments'
+                    // expected types (contextual literals) — and are checked.
+                    let concrete: Option<Vec<Ty>> = ctx
+                        .raw_by_name
+                        .get(head.as_str())
+                        .filter(|r| r.ty_params.is_empty())
+                        .map(|r| r.params.iter().map(|(_, t)| *t).collect());
                     let mut args = Vec::new();
-                    for it in &items[1..] {
-                        args.push(lower(it, env, ctx)?);
+                    for (k, it) in items[1..].iter().enumerate() {
+                        let want = concrete.as_ref().and_then(|ps| ps.get(k).copied());
+                        args.push(lower_expect(it, env, ctx, want)?);
+                    }
+                    if let Some(ps) = &concrete {
+                        check_call_args(head, ps, &args, env, ctx)?;
                     }
                     // Generic functions (multimethods) resolve by
                     // structural specificity into hidden dispatch calls.
@@ -931,6 +987,99 @@ fn lower_expect_node(
                 }
             }
         }
+    }
+}
+
+/// A vector literal at a narrow element width; every value must fit.
+fn narrow_vec_lit(items: &[Expr], n: Narrow) -> Result<HExpr, String> {
+    if n == Narrow::F32 {
+        let mut vs = Vec::new();
+        for e in items {
+            match e {
+                Expr::LitF64(v) => vs.push(*v),
+                Expr::LitI64(v) => vs.push(*v as f64),
+                _ => return Err("a (Vector f32) literal takes numeric literals".into()),
+            }
+        }
+        return Ok(HExpr::VecLit(VLit::F32(vs)));
+    }
+    let mut vs = Vec::new();
+    for e in items {
+        match e {
+            Expr::LitI64(v) if int_fits(*v, n.ty()) => vs.push(*v),
+            Expr::LitI64(v) => {
+                return Err(format!(
+                    "integer literal {} does not fit {} (a (Vector {}) element)",
+                    v,
+                    n.name(),
+                    n.name()
+                ))
+            }
+            _ => return Err(format!("a (Vector {}) literal takes integer literals", n.name())),
+        }
+    }
+    Ok(HExpr::VecLit(VLit::N(n, vs)))
+}
+
+/// A call to a concrete function must supply exactly its parameters, each
+/// of its declared type (after contextual literal typing). Before this
+/// check, `(f 5)` against a two-parameter `f` compiled and read an
+/// undefined register, and a mistyped argument reached the backend.
+fn check_call_args(head: &str, params: &[Ty], args: &[HExpr], env: &Env, ctx: &Ctx) -> Result<(), String> {
+    if params.len() != args.len() {
+        return Err(format!(
+            "{} expects exactly {} argument{}, got {}",
+            head,
+            params.len(),
+            if params.len() == 1 { "" } else { "s" },
+            args.len()
+        ));
+    }
+    for (k, (p, a)) in params.iter().zip(args.iter()).enumerate() {
+        let at = ty_of(a, env, ctx);
+        // `[]` has no elements to type: it is any vector (same header).
+        let empty_vec = matches!(a, HExpr::VecLit(VLit::I64(v)) if v.is_empty())
+            && matches!(p, Ty::Vec(_));
+        if at != *p && !empty_vec {
+            return Err(format!(
+                "{}: argument {} must be {}, got {}",
+                head,
+                k + 1,
+                ty_name(*p, ctx),
+                ty_name(at, ctx)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A type as the programmer wrote it, for diagnostics.
+fn ty_name(t: Ty, ctx: &Ctx) -> String {
+    match t {
+        Ty::I64 => "i64".into(),
+        Ty::I32 => "i32".into(),
+        Ty::I16 => "i16".into(),
+        Ty::I8 => "i8".into(),
+        Ty::U64 => "u64".into(),
+        Ty::U32 => "u32".into(),
+        Ty::U16 => "u16".into(),
+        Ty::U8 => "u8".into(),
+        Ty::Usize => "usize".into(),
+        Ty::F64 => "f64".into(),
+        Ty::F32 => "f32".into(),
+        Ty::Bool => "bool".into(),
+        Ty::Str => "str".into(),
+        Ty::Map => "map".into(),
+        Ty::Set => "set".into(),
+        Ty::Vec(Elem::I64) => "(Vector i64)".into(),
+        Ty::Vec(Elem::F64) => "(Vector f64)".into(),
+        Ty::Vec(Elem::Str) => "(Vector str)".into(),
+        Ty::Adt(i) => ctx
+            .adts
+            .get(i as usize)
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| format!("{:?}", t)),
+        other => format!("{:?}", other),
     }
 }
 
@@ -980,24 +1129,16 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
             }
             ty_of(body, &child, ctx)
         }
-        HExpr::Recur(_) => Ty::I64,
+        HExpr::Recur(..) => Ty::I64,
         HExpr::ToStr(_, _) => Ty::Str,
         HExpr::ParseNum { res, .. } => *res,
         HExpr::Slurp(_) => Ty::Str,
         HExpr::Spit { .. } => Ty::I64,
         HExpr::Args => Ty::Vec(Elem::Str),
         HExpr::Exit(_) => Ty::I64,
-        HExpr::VecLit(vl) => Ty::Vec(match vl {
-            VLit::I64(_) => Elem::I64,
-            VLit::F64(_) => Elem::F64,
-        }),
+        HExpr::VecLit(vl) => Ty::Vec(vl.elem()),
         HExpr::Reduce(r) => match &**r {
-            HReduce::Closure { init, .. } => {
-                if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 }
-            }
-            HReduce::Pipeline { init, .. } => {
-                if matches!(init, HExpr::ConstF64(_)) { Ty::F64 } else { Ty::I64 }
-            }
+            HReduce::Closure { acc_ty, .. } | HReduce::Pipeline { acc_ty, .. } => *acc_ty,
         },
         HExpr::Call(name, _) if name == "even?" => Ty::Bool,
         HExpr::Call(name, _) => {
@@ -1442,7 +1583,7 @@ fn validate_recurs(
         ))
     };
     match e {
-        HExpr::Recur(args) => {
+        HExpr::Recur(args, _) => {
             if crossed {
                 return Err("recur cannot cross a closure boundary".into());
             }
@@ -1489,7 +1630,7 @@ fn validate_recurs(
         HExpr::Closure { .. } | HExpr::Reduce(_) => {
             let mut found = false;
             visit_nodes_shallow(e, &mut |n| {
-                if matches!(n, HExpr::Recur(_)) {
+                if matches!(n, HExpr::Recur(..)) {
                     found = true;
                 }
             });
@@ -1502,7 +1643,7 @@ fn validate_recurs(
         other => {
             let mut found = false;
             visit_nodes_shallow(other, &mut |n| {
-                if matches!(n, HExpr::Recur(_)) {
+                if matches!(n, HExpr::Recur(..)) {
                     found = true;
                 }
             });

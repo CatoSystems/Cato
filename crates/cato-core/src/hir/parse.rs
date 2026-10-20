@@ -200,9 +200,7 @@ fn parse_field_ty(
             };
             if h == "Vector" && items.len() == 2 {
                 let el = match &items[1] {
-                    Expr::LitSym(s) if s == "i64" => Elem::I64,
-                    Expr::LitSym(s) if s == "f64" => Elem::F64,
-                    Expr::LitSym(s) if s == "str" => Elem::Str,
+                    Expr::LitSym(s) if Elem::of_name(s).is_some() => Elem::of_name(s).unwrap(),
                     Expr::LitSym(p) => {
                         let k = ty_params
                             .iter()
@@ -384,6 +382,17 @@ pub(crate) fn parse_params(
                     // (`x :- &vec`). List annotations take the sigil from
                     // the name position.
                     let (name_borrow, bare) = split_borrow(name)?;
+                    // `x :- &(Vector u8)`: the reader splits the sigil off
+                    // a list annotation into its own `&` symbol.
+                    if matches!(&params[i + 2], Expr::LitSym(amp) if amp == "&") {
+                        let Some(list) = params.get(i + 3) else {
+                            return Err(format!("parameter '{}': `&` needs a type", name));
+                        };
+                        out.push((bare.to_string(), parse_ty(list, tcx, ty_params, fnsigs)?));
+                        borrows.push(Borrow::Shared);
+                        i += 4;
+                        continue;
+                    }
                     let (ty_borrow, ty) = match &params[i + 2] {
                         Expr::LitSym(ty_sym) => {
                             let (b, rest) = split_borrow(ty_sym)?;
@@ -469,9 +478,7 @@ pub(crate) fn parse_ty(
                 ));
             }
             let el = match &items[1] {
-                Expr::LitSym(s) if s == "i64" => Elem::I64,
-                Expr::LitSym(s) if s == "f64" => Elem::F64,
-                Expr::LitSym(s) if s == "str" => Elem::Str,
+                Expr::LitSym(s) if Elem::of_name(s).is_some() => Elem::of_name(s).unwrap(),
                 Expr::LitSym(p) => {
                     // A type parameter must be spelled like one (uppercase,
                     // e.g. T); anything else is a typo'd type name.
@@ -502,28 +509,39 @@ pub(crate) fn split_borrow(s: &str) -> Result<(Borrow, &str), String> {
     }
 }
 
+/// The built-in type names — one table for every annotation position
+/// (parameters, returns, `let`/`loop` bindings, ADT fields).
+pub(crate) fn builtin_ty_name(s: &str) -> Option<Ty> {
+    Some(match s {
+        "i64" => Ty::I64,
+        "i32" => Ty::I32,
+        "i8" => Ty::I8,
+        "i16" => Ty::I16,
+        "u8" => Ty::U8,
+        "u16" => Ty::U16,
+        "u32" => Ty::U32,
+        "u64" => Ty::U64,
+        "usize" => Ty::Usize,
+        "f64" => Ty::F64,
+        "f32" => Ty::F32,
+        "vec" => VEC_I64,
+        "bool" => Ty::Bool,
+        "str" | "string" => Ty::Str,
+        "map" => Ty::Map,
+        "set" => Ty::Set,
+        _ => return None,
+    })
+}
+
 pub(crate) fn parse_ty_sym(
     s: &str,
     adt_by_name: &HashMap<String, u32>,
     ty_params: &mut Vec<String>,
 ) -> Result<Ty, String> {
+    if let Some(t) = builtin_ty_name(s) {
+        return Ok(t);
+    }
     match s {
-        "i64" => Ok(Ty::I64),
-        "i32" => Ok(Ty::I32),
-        "i8" => Ok(Ty::I8),
-        "i16" => Ok(Ty::I16),
-        "u8" => Ok(Ty::U8),
-        "u16" => Ok(Ty::U16),
-        "u32" => Ok(Ty::U32),
-        "u64" => Ok(Ty::U64),
-        "usize" => Ok(Ty::Usize),
-        "f64" => Ok(Ty::F64),
-        "f32" => Ok(Ty::F32),
-        "vec" => Ok(VEC_I64),
-        "bool" => Ok(Ty::Bool),
-        "str" | "string" => Ok(Ty::Str),
-        "map" => Ok(Ty::Map),
-        "set" => Ok(Ty::Set),
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
             None if is_ty_param_name(other) => {

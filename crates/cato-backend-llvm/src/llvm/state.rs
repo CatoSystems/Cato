@@ -119,16 +119,33 @@ impl Mdl {
                     items.join(", ")
                 ));
             }
+            VLit::N(_, vs) => {
+                let ll = self.elem_ll(lit.elem());
+                let items: Vec<String> = vs.iter().map(|v| format!("{} {}", ll, v)).collect();
+                self.vec_globals.push(format!(
+                    "{} = private constant [{} x {}] [{}]",
+                    label,
+                    vs.len(),
+                    ll,
+                    items.join(", ")
+                ));
+            }
+            VLit::F32(vs) => {
+                // LLVM spells a float constant as the double holding the
+                // nearest f32 value.
+                let items: Vec<String> = vs
+                    .iter()
+                    .map(|v| format!("float {}", llvm_f64((*v as f32) as f64)))
+                    .collect();
+                self.vec_globals.push(format!(
+                    "{} = private constant [{} x float] [{}]",
+                    label,
+                    vs.len(),
+                    items.join(", ")
+                ));
+            }
         }
-        let elem = match lit {
-            VLit::I64(_) => Elem::I64,
-            VLit::F64(_) => Elem::F64,
-        };
-        let len = match lit {
-            VLit::I64(vs) => vs.len(),
-            VLit::F64(vs) => vs.len(),
-        };
-        (label, len.to_string(), elem)
+        (label, lit.len().to_string(), lit.elem())
     }
     /// Mint a private NUL-terminated `[N x i8]` constant for a string
     /// literal; returns the global label.
@@ -172,8 +189,23 @@ impl Mdl {
             Elem::I64 => "i64",
             Elem::F64 => "double",
             Elem::Str => "ptr",
+            Elem::N(n) => match n {
+                Narrow::I8 | Narrow::U8 => "i8",
+                Narrow::I16 | Narrow::U16 => "i16",
+                Narrow::I32 | Narrow::U32 => "i32",
+                Narrow::U64 => "i64",
+                Narrow::F32 => "float",
+            },
             Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
         }
+    }
+    /// One element's store: its LLVM type at its own alignment (a narrow
+    /// element is not 8-byte aligned — claiming `align 8` would be UB).
+    pub(crate) fn elem_store(&self, e: Elem, v: &str, p: &str) -> String {
+        format!("  store {} {}, ptr {}, align {}", self.elem_ll(e), v, p, e.bytes())
+    }
+    pub(crate) fn elem_load(&self, e: Elem, dst: &str, p: &str) -> String {
+        format!("  {} = load {}, ptr {}, align {}", dst, self.elem_ll(e), p, e.bytes())
     }
     pub(crate) fn globals(&self) -> &[String] {
         &self.vec_globals

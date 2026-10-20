@@ -99,6 +99,13 @@
     (HENil [] true)
     (HECons [kid next] false)))
 
+; The first element (owned): the HExprs twin of ast/asts-first, which the
+; emitter used to call on HExprs lists (and drop their tails with Asts glue).
+(defn hes-first [ks :- HExprs] :- HExpr
+  (match ks
+    (HECons [kid next] kid)
+    (HENil [] (HConstI64 0))))
+
 (defn hes-depth [ks :- &HExprs] :- i64
   (match ks
     (HECons [kid next] (+ 1 (hes-depth next)))

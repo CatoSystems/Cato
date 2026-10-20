@@ -46,7 +46,7 @@ pub fn check(h: &HExpr) -> HExpr {
             body: Box::new(check(body)),
             ty: *ty,
         },
-        HExpr::Recur(args) => HExpr::Recur(args.iter().map(check).collect()),
+        HExpr::Recur(args, drops) => HExpr::Recur(args.iter().map(check).collect(), drops.clone()),
         HExpr::ToStr(e, t) => HExpr::ToStr(Box::new(check(e)), *t),
         HExpr::ParseNum { s, int, res } => HExpr::ParseNum {
             s: Box::new(check(s)),

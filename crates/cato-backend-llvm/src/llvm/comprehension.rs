@@ -14,7 +14,7 @@ pub(crate) fn emit_for(
     let rll = mdl.elem_ll(res_elem);
     let ll = mdl.elem_ll(elem);
     let nbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, 8", nbytes, len));
+    c.line(&format!("  {} = mul i64 {}, {}", nbytes, len, res_elem.bytes()));
     let res = emit_malloc(c, mdl, &nbytes);
 
     let bloop = c.block_name();
@@ -41,10 +41,7 @@ pub(crate) fn emit_for(
         "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
         pvar, ll, ptr, ivar
     ));
-    c.line(&format!(
-        "  {} = load {}, ptr {}, align 8",
-        xvar, ll, pvar
-    ));
+    c.line(&mdl.elem_load(elem, &xvar, &pvar));
     c.scalar.insert(el.to_string(), (xvar, elem_ty_of(elem)));
     let val = emit_typed(body, elem_ty_of(res_elem), c, mdl, sigs);
     let w = c.temp();
@@ -53,10 +50,9 @@ pub(crate) fn emit_for(
         w, rll, res, ivar
     ));
     match res_elem {
-        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", val, w)),
-        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", val, w)),
         Elem::Str => panic!("codegen: for over strings not supported"),
         Elem::Param(_) => panic!("unresolved element"),
+        e => c.line(&mdl.elem_store(e, &val, &w)),
     }
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
     let cond = c.temp();

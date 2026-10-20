@@ -399,19 +399,13 @@ impl<'p> Interpreter<'p> {
                 }
                 let x = int_of(&self.eval(a, env)?);
                 let y = int_of(&self.eval(b, env)?);
-                let v = match op {
-                    BinOp::Add => x.wrapping_add(y),
-                    BinOp::Sub => x.wrapping_sub(y),
-                    BinOp::Mul => x.wrapping_mul(y),
-                    BinOp::Div => {
-                        if ty.is_uint() {
-                            (x as u64 / y as u64) as i64
-                        } else {
-                            x.wrapping_div(y)
-                        }
-                    }
-                };
-                Value::Int(wrap(v, *ty))
+                // One semantics table with the constant folder.
+                // Division/remainder by zero traps, as natively (the
+                // contract `unfolded_division_still_traps` pins).
+                match cato_core::hir::eval_int_binop(*op, x, y, *ty) {
+                    Some(v) => Value::Int(v),
+                    None => panic!("interp: integer {:?} by zero", op),
+                }
             }
             HExpr::ICast(a, from, target) => {
                 let v = self.eval(a, env)?;
@@ -558,6 +552,12 @@ impl<'p> Interpreter<'p> {
             }
             HExpr::VecLit(VLit::F64(vs)) => {
                 Value::Vec(Rc::new(vs.iter().map(|v| Value::F64(*v)).collect()))
+            }
+            HExpr::VecLit(VLit::N(_, vs)) => {
+                Value::Vec(Rc::new(vs.iter().map(|v| Value::Int(*v)).collect()))
+            }
+            HExpr::VecLit(VLit::F32(vs)) => {
+                Value::Vec(Rc::new(vs.iter().map(|v| Value::F32(*v as f32)).collect()))
             }
             HExpr::SetLit(vs) => {
                 let mut items: Vec<i64> = vs.iter().map(|v| int_of(&self.eval(v, env).ok().unwrap_or(Value::Int(0)))).collect();
@@ -801,7 +801,7 @@ impl<'p> Interpreter<'p> {
                     }
                 }
             }
-            HExpr::Recur(args) => {
+            HExpr::Recur(args, _) => {
                 let mut out = Vec::new();
                 for a in args {
                     out.push(self.eval(a, env)?);
@@ -1113,12 +1113,8 @@ impl<'p> Interpreter<'p> {
                         acc = Value::F64(apply_fbin(combine, f64_of(&acc), f64_of(&cur)));
                     } else {
                         let (x, y) = (int_of(&acc), int_of(&cur));
-                        let v = match combine {
-                            BinOp::Add => x.wrapping_add(y),
-                            BinOp::Sub => x.wrapping_sub(y),
-                            BinOp::Mul => x.wrapping_mul(y),
-                            BinOp::Div => x.wrapping_div(y),
-                        };
+                        let v = cato_core::hir::eval_int_binop(combine, x, y, cato_core::hir::Ty::I64)
+                            .unwrap_or_else(|| panic!("interp: integer {:?} by zero", combine));
                         acc = Value::Int(v);
                     };
                 }
@@ -1150,6 +1146,14 @@ impl<'p> Interpreter<'p> {
                 cato_core::hir::VLit::I64(vs) => vs
                     .iter()
                     .map(|v| (Value::Int(*v), None))
+                    .collect(),
+                cato_core::hir::VLit::N(_, vs) => vs
+                    .iter()
+                    .map(|v| (Value::Int(*v), None))
+                    .collect(),
+                cato_core::hir::VLit::F32(vs) => vs
+                    .iter()
+                    .map(|v| (Value::F32(*v as f32), None))
                     .collect(),
                 cato_core::hir::VLit::F64(vs) => vs
                     .iter()
@@ -1246,6 +1250,8 @@ fn apply_fbin(op: cato_core::hir::BinOp, x: f64, y: f64) -> f64 {
         cato_core::hir::BinOp::Sub => x - y,
         cato_core::hir::BinOp::Mul => x * y,
         cato_core::hir::BinOp::Div => x / y,
+        cato_core::hir::BinOp::Rem => x % y,
+        o => unreachable!("integer-only operator {:?} on floats (lowering rejects it)", o),
     }
 }
 
@@ -1255,6 +1261,8 @@ fn apply_f32bin(op: cato_core::hir::BinOp, x: f32, y: f32) -> f32 {
         cato_core::hir::BinOp::Sub => x - y,
         cato_core::hir::BinOp::Mul => x * y,
         cato_core::hir::BinOp::Div => x / y,
+        cato_core::hir::BinOp::Rem => x % y,
+        o => unreachable!("integer-only operator {:?} on floats (lowering rejects it)", o),
     }
 }
 

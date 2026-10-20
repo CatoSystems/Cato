@@ -82,7 +82,9 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
             body: Box::new(rewrite(*body, f)),
             ty,
         },
-        HExpr::Recur(args) => HExpr::Recur(args.into_iter().map(|a| rewrite(a, f)).collect()),
+        HExpr::Recur(args, drops) => {
+            HExpr::Recur(args.into_iter().map(|a| rewrite(a, f)).collect(), drops)
+        }
         HExpr::ToStr(e, t) => HExpr::ToStr(Box::new(rewrite(*e, f)), t),
         HExpr::ParseNum { s, int, res } => HExpr::ParseNum {
             s: Box::new(rewrite(*s, f)),
@@ -252,6 +254,7 @@ fn rewrite_reduce(r: HReduce, f: &mut dyn FnMut(HExpr) -> HExpr) -> HReduce {
         HReduce::Pipeline {
             combine,
             init,
+            acc_ty,
             maps,
             filters,
             src,
@@ -259,6 +262,7 @@ fn rewrite_reduce(r: HReduce, f: &mut dyn FnMut(HExpr) -> HExpr) -> HReduce {
         } => HReduce::Pipeline {
             combine,
             init: rewrite(init, f),
+            acc_ty,
             maps: maps
                 .into_iter()
                 .map(|m| MapSpec {
@@ -285,6 +289,7 @@ fn rewrite_reduce(r: HReduce, f: &mut dyn FnMut(HExpr) -> HExpr) -> HReduce {
         },
         HReduce::Closure {
             init,
+            acc_ty,
             src,
             acc,
             el,
@@ -294,6 +299,7 @@ fn rewrite_reduce(r: HReduce, f: &mut dyn FnMut(HExpr) -> HExpr) -> HReduce {
             filters,
         } => HReduce::Closure {
             init: rewrite(init, f),
+            acc_ty,
             src: rewrite_source(src, f),
             acc,
             el,
@@ -408,7 +414,7 @@ fn count_walk(
             }
             count_walk(body, targets, shadowed, counts);
         }
-        HExpr::Recur(args) => {
+        HExpr::Recur(args, _) => {
             for a in args {
                 count_walk(a, targets, shadowed, counts);
             }
@@ -933,7 +939,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             }
             visit_nodes(body, f);
         }
-        HExpr::Recur(args) => {
+        HExpr::Recur(args, _) => {
             for a in args {
                 visit_nodes(a, f);
             }

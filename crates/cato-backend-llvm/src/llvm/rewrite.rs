@@ -1,9 +1,56 @@
 use super::*;
 
+/// The typed bindings visible at a node (parameters, then every `let`,
+/// `loop`, `for`, match binder in scope — innermost last) plus the ADT
+/// table for binder field types. A hoisted reduce helper takes its
+/// captures' and base vectors' types from here: before, only the defn's
+/// parameters were known and everything else was *guessed* (a `let`-bound
+/// i64 capture became a `double` parameter — invalid IR).
+pub(crate) struct Scope<'a> {
+    pub(crate) vars: Vec<(String, Ty)>,
+    pub(crate) adts: &'a [AdtDef],
+}
+
+impl<'a> Scope<'a> {
+    pub(crate) fn new(vars: Vec<(String, Ty)>, adts: &'a [AdtDef]) -> Self {
+        Scope { vars, adts }
+    }
+    fn with(&self, more: impl IntoIterator<Item = (String, Ty)>) -> Scope<'a> {
+        let mut vars = self.vars.clone();
+        vars.extend(more);
+        Scope { vars, adts: self.adts }
+    }
+    fn ty_of_var(&self, v: &str) -> Option<Ty> {
+        self.vars.iter().rev().find(|(n, _)| n == v).map(|(_, t)| *t)
+    }
+    /// Field types of a match arm's binders, when the scrutinee's ADT is
+    /// known (a typed variable, or a call through the signature table).
+    fn binder_tys(
+        &self,
+        scrut: &HExpr,
+        arm: &HArm,
+        sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+    ) -> Vec<(String, Ty)> {
+        let adt = match scrut {
+            HExpr::Var(v) => self.ty_of_var(v),
+            HExpr::Call(f, _) => sigs.get(f).map(|(r, _)| *r),
+            HExpr::Ctor { adt, .. } => Some(Ty::Adt(*adt)),
+            _ => None,
+        };
+        let (Some(Ty::Adt(i)), Some(vi)) = (adt, arm.variant) else {
+            return Vec::new();
+        };
+        let Some(fields) = self.adts.get(i as usize).and_then(|d| d.variants.get(vi as usize)) else {
+            return Vec::new();
+        };
+        arm.binders.iter().cloned().zip(fields.1.iter().copied()).collect()
+    }
+}
+
 pub(crate) fn rewrite_body(
     h: &HExpr,
     fnprefix: &str,
-    params: &[(String, Ty)],
+    params: &Scope,
     idmap: &mut HashMap<String, usize>,
     loops: &mut Vec<LoopSpec>,
     sigs: &mut HashMap<String, (Ty, Vec<Ty>)>,
@@ -41,13 +88,21 @@ pub(crate) fn rewrite_body(
                     ))
                 })
                 .collect::<Result<Vec<(String, Ty, HExpr)>, String>>()?,
-            body: Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
+            body: Box::new(rewrite_body(
+                body,
+                fnprefix,
+                &params.with(binds.iter().map(|(n, t, _)| (n.clone(), *t))),
+                idmap,
+                loops,
+                sigs,
+            )?),
             ty: *ty,
         },
-        HExpr::Recur(args) => HExpr::Recur(
+        HExpr::Recur(args, drops) => HExpr::Recur(
             args.iter()
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<HExpr>, String>>()?,
+            drops.clone(),
         ),
         HExpr::ToStr(e2, t) => HExpr::ToStr(
             Box::new(rewrite_body(e2, fnprefix, params, idmap, loops, sigs)?),
@@ -118,20 +173,20 @@ pub(crate) fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        HExpr::Let(binds, body, frees) => HExpr::Let(
-            binds
-                .iter()
-                .map(|(n, e, t)| {
-                    Ok((
-                        n.clone(),
-                        rewrite_body(e, fnprefix, params, idmap, loops, sigs)?,
-                        *t,
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-            Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
-            frees.clone(),
-        ),
+        HExpr::Let(binds, body, frees) => {
+            // Sequential: each value sees the bindings before it.
+            let mut scope = params.with(std::iter::empty());
+            let mut out = Vec::with_capacity(binds.len());
+            for (n, e, t) in binds {
+                out.push((n.clone(), rewrite_body(e, fnprefix, &scope, idmap, loops, sigs)?, *t));
+                scope.vars.push((n.clone(), *t));
+            }
+            HExpr::Let(
+                out,
+                Box::new(rewrite_body(body, fnprefix, &scope, idmap, loops, sigs)?),
+                frees.clone(),
+            )
+        }
         HExpr::Seq(vs) => HExpr::Seq(
             vs.iter()
                 .map(|v| rewrite_body(v, fnprefix, params, idmap, loops, sigs))
@@ -144,7 +199,7 @@ pub(crate) fn rewrite_body(
 
             let ret_f64 = acc_ret_is_f64(r);
             let ret_ty = if ret_f64 { Ty::F64 } else { Ty::I64 };
-            let spec = make_loop_spec(&helper, (**r).clone(), params);
+            let spec = make_loop_spec(&helper, (**r).clone(), &params.vars);
             // Base sources become data/len pairs; captures follow.
             let base_args = source_base_args(reduce_src(r));
             let mut arg_tys: Vec<Ty> = Vec::new();
@@ -261,7 +316,14 @@ pub(crate) fn rewrite_body(
             el: el.clone(),
             src: Box::new(rewrite_body(src, fnprefix, params, idmap, loops, sigs)?),
             elem: *elem,
-            body: Box::new(rewrite_body(body, fnprefix, params, idmap, loops, sigs)?),
+            body: Box::new(rewrite_body(
+                body,
+                fnprefix,
+                &params.with(elem.ty().map(|t| (el.clone(), t))),
+                idmap,
+                loops,
+                sigs,
+            )?),
             res_elem: *res_elem,
         },
         HExpr::StrCmp(p, a, b) => HExpr::StrCmp(
@@ -346,10 +408,11 @@ pub(crate) fn rewrite_body(
             arms: arms
                 .iter()
                 .map(|arm| {
+                    let scope = params.with(params.binder_tys(scrut, arm, sigs));
                     Ok(HArm {
                         variant: arm.variant,
                         binders: arm.binders.clone(),
-                        body: rewrite_body(&arm.body, fnprefix, params, idmap, loops, sigs)?,
+                        body: rewrite_body(&arm.body, fnprefix, &scope, idmap, loops, sigs)?,
                         exit_free: arm.exit_free.clone(),
                     })
                 })

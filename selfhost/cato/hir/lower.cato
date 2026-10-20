@@ -1681,12 +1681,15 @@
       (arms-all-recur (arms-of e))
       false)))
 
+; The seed's argument checks caught this walk testing an HExprs list with
+; `expand/asts-null` (an Asts predicate): it only worked because both cons
+; types put their nil tag at 0.
 (defn seq-all-recur [es :- HExprs] :- bool
   (if
-    (expand/asts-null es)
+    (hexpr/hes-null es)
     false
     (if
-      (expand/asts-null (asts-tail-hes es))
+      (hexpr/hes-null (asts-tail-hes es))
       (all-paths-recur (hes-head-hes es))
       (seq-all-recur (asts-tail-hes es)))))
 
@@ -3821,7 +3824,7 @@
     )))
 
 (defn validate-seq [es :- HExprs arity :- i64 inloop :- bool crossed :- bool] :- VRes
-  (let [restq (expand/asts-null (asts-tail-hes es))]
+  (let [restq (hexpr/hes-null (asts-tail-hes es))]
     (if restq
       (validate-recurs-2 (hes-head-hes es) arity inloop crossed)
       (let [r (validate-recurs-2 (hes-head-hes es) arity false crossed)]
@@ -4809,6 +4812,7 @@
             variant
             (instance-fields (clone adts) inst-exp variant)
             env
+            expected
             0
             (TENil)
             tab
@@ -4830,6 +4834,7 @@
             variant
             fields
             env
+            expected
             tpl-params
             (TENil)
             tab
@@ -4969,6 +4974,7 @@
   variant :- i64
   fields :- TyList
   env :- TyEnv
+  expected :- Ty
   nparams :- i64
   subs :- TyEnv
   tab :- i64
@@ -5004,7 +5010,10 @@
         (hexpr/hes-rev acc (HENil))
         nparams
         subs
-        (clone env)
+        ; the expected type (this passed `env`, a TyEnv, until the seed's
+        ; argument checks caught it — generic ctors then inferred their
+        ; type arguments from the wrong structure)
+        expected
         tab
         adts
         insts
@@ -5065,6 +5074,7 @@
                     variant
                     fields
                     (clone env)
+                    expected
                     nparams
                     subs2
                     t2

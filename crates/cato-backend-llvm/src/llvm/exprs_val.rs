@@ -278,7 +278,7 @@ pub(crate) fn emit_get(
         p, ll, d, safe
     ));
     let v = c.temp();
-    c.line(&format!("  {} = load {}, ptr {}, align 8", v, ll, p));
+    c.line(&mdl.elem_load(elem, &v, &p));
     match default {
         Some(dv) => {
             let dvv = emit_typed(dv, *ty, c, mdl, sigs);

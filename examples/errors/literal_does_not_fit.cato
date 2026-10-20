@@ -1,0 +1,4 @@
+;; E202: a literal takes the width its context expects only when it fits.
+;; 300 is not a u8 — never a silent wrap.
+(defn inc8 [x :- u8] :- u8 (+ x 1))
+(defn main [] :- i64 (i64 (inc8 300)))

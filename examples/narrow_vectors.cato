@@ -1,0 +1,37 @@
+; narrow_vectors.cato — vectors store their elements at their own width.
+;
+; (Vector u8) is one byte per element, (Vector i32) four: literals, conj,
+; get, count, subvec, loops and fused reduces all work at the element's
+; width. A literal takes the expected element type when it fits (a value
+; that does not fit is a compile error, never a silent wrap); `get` yields
+; the element type; a reduce widens elements into its accumulator.
+
+; `&`: the sum only reads its vector, so the caller keeps it.
+(defn bytes-sum [bs :- &(Vector u8)] :- i64 (reduce + 0 bs))
+
+; In-place growth: the accumulator is rebound by recur (one byte per conj).
+(defn fill [n :- i64] :- (Vector u8)
+  (loop [i :- i64 0 acc :- (Vector u8) []]
+    (if (>= i n) acc (recur (+ i 1) (conj acc (u8 (+ 200 (rem i 50))))))))
+
+(defn main []
+  (let [lit :- (Vector u8) [1 2 250]
+        big (fill 1000)
+        tail (subvec big 990 1000)
+        far (subvec [10 20 30 40 50 60 70] 4 5)
+        fs :- (Vector f32) [1.5 2.25]
+        i32s :- (Vector i32) [-7 100000]
+        i16s :- (Vector i16) [1 -2]]
+    (do
+      (print-i64 (count lit))            ; 3
+      (print-i64 (i64 (get lit 2 0)))    ; 250
+      (print-i64 (bytes-sum lit))        ; 253
+      (print-i64 (count (conj lit 9)))   ; 4  (the literal 9 is a u8)
+      (print-i64 (count big))            ; 1000
+      (print-i64 (bytes-sum big))        ; 224500
+      (print-i64 (count tail))           ; 10
+      (print-i64 (i64 (get tail 0 0)))   ; 240
+      (print-i64 (get far 0 -1))         ; 50 (subvec copies from the start index)
+      (print-f64 (reduce + 0.0 fs))      ; 3.75
+      (print-i64 (reduce + 0 i32s))      ; 99993
+      (print-i64 (i64 (get i16s 1 7))))))  ; -2

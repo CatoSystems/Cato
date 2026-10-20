@@ -50,11 +50,119 @@ pub enum Elem {
     Str,
     /// `(Vector T)` in a generic template.
     Param(u32),
+    /// A narrow numeric element stored at its own width: `(Vector u8)` is
+    /// one byte per element, not eight. Reads yield the element type.
+    N(Narrow),
+}
+
+/// The narrow numeric element widths (`i64`/`f64` keep their own `Elem`
+/// variants; `Ty` cannot nest in `Elem`, which nests in `Ty`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Narrow {
+    I8,
+    I16,
+    I32,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+}
+
+impl Narrow {
+    pub fn ty(self) -> Ty {
+        match self {
+            Narrow::I8 => Ty::I8,
+            Narrow::I16 => Ty::I16,
+            Narrow::I32 => Ty::I32,
+            Narrow::U8 => Ty::U8,
+            Narrow::U16 => Ty::U16,
+            Narrow::U32 => Ty::U32,
+            Narrow::U64 => Ty::U64,
+            Narrow::F32 => Ty::F32,
+        }
+    }
+    pub fn of_ty(t: Ty) -> Option<Narrow> {
+        Some(match t {
+            Ty::I8 => Narrow::I8,
+            Ty::I16 => Narrow::I16,
+            Ty::I32 => Narrow::I32,
+            Ty::U8 => Narrow::U8,
+            Ty::U16 => Narrow::U16,
+            Ty::U32 => Narrow::U32,
+            Ty::U64 => Narrow::U64,
+            Ty::F32 => Narrow::F32,
+            _ => return None,
+        })
+    }
+    pub fn bytes(self) -> u32 {
+        match self {
+            Narrow::I8 | Narrow::U8 => 1,
+            Narrow::I16 | Narrow::U16 => 2,
+            Narrow::I32 | Narrow::U32 | Narrow::F32 => 4,
+            Narrow::U64 => 8,
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Narrow::I8 => "i8",
+            Narrow::I16 => "i16",
+            Narrow::I32 => "i32",
+            Narrow::U8 => "u8",
+            Narrow::U16 => "u16",
+            Narrow::U32 => "u32",
+            Narrow::U64 => "u64",
+            Narrow::F32 => "f32",
+        }
+    }
 }
 
 impl Elem {
     pub fn is_param(self) -> bool {
         matches!(self, Elem::Param(_))
+    }
+    /// The element's value type (`None` for an unresolved parameter).
+    pub fn ty(self) -> Option<Ty> {
+        match self {
+            Elem::I64 => Some(Ty::I64),
+            Elem::F64 => Some(Ty::F64),
+            Elem::Str => Some(Ty::Str),
+            Elem::N(n) => Some(n.ty()),
+            Elem::Param(_) => None,
+        }
+    }
+    /// The element kind storing values of type `t`, if vectors hold it.
+    pub fn of_ty(t: Ty) -> Option<Elem> {
+        match t {
+            Ty::I64 => Some(Elem::I64),
+            Ty::F64 => Some(Elem::F64),
+            Ty::Str => Some(Elem::Str),
+            other => Narrow::of_ty(other).map(Elem::N),
+        }
+    }
+    /// The element type named in an annotation (`i64`, `u8`, `str`, ...).
+    pub fn of_name(s: &str) -> Option<Elem> {
+        Some(match s {
+            "i64" => Elem::I64,
+            "f64" => Elem::F64,
+            "str" => Elem::Str,
+            "i8" => Elem::N(Narrow::I8),
+            "i16" => Elem::N(Narrow::I16),
+            "i32" => Elem::N(Narrow::I32),
+            "u8" => Elem::N(Narrow::U8),
+            "u16" => Elem::N(Narrow::U16),
+            "u32" => Elem::N(Narrow::U32),
+            "u64" => Elem::N(Narrow::U64),
+            "f32" => Elem::N(Narrow::F32),
+            _ => return None,
+        })
+    }
+    /// Bytes per element in the buffer.
+    pub fn bytes(self) -> u32 {
+        match self {
+            Elem::N(n) => n.bytes(),
+            _ => 8,
+        }
     }
 }
 
@@ -64,6 +172,31 @@ impl Ty {
             self,
             Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize
         )
+    }
+
+    /// Bit width of an integer type (64 for anything else).
+    pub fn bits(self) -> u32 {
+        match self {
+            Ty::I8 | Ty::U8 => 8,
+            Ty::I16 | Ty::U16 => 16,
+            Ty::I32 | Ty::U32 => 32,
+            _ => 64,
+        }
+    }
+
+    /// Reduce an i64 to this integer width's range: sign-extended for
+    /// signed widths, zero-extended for unsigned (64-bit widths unchanged).
+    pub fn wrap(self, v: i64) -> i64 {
+        let bits = self.bits();
+        if bits == 64 {
+            return v;
+        }
+        let m = v & ((1i64 << bits) - 1);
+        if !self.is_uint() && m >= (1i64 << (bits - 1)) {
+            m - (1i64 << bits)
+        } else {
+            m
+        }
     }
 
     pub fn is_uint(self) -> bool {
@@ -143,6 +276,82 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    /// `(rem a b)` — truncated remainder (the sign of `a`, like C's `%`).
+    Rem,
+    /// `(mod a b)` — floored modulo (the sign of `b`); integers only.
+    Mod,
+    /// `bit-and` / `bit-or` / `bit-xor` — integers only.
+    BitAnd,
+    BitOr,
+    BitXor,
+    /// `bit-shift-left` / `bit-shift-right` — integers only; the amount is
+    /// taken modulo the width (never undefined), right shifts are
+    /// arithmetic for signed and logical for unsigned widths.
+    Shl,
+    Shr,
+}
+
+impl BinOp {
+    /// Defined on integer widths only (no float meaning).
+    pub fn int_only(self) -> bool {
+        matches!(
+            self,
+            BinOp::Mod | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr
+        )
+    }
+    /// The surface operators, by name.
+    pub fn of_name(s: &str) -> Option<BinOp> {
+        Some(match s {
+            "+" => BinOp::Add,
+            "-" => BinOp::Sub,
+            "*" => BinOp::Mul,
+            "/" => BinOp::Div,
+            "rem" => BinOp::Rem,
+            "mod" => BinOp::Mod,
+            "bit-and" => BinOp::BitAnd,
+            "bit-or" => BinOp::BitOr,
+            "bit-xor" => BinOp::BitXor,
+            "bit-shift-left" => BinOp::Shl,
+            "bit-shift-right" => BinOp::Shr,
+            _ => return None,
+        })
+    }
+}
+
+/// The integer semantics of every binary operator, at width `ty`, over
+/// operands already in that width's range (sign-extended for signed,
+/// zero-extended for unsigned). The single source of truth for constant
+/// folding and the interpreter; the LLVM backend emits the same table.
+/// `None`: division or remainder by zero (left to run time).
+pub fn eval_int_binop(op: BinOp, x: i64, y: i64, ty: Ty) -> Option<i64> {
+    let unsigned = ty.is_uint();
+    let shift = (y as u32) & (ty.bits() - 1);
+    let v = match op {
+        BinOp::Add => x.wrapping_add(y),
+        BinOp::Sub => x.wrapping_sub(y),
+        BinOp::Mul => x.wrapping_mul(y),
+        BinOp::Div if y == 0 => return None,
+        BinOp::Div if unsigned => ((x as u64) / (y as u64)) as i64,
+        BinOp::Div => x.wrapping_div(y),
+        BinOp::Rem | BinOp::Mod if y == 0 => return None,
+        BinOp::Rem | BinOp::Mod if unsigned => ((x as u64) % (y as u64)) as i64,
+        BinOp::Rem => x.wrapping_rem(y),
+        BinOp::Mod => {
+            let r = x.wrapping_rem(y);
+            if r != 0 && ((r ^ y) < 0) {
+                r + y
+            } else {
+                r
+            }
+        }
+        BinOp::BitAnd => x & y,
+        BinOp::BitOr => x | y,
+        BinOp::BitXor => x ^ y,
+        BinOp::Shl => x.wrapping_shl(shift),
+        BinOp::Shr if unsigned => ((x as u64) >> shift) as i64,
+        BinOp::Shr => x >> shift,
+    };
+    Some(ty.wrap(v))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -272,8 +481,12 @@ pub enum HExpr {
         ty: Ty,
     },
     /// `(recur e ...)` — re-bind the innermost loop's variables and jump to
-    /// its head. Validated tail-only at lowering.
-    Recur(Vec<HExpr>),
+    /// its head. Validated tail-only at lowering. The second field is drop-
+    /// planner output: the bindings this iteration still owns at the jump
+    /// (loop-body `let`s, the old values of loop variables not handed to
+    /// the next iteration), freed after the arguments are evaluated and
+    /// before the loop variables are rebound. `recur` is a scope exit.
+    Recur(Vec<HExpr>, Vec<String>),
     /// `(str n)` over a numeric/bool operand: the runtime's decimal text.
     ToStr(Box<HExpr>, Ty),
     /// `(parse-i64 s)` / `(parse-f64 s)` — `res` is the `(Option T)`
@@ -362,6 +575,29 @@ pub enum HExpr {
 pub enum VLit {
     I64(Vec<i64>),
     F64(Vec<f64>),
+    /// A narrow integer vector literal (values range-checked at lowering).
+    N(Narrow, Vec<i64>),
+    F32(Vec<f64>),
+}
+
+impl VLit {
+    pub fn elem(&self) -> Elem {
+        match self {
+            VLit::I64(_) => Elem::I64,
+            VLit::F64(_) => Elem::F64,
+            VLit::N(n, _) => Elem::N(*n),
+            VLit::F32(_) => Elem::N(Narrow::F32),
+        }
+    }
+    pub fn len(&self) -> usize {
+        match self {
+            VLit::I64(v) | VLit::N(_, v) => v.len(),
+            VLit::F64(v) | VLit::F32(v) => v.len(),
+        }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -380,9 +616,14 @@ pub struct HArm {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HReduce {
+    /// `acc_ty` (both variants): the accumulator's type, `I64` or `F64`,
+    /// decided once at lowering from the init's real type. Consumers read
+    /// it — never re-derive it from the shape of `init` (an f64 *variable*
+    /// init once typed as i64 and produced invalid IR).
     Pipeline {
         combine: BinOp,
         init: HExpr,
+        acc_ty: Ty,
         maps: Vec<MapSpec>,
         filters: Vec<FilterSpec>,
         src: HSource,
@@ -391,6 +632,7 @@ pub enum HReduce {
     },
     Closure {
         init: HExpr,
+        acc_ty: Ty,
         src: HSource,
         acc: String,
         el: String,

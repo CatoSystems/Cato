@@ -179,15 +179,34 @@ pub(crate) fn emit_arm_exit_free(
     let Some(skip) = &arm.exit_free else {
         return;
     };
+    emit_exit_free_parts(skip, arm.variant, &arm.binders, scrut_ptr, ai, name, c, mdl);
+}
+
+/// A pending arm exit, run at a `recur` that leaves the arm.
+pub(crate) fn emit_pending_exit(pe: &PendingExit, c: &mut FnCtx, mdl: &mut Mdl) {
+    emit_exit_free_parts(&pe.skip, pe.variant, &pe.binders, &pe.scrut_ptr, pe.ai, &pe.name, c, mdl);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_exit_free_parts(
+    skip: &[String],
+    variant: Option<u32>,
+    binders: &[String],
+    scrut_ptr: &str,
+    ai: u32,
+    name: &str,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+) {
     if !mdl.adt_owns(ai) {
         return;
     }
-    if let Some(vi) = arm.variant {
+    if let Some(vi) = variant {
         if !skip.is_empty() {
             let def = mdl.adts[ai as usize].clone();
             let fields = def.variants[vi as usize].1.clone();
             let offsets = mdl.adt_field_offsets(ai)[vi as usize].clone();
-            for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
+            for (k, (binder, fty)) in binders.iter().zip(fields.iter()).enumerate() {
                 if !skip.contains(binder) {
                     continue;
                 }
@@ -378,7 +397,25 @@ pub(crate) fn emit_match_in_loop(
                 emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
             }
         }
+        // A `recur` inside this arm leaves it: register the arm's exit
+        // free so the jump runs it (after the recur arguments).
+        let pushed = if let Some(skip) = &arm.exit_free {
+            c.pending_exits.push(PendingExit {
+                skip: skip.clone(),
+                variant: arm.variant,
+                binders: arm.binders.clone(),
+                scrut_ptr: scrut_ptr.clone(),
+                ai,
+                name: name.clone(),
+            });
+            true
+        } else {
+            false
+        };
         let v = loop_tail(&arm.body, *ty, c, mdl, sigs);
+        if pushed {
+            c.pending_exits.pop();
+        }
         if v.is_some() {
             emit_arm_exit_free(arm, &scrut_ptr, ai, &name, c, mdl);
         }
@@ -660,7 +697,7 @@ fn heap_copy_vec(
         d
     } else {
         let nbytes = c.temp();
-        c.line(&format!("  {} = mul i64 {}, 8", nbytes, l));
+        c.line(&format!("  {} = mul i64 {}, {}", nbytes, l, elem.bytes()));
         let d = emit_malloc(c, mdl, &nbytes);
         mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
         c.line(&format!(
@@ -858,13 +895,15 @@ fn copy_field(
                 ));
             } else {
                 out.push_str(&format!(
-                    "  %vnb{u} = mul i64 %vl{u}k2, 8\n"
+                    "  %vnb{u} = mul i64 %vl{u}k2, {}\n",
+                    elem.bytes()
                 ));
                 out.push_str(&format!(
                     "  %vcp{u} = call ptr @malloc(i64 %vnb{u})\n"
                 ));
                 out.push_str(&format!(
-                    "  %vcb{u} = mul i64 %vl{u}k1, 8\n"
+                    "  %vcb{u} = mul i64 %vl{u}k1, {}\n",
+                    elem.bytes()
                 ));
                 out.push_str(&format!(
                     "  call void @llvm.memcpy.p0.p0.i64(ptr %vcp{u}, ptr %vptr{u}, i64 %vcb{u}, i1 false, i1 false)\n"

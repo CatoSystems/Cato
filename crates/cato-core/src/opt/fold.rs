@@ -51,6 +51,9 @@ fn fold_one(e: HExpr) -> HExpr {
                             BinOp::Sub => x - y,
                             BinOp::Mul => x * y,
                             BinOp::Div => x / y,
+                            // IEEE fmod, as LLVM's frem.
+                            BinOp::Rem => x % y,
+                            _ => return HExpr::BinW(op, a, b, ty),
                         };
                         if v.is_finite() {
                             HExpr::ConstF64(v)
@@ -63,18 +66,17 @@ fn fold_one(e: HExpr) -> HExpr {
             }
             match (as_i64(&a), as_i64(&b)) {
                 (Some(x), Some(y)) if ty.is_int() => {
-                    let v = match op {
-                        BinOp::Add => x.wrapping_add(y),
-                        BinOp::Sub => x.wrapping_sub(y),
-                        BinOp::Mul => x.wrapping_mul(y),
-                        BinOp::Div => {
-                            if y == 0 || (x == i64::MIN && y == -1) {
-                                return HExpr::BinW(op, a, b, ty);
-                            }
-                            x.wrapping_div(y)
-                        }
-                    };
-                    HExpr::ConstI64(wrap_bits(v, ty))
+                    // i64::MIN / -1 is left to run time (it traps there).
+                    if matches!(op, BinOp::Div | BinOp::Rem | BinOp::Mod)
+                        && x == i64::MIN
+                        && y == -1
+                    {
+                        return HExpr::BinW(op, a, b, ty);
+                    }
+                    match cato_core_eval(op, x, y, ty) {
+                        Some(v) => HExpr::ConstI64(wrap_bits(v, ty)),
+                        None => HExpr::BinW(op, a, b, ty),
+                    }
                 }
                 _ => HExpr::BinW(op, a, b, ty),
             }
@@ -92,6 +94,8 @@ fn fold_one(e: HExpr) -> HExpr {
                         BinOp::Sub => x - y,
                         BinOp::Mul => x * y,
                         BinOp::Div => x / y,
+                        BinOp::Rem => x % y,
+                        _ => return HExpr::BinF(op, a, b),
                     };
                     if v.is_finite() {
                         HExpr::ConstF64(v as f64)
@@ -389,6 +393,10 @@ fn const_str_ord(op: CmpOp, x: &str, y: &str) -> bool {
 
 /// Normalize a (possibly out-of-range) i64 into `ty`'s value range; mirrors
 /// the interpreter's `wrap` (LLVM trunc/sext semantics).
+fn cato_core_eval(op: BinOp, x: i64, y: i64, ty: Ty) -> Option<i64> {
+    crate::hir::eval_int_binop(op, x, y, ty)
+}
+
 fn wrap_bits(v: i64, ty: Ty) -> i64 {
     match ty {
         Ty::I8 | Ty::U8 => {

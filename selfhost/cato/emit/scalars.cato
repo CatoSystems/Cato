@@ -779,10 +779,10 @@
       [name args]
       (cond
         (= name (expand/s-printf64))
-        (print-f64-stmt (ast/asts-first (clone args)) st "0")
+        (print-f64-stmt (hexpr/hes-first (clone args)) st "0")
         (= name (expand/s-printi64))
         (match
-          (emit-int-widened (ast/asts-first (clone args)) st)
+          (emit-int-widened (hexpr/hes-first (clone args)) st)
           (
             ESRes
             [st1 v64]
@@ -790,7 +790,7 @@
           ))
         (= name (expand/s-printstring))
         (match
-          (heap/emit-str-val (ast/asts-first (clone args)) st)
+          (heap/emit-str-val (hexpr/hes-first (clone args)) st)
           (
             ESRes
             [st1 v]
@@ -988,7 +988,7 @@
       [name args]
       (if
         (= name (expand/s-printf64))
-        (print-f64-stmt (ast/asts-first (clone args)) st "0.0")
+        (print-f64-stmt (hexpr/hes-first (clone args)) st "0.0")
         (adt/call-user name (clone args) st))
     )
     (HLoop [binds ty body] (emit-loop-node (clone binds) (clone ty) (clone body) st))
@@ -1176,7 +1176,7 @@
       (if
         (= name (expand/s-evenq))
         (match
-          (emit-int (ast/asts-first args) st)
+          (emit-int (hexpr/hes-first args) st)
           (
             ESRes
             [st1 v]
@@ -1384,7 +1384,7 @@
                 ET2Res
                 [st3 merged fail]
                 (match
-                  (arm-labels-mint (hexpr/arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
+                  (arm-labels-mint (hexpr/arms-rev (clone arms) (HANil)) st3 (EMLSNil))
                   (
                     ARes
                     [st4 labels]
@@ -1587,7 +1587,9 @@
         (if
           (= variant -1)
           st
-          (aef-fields binders 0 skip st scrut name ai))]
+          ; the variant locates the skipped fields (the seed's argument
+          ; checks caught this call omitting it: offsets came from garbage)
+          (aef-fields binders 0 skip st scrut name ai variant))]
         (em-line st1 (str "  call void @drop__" name "(ptr " scrut ")")))
     )))
 
@@ -2076,7 +2078,7 @@
                     ET2Res
                     [st3 merged fail]
                     (match
-                      (arm-labels-mint (hexpr/arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
+                      (arm-labels-mint (hexpr/arms-rev (clone arms) (HANil)) st3 (EMLSNil))
                       (
                         ARes
                         [st4 labels]

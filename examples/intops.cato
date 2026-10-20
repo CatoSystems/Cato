@@ -1,0 +1,21 @@
+; intops.cato — integer operators beyond + - * /.
+;
+; rem is the truncated remainder (sign of the dividend, like C's %); mod is
+; floored (sign of the divisor). bit-and/or/xor/not and the shifts are
+; integer-only. A shift amount is taken modulo the width (never undefined);
+; bit-shift-right is arithmetic on signed widths and logical on unsigned.
+; Every operator works at the operands' own width, wrapping like + and *.
+(defn p [x :- i64] (print-i64 x))
+(defn ops64 [a :- i64 b :- i64]
+  (do (p (rem a b)) (p (mod a b)) (p (bit-and a b)) (p (bit-or a b)) (p (bit-xor a b))
+      (p (bit-shift-left a 3)) (p (bit-shift-right a 2)) (p (bit-shift-left 1 b)) (p (bit-not a))))
+(defn ops8 [a :- i8 b :- i8]
+  (do (p (i64 (rem a b))) (p (i64 (mod a b))) (p (i64 (bit-shift-left a 3)))
+      (p (i64 (bit-shift-right a 1))) (p (i64 (bit-not a))) (p (i64 (bit-shift-left a 9)))))
+(defn opsu8 [a :- u8 b :- u8]
+  (do (p (i64 (rem a b))) (p (i64 (mod a b))) (p (i64 (bit-shift-left a 3)))
+      (p (i64 (bit-shift-right a 1))) (p (i64 (bit-not a))) (p (i64 (bit-xor a 255)))))
+(defn main []
+  (do (ops64 -17 5) (ops64 17 -5) (ops64 1234567 65)
+      (ops8 (i8 -100) (i8 7)) (opsu8 (u8 200) (u8 7))
+      (print-f64 (rem 7.5 2.0)) ))

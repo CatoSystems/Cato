@@ -517,7 +517,7 @@ pub(crate) fn emit_vec_pair(
                 d
             } else {
                 let nbytes = c.temp();
-                c.line(&format!("  {} = mul i64 {}, 8", nbytes, l));
+                c.line(&format!("  {} = mul i64 {}, {}", nbytes, l, elem.bytes()));
                 let d = emit_malloc(c, mdl, &nbytes);
                 mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
                 c.line(&format!(

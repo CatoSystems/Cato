@@ -476,7 +476,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             t
         }
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
-        HExpr::Recur(_) => panic!("codegen: recur outside loop (validation bug)"),
+        HExpr::Recur(..) => panic!("codegen: recur outside loop (validation bug)"),
         HExpr::Spit { path, data } => {
             let pv = emit_str_val(path, c, mdl, sigs);
             let dv = emit_str_val(data, c, mdl, sigs);
@@ -535,7 +535,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             emit_adt(e, c, mdl, sigs);
             "0".to_string()
         }
-        HExpr::Get { ty: Ty::I64, .. } => emit_get(e, c, mdl, sigs),
+        HExpr::Get { ty, .. } if ty.is_int() => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_int(inner, c, mdl, sigs),
         HExpr::DropStmt(_) => "0".to_string(),
         HExpr::StrLit(_) => panic!("codegen: string literal in i64 context"),
@@ -554,17 +554,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::BinW(op, a, b, ty) => {
             let av = emit_int(a, c, mdl, sigs);
             let bv = emit_int(b, c, mdl, sigs);
-            let op = match op {
-                BinOp::Add => "add",
-                BinOp::Sub => "sub",
-                BinOp::Mul => "mul",
-                BinOp::Div if ty.is_uint() => "udiv",
-                BinOp::Div => "sdiv",
-            };
-            let ll = Mdl::ll_scalar(*ty);
-            let t = c.temp();
-            c.line(&format!("  {} = {} {} {}, {}", t, op, ll, av, bv));
-            t
+            emit_int_binop(*op, &av, &bv, *ty, c)
         }
         HExpr::ICast(inner, from, target) => {
             let iv = emit_typed(inner, *from, c, mdl, sigs);
@@ -624,5 +614,58 @@ fn count_expr_is_vec(
         HExpr::Seq(vs) => vs.last().map(|x| count_expr_is_vec(x, c, sigs)).unwrap_or(false),
         HExpr::Var(v) => c.vecs.contains_key(v) || c.grow.contains_key(v),
         _ => false,
+    }
+}
+
+/// One integer binary operation at its width — the LLVM rendering of
+/// `cato_core::hir::eval_int_binop` (the folder's and interpreter's table).
+/// Shift amounts are reduced modulo the width: an LLVM shift by >= width is
+/// poison, and Cato defines every shift. Floored `mod` corrects the
+/// truncated remainder when its sign differs from the divisor's.
+pub(crate) fn emit_int_binop(op: BinOp, av: &str, bv: &str, ty: Ty, c: &mut FnCtx) -> String {
+    let ll = Mdl::ll_scalar(ty);
+    let simple = |c: &mut FnCtx, inst: &str, x: &str, y: &str| {
+        let t = c.temp();
+        c.line(&format!("  {} = {} {} {}, {}", t, inst, ll, x, y));
+        t
+    };
+    let masked = |c: &mut FnCtx| {
+        let t = c.temp();
+        c.line(&format!("  {} = and {} {}, {}", t, ll, bv, ty.bits() - 1));
+        t
+    };
+    match op {
+        BinOp::Add => simple(c, "add", av, bv),
+        BinOp::Sub => simple(c, "sub", av, bv),
+        BinOp::Mul => simple(c, "mul", av, bv),
+        BinOp::Div => simple(c, if ty.is_uint() { "udiv" } else { "sdiv" }, av, bv),
+        BinOp::Rem => simple(c, if ty.is_uint() { "urem" } else { "srem" }, av, bv),
+        BinOp::Mod if ty.is_uint() => simple(c, "urem", av, bv),
+        BinOp::Mod => {
+            // r = a srem b; if r != 0 && (r ^ b) < 0 then r + b else r
+            let r = simple(c, "srem", av, bv);
+            let x = simple(c, "xor", &r, bv);
+            let neg = c.temp();
+            c.line(&format!("  {} = icmp slt {} {}, 0", neg, ll, x));
+            let nz = c.temp();
+            c.line(&format!("  {} = icmp ne {} {}, 0", nz, ll, r));
+            let fix = c.temp();
+            c.line(&format!("  {} = and i1 {}, {}", fix, neg, nz));
+            let rb = simple(c, "add", &r, bv);
+            let t = c.temp();
+            c.line(&format!("  {} = select i1 {}, {} {}, {} {}", t, fix, ll, rb, ll, r));
+            t
+        }
+        BinOp::BitAnd => simple(c, "and", av, bv),
+        BinOp::BitOr => simple(c, "or", av, bv),
+        BinOp::BitXor => simple(c, "xor", av, bv),
+        BinOp::Shl => {
+            let s = masked(c);
+            simple(c, "shl", av, &s)
+        }
+        BinOp::Shr => {
+            let s = masked(c);
+            simple(c, if ty.is_uint() { "lshr" } else { "ashr" }, av, &s)
+        }
     }
 }

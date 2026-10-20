@@ -115,6 +115,7 @@ fn clear_frees(body: &mut HExpr) {
     let taken = std::mem::replace(body, HExpr::ConstI64(0));
     *body = walk::rewrite(taken, &mut |e| match e {
         HExpr::Let(binds, body, _) => HExpr::Let(binds, body, Vec::new()),
+        HExpr::Recur(args, _) => HExpr::Recur(args, Vec::new()),
         HExpr::Match { scrut, mut arms, ty } => {
             for a in arms.iter_mut() {
                 a.exit_free = None;

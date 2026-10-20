@@ -174,10 +174,11 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                 ));
                 let x = c.temp();
                 c.line(&format!(
-                    "  {} = load {}, ptr {}, align 8",
+                    "  {} = load {}, ptr {}, align {}",
                     x,
                     ll(e),
-                    p
+                    p,
+                    e.bytes()
                 ));
                 (x, elem_ty_of(e), None)
             }
@@ -194,7 +195,7 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     pidx
                 ));
                 let xa = c.temp();
-                c.line(&format!("  {} = load {}, ptr {}, align 8", xa, ll(ea), pa));
+                c.line(&format!("  {} = load {}, ptr {}, align {}", xa, ll(ea), pa, ea.bytes()));
                 let pb = c.temp();
                 c.line(&format!(
                     "  {} = getelementptr inbounds {}, ptr %dataB, i64 {}",
@@ -203,7 +204,7 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     pidx
                 ));
                 let xb = c.temp();
-                c.line(&format!("  {} = load {}, ptr {}, align 8", xb, ll(eb), pb));
+                c.line(&format!("  {} = load {}, ptr {}, align {}", xb, ll(eb), pb, eb.bytes()));
                 (
                     xa,
                     elem_ty_of(ea),
@@ -283,6 +284,7 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
             }
             c.scalar
                 .insert(accsym.clone(), ("%acc".to_string(), spec.acc_ty));
+            let xv = widen_to_acc(&xv, xty, spec.acc_ty, &mut c);
             let combined = combine_step(*combine, &xv, "%acc", spec.acc_ty, &mut c);
             c.line(&format!("  %acc.next = {}", combined));
             carried = "%acc.next".to_string();
@@ -343,14 +345,8 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     emit_typed(body, spec.acc_ty, &mut c, mdl, sigs)
                 }
                 HReduce::Pipeline { combine, .. } => {
-                    // Int elements under an f64 accumulator widen first.
-                    let val = if spec.acc_ty == Ty::F64 && val_ty != Ty::F64 {
-                        let t = c.temp();
-                        c.line(&format!("  {} = sitofp i64 {} to double", t, val));
-                        t
-                    } else {
-                        val
-                    };
+                    // Elements narrower than the accumulator widen first.
+                    let val = widen_to_acc(&val, val_ty, spec.acc_ty, &mut c);
                     let t = c.temp();
                     let combined =
                         combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
@@ -432,6 +428,7 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
         BinOp::Sub => ("fsub", "sub"),
         BinOp::Mul => ("fmul", "mul"),
         BinOp::Div => ("fdiv", "sdiv"),
+        o => panic!("codegen: reduce combines with + - * / only, got {:?}", o),
     };
     let (op, sigil) = if ty == Ty::F64 { (fop, "double") } else { (iop, "i64") };
     format!("{} {} {}, {}", op, sigil, acc, val)
@@ -696,4 +693,26 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
         FnCtx::with_prelude(c.lines, &c.prelude).join("\n")
     );
     format!("{}{}", tramp, runner)
+}
+
+/// A pipeline element widened, losslessly, to the accumulator's type:
+/// `(reduce + 0 bytes)` sums a `(Vector u8)` into an i64 (zext), an f64
+/// accumulator takes integer or f32 elements (the `(reduce + 0.0 ints)`
+/// contract). Signedness comes from the element's own width.
+pub(crate) fn widen_to_acc(v: &str, from: Ty, acc: Ty, c: &mut FnCtx) -> String {
+    if from == acc {
+        return v.to_string();
+    }
+    let src = Mdl::ll_scalar(from);
+    let (op, dst) = match (from, acc) {
+        (Ty::F32, Ty::F64) => ("fpext", "double"),
+        (f, Ty::F64) if f.is_int() => (if f.is_uint() { "uitofp" } else { "sitofp" }, "double"),
+        // u64 and usize are already a 64-bit word: same bits.
+        (Ty::U64 | Ty::Usize, Ty::I64) => return v.to_string(),
+        (f, Ty::I64) if f.is_int() => (if f.is_uint() { "zext" } else { "sext" }, "i64"),
+        (f, a) => panic!("codegen: cannot widen a {:?} element to a {:?} accumulator", f, a),
+    };
+    let t = c.temp();
+    c.line(&format!("  {} = {} {} {} to {}", t, op, src, v, dst));
+    t
 }

@@ -29,6 +29,8 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 BinOp::Sub => "fsub",
                 BinOp::Mul => "fmul",
                 BinOp::Div => "fdiv",
+                BinOp::Rem => "frem",
+                o => panic!("codegen: integer-only {:?} on floats (lowering rejects it)", o),
             };
             let t = c.temp();
             c.line(&format!("  {} = {} float {}, {}", t, op, av, bv));
@@ -42,6 +44,8 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 BinOp::Sub => "fsub",
                 BinOp::Mul => "fmul",
                 BinOp::Div => "fdiv",
+                BinOp::Rem => "frem",
+                o => panic!("codegen: integer-only {:?} on floats (lowering rejects it)", o),
             };
             let t = c.temp();
             c.line(&format!("  {} = {} double {}, {}", t, op, av, bv));
@@ -211,7 +215,10 @@ pub(crate) fn emit_loop_node(
     }
     let saved = c.loop_frame.take();
     c.loop_frame = Some((slots, head));
+    // A `recur` exits only the arms opened inside its own loop.
+    let saved_exits = std::mem::take(&mut c.pending_exits);
     let completing = emit_loop_tail(body, *ty, c, mdl, sigs);
+    c.pending_exits = saved_exits;
     c.loop_frame = saved;
     c.recur_fast = saved_fast;
     c.restore_binds(scope);
@@ -312,7 +319,7 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
         HExpr::And(a, b) | HExpr::Or(a, b) => arg_reads_var(a, name) || arg_reads_var(b, name),
         HExpr::Not(v) | HExpr::Abs(v, _) | HExpr::DropStmt(v) => arg_reads_var(v, name),
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => arg_reads_var(a, name) || arg_reads_var(b, name),
-        HExpr::Recur(args) => args.iter().any(|a| arg_reads_var(a, name)),
+        HExpr::Recur(args, _) => args.iter().any(|a| arg_reads_var(a, name)),
         HExpr::Loop { binds, body, .. } => {
             binds.iter().any(|(_, _, i)| arg_reads_var(i, name))
                 || arg_reads_var(body, name)
@@ -364,7 +371,7 @@ fn emit_loop_tail(
 ) -> Option<String> {
     let (slots, head) = c.loop_frame.clone().expect("codegen: loop tail outside loop");
     match e {
-        HExpr::Recur(args) => {
+        HExpr::Recur(args, drops) => {
             // `(recur ... (conj v x) ...)` where the i-th argument is exactly
             // a conj of the i-th loop variable *is* the loop's accumulator
             // update: the value the slot holds is replaced for the next
@@ -381,6 +388,7 @@ fn emit_loop_tail(
                     }
                 }
             }
+            let mut vals: Vec<(String, String, Ty)> = Vec::with_capacity(args.len());
             for (ai, (a, (name, slot, vty))) in
                 args.iter().zip(slots.iter()).enumerate()
             {
@@ -405,9 +413,26 @@ fn emit_loop_tail(
                 if self_update {
                     c.recur_fast = None;
                 }
+                vals.push((v, slot.clone(), *vty));
+            }
+            // `recur` is the iteration's scope exit. Every argument is
+            // computed first (collection variables are read live from
+            // their slots, so storing one before a later argument reads
+            // it — `(recur b a)` — would hand that argument the new value).
+            // Then the iteration's owned values go, innermost first: the
+            // open arms' boxes (their moved-out slots skipped), then the
+            // planner's drop list. Only then are the variables rebound.
+            let exits = c.pending_exits.clone();
+            for pe in exits.iter().rev() {
+                emit_pending_exit(pe, c, mdl);
+            }
+            for d in drops {
+                free_binding_storage(d, c, mdl);
+            }
+            for (v, slot, vty) in vals {
                 c.line(&format!(
                     "  store {} {}, ptr {}, align 8",
-                    loop_slot_ty(mdl, *vty),
+                    loop_slot_ty(mdl, vty),
                     v,
                     slot
                 ));

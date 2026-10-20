@@ -129,12 +129,10 @@ pub(crate) fn emit_conj(
         "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
         tail, ll, ptr, len
     ));
+    // (Element strings are already owned copies: strdup above.)
     match elem {
-        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, tail)),
-        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, tail)),
-        // Element strings are already owned copies (strdup above).
-        Elem::Str => c.line(&format!("  store ptr {}, ptr {}, align 8", xv, tail)),
         Elem::Param(_) => panic!("unresolved element"),
+        e => c.line(&mdl.elem_store(e, &xv, &tail)),
     }
     let slot_out = c.temp();
     c.prelude.push(format!(
@@ -185,10 +183,10 @@ pub(crate) fn emit_conj(
         dp
     } else {
         let nbytes = c.temp();
-        c.line(&format!("  {} = mul i64 {}, 8", nbytes, newcap));
+        c.line(&format!("  {} = mul i64 {}, {}", nbytes, newcap, elem.bytes()));
         let np = emit_malloc(c, mdl, &nbytes);
         let cbytes = c.temp();
-        c.line(&format!("  {} = mul i64 {}, 8", cbytes, len));
+        c.line(&format!("  {} = mul i64 {}, {}", cbytes, len, elem.bytes()));
         mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
         c.line(&format!(
             "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
@@ -202,10 +200,8 @@ pub(crate) fn emit_conj(
         gp, ll, np, len
     ));
     match elem {
-        Elem::I64 => c.line(&format!("  store i64 {}, ptr {}, align 8", xv, gp)),
-        Elem::F64 => c.line(&format!("  store double {}, ptr {}, align 8", xv, gp)),
-        Elem::Str => c.line(&format!("  store ptr {}, ptr {}, align 8", xv, gp)),
         Elem::Param(_) => panic!("unresolved element"),
+        e => c.line(&mdl.elem_store(e, &xv, &gp)),
     }
     if freeable {
         mdl.ensure_decl("declare void @free(ptr)");
@@ -273,14 +269,20 @@ pub(crate) fn emit_subvec(
     let n = c.temp();
     c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", n, neg, d));
     let nbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, 8", nbytes, n));
+    c.line(&format!("  {} = mul i64 {}, {}", nbytes, n, elem.bytes()));
     let np = emit_malloc(c, mdl, &nbytes);
-    let sbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, 8", sbytes, s1));
+    // Copy the n elements from `start` on. (This used to copy start*8
+    // bytes from the beginning of the source: wrong elements, and a heap
+    // overflow of the n-element buffer whenever start > n.)
+    let src = c.temp();
+    c.line(&format!(
+        "  {} = getelementptr inbounds {}, ptr {}, i64 {}",
+        src, ll, ptr, s1
+    ));
     mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
     c.line(&format!(
         "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
-        np, ptr, sbytes
+        np, src, nbytes
     ));
     // New growable header {np, n, n}.
     let slot = c.temp();
@@ -303,7 +305,6 @@ pub(crate) fn emit_subvec(
         cf, slot
     ));
     c.line(&format!("  store i64 {}, ptr {}, align 8", n, cf));
-    let _ = ll;
     slot
 }
 

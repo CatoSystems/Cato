@@ -40,6 +40,8 @@ const EXAMPLES: &[&str] = &[
     "strings",
     "widths",
     "widths2",
+    "intops",
+    "narrow_vectors",
     "generics",
 ];
 

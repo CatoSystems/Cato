@@ -27,6 +27,8 @@ const EXAMPLES: &[&str] = &[
     "trees",
     "widths",
     "widths2",
+    "intops",
+    "narrow_vectors",
     "ffi",
     "generics",
 ];

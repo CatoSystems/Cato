@@ -39,6 +39,22 @@ pub(crate) struct FnCtx {
     /// appends keep copying — two live headers could otherwise interleave
     /// writes at the same index.
     pub(crate) loop_alias: HashSet<String>,
+    /// Arm-exit frees (`HArm::exit_free`) of the match arms open on the
+    /// current loop-tail path, innermost last. A `recur` inside such an arm
+    /// leaves it: the jump runs these frees after the arguments are
+    /// computed. Reset per loop — a `recur` only exits its own loop's arms.
+    pub(crate) pending_exits: Vec<PendingExit>,
+}
+
+/// One open arm's exit free, captured when the arm is entered.
+#[derive(Clone)]
+pub(crate) struct PendingExit {
+    pub(crate) skip: Vec<String>,
+    pub(crate) variant: Option<u32>,
+    pub(crate) binders: Vec<String>,
+    pub(crate) scrut_ptr: String,
+    pub(crate) ai: u32,
+    pub(crate) name: String,
 }
 
 impl FnCtx {
@@ -58,6 +74,7 @@ impl FnCtx {
             loop_frame: None,
             recur_fast: None,
             loop_alias: HashSet::new(),
+            pending_exits: Vec::new(),
         }
     }
     pub(crate) fn temp(&mut self) -> String {
@@ -153,6 +170,7 @@ impl FnCtx {
             loop_frame: self.loop_frame.clone(),
             recur_fast: self.recur_fast.clone(),
             loop_alias: self.loop_alias.clone(),
+            pending_exits: self.pending_exits.clone(),
         }
     }
     /// Splice hoisted entry allocas directly after the `entry:` label.
@@ -172,12 +190,7 @@ impl FnCtx {
 
 /// Scalar type of a concrete vector element.
 pub(crate) fn elem_ty_of(e: Elem) -> Ty {
-    match e {
-        Elem::I64 => Ty::I64,
-        Elem::F64 => Ty::F64,
-        Elem::Str => Ty::Str,
-        Elem::Param(_) => panic!("codegen: unresolved element type parameter"),
-    }
+    e.ty().expect("codegen: unresolved element type parameter")
 }
 
 pub(crate) fn mangle(name: &str) -> String {

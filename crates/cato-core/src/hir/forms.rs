@@ -105,6 +105,7 @@ pub(crate) fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Resul
             }
         }
     }
+    let (a, b) = fit_operands(a, b, env, ctx)?;
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
     // Closed widths compare in their own width (and signedness); the width
@@ -245,6 +246,7 @@ pub(crate) fn elem_ty(e: Elem) -> Ty {
         Elem::I64 => Ty::I64,
         Elem::F64 => Ty::F64,
         Elem::Str => Ty::Str,
+        Elem::N(n) => n.ty(),
         Elem::Param(_) => panic!("unresolved element type parameter"),
     }
 }
@@ -362,7 +364,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
 /// side's type. Reads the same tail positions `validate_recurs` accepts.
 pub(crate) fn all_paths_recur(e: &HExpr) -> bool {
     match e {
-        HExpr::Recur(_) => true,
+        HExpr::Recur(..) => true,
         HExpr::If(_, t, f, _) => all_paths_recur(t) && all_paths_recur(f),
         HExpr::Match { arms, .. } => arms.iter().all(|a| all_paths_recur(&a.body)),
         HExpr::Let(_, body, _) => all_paths_recur(body),

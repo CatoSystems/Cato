@@ -277,6 +277,7 @@ fn elem_name(e: &cato_core::hir::Elem) -> String {
         Elem::I64 => "i64".into(),
         Elem::F64 => "f64".into(),
         Elem::Str => "str".into(),
+        Elem::N(n) => n.name().into(),
         Elem::Param(k) => format!("(Param {})", k),
     }
 }
@@ -288,6 +289,9 @@ fn elem_code(e: &cato_core::hir::Elem) -> i64 {
         Elem::I64 => 0,
         Elem::F64 => 1,
         Elem::Str => 2,
+        // Seed-only narrow elements (outside the kernel subset): distinct
+        // codes that cannot collide with the kernel's 0/1/2/100+k.
+        Elem::N(n) => 10 + *n as i64,
         Elem::Param(k) => 100 + *k as i64,
     }
 }
@@ -306,6 +310,14 @@ fn bin_op(op: &cato_core::hir::BinOp) -> i64 {
         BinOp::Sub => 1,
         BinOp::Mul => 2,
         BinOp::Div => 3,
+        // Seed-only operators (outside the kernel subset).
+        BinOp::Rem => 4,
+        BinOp::Mod => 5,
+        BinOp::BitAnd => 6,
+        BinOp::BitOr => 7,
+        BinOp::BitXor => 8,
+        BinOp::Shl => 9,
+        BinOp::Shr => 10,
     }
 }
 
@@ -433,7 +445,7 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
             }
             format!("(loop [{}] {} {})", parts.join(" "), ty_name(ty), ser_hir(body))
         }
-        HExpr::Recur(args) => format!(
+        HExpr::Recur(args, _) => format!(
             "(recur{})",
             args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
         ),

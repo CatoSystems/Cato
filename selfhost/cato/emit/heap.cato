@@ -1407,7 +1407,7 @@
                 ET2Res
                 [st3 merged fail]
                 (match
-                  (scalars/arm-labels-mint (hexpr/arms-rev (clone arms) (EMLSNil)) st3 (ESlotsNil))
+                  (scalars/arm-labels-mint (hexpr/arms-rev (clone arms) (HANil)) st3 (EMLSNil))
                   (
                     ARes
                     [st4 labels]

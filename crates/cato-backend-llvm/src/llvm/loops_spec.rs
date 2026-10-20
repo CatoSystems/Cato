@@ -21,18 +21,13 @@ fn caps_parallel_ok(caps: &[(String, Ty)]) -> bool {
 /// Element type of each base vector of a loop source (argument order).
 pub(crate) fn source_base_elems(src: &HSource, params: &[(String, Ty)]) -> Vec<Elem> {
     match src {
-        HSource::Var(v) => vec![params
-            .iter()
-            .find(|(n, _)| n == v)
-            .map(|(_, t)| match t {
-                Ty::Vec(e) => *e,
-                _ => Elem::I64,
-            })
-            .unwrap_or(Elem::I64)],
-        HSource::Lit(vl) => vec![match vl {
-            VLit::I64(_) => Elem::I64,
-            VLit::F64(_) => Elem::F64,
+        // The innermost binding of the name wins; an unknown or non-vector
+        // source is a compiler bug — never a guessed element width.
+        HSource::Var(v) => vec![match params.iter().rev().find(|(n, _)| n == v) {
+            Some((_, Ty::Vec(e))) => *e,
+            other => panic!("codegen: loop source {} has no vector type in scope ({:?})", v, other),
         }],
+        HSource::Lit(vl) => vec![vl.elem()],
         HSource::Zip(a, b) => {
             let mut out = source_base_elems(a, params);
             out.extend(source_base_elems(b, params));
@@ -51,9 +46,10 @@ pub(crate) fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, T
         .map(|v| {
             let t = params
                 .iter()
+                .rev()
                 .find(|(n, _)| *n == v)
                 .map(|(_, t)| *t)
-                .unwrap_or(Ty::F64);
+                .unwrap_or_else(|| panic!("codegen: reduce capture {} has no type in scope", v));
             (v, t)
         })
         .collect();
@@ -181,10 +177,8 @@ pub(crate) fn loop_free_vars(reduce: &HReduce) -> (Ty, VarSet) {
             bv.remove(e2);
         }
     }
-    let t = if reduce_init(reduce).map(init_is_f64).unwrap_or(false) {
-        Ty::F64
-    } else {
-        Ty::I64
+    let t = match reduce {
+        HReduce::Pipeline { acc_ty, .. } | HReduce::Closure { acc_ty, .. } => *acc_ty,
     };
     (t, bv)
 }
@@ -199,7 +193,7 @@ pub(crate) fn reduce_init(r: &HReduce) -> Option<&HExpr> {
 /// (an `ICast` to f64 inserted by HIR when elements are f64).
 pub(crate) fn acc_ret_is_f64(r: &HReduce) -> bool {
     match r {
-        HReduce::Pipeline { init, .. } | HReduce::Closure { init, .. } => init_is_f64(init),
+        HReduce::Pipeline { acc_ty, .. } | HReduce::Closure { acc_ty, .. } => *acc_ty == Ty::F64,
     }
 }
 

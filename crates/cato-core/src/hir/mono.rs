@@ -16,6 +16,7 @@ pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Result<Ty, Str
                 Some(Ty::I64) => Elem::I64,
                 Some(Ty::F64) => Elem::F64,
                 Some(Ty::Vec(el)) => el,
+                Some(t) if Narrow::of_ty(t).is_some() => Elem::N(Narrow::of_ty(t).unwrap()),
                 other => {
                     return Err(format!("unresolved vector element parameter {} ({:?})", i, other))
                 }
@@ -112,12 +113,7 @@ fn unify_seen(
         }
         // `(Vector T)` binds T to the element type, not the vector type.
         (Ty::Vec(Elem::Param(i)), Ty::Vec(el)) => {
-            let a = match el {
-                Elem::I64 => Ty::I64,
-                Elem::F64 => Ty::F64,
-                Elem::Str => Ty::Str,
-                Elem::Param(_) => return None,
-            };
+            let a = el.ty()?;
             match subs.get_mut(i as usize)? {
                 Some(bound) if *bound != a => return None,
                 slot => *slot = Some(a),

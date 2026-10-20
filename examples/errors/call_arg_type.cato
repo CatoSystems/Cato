@@ -1,0 +1,4 @@
+;; E202: argument types are checked against the parameters (an integer
+;; passed as a `str` used to compile and crash at run time).
+(defn f [x :- str] :- i64 (count x))
+(defn main [] :- i64 (f 5))

@@ -9,6 +9,10 @@ const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/errors");
 ///  message substring)
 const CASES: &[(&str, &str, usize, &str)] = &[
     ("use_moved.cato", "E301", 4, "use of moved value xs"),
+    ("loop_var_moved.cato", "E301", 12, "use of moved value p"),
+    ("literal_does_not_fit.cato", "E202", 4, "integer literal 300 does not fit u8"),
+    ("call_arity.cato", "E201", 4, "f expects exactly 2 arguments, got 1"),
+    ("call_arg_type.cato", "E202", 4, "f: argument 1 must be str, got i64"),
     (
         "exclusive_sigil.cato",
         "E202",

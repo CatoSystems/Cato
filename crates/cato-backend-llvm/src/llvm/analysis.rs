@@ -23,7 +23,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Loop { binds, body, .. } => {
             binds.iter().any(|(_, _, e2)| has_ctl(e2)) || has_ctl(body)
         }
-        HExpr::Recur(args) => args.iter().any(has_ctl),
+        HExpr::Recur(args, _) => args.iter().any(has_ctl),
         HExpr::ToStr(e, _) => has_ctl(e),
         HExpr::ParseNum { s, .. } => has_ctl(s),
         HExpr::Slurp(p) => has_ctl(p),
@@ -182,7 +182,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             }
             collect_vars(body, f);
         }
-        HExpr::Recur(args) => {
+        HExpr::Recur(args, _) => {
             for a in args {
                 collect_vars(a, f);
             }

@@ -448,7 +448,7 @@ fn compiles_widths2_to_expected_output() {
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
-    for name in ["heap", "maps", "sets", "slice"] {
+    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops"] {
         // (mem/ cases are covered by their own sanitizer tests below)
         let src = manifest.join("../../examples").join(format!("{}.cato", name));
         let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", name));
@@ -746,4 +746,107 @@ fn let_rebinding_an_owned_str_vec_frees_once() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+}
+
+// The reduce accumulator's type comes from the init's real type, not its
+// syntax: an f64 *variable* init used to type the loop as i64 (invalid IR).
+#[test]
+fn reduce_with_f64_variable_init() {
+    let src = "(defn total [x0 :- f64 xs :- (Vector f64)] :- f64 (reduce + x0 xs))\n\
+               (defn main [] (print-f64 (total 0.5 [1.25 2.0])))\n";
+    assert_eq!(compile_and_run("reduce_f64_var", src), "3.25\n");
+}
+
+#[test]
+fn compiles_intops_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/intops.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("intops", &src),
+        "-2\n3\n5\n-17\n-22\n-136\n-5\n32\n16\n2\n-3\n17\n-5\n-22\n136\n4\n576460752303423488\n-18\n22\n22\n1\n1234631\n1234630\n9876536\n308641\n2\n-1234568\n-2\n5\n-32\n-50\n99\n56\n4\n4\n64\n100\n55\n55\n1.5\n"
+    );
+}
+
+#[test]
+fn compiles_narrow_vectors_to_expected_output() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = std::fs::read_to_string(manifest.join("../../examples/narrow_vectors.cato")).unwrap();
+    assert_eq!(
+        compile_and_run("narrow_vectors", &src),
+        "3\n250\n253\n4\n1000\n224500\n10\n240\n50\n3.75\n99993\n-2\n"
+    );
+}
+
+// A (Vector u8) stores one byte per element: the literal is an i8 array
+// and the elements load at byte alignment (an `align 8` claim on a byte
+// array would be undefined behaviour).
+#[test]
+fn narrow_vectors_store_at_element_width() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let src = manifest.join("../../examples/narrow_vectors.cato");
+    let out_ll = manifest.join("../../target/narrow_vectors_width.ll");
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success());
+    let ir = std::fs::read_to_string(&out_ll).unwrap();
+    assert!(ir.contains("private constant [3 x i8] [i8 1, i8 2, i8 250]"), "u8 literal not narrow:\n{}", ir);
+    assert!(ir.contains("load i8, ptr") && !ir.contains("load i8, ptr %t0, align 8"));
+    assert!(!ir.lines().any(|l| l.contains("load i8") && l.contains("align 8")), "byte load claims 8-byte alignment");
+}
+
+// `recur` is a scope exit: every loop shape in loop_drops.cato frees what
+// each iteration owned. Sanitizer-clean at -O0 (no double free, no use
+// after free) and the right answers (the swap used to print 22).
+#[test]
+fn loop_drops_are_sanitizer_clean() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let rt = manifest.join("../../runtime/runtime.c");
+    let src = manifest.join("../../examples/mem/loop_drops.cato");
+    let out_ll = manifest.join("../../target/loop_drops.ll");
+    let exe = manifest.join("../../target/loop_drops_bin");
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
+        .status().expect("cato compile");
+    assert!(status.success(), "cato compile failed");
+    let cc = Command::new("clang")
+        .args(["-O0", "-fsanitize=address", "-w"])
+        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
+        .status().expect("clang link");
+    assert!(cc.success(), "clang failed");
+    let out = Command::new(&exe).output().expect("run binary");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+    assert!(out.status.success(), "binary failed");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "345800\n21\n");
+}
+
+// ...and leak-free: 200 rounds of every shape leave nothing live at exit
+// beyond the C runtime's own startup allocations (stdio buffers, ~80 KB).
+// Before v3 each round leaked thousands of blocks.
+#[cfg(target_os = "macos")]
+#[test]
+fn loop_drops_leave_nothing_live() {
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest.join("../..");
+    let dylib = root.join("target/alloc_live_test.dylib");
+    let cc = Command::new("clang")
+        .args(["-dynamiclib", "-O2", "-o"]).arg(&dylib)
+        .arg(root.join("tools/alloc_live.c"))
+        .status().expect("build alloc_live");
+    assert!(cc.success());
+    let exe = root.join("target/loop_drops_live_bin");
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
+        .arg("compile").arg(root.join("examples/mem/loop_drops.cato")).arg("-o").arg(&exe)
+        .status().expect("cato compile");
+    assert!(status.success());
+    let out = Command::new(&exe)
+        .env("DYLD_INSERT_LIBRARIES", &dylib)
+        .output().expect("run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let live: i64 = stderr
+        .lines()
+        .find_map(|l| l.strip_prefix("LIVE_EXIT ").map(|v| v.trim().parse().unwrap()))
+        .unwrap_or_else(|| panic!("no LIVE_EXIT line:\n{}", stderr));
+    assert!(live < 200_000, "{} bytes still live at exit", live);
 }

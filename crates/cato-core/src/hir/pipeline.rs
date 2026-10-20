@@ -8,7 +8,82 @@ pub(crate) fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
     }
 }
 
+/// Does an integer literal fit this integer width?
+pub(crate) fn int_fits(v: i64, t: Ty) -> bool {
+    match t {
+        Ty::I64 => true,
+        Ty::I32 => i32::try_from(v).is_ok(),
+        Ty::I16 => i16::try_from(v).is_ok(),
+        Ty::I8 => i8::try_from(v).is_ok(),
+        Ty::U32 => u32::try_from(v).is_ok(),
+        Ty::U16 => u16::try_from(v).is_ok(),
+        Ty::U8 => u8::try_from(v).is_ok(),
+        Ty::U64 | Ty::Usize => v >= 0,
+        _ => false,
+    }
+}
+
+/// Contextual literal typing: a numeric literal takes the width its
+/// context expects — `(f 5)` for an `i32` parameter, `(+ x 1)` for an `u8`
+/// `x`, `(conj bytes 7)` — when the value is exactly representable there.
+/// `None`: not a literal, or nothing to change (the literal keeps its own
+/// type, and the ordinary width rules decide). `Some(Err)`: the literal
+/// does not fit the expected width — a diagnostic, never a silent wrap.
+/// A narrow literal is a cast of the constant, folded by the backends.
+pub(crate) fn retype_literal(e: &HExpr, want: Ty) -> Option<Result<HExpr, String>> {
+    const F64_EXACT: i64 = 1 << 53;
+    const F32_EXACT: i64 = 1 << 24;
+    match e {
+        HExpr::ConstI64(v) if want.is_int() && want != Ty::I64 => Some(if int_fits(*v, want) {
+            Ok(HExpr::ICast(Box::new(HExpr::ConstI64(*v)), Ty::I64, want))
+        } else {
+            Err(format!(
+                "integer literal {} does not fit {} (mixed widths: cast a wider value explicitly)",
+                v,
+                format!("{:?}", want).to_lowercase()
+            ))
+        }),
+        HExpr::ConstI64(v) if want == Ty::F64 && v.unsigned_abs() <= F64_EXACT as u64 => {
+            Some(Ok(HExpr::ConstF64(*v as f64)))
+        }
+        HExpr::ConstI64(v) if want == Ty::F32 && v.unsigned_abs() <= F32_EXACT as u64 => Some(Ok(
+            HExpr::ICast(Box::new(HExpr::ConstF64(*v as f64)), Ty::F64, Ty::F32),
+        )),
+        HExpr::ConstF64(v) if want == Ty::F32 => Some(Ok(HExpr::ICast(
+            Box::new(HExpr::ConstF64(*v)),
+            Ty::F64,
+            Ty::F32,
+        ))),
+        _ => None,
+    }
+}
+
+/// `retype_literal`, keeping `e` unchanged when it does not apply.
+pub(crate) fn fit_literal(e: HExpr, want: Ty) -> Result<HExpr, String> {
+    match retype_literal(&e, want) {
+        Some(r) => r,
+        None => Ok(e),
+    }
+}
+
+/// A literal operand adopts the width of the other operand.
+pub(crate) fn fit_operands(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
+    let at = ty_of(&a, env, ctx);
+    let bt = ty_of(&b, env, ctx);
+    if at == bt || !at.is_numeric() || !bt.is_numeric() {
+        return Ok((a, b));
+    }
+    if let Some(r) = retype_literal(&a, bt) {
+        return Ok((r?, b));
+    }
+    if let Some(r) = retype_literal(&b, at) {
+        return Ok((a, r?));
+    }
+    Ok((a, b))
+}
+
 pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
+    let (a, b) = fit_operands(a, b, env, ctx)?;
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
     if matches!(at, Ty::Adt(_) | Ty::Str) || matches!(bt, Ty::Adt(_) | Ty::Str) {
@@ -47,6 +122,16 @@ pub(crate) fn promote_init(init: HExpr) -> HExpr {
     }
 }
 
+/// Fused-loop accumulators live in one register: an integer word or a
+/// double. Anything else is a diagnostic, not a guess.
+fn check_acc_ty(t: Ty) -> Result<(), String> {
+    if matches!(t, Ty::I64 | Ty::F64) {
+        Ok(())
+    } else {
+        Err(format!("reduce accumulator must be i64 or f64, got {:?}", t))
+    }
+}
+
 pub(crate) fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
     if items.len() < 4 {
         return Err(format!(
@@ -68,14 +153,19 @@ pub(crate) fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr
             // f64 stage results force an f64 accumulator (mirrors `if`).
             let (src_el, _) = source_elem_tys(&src, env)?;
             let stage_ty = maps.last().map(|m| m.res_ty).unwrap_or(src_el);
-            let init = if stage_ty == Ty::F64 && ty_of(&init, env, ctx) == Ty::I64 {
+            let init = if stage_ty.is_float() && ty_of(&init, env, ctx) == Ty::I64 {
                 promote_init(init)
             } else {
                 init
             };
+            // An f64 accumulator over integer elements converts each element
+            // (the established `(reduce + 0.0 ints)` contract).
+            let acc_ty = ty_of(&init, env, ctx);
+            check_acc_ty(acc_ty)?;
             Ok(HExpr::Reduce(Box::new(HReduce::Pipeline {
                 combine,
                 init,
+                acc_ty,
                 maps,
                 filters,
                 src,
@@ -132,8 +222,10 @@ pub(crate) fn lower_reduce(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr
                     body = coerce_f64(body, body_ty, true);
                 }
             }
+            check_acc_ty(init_ty)?;
             Ok(HExpr::Reduce(Box::new(HReduce::Closure {
                 init,
+                acc_ty: init_ty,
                 src,
                 acc,
                 el,
@@ -282,13 +374,14 @@ pub(crate) fn source_elem_tys(src: &HSource, env: &Env) -> Result<(Ty, Ty), Stri
         HSource::Var(v) => match env.get(v) {
             Some(Ty::Vec(Elem::I64)) => Ok((Ty::I64, Ty::I64)),
             Some(Ty::Vec(Elem::F64)) => Ok((Ty::F64, Ty::F64)),
+            Some(Ty::Vec(Elem::N(n))) => Ok((n.ty(), n.ty())),
             Some(other) => Err(format!("loop source {} is not a vector ({:?})", v, other)),
             None => Err(format!("unknown loop source {}", v)),
         },
-        HSource::Lit(vl) => Ok(match vl {
-            VLit::I64(_) => (Ty::I64, Ty::I64),
-            VLit::F64(_) => (Ty::F64, Ty::F64),
-        }),
+        HSource::Lit(vl) => {
+            let t = vl.elem().ty().expect("literal element");
+            Ok((t, t))
+        }
         HSource::Range(..) => Ok((Ty::I64, Ty::I64)),
         HSource::Zip(a, b) => Ok((source_elem_tys(a, env)?.0, source_elem_tys(b, env)?.0)),
         HSource::Take(_, inner) | HSource::Drop(_, inner) => source_elem_tys(inner, env),

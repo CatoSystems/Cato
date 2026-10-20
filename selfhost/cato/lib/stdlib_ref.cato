@@ -56,7 +56,7 @@
       (print sid-let) ; 1
       (print sid-defn-again) ; 0 (dup hit)
       (print cnt3) ; 2
-      (print (sym/intern-find tab3 "let" 1)) ; 1
+      (print (sym/intern-find tab3 "let")) ; 1
       (print-string (sym/sym-name (clone st3) sid-let)) ; let
       (print-string (span/sp-str (clone sp))) ; 3:7+4
       (print (span/sp-len (clone sp))) ; 4

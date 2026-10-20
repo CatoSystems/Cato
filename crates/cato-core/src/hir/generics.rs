@@ -148,6 +148,7 @@ fn elem_display(e: Elem) -> String {
         Elem::I64 => "i64".into(),
         Elem::F64 => "f64".into(),
         Elem::Str => "str".into(),
+        Elem::N(n) => n.name().into(),
         Elem::Param(p) => format!("T{}", p),
     }
 }
@@ -898,6 +899,7 @@ fn elem_key(e: Elem) -> String {
         Elem::I64 => "i64".into(),
         Elem::F64 => "f64".into(),
         Elem::Str => "str".into(),
+        Elem::N(n) => n.name().into(),
         Elem::Param(p) => format!("t{}", p),
     }
 }

@@ -85,7 +85,7 @@ pub fn emit_module_fast(
             let body = rewrite_body(
                 &d.body,
                 &mangle(&d.name),
-                &d.params,
+                &Scope::new(d.params.clone(), adts),
                 &mut idmap,
                 &mut loops,
                 &mut sigs,
@@ -156,10 +156,13 @@ pub fn emit_module_fast(
     // Closure bodies get the same loop-hoisting rewrite as plain defns.
     for lambda in &mdl.lambdas.clone() {
         let mut idmap2: HashMap<String, usize> = HashMap::new();
+        // A lambda body sees its parameters and its captures.
+        let mut lvars = lambda.captures.clone();
+        lvars.extend(lambda.params.iter().cloned());
         let body = rewrite_body(
             &lambda.body,
             &lambda.mangled,
-            &lambda.params,
+            &Scope::new(lvars, adts),
             &mut idmap2,
             &mut loops,
             &mut sigs,

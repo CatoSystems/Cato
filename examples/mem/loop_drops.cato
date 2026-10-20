@@ -1,0 +1,66 @@
+; loop_drops.cato — `recur` is a scope exit (memory model v3).
+;
+; Each loop below used to leak once per iteration: a `let` in a body that
+; recurs, a matched box handed on through `recur`, a loop variable replaced
+; by `recur`, and the loop's last values. The last two shapes are the
+; kernel reader's: a binder moved into a constructor inside a nested match
+; whose only arm recurs, and a vector swap (which also printed the wrong
+; result before every recur argument was evaluated ahead of the stores).
+
+(deftype Cell (CNil) (CCons [h :- str t :- Cell]))
+(deftype Pair (P [a :- str b :- i64]))
+(deftype Stk (SNil) (SFrame [kids :- Cell next :- Stk]))
+(deftype Pr (Pr [a :- i64 b :- i64]))
+
+(defn build [n :- i64 acc :- Cell] :- Cell
+  (if (= n 0) acc (build (- n 1) (CCons (str "x" n) acc))))
+(defn is-null [l :- &Cell] :- bool (match l (CNil [] true) (_ false)))
+(defn mk [i :- i64] :- Pair (P (str "s" i) i))
+(defn pb [p :- &Pair] :- i64 (match p (P [a b] b)))
+(defn pr [i :- i64] :- Pr (Pr i (+ i 1)))
+(defn cnt [c :- &Cell] :- i64 (match c (CCons [h t] (+ 1 (cnt t))) (CNil [] 0)))
+(defn mkstk [n :- i64 acc :- Stk] :- Stk
+  (if (= n 0) acc (mkstk (- n 1) (SFrame (CCons (str "k" n) (CNil)) acc))))
+
+(defn walk [l0 :- Cell] :- i64
+  (loop [l :- Cell l0 k :- i64 0]
+    (if (is-null l) k
+      (match l (CCons [h t] (recur t (+ k (count h)))) (_ k)))))
+
+(defn drain [l0 :- Cell] :- i64
+  (let [v (loop [acc :- (Vector str) (split "" "") l :- Cell l0]
+            (if (is-null l) acc
+              (match l (CCons [h t] (recur (conj acc h) t)) (_ acc))))]
+    (count v)))
+
+(defn lets [n :- i64] :- i64
+  (loop [i :- i64 0 k :- i64 0]
+    (if (>= i n) k (let [s (str "a" i)] (recur (+ i 1) (+ k (count s)))))))
+
+(defn temps [n :- i64] :- i64
+  (loop [i :- i64 0 k :- i64 0]
+    (if (>= i n) k (match (mk i) (P [a b] (recur (+ i 1) (+ k (count a))))))))
+
+(defn rebind [n :- i64] :- i64
+  (loop [i :- i64 0 p :- Pair (mk 0)]
+    (if (>= i n) (pb p) (recur (+ i 1) (mk (+ i (pb p)))))))
+
+(defn frames [] :- i64
+  (loop [k :- i64 0 s :- Stk (mkstk 30 (SNil)) acc :- Cell (CNil)]
+    (match s
+      (SFrame [kidsF rest]
+        (match (pr k) (Pr [a b] (recur b rest (CCons (str "n" a) kidsF)))))
+      (SNil [] (+ k (cnt acc))))))
+
+(defn swap [n :- i64] :- i64
+  (loop [i :- i64 0 a :- (Vector i64) [1] b :- (Vector i64) [2 2]]
+    (if (>= i n) (+ (* 10 (count a)) (count b)) (recur (+ i 1) b a))))
+
+(defn main []
+  (loop [r :- i64 0 tot :- i64 0]
+    (if (< r 200)
+      (recur (+ r 1)
+             (+ tot (+ (walk (build 50 (CNil)))
+                       (+ (drain (build 50 (CNil)))
+                          (+ (lets 50) (+ (temps 50) (+ (rebind 50) (frames))))))))
+      (do (print-i64 tot) (print-i64 (swap 1))))))
