@@ -1,0 +1,79 @@
+(ns cato.hir.statemap)
+(require ["types.cato" :as types])
+(require ["forms.cato" :as forms])
+
+; statemap.cato — reading the drop planner's per-name state maps.
+;
+; The planner's maps (name -> state, name -> owns) are prepend-only cons
+; lists: an update puts a new entry in front, and the first entry for a
+; name is its current value. A branch starts from its pre-branch map, so
+; its own facts are exactly the entries in front of that map — a merge or
+; a "what did this branch move" query walks only that prefix instead of
+; the whole history.
+
+(defn depth [m :- &IMap] :- i64
+  (match m
+    (MNil [] 0)
+    (MCons [_k _v next] (+ 1 (depth next)))))
+
+; The number of entries a branch put in front of its pre-branch map.
+(defn prefix-len [m :- &IMap pre :- &IMap] :- i64
+  (let [n (- (depth m) (depth pre))]
+    (if (< n 0) (depth m) n)))
+
+; Names whose current value in m is `val`, among m's first n entries, and
+; whose value in `pre` is `was` — each name once.
+(defn changed-to [m :- &IMap top :- &IMap n :- i64 val :- i64 pre :- &IMap was :- i64 acc :- Sids] :- Sids
+  (if
+    (<= n 0)
+    acc
+    (match m
+      (MNil [] acc)
+      (
+        MCons
+        [k v next]
+        (changed-to
+          next
+          top
+          (- n 1)
+          val
+          pre
+          was
+          (if
+            (
+              and
+              (= v val)
+              (= (forms/im-get top k -1) val)
+              (= (forms/im-get pre k -1) was)
+              (not (types/sids-has acc k))
+            )
+            (SCons k acc)
+            acc))
+      ))))
+
+; Pre-branch Owned (0) names the branch left Moved (1).
+(defn moved-in [m :- &IMap pre :- &IMap] :- Sids
+  (changed-to m m (prefix-len m pre) 1 pre 0 (SNil)))
+
+(defn union [a :- &Sids b :- Sids] :- Sids
+  (match a
+    (SNil [] b)
+    (SCons [h t] (union t (if (types/sids-has b h) b (SCons h b))))))
+
+; Names in symbol-text order (the order the seed's planner lists frees).
+(defn sort-by-name [xs :- &Sids tab :- i64] :- Sids
+  (match xs
+    (SNil [] (SNil))
+    (SCons [h t] (insert-by-name h (sort-by-name t tab) tab))))
+
+(defn insert-by-name [x :- i64 sorted :- Sids tab :- i64] :- Sids
+  (match sorted
+    (SNil [] (SCons x (SNil)))
+    (
+      SCons
+      [h t]
+      (if
+        (< (forms/sym-str tab x) (forms/sym-str tab h))
+        (SCons x (SCons h t))
+        (SCons h (insert-by-name x t tab)))
+    )))

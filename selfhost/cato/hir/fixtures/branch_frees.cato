@@ -1,0 +1,53 @@
+; fixture: branch-local frees — a value moved in one branch is freed by the
+; branches that kept it (if branches, match arms, binders of a freed box).
+
+(deftype Pair
+  (P [a :- str b :- str])
+  (Q [n :- i64]))
+
+(deftype Chain
+  (Link [v :- (Vector i64) rest :- Chain])
+  (End))
+
+; owning through a later variant only: its constructor moves the chain
+(deftype Opt
+  (ONone)
+  (OSome [c :- Chain]))
+
+(defn eat [p :- Pair] :- i64
+  (match p
+    (P [a b] (+ (count a) (count b)))
+    (Q [n] n)))
+
+(defn len [c :- Chain] :- i64
+  (match c
+    (Link [_ rest] (+ 1 (len rest)))
+    (End [] 0)))
+
+; if: the else branch frees what the then branch consumed
+(defn maybe-eat [go :- bool p :- Pair] :- i64
+  (if go (eat p) 0))
+
+; arms as branches: Q's arm frees the pair P's arm consumed
+(defn by-kind [k :- Pair p :- Pair] :- i64
+  (match k
+    (P [_ _] (eat p))
+    (Q [n] n)))
+
+; a binder of the freed box, moved in one branch, freed in the other
+(defn rest-len [c :- Chain deep :- bool] :- i64
+  (match c
+    (Link [v rest] (if deep (len rest) (count v)))
+    (End [] 0)))
+
+; the else branch frees what the constructor took in the then branch
+(defn wrap [go :- bool c :- Chain] :- Opt
+  (if go (OSome c) (ONone)))
+
+(defn main [] :- i64
+  (+ (match (wrap false (End)) (OSome [c] (len c)) (ONone [] 0))
+  (+ (maybe-eat true (P "a" "b"))
+    (+ (maybe-eat false (Q 1))
+      (+ (by-kind (Q 2) (P "c" "d"))
+        (+ (rest-len (Link (vec-i64 1) (Link (vec-i64 2) (End))) true)
+          (rest-len (Link (vec-i64 1) (End)) false)))))))
