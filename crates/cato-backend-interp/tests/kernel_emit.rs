@@ -93,7 +93,12 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         std::fs::write(&ll, &ir).expect("write ll");
         let mut cc = Command::new("clang");
         if has_main {
-            cc.arg(&ll).arg(&rt).arg("-o").arg(&exe);
+            cc.arg(&ll).arg(&rt);
+            // glibc keeps math symbols in libm; ELF links must add it.
+            if cfg!(target_os = "linux") {
+                cc.arg("-lm");
+            }
+            cc.arg("-o").arg(&exe);
         } else {
             cc.arg("-c")
                 .arg(&ll)

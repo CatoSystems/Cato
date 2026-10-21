@@ -1,6 +1,9 @@
 //! Backend parity: the interpreter and the LLVM backend must agree on the
 //! whole examples/ suite (LLVM side is compiled with clang and executed).
 
+mod common;
+
+use common::link_ir;
 use std::process::Command;
 
 const EXAMPLES: &[&str] = &[
@@ -69,14 +72,7 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
             .status()
             .expect("cato emit");
         assert!(status.success(), "{}: emit failed", name);
-        let cc = Command::new("clang")
-            .arg(&ll)
-            .arg(&rt)
-            .arg("-o")
-            .arg(&exe)
-            .status()
-            .expect("clang");
-        assert!(cc.success(), "{}: clang failed", name);
+        link_ir(&ll, &rt, &exe);
         let out = Command::new(&exe).output().expect("llvm run");
         let llvm = String::from_utf8_lossy(&out.stdout).to_string();
 
@@ -122,14 +118,7 @@ fn generic_instantiations_over_str_and_widths_emit_valid_ir() {
         .status()
         .expect("cato emit");
     assert!(status.success(), "emit failed");
-    let cc = Command::new("clang")
-        .arg(&ll)
-        .arg(root.join("runtime/runtime.c"))
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(cc.success(), "clang rejected the emitted IR");
+    link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "5\nab\n7\n");
 }
@@ -184,14 +173,7 @@ fn string_builder_patterns_agree_between_backends() {
         .status()
         .expect("cato emit");
     assert!(status.success(), "emit failed");
-    let cc = Command::new("clang")
-        .arg(&ll)
-        .arg(root.join("runtime/runtime.c"))
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(cc.success(), "clang rejected the emitted IR");
+    link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n4\nawww\n1\na\n");
 }
@@ -382,14 +364,7 @@ fn modules_agree_between_backends() {
         .status()
         .expect("emit");
     assert!(status.success());
-    let cc = Command::new("clang")
-        .arg(&ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(cc.success());
+    link_ir(&ll, &rt, &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     let llvm = String::from_utf8_lossy(&out.stdout).to_string();
     assert_eq!(interp, llvm, "modules parity");

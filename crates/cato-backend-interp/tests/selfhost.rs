@@ -3,6 +3,9 @@
 //! (`lib/stdlib_ref.cato`, which `require`s the sibling lib modules) runs
 //! byte-identically on the interpreter and the clang-compiled LLVM backend.
 
+mod common;
+
+use common::link_ir;
 use std::process::Command;
 
 #[test]
@@ -41,14 +44,7 @@ fn seed_builds_the_kernel_stdlib_and_both_backends_agree() {
         .status()
         .expect("cato emit");
     assert!(status.success(), "emit failed");
-    let cc = Command::new("clang")
-        .arg(&ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(cc.success(), "clang rejected the emitted IR");
+    link_ir(&ll, &rt, &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     assert_eq!(
         String::from_utf8_lossy(&out.stdout),

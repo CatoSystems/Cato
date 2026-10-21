@@ -11,6 +11,9 @@
 
 use cato_core::ast::Expr;
 use cato_core::reader::read_all_spanned;
+mod common;
+
+use common::link_ir;
 use std::process::Command;
 
 struct Paths {
@@ -36,14 +39,7 @@ fn setup() -> Paths {
         .status()
         .expect("cato emit");
     assert!(status.success(), "seed failed to compile the kernel reader");
-    let status = Command::new("clang")
-        .arg(&ll)
-        .arg(root.join("runtime/runtime.c"))
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang");
-    assert!(status.success(), "clang rejected the kernel reader's IR");
+    link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
 
     Paths { root, entry, exe }
 }

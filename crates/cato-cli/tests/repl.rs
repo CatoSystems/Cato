@@ -134,7 +134,7 @@ fn repl_exit_words() {
 // Regression: raw mode disables the terminal's LF->CRLF translation, so a
 // bare newline on Enter left the cursor mid-column and every result line
 // printed indented. Through a pty, the result must start at column 0.
-// Skipped where the BSD `script` pty helper is unavailable.
+// Skipped where the `script` pty helper is unavailable.
 #[test]
 fn repl_results_start_at_column_zero_on_a_terminal() {
     let script = std::path::Path::new("/usr/bin/script");
@@ -143,8 +143,26 @@ fn repl_results_start_at_column_zero_on_a_terminal() {
     }
     use std::io::Write as _;
     use std::process::Stdio;
-    let mut child = Command::new(script)
-        .args(["-q", "/dev/null", env!("CARGO_BIN_EXE_cato"), "repl"])
+    // BSD script (macOS) takes the command as trailing args and a file to
+    // record to; util-linux script (Linux) needs `-c <command>`. Probe the
+    // variant once rather than assuming the host.
+    let gnu = Command::new(script)
+        .arg("--version")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("util-linux"))
+        .unwrap_or(false);
+    let mut cmd = Command::new(script);
+    cmd.arg("-q");
+    if gnu {
+        cmd.arg("-c")
+            .arg(format!("{} repl", env!("CARGO_BIN_EXE_cato")));
+        cmd.arg("/dev/null");
+    } else {
+        cmd.arg("/dev/null");
+        cmd.arg(env!("CARGO_BIN_EXE_cato"));
+        cmd.arg("repl");
+    }
+    let mut child = cmd
         .env("TERM", "xterm-256color")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
