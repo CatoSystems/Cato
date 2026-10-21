@@ -21,8 +21,10 @@ pub(crate) fn infer_param_modes(
     alias_ret: &std::collections::HashSet<String>,
 ) {
     use std::collections::{HashSet, VecDeque};
-    let mut sigs: HashMap<String, Vec<Borrow>> =
-        out.iter().map(|d| (d.name.clone(), d.borrows.clone())).collect();
+    let mut sigs: HashMap<String, Vec<Borrow>> = out
+        .iter()
+        .map(|d| (d.name.clone(), d.borrows.clone()))
+        .collect();
     // Candidates: defn name -> parameter positions still inferred lent.
     let mut lent: HashMap<String, Vec<usize>> = HashMap::new();
     for d in out.iter() {
@@ -57,15 +59,28 @@ pub(crate) fn infer_param_modes(
             }
         });
     }
-    let mut work: VecDeque<usize> = (0..out.len()).filter(|k| lent.contains_key(&out[*k].name)).collect();
+    let mut work: VecDeque<usize> = (0..out.len())
+        .filter(|k| lent.contains_key(&out[*k].name))
+        .collect();
     let mut queued: HashSet<usize> = work.iter().copied().collect();
     while let Some(k) = work.pop_front() {
         queued.remove(&k);
         let d = &out[k];
-        let Some(cand) = lent.get(&d.name).cloned() else { continue };
+        let Some(cand) = lent.get(&d.name).cloned() else {
+            continue;
+        };
         let kept = crate::hir::ownership::kept_params(
-            &d.name, &d.params, d.ret, d.ret_borrowed, &d.body, &sigs, ret_borrowed_names, rets,
-            facts, adts, alias_ret,
+            &d.name,
+            &d.params,
+            d.ret,
+            d.ret_borrowed,
+            &d.body,
+            &sigs,
+            ret_borrowed_names,
+            rets,
+            facts,
+            adts,
+            alias_ret,
         );
         let now_owned: Vec<usize> = cand.iter().copied().filter(|&i| kept[i]).collect();
         if now_owned.is_empty() {
@@ -76,7 +91,9 @@ pub(crate) fn infer_param_modes(
         for &i in &now_owned {
             s[i] = Borrow::Owned;
         }
-        lent.get_mut(&name).unwrap().retain(|i| !now_owned.contains(i));
+        lent.get_mut(&name)
+            .unwrap()
+            .retain(|i| !now_owned.contains(i));
         for &c in callers.get(&name).into_iter().flatten() {
             if lent.contains_key(&out[c].name) && queued.insert(c) {
                 work.push_back(c);
@@ -101,7 +118,9 @@ pub(crate) fn infer_param_modes(
                         if kinds.get(i) != Some(&Borrow::Shared) {
                             continue;
                         }
-                        let HExpr::Clone(inner) = &args[i] else { continue };
+                        let HExpr::Clone(inner) = &args[i] else {
+                            continue;
+                        };
                         let HExpr::Var(x) = &**inner else { continue };
                         let x = x.clone();
                         let elsewhere = args.iter().enumerate().any(|(j, a)| {

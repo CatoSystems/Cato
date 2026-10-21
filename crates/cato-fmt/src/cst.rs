@@ -64,8 +64,14 @@ fn pair(open: &str) -> Option<(char, NodeKind)> {
 
 fn trivia_of(t: &Token) -> Option<Trivia> {
     match t.kind {
-        TokKind::Ws => Some(Trivia { kind: TriviaKind::Ws, text: t.text.clone() }),
-        TokKind::Comment => Some(Trivia { kind: TriviaKind::Comment, text: t.text.clone() }),
+        TokKind::Ws => Some(Trivia {
+            kind: TriviaKind::Ws,
+            text: t.text.clone(),
+        }),
+        TokKind::Comment => Some(Trivia {
+            kind: TriviaKind::Comment,
+            text: t.text.clone(),
+        }),
         _ => None,
     }
 }
@@ -124,8 +130,8 @@ pub fn parse(src: &str) -> Result<Vec<Top>, FmtError> {
                 }
             }
             TokKind::Open => {
-                let (expected, kind) = pair(&tok.text)
-                    .ok_or_else(|| FmtError::new("stray opener", tok_offset))?;
+                let (expected, kind) =
+                    pair(&tok.text).ok_or_else(|| FmtError::new("stray opener", tok_offset))?;
                 stack.push(Frame {
                     open: tok.clone(),
                     open_offset: tok_offset,
@@ -135,9 +141,9 @@ pub fn parse(src: &str) -> Result<Vec<Top>, FmtError> {
                 });
             }
             TokKind::Close => {
-                let f = stack
-                    .pop()
-                    .ok_or_else(|| FmtError::new(format!("unbalanced delimiter '{}'", tok.text), tok_offset))?;
+                let f = stack.pop().ok_or_else(|| {
+                    FmtError::new(format!("unbalanced delimiter '{}'", tok.text), tok_offset)
+                })?;
                 if tok.text.chars().next() != Some(f.expected) {
                     return Err(FmtError::new(
                         format!("unbalanced delimiter '{}'", tok.text),
@@ -145,11 +151,7 @@ pub fn parse(src: &str) -> Result<Vec<Top>, FmtError> {
                     ));
                 }
                 // Map parity, like the reader: trivia doesn't count.
-                let values = f
-                    .kids
-                    .iter()
-                    .filter(|e| matches!(e, Elem::Node(_)))
-                    .count();
+                let values = f.kids.iter().filter(|e| matches!(e, Elem::Node(_))).count();
                 if f.kind == NodeKind::Map && values % 2 != 0 {
                     return Err(FmtError::new(
                         "map literal must have key/value pairs",
@@ -164,11 +166,18 @@ pub fn parse(src: &str) -> Result<Vec<Top>, FmtError> {
                     kids,
                     text_len: 0,
                 };
-                let node = Node { text_len: compute_len(&node), ..node };
+                let node = Node {
+                    text_len: compute_len(&node),
+                    ..node
+                };
                 push_node(node, &mut stack, &mut tops);
             }
             TokKind::Str | TokKind::Atom => {
-                let kind = if tok.kind == TokKind::Str { NodeKind::Str } else { NodeKind::Atom };
+                let kind = if tok.kind == TokKind::Str {
+                    NodeKind::Str
+                } else {
+                    NodeKind::Atom
+                };
                 let node = Node {
                     kind,
                     open: tok.clone(),

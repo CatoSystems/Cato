@@ -91,5 +91,8 @@ pub fn lex(src: &str) -> Result<Vec<Token>, FmtError> {
 }
 
 fn push(out: &mut Vec<Token>, kind: TokKind, text: &str) {
-    out.push(Token { kind, text: text.to_string() });
+    out.push(Token {
+        kind,
+        text: text.to_string(),
+    });
 }

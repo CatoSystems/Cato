@@ -94,9 +94,9 @@ pub fn run(program: &mut Program) -> bool {
 }
 
 fn substitution_safe_params(params: &[(String, Ty)]) -> bool {
-    params.iter().all(|(_, t)| {
-        t.is_numeric() || matches!(t, Ty::Bool | Ty::Str)
-    })
+    params
+        .iter()
+        .all(|(_, t)| t.is_numeric() || matches!(t, Ty::Bool | Ty::Str))
 }
 
 /// The substituted body value takes the call site's uses across destruction

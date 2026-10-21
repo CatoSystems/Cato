@@ -3,11 +3,11 @@ use crate::cli::Cli;
 #[cfg(feature = "static-llvm")]
 use crate::driver::TargetSpec;
 #[cfg(feature = "static-llvm")]
-use cato_core::Program;
-#[cfg(feature = "static-llvm")]
 use crate::objgen;
 #[cfg(feature = "static-llvm")]
 use cato_assets::{assets_for, host_target_name};
+#[cfg(feature = "static-llvm")]
+use cato_core::Program;
 #[cfg(feature = "static-llvm")]
 use std::fs;
 #[cfg(feature = "static-llvm")]
@@ -101,9 +101,9 @@ fn llvm_triple_for_target(target_name: &str) -> &str {
 #[cfg(feature = "static-llvm")]
 fn resolve_target_asset_name(spec: &TargetSpec) -> Result<String, String> {
     if spec.name == "native" {
-        host_target_name()
-            .map(|s| s.to_string())
-            .ok_or_else(|| "cato: hermetic compile is not supported on this host for --target native".to_string())
+        host_target_name().map(|s| s.to_string()).ok_or_else(|| {
+            "cato: hermetic compile is not supported on this host for --target native".to_string()
+        })
     } else {
         Ok(spec.name.to_string())
     }
@@ -244,11 +244,7 @@ pub(super) fn hermetic_link_argv(
 }
 
 #[cfg(feature = "static-llvm")]
-pub fn build_hermetic(
-    program: &Program,
-    cli: &Cli,
-    out: &Path,
-) -> Result<PathBuf, String> {
+pub fn build_hermetic(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf, String> {
     reject_unsupported(cli)?;
     let target_name = resolve_target_asset_name(&cli.target)?;
     let ir = crate::native::emit_llvm_ir(program, cli).map_err(|e| e.to_string())?;
@@ -270,7 +266,8 @@ pub fn build_hermetic(
     {
         let mut cstrs: Vec<std::ffi::CString> = Vec::with_capacity(argv.len());
         for a in &argv {
-            cstrs.push(std::ffi::CString::new(a.as_str()).map_err(|_| "cato: invalid argv string")?);
+            cstrs
+                .push(std::ffi::CString::new(a.as_str()).map_err(|_| "cato: invalid argv string")?);
         }
         let refs: Vec<&std::ffi::CStr> = cstrs.iter().map(|c| c.as_c_str()).collect();
         let lld_flavor = match flavor {
@@ -308,7 +305,11 @@ pub fn build_hermetic(
         }
         Ok(out.to_path_buf())
     }
-    #[cfg(all(feature = "static-llvm", not(feature = "in-process-lld"), not(cato_bundled_lld)))]
+    #[cfg(all(
+        feature = "static-llvm",
+        not(feature = "in-process-lld"),
+        not(cato_bundled_lld)
+    ))]
     {
         Err("cato: hermetic linking unavailable in this build".to_string())
     }
@@ -318,8 +319,6 @@ pub fn build_hermetic(
         Err("cato: hermetic linking unavailable in this build".to_string())
     }
 }
-
-
 
 #[cfg(all(feature = "static-llvm", test))]
 mod tests {
@@ -536,8 +535,10 @@ mod bundled {
                 ));
             }
             let tmp = dest.with_extension("tmp");
-            fs::write(&tmp, bytes).map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
-            fs::rename(&tmp, dest).map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
+            fs::write(&tmp, bytes)
+                .map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
+            fs::rename(&tmp, dest)
+                .map_err(|e| format!("cato: failed to extract bundled lld: {}", e))?;
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

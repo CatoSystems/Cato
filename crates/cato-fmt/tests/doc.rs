@@ -29,7 +29,10 @@ fn nest_indent_appears_before_next_content() {
     // inside the nest (Wadler doesn't retroindent).
     let d = concat(vec![
         text("root"),
-        nest(2, concat(vec![Doc::Line, text("child"), Doc::Line, text("next")])),
+        nest(
+            2,
+            concat(vec![Doc::Line, text("child"), Doc::Line, text("next")]),
+        ),
     ]);
     assert_eq!(print(&d, 40), "root\n  child\n  next");
 }
@@ -58,10 +61,7 @@ fn width_40_regression() {
     };
     let d = group(concat(vec![text("("), nest(1, items()), text(")")]));
     assert_eq!(print(&d, 40), "(item1 item2 item3 item4 item5)");
-    assert_eq!(
-        print(&d, 20),
-        "(item1\n item2\n item3\n item4\n item5)"
-    );
+    assert_eq!(print(&d, 20), "(item1\n item2\n item3\n item4\n item5)");
 }
 
 #[test]

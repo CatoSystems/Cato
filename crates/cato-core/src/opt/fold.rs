@@ -185,44 +185,74 @@ fn fold_one(e: HExpr) -> HExpr {
             ty,
             res,
         } => match (&*src, as_i64(&idx), res) {
-            (_, _, Some(_)) => HExpr::Get { src, idx, default, ty, res },
+            (_, _, Some(_)) => HExpr::Get {
+                src,
+                idx,
+                default,
+                ty,
+                res,
+            },
             (HExpr::VecLit(VLit::I64(vs)), Some(i), _) => {
                 if i >= 0 && (i as usize) < vs.len() {
                     // Dropping an evaluated-by-default expression could
                     // remove work only if it had effects; require pure.
-                    let default_ok = default
-                        .as_deref()
-                        .map(is_drop_safe)
-                        .unwrap_or(true);
+                    let default_ok = default.as_deref().map(is_drop_safe).unwrap_or(true);
                     if default_ok {
                         HExpr::ConstI64(vs[i as usize])
                     } else {
-                        HExpr::Get { src, idx, default, ty, res }
+                        HExpr::Get {
+                            src,
+                            idx,
+                            default,
+                            ty,
+                            res,
+                        }
                     }
                 } else if let Some(d) = default {
                     *d
                 } else {
-                    HExpr::Get { src, idx, default, ty, res }
+                    HExpr::Get {
+                        src,
+                        idx,
+                        default,
+                        ty,
+                        res,
+                    }
                 }
             }
             (HExpr::VecLit(VLit::F64(vs)), Some(i), _) => {
                 if i >= 0 && (i as usize) < vs.len() {
-                    let default_ok = default
-                        .as_deref()
-                        .map(is_drop_safe)
-                        .unwrap_or(true);
+                    let default_ok = default.as_deref().map(is_drop_safe).unwrap_or(true);
                     if default_ok {
                         HExpr::ConstF64(vs[i as usize])
                     } else {
-                        HExpr::Get { src, idx, default, ty, res }
+                        HExpr::Get {
+                            src,
+                            idx,
+                            default,
+                            ty,
+                            res,
+                        }
                     }
                 } else if let Some(d) = default {
                     *d
                 } else {
-                    HExpr::Get { src, idx, default, ty, res }
+                    HExpr::Get {
+                        src,
+                        idx,
+                        default,
+                        ty,
+                        res,
+                    }
                 }
             }
-            _ => HExpr::Get { src, idx, default, ty, res },
+            _ => HExpr::Get {
+                src,
+                idx,
+                default,
+                ty,
+                res,
+            },
         },
         HExpr::StrCat(args) => {
             let mut all = String::new();
@@ -261,9 +291,19 @@ fn fold_one(e: HExpr) -> HExpr {
             }
             _ => HExpr::SetContains { s, x },
         },
-        HExpr::MapGet { src, key, default, res } => {
+        HExpr::MapGet {
+            src,
+            key,
+            default,
+            res,
+        } => {
             if res.is_some() {
-                return HExpr::MapGet { src, key, default, res };
+                return HExpr::MapGet {
+                    src,
+                    key,
+                    default,
+                    res,
+                };
             }
             if let (HExpr::MapLit(pairs), Some(k)) = (&*src, as_i64(&key)) {
                 // Last match wins; fold only when the key is unambiguous.
@@ -282,14 +322,20 @@ fn fold_one(e: HExpr) -> HExpr {
                     }
                 }
             }
-            HExpr::MapGet { src, key, default, res }
+            HExpr::MapGet {
+                src,
+                key,
+                default,
+                res,
+            }
         }
         HExpr::Subs { s, start, end } => {
             let folded = match (&*s, as_i64(&start), as_i64(&end)) {
                 (HExpr::StrLit(s), Some(a), Some(b))
                     if a >= 0 && b >= 0 && a <= b && (b as usize) <= s.len() =>
                 {
-                    s.get(a as usize..b as usize).map(|sub| HExpr::StrLit(sub.to_string()))
+                    s.get(a as usize..b as usize)
+                        .map(|sub| HExpr::StrLit(sub.to_string()))
                 }
                 _ => None,
             };

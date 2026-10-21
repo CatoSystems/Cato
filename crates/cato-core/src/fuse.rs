@@ -14,9 +14,7 @@ pub fn check(h: &HExpr) -> HExpr {
     match h {
         HExpr::Reduce(r) => check_reduce(r),
         HExpr::Count(e) => HExpr::Count(Box::new(check(e))),
-        HExpr::Call(n, args) => {
-            HExpr::Call(n.clone(), args.iter().map(check).collect())
-        }
+        HExpr::Call(n, args) => HExpr::Call(n.clone(), args.iter().map(check).collect()),
         HExpr::Let(binds, body, frees) => HExpr::Let(
             binds
                 .iter()
@@ -29,9 +27,7 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::ConstB(v) => HExpr::ConstB(*v),
         HExpr::ConstI64(v) => HExpr::ConstI64(*v),
-        HExpr::StrOrd(op, a, b) => {
-            HExpr::StrOrd(*op, Box::new(check(a)), Box::new(check(b)))
-        }
+        HExpr::StrOrd(op, a, b) => HExpr::StrOrd(*op, Box::new(check(a)), Box::new(check(b))),
         HExpr::StrNth { s, idx, res } => HExpr::StrNth {
             s: Box::new(check(s)),
             idx: Box::new(check(idx)),
@@ -76,22 +72,13 @@ pub fn check(h: &HExpr) -> HExpr {
         HExpr::Max(a, b, t) => HExpr::Max(Box::new(check(a)), Box::new(check(b)), *t),
         HExpr::StrLit(s) => HExpr::StrLit(s.clone()),
         HExpr::StrCat(args) => HExpr::StrCat(args.iter().map(check).collect()),
-        HExpr::BinW(op, a, b, t) => {
-            HExpr::BinW(*op, Box::new(check(a)), Box::new(check(b)), *t)
-        }
-        HExpr::CmpW(op, a, b, t) => {
-            HExpr::CmpW(*op, Box::new(check(a)), Box::new(check(b)), *t)
-        }
-        HExpr::BinF(op, a, b) => {
-            HExpr::BinF(*op, Box::new(check(a)), Box::new(check(b)))
-        }
+        HExpr::BinW(op, a, b, t) => HExpr::BinW(*op, Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::CmpW(op, a, b, t) => HExpr::CmpW(*op, Box::new(check(a)), Box::new(check(b)), *t),
+        HExpr::BinF(op, a, b) => HExpr::BinF(*op, Box::new(check(a)), Box::new(check(b))),
         HExpr::ICast(inner, f, t) => HExpr::ICast(Box::new(check(inner)), *f, *t),
-        HExpr::MapLit(pairs) => HExpr::MapLit(
-            pairs
-                .iter()
-                .map(|(k, v)| (check(k), check(v)))
-                .collect(),
-        ),
+        HExpr::MapLit(pairs) => {
+            HExpr::MapLit(pairs.iter().map(|(k, v)| (check(k), check(v))).collect())
+        }
         HExpr::MapAssoc { m, k, v } => HExpr::MapAssoc {
             m: Box::new(check(m)),
             k: Box::new(check(k)),
@@ -134,7 +121,12 @@ pub fn check(h: &HExpr) -> HExpr {
             sep: Box::new(check(sep)),
             xs: Box::new(check(xs)),
         },
-        HExpr::Conj { v, x, elem, in_place } => HExpr::Conj {
+        HExpr::Conj {
+            v,
+            x,
+            elem,
+            in_place,
+        } => HExpr::Conj {
             v: Box::new(check(v)),
             x: Box::new(check(x)),
             elem: *elem,
@@ -180,7 +172,14 @@ pub fn check(h: &HExpr) -> HExpr {
             ty: *ty,
             res: *res,
         },
-        HExpr::Closure { sig, mangled, params, captures, capture_owns, body } => HExpr::Closure {
+        HExpr::Closure {
+            sig,
+            mangled,
+            params,
+            captures,
+            capture_owns,
+            body,
+        } => HExpr::Closure {
             sig: *sig,
             mangled: mangled.clone(),
             params: params.clone(),
@@ -198,11 +197,7 @@ pub fn check(h: &HExpr) -> HExpr {
             variant: *variant,
             args: args.iter().map(check).collect(),
         },
-        HExpr::Match {
-            scrut,
-            arms,
-            ty,
-        } => HExpr::Match {
+        HExpr::Match { scrut, arms, ty } => HExpr::Match {
             scrut: Box::new(check(scrut)),
             arms: arms
                 .iter()

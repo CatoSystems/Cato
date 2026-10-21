@@ -50,7 +50,6 @@ pub(crate) fn lambda_spec(
     }
 }
 
-
 pub(crate) fn resolve_function_ref(
     name: &str,
     zip: bool,
@@ -131,5 +130,3 @@ pub(crate) fn resolve_function_ref(
     };
     Ok((el, el2, body, ret))
 }
-
-

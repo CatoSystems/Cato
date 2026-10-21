@@ -14,7 +14,12 @@ pub(crate) fn emit_for(
     let rll = mdl.elem_ll(res_elem);
     let ll = mdl.elem_ll(elem);
     let nbytes = c.temp();
-    c.line(&format!("  {} = mul i64 {}, {}", nbytes, len, res_elem.bytes()));
+    c.line(&format!(
+        "  {} = mul i64 {}, {}",
+        nbytes,
+        len,
+        res_elem.bytes()
+    ));
     let res = emit_malloc(c, mdl, &nbytes);
 
     let bloop = c.block_name();
@@ -63,14 +68,18 @@ pub(crate) fn emit_for(
             cond, bloop, bexit
         ));
     } else {
-        c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+        c.line(&format!(
+            "  br i1 {}, label %{}, label %{}",
+            cond, bloop, bexit
+        ));
     }
 
     let lbl = c.open(&bexit);
     c.line(&format!("{}:", lbl));
     // Result header {res, len, len}.
     let slot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -91,7 +100,6 @@ pub(crate) fn emit_for(
     c.line(&format!("  store i64 {}, ptr {}, align 8", len, cf));
     slot
 }
-
 
 // ---------------------------------------------------------------------------
 // Maps: flat arrays of (i64 key, i64 value) pairs on the heap. Entries are

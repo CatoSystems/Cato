@@ -54,9 +54,7 @@ fn hermetic_rejects_runtime_flag() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains(
-            "--runtime is not supported in this cato build (the runtime is embedded)"
-        ),
+        stderr.contains("--runtime is not supported in this cato build (the runtime is embedded)"),
         "got: {}",
         stderr
     );
@@ -182,11 +180,7 @@ fn hermetic_macos_output_links_only_libsystem() {
         .output()
         .expect("otool");
     let s = String::from_utf8_lossy(&deps.stdout);
-    let lines: Vec<&str> = s
-        .lines()
-        .skip(1)
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let lines: Vec<&str> = s.lines().skip(1).filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 1, "exactly one dependency: {}", s);
     assert!(
         lines[0].trim().contains("/usr/lib/libSystem.B.dylib"),
@@ -194,7 +188,6 @@ fn hermetic_macos_output_links_only_libsystem() {
         s
     );
 }
-
 
 #[cfg(feature = "in-process-lld")]
 #[test]
@@ -249,5 +242,9 @@ fn bundled_link_produces_running_host_binary() {
         .unwrap_or_else(std::env::temp_dir)
         .join(".cache")
         .join("cato");
-    assert!(cache.exists(), "bundled lld cache dir should exist: {}", cache.display());
+    assert!(
+        cache.exists(),
+        "bundled lld cache dir should exist: {}",
+        cache.display()
+    );
 }

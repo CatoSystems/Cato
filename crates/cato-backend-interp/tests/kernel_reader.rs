@@ -58,7 +58,10 @@ impl Paths {
     }
 
     fn run_kernel(&self, file: &std::path::Path) -> String {
-        let out = Command::new(&self.exe).arg(file).output().expect("kernel run");
+        let out = Command::new(&self.exe)
+            .arg(file)
+            .output()
+            .expect("kernel run");
         assert!(
             out.status.success(),
             "kernel reader failed on {}: {}",
@@ -194,7 +197,12 @@ fn kernel_reader_matches_the_seed_over_the_whole_corpus() {
             .unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
         let want = oracle(&src);
         let got = paths.run_kernel(&file);
-        assert_eq!(got, want, "kernel reader disagrees with the seed on {}", file.display());
+        assert_eq!(
+            got,
+            want,
+            "kernel reader disagrees with the seed on {}",
+            file.display()
+        );
     }
 }
 
@@ -205,7 +213,8 @@ fn kernel_reader_backend_parity_over_the_fixtures() {
         let native = paths.run_kernel(&file);
         let interp = paths.run_kernel_interp(&file);
         assert_eq!(
-            native, interp,
+            native,
+            interp,
             "backend parity mismatch on {}",
             file.display()
         );

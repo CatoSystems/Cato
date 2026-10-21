@@ -90,7 +90,11 @@ fn list(items: Vec<Expr>) -> Expr {
 }
 
 fn do_form(body: &[Expr]) -> Expr {
-    list(std::iter::once(sym("do")).chain(body.iter().cloned()).collect())
+    list(
+        std::iter::once(sym("do"))
+            .chain(body.iter().cloned())
+            .collect(),
+    )
 }
 
 fn expand_when(items: Vec<Expr>) -> Result<Expr, String> {
@@ -131,12 +135,7 @@ fn expand_cond(items: Vec<Expr>) -> Result<Expr, String> {
     };
     let mut result = default.unwrap_or(Expr::LitI64(0));
     for pair in pairs.rchunks(2) {
-        result = list(vec![
-            sym("if"),
-            pair[0].clone(),
-            pair[1].clone(),
-            result,
-        ]);
+        result = list(vec![sym("if"), pair[0].clone(), pair[1].clone(), result]);
     }
     Ok(result)
 }
@@ -175,12 +174,7 @@ fn expand_when_let(items: Vec<Expr>) -> Result<Expr, String> {
     Ok(list(vec![
         sym("let"),
         Expr::Vector(binding),
-        list(vec![
-            sym("if"),
-            x,
-            do_form(&items[2..]),
-            Expr::LitI64(0),
-        ]),
+        list(vec![sym("if"), x, do_form(&items[2..]), Expr::LitI64(0)]),
     ]))
 }
 

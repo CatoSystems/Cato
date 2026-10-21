@@ -69,7 +69,10 @@ impl Json {
                 }
             }
             Json::Str(s) => format!("\"{}\"", Self::esc(s)),
-            Json::Arr(v) => format!("[{}]", v.iter().map(|j| j.ser()).collect::<Vec<_>>().join(",")),
+            Json::Arr(v) => format!(
+                "[{}]",
+                v.iter().map(|j| j.ser()).collect::<Vec<_>>().join(",")
+            ),
             Json::Obj(pairs) => format!(
                 "{{{}}}",
                 pairs
@@ -236,7 +239,12 @@ fn publish_diagnostics(uri: &str, text: &str) {
     let backend = frontend.as_ref().ok().map(|p| {
         let p = p.clone();
         std::panic::catch_unwind(move || {
-            cato_llvm::LlvmBackend { fast: false, threads: 1, target: Default::default() }.emit(&p)
+            cato_llvm::LlvmBackend {
+                fast: false,
+                threads: 1,
+                target: Default::default(),
+            }
+            .emit(&p)
         })
     });
     let diags = match frontend {
@@ -305,7 +313,6 @@ fn mk_diag_from_msg(e: &str) -> Json {
     mk_diag(line, col, e.to_string())
 }
 
-
 pub fn run() {
     let mut docs: HashMap<String, Doc> = HashMap::new();
     let mut input = Vec::new();
@@ -314,9 +321,7 @@ pub fn run() {
     while pos < input.len() {
         // Header: Content-Length: N\r\n(\r\n)*
         let mut header_end = pos;
-        while header_end + 3 < input.len()
-            && &input[header_end..header_end + 4] != b"\r\n\r\n"
-        {
+        while header_end + 3 < input.len() && &input[header_end..header_end + 4] != b"\r\n\r\n" {
             header_end += 1;
         }
         if header_end + 4 > input.len() {
@@ -333,7 +338,9 @@ pub fn run() {
         let body = String::from_utf8_lossy(&input[body_start..body_end]).to_string();
         pos = body_end;
 
-        let Some(msg) = parse_json(&body) else { continue };
+        let Some(msg) = parse_json(&body) else {
+            continue;
+        };
         let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
         let id = msg.get("id").cloned().unwrap_or(Json::Null);
         let params = msg.get("params").cloned().unwrap_or(Json::Null);
@@ -354,9 +361,15 @@ pub fn run() {
             "exit" => return,
             "textDocument/didOpen" | "textDocument/didChange" => {
                 let td = params.get("textDocument");
-                let uri = td.and_then(|t| t.get("uri")).and_then(|u| u.as_str()).unwrap_or("");
+                let uri = td
+                    .and_then(|t| t.get("uri"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("");
                 let content = if method == "textDocument/didOpen" {
-                    params.get("textDocument").and_then(|t| t.get("text")).and_then(|t| t.as_str())
+                    params
+                        .get("textDocument")
+                        .and_then(|t| t.get("text"))
+                        .and_then(|t| t.as_str())
                 } else {
                     params
                         .get("contentChanges")
@@ -366,7 +379,12 @@ pub fn run() {
                         .and_then(|t| t.as_str())
                 };
                 if let Some(text) = content {
-                    docs.insert(uri.to_string(), Doc { text: text.to_string() });
+                    docs.insert(
+                        uri.to_string(),
+                        Doc {
+                            text: text.to_string(),
+                        },
+                    );
                     publish_diagnostics(uri, text);
                 }
             }
@@ -377,7 +395,10 @@ pub fn run() {
                     .and_then(|u| u.as_str())
                     .unwrap_or("");
                 let posj = params.get("position");
-                let line = posj.and_then(|p| p.get("line")).and_then(|l| l.as_num()).unwrap_or(0.0) as usize;
+                let line = posj
+                    .and_then(|p| p.get("line"))
+                    .and_then(|l| l.as_num())
+                    .unwrap_or(0.0) as usize;
                 let ch = posj
                     .and_then(|p| p.get("character"))
                     .and_then(|l| l.as_num())

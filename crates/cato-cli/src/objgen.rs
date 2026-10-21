@@ -8,7 +8,9 @@ fn take_message(msg: *mut c_char) -> String {
     if msg.is_null() {
         return "unknown LLVM error".to_string();
     }
-    let s = unsafe { CStr::from_ptr(msg) }.to_string_lossy().into_owned();
+    let s = unsafe { CStr::from_ptr(msg) }
+        .to_string_lossy()
+        .into_owned();
     unsafe { llvm_sys::core::LLVMDisposeMessage(msg) };
     s
 }
@@ -37,8 +39,8 @@ pub fn emit_object(ir: &str, llvm_triple: &str, opt_level: u8) -> Result<Vec<u8>
     };
 
     init_targets();
-    let triple = CString::new(llvm_triple)
-        .map_err(|_| format!("invalid target triple '{llvm_triple}'"))?;
+    let triple =
+        CString::new(llvm_triple).map_err(|_| format!("invalid target triple '{llvm_triple}'"))?;
     let opt = match opt_level {
         0 => LLVMCodeGenOptLevel::LLVMCodeGenLevelNone,
         1 => LLVMCodeGenOptLevel::LLVMCodeGenLevelLess,
@@ -96,7 +98,9 @@ pub fn emit_object(ir: &str, llvm_triple: &str, opt_level: u8) -> Result<Vec<u8>
         if machine.is_null() {
             llvm_sys::core::LLVMDisposeModule(module);
             llvm_sys::core::LLVMContextDispose(ctx);
-            return Err(format!("llvm: cannot create target machine for '{llvm_triple}'"));
+            return Err(format!(
+                "llvm: cannot create target machine for '{llvm_triple}'"
+            ));
         }
 
         let mut out_buf = ptr::null_mut();

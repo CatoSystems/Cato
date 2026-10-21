@@ -33,10 +33,11 @@ pub(crate) fn emit_conj(
     // Source header: live loads for growable bindings; static sources get
     // capacity == length (their data is read-only, forcing the copy path).
     // Only growable (heap) sources may be freed after the copy.
-    let self_update = c.recur_fast.as_deref() == Some(match v {
-        HExpr::Var(n) => n.as_str(),
-        _ => "",
-    });
+    let self_update = c.recur_fast.as_deref()
+        == Some(match v {
+            HExpr::Var(n) => n.as_str(),
+            _ => "",
+        });
     // Freeing stays tied to the planner's last-use verdict alone.
     let mut freeable = false;
     let may_update_in_place = in_place || self_update;
@@ -135,10 +136,8 @@ pub(crate) fn emit_conj(
         e => c.line(&mdl.elem_store(e, &xv, &tail)),
     }
     let slot_out = c.temp();
-    c.prelude.push(format!(
-        "  {} = alloca %VecI64, align 8",
-        slot_out
-    ));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot_out));
     let pf2 = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -183,7 +182,12 @@ pub(crate) fn emit_conj(
         dp
     } else {
         let nbytes = c.temp();
-        c.line(&format!("  {} = mul i64 {}, {}", nbytes, newcap, elem.bytes()));
+        c.line(&format!(
+            "  {} = mul i64 {}, {}",
+            nbytes,
+            newcap,
+            elem.bytes()
+        ));
         let np = emit_malloc(c, mdl, &nbytes);
         let cbytes = c.temp();
         c.line(&format!("  {} = mul i64 {}, {}", cbytes, len, elem.bytes()));
@@ -232,7 +236,6 @@ pub(crate) fn emit_conj(
     slot_out
 }
 
-
 /// Emit `(subvec v start end)`: a fresh heap copy of the clamped slice.
 /// Branchless: bounds are clamped with selects. Returns the growable slot.
 #[allow(clippy::too_many_arguments)]
@@ -261,7 +264,10 @@ pub(crate) fn emit_subvec(
     let e2 = c.temp();
     c.line(&format!("  {} = icmp ugt i64 {}, {}", e2, e1, len));
     let e3 = c.temp();
-    c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", e3, e2, len, e1));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 {}",
+        e3, e2, len, e1
+    ));
     let d = c.temp();
     c.line(&format!("  {} = sub i64 {}, {}", d, e3, s1));
     let neg = c.temp();
@@ -284,7 +290,8 @@ pub(crate) fn emit_subvec(
     ));
     // New growable header {np, n, n}.
     let slot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -365,7 +372,10 @@ pub(crate) fn emit_strcat(
             None => dst.clone(),
             Some(o) => {
                 let t = c.temp();
-                c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", t, dst, o));
+                c.line(&format!(
+                    "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+                    t, dst, o
+                ));
                 t
             }
         };
@@ -390,14 +400,16 @@ pub(crate) fn emit_strcat(
         None => dst.clone(),
         Some(o) => {
             let t = c.temp();
-            c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", t, dst, o));
+            c.line(&format!(
+                "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+                t, dst, o
+            ));
             t
         }
     };
     c.line(&format!("  store i8 0, ptr {}", end_at));
     dst
 }
-
 
 // ---------------------------------------------------------------------------
 // subs / split / join: heap string building.
@@ -422,7 +434,10 @@ pub(crate) fn emit_subs(
     let neg = c.temp();
     c.line(&format!("  {} = icmp slt i64 {}, 0", neg, diff));
     let len = c.temp();
-    c.line(&format!("  {} = select i1 {}, i64 0, i64 {}", len, neg, diff));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 0, i64 {}",
+        len, neg, diff
+    ));
     let one = c.temp();
     c.line(&format!("  {} = add i64 {}, 1", one, len));
     let np = emit_malloc(c, mdl, &one);
@@ -654,10 +669,7 @@ pub(crate) fn materialize_option(
     ));
     // Some is variant 0 in the prelude's declaration: tag = found ? 0 : 1.
     let tag = c.temp();
-    c.line(&format!(
-        "  {} = select i1 {}, i64 0, i64 1",
-        tag, found
-    ));
+    c.line(&format!("  {} = select i1 {}, i64 0, i64 1", tag, found));
     c.line(&format!("  store i64 {}, ptr {}, align 8", tag, tf));
     let pf = c.temp();
     c.line(&format!(

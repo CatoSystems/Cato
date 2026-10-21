@@ -31,7 +31,9 @@ pub fn read_span_trees(input: &str) -> Result<Vec<(Expr, SpanNode)>, ReadErr> {
 }
 
 pub fn read_all(input: &str) -> Result<Vec<Expr>, String> {
-    read_all_spanned(input).map(|(forms, _)| forms).map_err(|e| e.msg)
+    read_all_spanned(input)
+        .map(|(forms, _)| forms)
+        .map_err(|e| e.msg)
 }
 
 /// Read a program, returning the forms with the byte span of each top-level
@@ -46,7 +48,11 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
     let mut i = 0usize;
     let mut top = Vec::new();
     let mut spans: Vec<Span> = Vec::new();
-    let mut st = Trees { on: trees, stack: Vec::new(), top: Vec::new() };
+    let mut st = Trees {
+        on: trees,
+        stack: Vec::new(),
+        top: Vec::new(),
+    };
     let mut stack: Vec<Vec<Expr>> = Vec::new();
     let mut kind_stack: Vec<char> = Vec::new();
     let mut start_stack: Vec<usize> = Vec::new();
@@ -92,7 +98,15 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
                 let items = stack.pop().unwrap();
                 if is_set {
                     let node = Expr::SetLit(items);
-                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
+                    push_node(
+                        node,
+                        Span::new(open, i + 1),
+                        &mut stack,
+                        &mut top,
+                        &mut spans,
+                        &mut st,
+                        true,
+                    );
                     i += 1;
                     continue;
                 }
@@ -108,7 +122,15 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
                         .map(|p| (p[0].clone(), p[1].clone()))
                         .collect();
                     let node = Expr::MapLit(pairs);
-                    push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
+                    push_node(
+                        node,
+                        Span::new(open, i + 1),
+                        &mut stack,
+                        &mut top,
+                        &mut spans,
+                        &mut st,
+                        true,
+                    );
                     i += 1;
                     continue;
                 }
@@ -117,7 +139,15 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
                 } else {
                     Expr::Vector(items)
                 };
-                push_node(node, Span::new(open, i + 1), &mut stack, &mut top, &mut spans, &mut st, true);
+                push_node(
+                    node,
+                    Span::new(open, i + 1),
+                    &mut stack,
+                    &mut top,
+                    &mut spans,
+                    &mut st,
+                    true,
+                );
                 i += 1;
             }
             '"' => {
@@ -136,7 +166,15 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
                 let raw = &input[start..j];
                 let unescaped = unescape(raw);
                 let span = Span::new(open, j + 1);
-                push_node(Expr::LitStr(unescaped), span, &mut stack, &mut top, &mut spans, &mut st, false);
+                push_node(
+                    Expr::LitStr(unescaped),
+                    span,
+                    &mut stack,
+                    &mut top,
+                    &mut spans,
+                    &mut st,
+                    false,
+                );
                 i = j + 1;
             }
             _ => {
@@ -153,10 +191,7 @@ fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<Span
     }
     if !stack.is_empty() {
         let open = start_stack.first().copied().unwrap_or(0);
-        return Err(rerr(
-            "unclosed delimiter",
-            Span::new(open, open + 1),
-        ));
+        return Err(rerr("unclosed delimiter", Span::new(open, open + 1)));
     }
     Ok((top, spans, st.top))
 }
@@ -180,7 +215,11 @@ impl Trees {
         if !self.on {
             return;
         }
-        let kids = if collection { self.stack.pop().unwrap_or_default() } else { Vec::new() };
+        let kids = if collection {
+            self.stack.pop().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let node = SpanNode { span, kids };
         match self.stack.last_mut() {
             Some(par) => par.push(node),
@@ -234,7 +273,8 @@ fn unescape(raw: &str) -> String {
     out
 }
 
-fn parse_atom(tok: &str) -> Result<Expr, String> {    if let Ok(v) = tok.parse::<i64>() {
+fn parse_atom(tok: &str) -> Result<Expr, String> {
+    if let Ok(v) = tok.parse::<i64>() {
         return Ok(Expr::LitI64(v));
     }
     if tok == "true" {

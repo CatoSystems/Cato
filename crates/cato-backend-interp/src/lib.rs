@@ -99,11 +99,7 @@ type R<T> = Result<T, String>;
 impl<'p> Interpreter<'p> {
     pub fn new(program: &'p Program) -> Interpreter<'p> {
         Interpreter {
-            defns: program
-                .defns
-                .iter()
-                .map(|d| (d.name.clone(), d))
-                .collect(),
+            defns: program.defns.iter().map(|d| (d.name.clone(), d)).collect(),
             out: String::new(),
             recur_sink: None,
             program_args: Vec::new(),
@@ -127,11 +123,7 @@ impl<'p> Interpreter<'p> {
             .defns
             .get(name)
             .ok_or_else(|| format!("interp: no {} defn", name))?;
-        let args: Vec<Value> = defn
-            .params
-            .iter()
-            .map(|(_, t)| default_value(*t))
-            .collect();
+        let args: Vec<Value> = defn.params.iter().map(|(_, t)| default_value(*t)).collect();
         let v = self.call(name, &args)?;
         Ok((v, std::mem::take(&mut self.out)))
     }
@@ -217,8 +209,13 @@ impl<'p> Interpreter<'p> {
             }
             "cato-spawn" => {
                 if let Value::Vec(v) = &args[0] {
-                    let argv: Vec<String> =
-                        v.iter().map(|x| match x { Value::Str(s) => s.to_string(), _ => String::new() }).collect();
+                    let argv: Vec<String> = v
+                        .iter()
+                        .map(|x| match x {
+                            Value::Str(s) => s.to_string(),
+                            _ => String::new(),
+                        })
+                        .collect();
                     if argv.is_empty() {
                         return Ok(Value::Int(-1));
                     }
@@ -272,8 +269,12 @@ impl<'p> Interpreter<'p> {
                 if n == 0 && line.is_empty() {
                     return Ok(Value::Str(Rc::new(String::new())));
                 }
-                if line.ends_with('\n') { line.pop(); }
-                if line.ends_with('\r') { line.pop(); }
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                if line.ends_with('\r') {
+                    line.pop();
+                }
                 return Ok(Value::Str(Rc::new(line)));
             }
             "stdin-read-exact" => {
@@ -372,7 +373,11 @@ impl<'p> Interpreter<'p> {
                 let a = int_of(&args[0]);
                 let n = int_of(&args[1]);
                 let v = if n < 0 || n >= 64 {
-                    if a < 0 { -1 } else { 0 }
+                    if a < 0 {
+                        -1
+                    } else {
+                        0
+                    }
                 } else {
                     a >> n
                 };
@@ -450,16 +455,13 @@ impl<'p> Interpreter<'p> {
             HExpr::ConstB(v) => Value::Bool(*v),
             HExpr::ConstF64(v) => Value::F64(*v),
             HExpr::StrLit(s) => Value::Str(Rc::new(s.clone())),
-            HExpr::Var(v) => env
-                .get(v)
-                .cloned()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "interp: unbound var {} (fn {})",
-                        v,
-                        INTERP_FN.with(|f| f.borrow().clone())
-                    )
-                }),
+            HExpr::Var(v) => env.get(v).cloned().unwrap_or_else(|| {
+                panic!(
+                    "interp: unbound var {} (fn {})",
+                    v,
+                    INTERP_FN.with(|f| f.borrow().clone())
+                )
+            }),
             HExpr::BinF(op, a, b) => {
                 let x = f32_of(&self.eval(a, env)?);
                 let y = f32_of(&self.eval(b, env)?);
@@ -538,23 +540,23 @@ impl<'p> Interpreter<'p> {
                     let (x, y) = (f64_of(&self.eval(a, env)?), f64_of(&self.eval(b, env)?));
                     Value::Bool(apply_fcmp(*op, x, y))
                 } else {
-                let (x, y) = (int_of(&self.eval(a, env)?), int_of(&self.eval(b, env)?));
-                if ty.is_uint() {
-                    // Top-bit values must order like the backend's `ult`
-                    // family: compare the bit patterns as unsigned.
-                    let (xu, yu) = (x as u64, y as u64);
-                    Value::Bool(match op {
-                        cato_core::hir::CmpOp::Eq => xu == yu,
-                        cato_core::hir::CmpOp::Ne => xu != yu,
-                        cato_core::hir::CmpOp::Lt => xu < yu,
-                        cato_core::hir::CmpOp::Gt => xu > yu,
-                        cato_core::hir::CmpOp::Le => xu <= yu,
-                        cato_core::hir::CmpOp::Ge => xu >= yu,
-                    })
-                } else {
-                    // Values are already width-normalized; plain i64 compare.
-                    Value::Bool(apply_icmp(*op, x, y))
-                }
+                    let (x, y) = (int_of(&self.eval(a, env)?), int_of(&self.eval(b, env)?));
+                    if ty.is_uint() {
+                        // Top-bit values must order like the backend's `ult`
+                        // family: compare the bit patterns as unsigned.
+                        let (xu, yu) = (x as u64, y as u64);
+                        Value::Bool(match op {
+                            cato_core::hir::CmpOp::Eq => xu == yu,
+                            cato_core::hir::CmpOp::Ne => xu != yu,
+                            cato_core::hir::CmpOp::Lt => xu < yu,
+                            cato_core::hir::CmpOp::Gt => xu > yu,
+                            cato_core::hir::CmpOp::Le => xu <= yu,
+                            cato_core::hir::CmpOp::Ge => xu >= yu,
+                        })
+                    } else {
+                        // Values are already width-normalized; plain i64 compare.
+                        Value::Bool(apply_icmp(*op, x, y))
+                    }
                 }
             }
             HExpr::And(a, b) => {
@@ -635,7 +637,10 @@ impl<'p> Interpreter<'p> {
                 Value::Vec(Rc::new(vs.iter().map(|v| Value::F32(*v as f32)).collect()))
             }
             HExpr::SetLit(vs) => {
-                let mut items: Vec<i64> = vs.iter().map(|v| int_of(&self.eval(v, env).ok().unwrap_or(Value::Int(0)))).collect();
+                let mut items: Vec<i64> = vs
+                    .iter()
+                    .map(|v| int_of(&self.eval(v, env).ok().unwrap_or(Value::Int(0))))
+                    .collect();
                 items.sort_unstable();
                 items.dedup();
                 Value::Set(Rc::new(items))
@@ -667,15 +672,18 @@ impl<'p> Interpreter<'p> {
                     panic!("interp: assoc on non-map")
                 }
             }
-            HExpr::MapGet { src, key, default, res } => {
+            HExpr::MapGet {
+                src,
+                key,
+                default,
+                res,
+            } => {
                 let mv = self.eval(src, env)?;
                 let kv = int_of(&self.eval(key, env)?);
                 if let Some(opt_ty) = res {
                     // Two-argument form: (Option i64), Some on a hit.
                     let found = match &mv {
-                        Value::Map(entries) => {
-                            entries.iter().any(|(ek, _)| *ek == kv)
-                        }
+                        Value::Map(entries) => entries.iter().any(|(ek, _)| *ek == kv),
                         o => panic!("interp: map get on non-map {:?}", o),
                     };
                     let v = if found {
@@ -967,7 +975,13 @@ impl<'p> Interpreter<'p> {
                 let _ = out.flush();
                 std::process::exit(code as i32);
             }
-            HExpr::Get { src, idx, default, ty, res } => {
+            HExpr::Get {
+                src,
+                idx,
+                default,
+                ty,
+                res,
+            } => {
                 let _ = ty;
                 let sv = self.eval(src, env)?;
                 let iv = int_of(&self.eval(idx, env)?);
@@ -976,7 +990,11 @@ impl<'p> Interpreter<'p> {
                         let found = iv >= 0 && (iv as usize) < xs.len();
                         match res {
                             Some(_) => {
-                                let v = if found { xs[iv as usize].clone() } else { Value::Int(0) };
+                                let v = if found {
+                                    xs[iv as usize].clone()
+                                } else {
+                                    Value::Int(0)
+                                };
                                 some_none(found, int_of(&v))
                             }
                             None => {
@@ -1046,7 +1064,11 @@ impl<'p> Interpreter<'p> {
                 let sv = self.eval(scrut, env)?;
                 let (variant, fields) = match &sv {
                     Value::Adt { variant, fields } => (*variant, fields.clone()),
-                    o => panic!("interp: match on {:?} (fn {})", o, INTERP_FN.with(|f| f.borrow().clone())),
+                    o => panic!(
+                        "interp: match on {:?} (fn {})",
+                        o,
+                        INTERP_FN.with(|f| f.borrow().clone())
+                    ),
                 };
                 for arm in arms {
                     if arm.variant == Some(variant) || arm.variant.is_none() {
@@ -1057,7 +1079,10 @@ impl<'p> Interpreter<'p> {
                         return self.eval(&arm.body, &mut child);
                     }
                 }
-                return Err(format!("interp: match fell through (fn {})", INTERP_FN.with(|f| f.borrow().clone())));
+                return Err(format!(
+                    "interp: match fell through (fn {})",
+                    INTERP_FN.with(|f| f.borrow().clone())
+                ));
             }
             HExpr::If(c, t, f, _) => {
                 if bool_of(&self.eval(c, env)?) {
@@ -1066,7 +1091,12 @@ impl<'p> Interpreter<'p> {
                     self.eval(f, env)?
                 }
             }
-            HExpr::Closure { params, captures, body, .. } => {
+            HExpr::Closure {
+                params,
+                captures,
+                body,
+                ..
+            } => {
                 let caps = captures
                     .iter()
                     .map(|(n, _)| {
@@ -1086,7 +1116,11 @@ impl<'p> Interpreter<'p> {
             HExpr::ClosureCall { f, args, .. } => {
                 let fv = self.eval(f, env)?;
                 let (params, caps, body) = match fv {
-                    Value::Closure { params, captures, body } => (params, captures, body),
+                    Value::Closure {
+                        params,
+                        captures,
+                        body,
+                    } => (params, captures, body),
                     o => panic!("interp: calling non-closure {:?}", o),
                 };
                 let mut child = env.clone();
@@ -1136,11 +1170,30 @@ impl<'p> Interpreter<'p> {
         env: &mut HashMap<String, Value>,
     ) -> R<Value> {
         use cato_core::hir::{BinOp, HReduce};
-        let (init, src, maps, filters, closure): (_, _, _, _, Option<(&String, &String, &cato_core::hir::HExpr)>) = match r {
-            HReduce::Pipeline { init, src, maps, filters, .. } => (init, src, maps, filters, None),
-            HReduce::Closure { init, src, maps, filters, acc, el, body, .. } => {
-                (init, src, maps, filters, Some((acc, el, body)))
-            }
+        let (init, src, maps, filters, closure): (
+            _,
+            _,
+            _,
+            _,
+            Option<(&String, &String, &cato_core::hir::HExpr)>,
+        ) = match r {
+            HReduce::Pipeline {
+                init,
+                src,
+                maps,
+                filters,
+                ..
+            } => (init, src, maps, filters, None),
+            HReduce::Closure {
+                init,
+                src,
+                maps,
+                filters,
+                acc,
+                el,
+                body,
+                ..
+            } => (init, src, maps, filters, Some((acc, el, body))),
         };
         let mut acc = self.eval(init, env)?;
         let items = self.source_items(src, env)?;
@@ -1188,8 +1241,9 @@ impl<'p> Interpreter<'p> {
                         acc = Value::F64(apply_fbin(combine, f64_of(&acc), f64_of(&cur)));
                     } else {
                         let (x, y) = (int_of(&acc), int_of(&cur));
-                        let v = cato_core::hir::eval_int_binop(combine, x, y, cato_core::hir::Ty::I64)
-                            .unwrap_or_else(|| panic!("interp: integer {:?} by zero", combine));
+                        let v =
+                            cato_core::hir::eval_int_binop(combine, x, y, cato_core::hir::Ty::I64)
+                                .unwrap_or_else(|| panic!("interp: integer {:?} by zero", combine));
                         acc = Value::Int(v);
                     };
                 }
@@ -1218,22 +1272,18 @@ impl<'p> Interpreter<'p> {
                 }
             }
             HSource::Lit(vlit) => match vlit {
-                cato_core::hir::VLit::I64(vs) => vs
-                    .iter()
-                    .map(|v| (Value::Int(*v), None))
-                    .collect(),
-                cato_core::hir::VLit::N(_, vs) => vs
-                    .iter()
-                    .map(|v| (Value::Int(*v), None))
-                    .collect(),
-                cato_core::hir::VLit::F32(vs) => vs
-                    .iter()
-                    .map(|v| (Value::F32(*v as f32), None))
-                    .collect(),
-                cato_core::hir::VLit::F64(vs) => vs
-                    .iter()
-                    .map(|v| (Value::F64(*v), None))
-                    .collect(),
+                cato_core::hir::VLit::I64(vs) => {
+                    vs.iter().map(|v| (Value::Int(*v), None)).collect()
+                }
+                cato_core::hir::VLit::N(_, vs) => {
+                    vs.iter().map(|v| (Value::Int(*v), None)).collect()
+                }
+                cato_core::hir::VLit::F32(vs) => {
+                    vs.iter().map(|v| (Value::F32(*v as f32), None)).collect()
+                }
+                cato_core::hir::VLit::F64(vs) => {
+                    vs.iter().map(|v| (Value::F64(*v), None)).collect()
+                }
             },
             HSource::Range(a, b) => {
                 let x = int_of(&self.eval(a, env)?);
@@ -1282,7 +1332,11 @@ fn int_of(v: &Value) -> i64 {
     match v {
         Value::Int(i) => *i,
         Value::Bool(b) => *b as i64,
-        o => panic!("interp: expected int, got {:?} (fn {})", o, INTERP_FN.with(|f| f.borrow().clone())),
+        o => panic!(
+            "interp: expected int, got {:?} (fn {})",
+            o,
+            INTERP_FN.with(|f| f.borrow().clone())
+        ),
     }
 }
 
@@ -1326,7 +1380,10 @@ fn apply_fbin(op: cato_core::hir::BinOp, x: f64, y: f64) -> f64 {
         cato_core::hir::BinOp::Mul => x * y,
         cato_core::hir::BinOp::Div => x / y,
         cato_core::hir::BinOp::Rem => x % y,
-        o => unreachable!("integer-only operator {:?} on floats (lowering rejects it)", o),
+        o => unreachable!(
+            "integer-only operator {:?} on floats (lowering rejects it)",
+            o
+        ),
     }
 }
 
@@ -1337,7 +1394,10 @@ fn apply_f32bin(op: cato_core::hir::BinOp, x: f32, y: f32) -> f32 {
         cato_core::hir::BinOp::Mul => x * y,
         cato_core::hir::BinOp::Div => x / y,
         cato_core::hir::BinOp::Rem => x % y,
-        o => unreachable!("integer-only operator {:?} on floats (lowering rejects it)", o),
+        o => unreachable!(
+            "integer-only operator {:?} on floats (lowering rejects it)",
+            o
+        ),
     }
 }
 
@@ -1403,7 +1463,6 @@ pub struct InterpBackend {
     /// Arguments visible to `(args)` (everything after the source file).
     pub program_args: Vec<String>,
 }
-
 
 impl Backend for InterpBackend {
     fn name(&self) -> &'static str {

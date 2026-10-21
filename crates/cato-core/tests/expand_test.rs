@@ -22,7 +22,11 @@ fn pp(e: &Expr) -> String {
         }
         Expr::List(items) | Expr::Vector(items) => {
             let inner: Vec<String> = items.iter().map(pp).collect();
-            let (o, c) = if matches!(e, Expr::List(_)) { ("(", ")") } else { ("[", "]") };
+            let (o, c) = if matches!(e, Expr::List(_)) {
+                ("(", ")")
+            } else {
+                ("[", "]")
+            };
             format!("{}{}{}", o, inner.join(" "), c)
         }
     }
@@ -132,10 +136,7 @@ fn expands_if_let_around_condition_value() {
 #[test]
 fn expands_doseq_to_reduce() {
     let e = expand_one("(doseq [x xs] (print-i64 x))");
-    assert_eq!(
-        pp(&e),
-        "(reduce (fn [_acc x] (do (print-i64 x) 0)) 0 xs)"
-    );
+    assert_eq!(pp(&e), "(reduce (fn [_acc x] (do (print-i64 x) 0)) 0 xs)");
 }
 
 #[test]
@@ -156,10 +157,9 @@ fn expands_macros_inside_binding_vectors() {
 
 #[test]
 fn expands_macros_inside_deftype_variants_are_untouched() {
-    let out = expand_all(&read_all(
-        "(deftype S (Mk [x :- i64]))\n(defn f [x :- i64] (when (> x 1) 1))",
+    let out = expand_all(
+        &read_all("(deftype S (Mk [x :- i64]))\n(defn f [x :- i64] (when (> x 1) 1))").unwrap(),
     )
-    .unwrap())
     .unwrap();
     assert_eq!(out.len(), 2);
     assert_eq!(pp(&out[0]), "(deftype S (Mk [x :- i64]))");

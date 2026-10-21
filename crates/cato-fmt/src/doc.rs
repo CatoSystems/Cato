@@ -98,7 +98,11 @@ impl Out {
 /// never emitted (indent is lazy); a trailing newline from a final break
 /// is dropped — the policy layer owns the final newline.
 pub fn print(doc: &Doc, width: usize) -> String {
-    let mut out = Out { buf: String::new(), col: 0, pending: 0 };
+    let mut out = Out {
+        buf: String::new(),
+        col: 0,
+        pending: 0,
+    };
     render(doc, width, 0, false, &mut out);
     out.buf.trim_end().to_string()
 }

@@ -196,8 +196,15 @@ fn devirtualizes_dispatch_on_fresh_constructors() {
 
     let unopt_calls = calls_in(main_body(&unopt));
     let opt_calls = calls_in(main_body(&opt));
-    let dispatch: Vec<&String> = unopt_calls.iter().filter(|c| c.starts_with("area__Shape")).collect();
-    assert_eq!(dispatch.len(), 1, "unoptimized main goes through the dispatcher");
+    let dispatch: Vec<&String> = unopt_calls
+        .iter()
+        .filter(|c| c.starts_with("area__Shape"))
+        .collect();
+    assert_eq!(
+        dispatch.len(),
+        1,
+        "unoptimized main goes through the dispatcher"
+    );
     let disp_name = dispatch[0].clone();
 
     assert!(
@@ -242,7 +249,11 @@ fn elides_clone_of_dead_binding() {
     (print (get w 0 0))))
 "#;
     let p = compile_opt(src, true);
-    assert_eq!(clones_in(main_body(&p)), 0, "clone of a dead binding should be elided");
+    assert_eq!(
+        clones_in(main_body(&p)),
+        0,
+        "clone of a dead binding should be elided"
+    );
 }
 
 #[test]
@@ -255,7 +266,11 @@ fn keeps_clone_of_live_binding() {
     (do (print (get w 0 0)) (print (get v 1 0)))))
 "#;
     let p = compile_opt(src, true);
-    assert_eq!(clones_in(main_body(&p)), 1, "clone of a live binding must stay");
+    assert_eq!(
+        clones_in(main_body(&p)),
+        1,
+        "clone of a live binding must stay"
+    );
 }
 
 // ---------------------------------------------------------------------------

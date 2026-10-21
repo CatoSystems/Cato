@@ -31,7 +31,12 @@ fn tree_text_is_lossless() {
     for path in fixtures() {
         let src = std::fs::read_to_string(&path).expect("read");
         let tops = parse(&src).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
-        assert_eq!(flatten(&tops), src, "lossless failed for {}", path.display());
+        assert_eq!(
+            flatten(&tops),
+            src,
+            "lossless failed for {}",
+            path.display()
+        );
     }
 }
 
@@ -66,7 +71,10 @@ fn comment_inside_list_trailing_close() {
         .expect("comment kid");
     // Everything after the comment must be trivia (the newline).
     for e in &list.kids[comment_idx + 1..] {
-        assert!(matches!(e, Elem::Trivia(_)), "only trivia after comment: {e:?}");
+        assert!(
+            matches!(e, Elem::Trivia(_)),
+            "only trivia after comment: {e:?}"
+        );
     }
     assert!(list.close.is_some());
 }
@@ -80,8 +88,11 @@ fn mismatched_delimiter_is_error() {
 #[test]
 fn stray_close_is_error() {
     let err = parse(")").expect_err("must error");
-    assert!(err.msg.contains("unbalanced delimiter") || err.msg.contains("stray"),
-        "msg: {}", err.msg);
+    assert!(
+        err.msg.contains("unbalanced delimiter") || err.msg.contains("stray"),
+        "msg: {}",
+        err.msg
+    );
 }
 
 #[test]
@@ -95,7 +106,8 @@ fn map_with_odd_elements_is_error() {
     let err = parse("{1 2 3}").expect_err("must error");
     assert!(
         err.msg.contains("map literal must have key/value pairs"),
-        "msg: {}", err.msg
+        "msg: {}",
+        err.msg
     );
 }
 

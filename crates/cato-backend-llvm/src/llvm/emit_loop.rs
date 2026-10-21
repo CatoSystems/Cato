@@ -1,6 +1,10 @@
 use super::*;
 
-pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+pub(crate) fn emit_loop(
+    spec: &LoopSpec,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
     let mut c = FnCtx::new();
     let mut adt_caps: Vec<(String, u32)> = Vec::new();
     for (n, t) in &spec.caps {
@@ -10,7 +14,11 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
             c.scalar.insert(n.clone(), (format!("%{}", mangle(n)), *t));
         }
     }
-    let acc_ll = if spec.acc_ty == Ty::F64 { "double" } else { "i64" };
+    let acc_ll = if spec.acc_ty == Ty::F64 {
+        "double"
+    } else {
+        "i64"
+    };
     let init_val = loop_init(&spec.reduce);
     let init_lit = if spec.acc_ty == Ty::F64 {
         llvm_f64(init_val)
@@ -195,7 +203,13 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     pidx
                 ));
                 let xa = c.temp();
-                c.line(&format!("  {} = load {}, ptr {}, align {}", xa, ll(ea), pa, ea.bytes()));
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align {}",
+                    xa,
+                    ll(ea),
+                    pa,
+                    ea.bytes()
+                ));
                 let pb = c.temp();
                 c.line(&format!(
                     "  {} = getelementptr inbounds {}, ptr %dataB, i64 {}",
@@ -204,12 +218,14 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     pidx
                 ));
                 let xb = c.temp();
-                c.line(&format!("  {} = load {}, ptr {}, align {}", xb, ll(eb), pb, eb.bytes()));
-                (
-                    xa,
-                    elem_ty_of(ea),
-                    Some((xb, elem_ty_of(eb))),
-                )
+                c.line(&format!(
+                    "  {} = load {}, ptr {}, align {}",
+                    xb,
+                    ll(eb),
+                    pb,
+                    eb.bytes()
+                ));
+                (xa, elem_ty_of(ea), Some((xb, elem_ty_of(eb))))
             }
             HSource::Range(..) => {
                 let x = c.temp();
@@ -348,8 +364,7 @@ pub(crate) fn emit_loop(spec: &LoopSpec, mdl: &mut Mdl, sigs: &HashMap<String, (
                     // Elements narrower than the accumulator widen first.
                     let val = widen_to_acc(&val, val_ty, spec.acc_ty, &mut c);
                     let t = c.temp();
-                    let combined =
-                        combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
+                    let combined = combine_step(*combine, &val, "%acc", spec.acc_ty, &mut c);
                     c.line(&format!("  {} = {}", t, combined));
                     t
                 }
@@ -430,7 +445,11 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
         BinOp::Div => ("fdiv", "sdiv"),
         o => panic!("codegen: reduce combines with + - * / only, got {:?}", o),
     };
-    let (op, sigil) = if ty == Ty::F64 { (fop, "double") } else { (iop, "i64") };
+    let (op, sigil) = if ty == Ty::F64 {
+        (fop, "double")
+    } else {
+        (iop, "i64")
+    };
     format!("{} {} {}, {}", op, sigil, acc, val)
 }
 
@@ -455,7 +474,11 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
 pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     let t = mdl.threads.max(1);
     let h = &spec.helper;
-    let acc_ll = if spec.acc_ty == Ty::F64 { "double" } else { "i64" };
+    let acc_ll = if spec.acc_ty == Ty::F64 {
+        "double"
+    } else {
+        "i64"
+    };
     let identity = if spec.acc_ty == Ty::F64 {
         llvm_f64(loop_init(&spec.reduce))
     } else {
@@ -536,10 +559,7 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     let count = c.temp();
     c.line(&format!("  {} = sub i64 {}, {}", count, end, start));
     let r = c.temp();
-    let mut call_args = vec![
-        format!("ptr {}", data),
-        format!("i64 {}", count),
-    ];
+    let mut call_args = vec![format!("ptr {}", data), format!("i64 {}", count)];
     call_args.extend(cap_regs.iter().map(|(r, l)| format!("{} {}", l, r)));
     c.line(&format!(
         "  {} = call {} @{}({})",
@@ -585,7 +605,12 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     }
     for i in 0..t {
         let base = c.temp();
-        c.line(&format!("  {} = getelementptr inbounds i8, ptr {}, i64 {}", base, blob, (i * stride) as i64));
+        c.line(&format!(
+            "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
+            base,
+            blob,
+            (i * stride) as i64
+        ));
         let s0 = c.temp();
         c.line(&format!("  {} = mul i64 {}, {}", s0, chunk, i));
         // The chunk fn reads data[0..count]: hand each worker a pointer
@@ -599,34 +624,54 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
             s0
         ));
         let f0 = c.temp();
-        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 0", f0, base));
+        c.line(&format!(
+            "  {} = getelementptr inbounds i64, ptr {}, i64 0",
+            f0, base
+        ));
         c.line(&format!("  store ptr {}, ptr {}, align 8", sliced, f0));
         let f1 = c.temp();
-        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 1", f1, base));
+        c.line(&format!(
+            "  {} = getelementptr inbounds i64, ptr {}, i64 1",
+            f1, base
+        ));
         c.line(&format!("  store i64 {}, ptr {}, align 8", s0, f1));
         let e0 = c.temp();
         c.line(&format!("  {} = add i64 {}, {}", e0, s0, chunk));
         let over = c.temp();
         c.line(&format!("  {} = icmp ugt i64 {}, %len", over, e0));
         let e1 = c.temp();
-        c.line(&format!("  {} = select i1 {}, i64 %len, i64 {}", e1, over, e0));
+        c.line(&format!(
+            "  {} = select i1 {}, i64 %len, i64 {}",
+            e1, over, e0
+        ));
         // Chunk starts past the end must clamp up to start: end < start
         // would make the worker's count negative.
         let under = c.temp();
         c.line(&format!("  {} = icmp ult i64 {}, {}", under, e1, s0));
         let e2 = c.temp();
-        c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", e2, under, s0, e1));
+        c.line(&format!(
+            "  {} = select i1 {}, i64 {}, i64 {}",
+            e2, under, s0, e1
+        ));
         let f2 = c.temp();
-        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 2", f2, base));
+        c.line(&format!(
+            "  {} = getelementptr inbounds i64, ptr {}, i64 2",
+            f2, base
+        ));
         c.line(&format!("  store i64 {}, ptr {}, align 8", e2, f2));
         // result slot points into the record's tail
         let sp = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
-            sp, base, (32 + 8 * ncaps) as i64
+            sp,
+            base,
+            (32 + 8 * ncaps) as i64
         ));
         let f3 = c.temp();
-        c.line(&format!("  {} = getelementptr inbounds i64, ptr {}, i64 3", f3, base));
+        c.line(&format!(
+            "  {} = getelementptr inbounds i64, ptr {}, i64 3",
+            f3, base
+        ));
         c.line(&format!("  store ptr {}, ptr {}, align 8", sp, f3));
         for (k, (n, _ty)) in spec.caps.iter().enumerate() {
             let cf = c.temp();
@@ -647,10 +692,7 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
         let treg = c.temp();
         c.line(&format!(
             "  {} = call i32 @pthread_create(ptr {}, ptr null, ptr @{}_tramp, ptr {})",
-            treg,
-            hn,
-            h,
-            base
+            treg, hn, h, base
         ));
     }
     for i in 0..t {
@@ -667,7 +709,10 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     // Combine partials.
     let mut acc = c.temp();
     if spec.acc_ty == Ty::F64 {
-        c.line(&format!("  {} = fadd double {}, 0.000000e+00", acc, identity));
+        c.line(&format!(
+            "  {} = fadd double {}, 0.000000e+00",
+            acc, identity
+        ));
     } else {
         c.line(&format!("  {} = add i64 {}, 0", acc, identity));
     }
@@ -675,7 +720,9 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
         let sp = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
-            sp, blob, ((i * stride) + 32 + 8 * ncaps) as i64
+            sp,
+            blob,
+            ((i * stride) + 32 + 8 * ncaps) as i64
         ));
         let pv = c.temp();
         c.line(&format!("  {} = load {}, ptr {}, align 8", pv, acc_ll, sp));
@@ -710,7 +757,10 @@ pub(crate) fn widen_to_acc(v: &str, from: Ty, acc: Ty, c: &mut FnCtx) -> String 
         // u64 and usize are already a 64-bit word: same bits.
         (Ty::U64 | Ty::Usize, Ty::I64) => return v.to_string(),
         (f, Ty::I64) if f.is_int() => (if f.is_uint() { "zext" } else { "sext" }, "i64"),
-        (f, a) => panic!("codegen: cannot widen a {:?} element to a {:?} accumulator", f, a),
+        (f, a) => panic!(
+            "codegen: cannot widen a {:?} element to a {:?} accumulator",
+            f, a
+        ),
     };
     let t = c.temp();
     c.line(&format!("  {} = {} {} {} to {}", t, op, src, v, dst));

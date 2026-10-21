@@ -8,7 +8,12 @@ pub(crate) fn coerce_f64(e: HExpr, cur: Ty, want: bool) -> HExpr {
     }
 }
 
-pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
+pub(crate) fn promote_pair(
+    a: HExpr,
+    b: HExpr,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<(HExpr, HExpr), String> {
     let (a, b) = fit_operands(a, b, env, ctx)?;
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
@@ -24,11 +29,21 @@ pub(crate) fn promote_pair(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(
         "cannot mix {:?} and {:?} in arithmetic — cast explicitly with ({}) e",
         at,
         bt,
-        if at.is_float() || bt.is_float() { "f64" } else { "i64" }
+        if at.is_float() || bt.is_float() {
+            "f64"
+        } else {
+            "i64"
+        }
     ))
 }
 
-pub(crate) fn promote_bin(op: BinOp, a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+pub(crate) fn promote_bin(
+    op: BinOp,
+    a: HExpr,
+    b: HExpr,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<HExpr, String> {
     let (a, b) = promote_pair(a, b, env, ctx)?;
     let t = ty_of(&a, env, ctx);
     if t == Ty::F32 {
@@ -54,7 +69,10 @@ fn check_acc_ty(t: Ty) -> Result<(), String> {
     if matches!(t, Ty::I64 | Ty::F64) {
         Ok(())
     } else {
-        Err(format!("reduce accumulator must be i64 or f64, got {:?}", t))
+        Err(format!(
+            "reduce accumulator must be i64 or f64, got {:?}",
+            t
+        ))
     }
 }
 
@@ -237,26 +255,32 @@ pub(crate) fn pipeline_src(
             }
             let a = vec_source_arg(&items[1], env, ctx)?;
             let b = vec_source_arg(&items[2], env, ctx)?;
-            Ok((HSource::Zip(Box::new(a), Box::new(b)), Vec::new(), Vec::new()))
+            Ok((
+                HSource::Zip(Box::new(a), Box::new(b)),
+                Vec::new(),
+                Vec::new(),
+            ))
         }
-        "range" => {
-            match items.len() {
-                2 => {
-                    let end = lower(&items[1], env, ctx)?;
-                    Ok((
-                        HSource::Range(Box::new(HExpr::ConstI64(0)), Box::new(end)),
-                        Vec::new(),
-                        Vec::new(),
-                    ))
-                }
-                3 => {
-                    let a = lower(&items[1], env, ctx)?;
-                    let b = lower(&items[2], env, ctx)?;
-                    Ok((HSource::Range(Box::new(a), Box::new(b)), Vec::new(), Vec::new()))
-                }
-                n => Err(format!("range expects 1 or 2 arguments, got {}", n - 1)),
+        "range" => match items.len() {
+            2 => {
+                let end = lower(&items[1], env, ctx)?;
+                Ok((
+                    HSource::Range(Box::new(HExpr::ConstI64(0)), Box::new(end)),
+                    Vec::new(),
+                    Vec::new(),
+                ))
             }
-        }
+            3 => {
+                let a = lower(&items[1], env, ctx)?;
+                let b = lower(&items[2], env, ctx)?;
+                Ok((
+                    HSource::Range(Box::new(a), Box::new(b)),
+                    Vec::new(),
+                    Vec::new(),
+                ))
+            }
+            n => Err(format!("range expects 1 or 2 arguments, got {}", n - 1)),
+        },
         _ => Ok((expr_to_source(src, env, ctx)?, Vec::new(), Vec::new())),
     }
 }
@@ -282,7 +306,9 @@ pub(crate) fn expr_to_source(src: &Expr, env: &Env, ctx: &Ctx) -> Result<HSource
         }
         Expr::List(items)
             if matches!(items.first(), Some(Expr::LitSym(h)) if h == "vec-f64")
-                && items[1..].iter().all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) =>
+                && items[1..]
+                    .iter()
+                    .all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) =>
         {
             Ok(HSource::Lit(VLit::F64(vec_lit_f64(&items[1..]))))
         }
@@ -325,4 +351,3 @@ pub(crate) fn vec_source_arg(src: &Expr, env: &Env, _ctx: &Ctx) -> Result<HSourc
         _ => Err("zip arguments must be vector variables".into()),
     }
 }
-

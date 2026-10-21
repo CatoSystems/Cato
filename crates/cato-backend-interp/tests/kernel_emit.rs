@@ -27,7 +27,10 @@ fn setup() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
         .arg(&entry)
         .status()
         .expect("cato compile");
-    assert!(status.success(), "seed failed to compile the kernel emit driver");
+    assert!(
+        status.success(),
+        "seed failed to compile the kernel emit driver"
+    );
 
     (root, entry, cato)
 }
@@ -92,8 +95,10 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         if has_main {
             cc.arg(&ll).arg(&rt).arg("-o").arg(&exe);
         } else {
-            cc.arg("-c").arg(&ll).arg("-o")
-              .arg(root.join(format!("target/kernel_emit_{}.o", name)));
+            cc.arg("-c")
+                .arg(&ll)
+                .arg("-o")
+                .arg(root.join(format!("target/kernel_emit_{}.o", name)));
         }
         let cc = cc.output().expect("clang spawn");
         assert!(
@@ -138,5 +143,9 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
         }
         ran += 1;
     }
-    assert!(ran > 5, "the emit differential covered only {} fixtures", ran);
+    assert!(
+        ran > 5,
+        "the emit differential covered only {} fixtures",
+        ran
+    );
 }

@@ -4,18 +4,18 @@
 mod cli;
 mod driver;
 mod fmt;
+#[cfg(feature = "static-llvm")]
+mod hermetic;
 mod lsp;
 mod native;
 #[cfg(feature = "static-llvm")]
 mod objgen;
-#[cfg(feature = "static-llvm")]
-mod hermetic;
 mod repl;
 mod ui;
 
-use cli::Cli;
 use cato_core::Backend;
 use cato_llvm::LlvmBackend;
+use cli::Cli;
 use std::time::Instant;
 
 fn main() {
@@ -50,11 +50,10 @@ fn main() {
         eprintln!("{} cannot read {}: {}", ui::error_lead(), cli.file, e);
         std::process::exit(1);
     });
-    let program = cato_core::compile_named_with(&cli.file, &src, !cli.no_opt)
-        .unwrap_or_else(|e| {
-            eprintln!("{} {}", ui::error_lead(), e);
-            std::process::exit(1);
-        });
+    let program = cato_core::compile_named_with(&cli.file, &src, !cli.no_opt).unwrap_or_else(|e| {
+        eprintln!("{} {}", ui::error_lead(), e);
+        std::process::exit(1);
+    });
     if cli.dump_hir {
         eprintln!("{:#?}", program);
     }

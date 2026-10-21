@@ -44,7 +44,12 @@ fn builds_reduce_closure() {
     match body {
         HExpr::Reduce(r) => match *r {
             HReduce::Closure {
-                init, src, acc, el, body, ..
+                init,
+                src,
+                acc,
+                el,
+                body,
+                ..
             } => {
                 assert_eq!(init, HExpr::ConstF64(0.0));
                 assert_eq!(acc, "acc".to_string());
@@ -68,7 +73,12 @@ fn builds_pipeline_reduce_from_chain() {
     match body {
         HExpr::Reduce(r) => match *r {
             HReduce::Pipeline {
-                combine, init, maps, filters, src, ..
+                combine,
+                init,
+                maps,
+                filters,
+                src,
+                ..
             } => {
                 assert_eq!(combine, BinOp::Add);
                 assert_eq!(init, HExpr::ConstI64(0));
@@ -127,7 +137,11 @@ fn rejects_reduce_with_too_few_args() {
 #[test]
 fn rejects_map_with_too_few_args() {
     let err = build_err("(defn f [xs :- vec] (reduce + 0 (map square xs)))");
-    assert!(err.contains("unknown"), "unresolved square should error: {}", err);
+    assert!(
+        err.contains("unknown"),
+        "unresolved square should error: {}",
+        err
+    );
 }
 
 #[test]
@@ -219,9 +233,7 @@ fn lowers_and_or_not() {
 
 #[test]
 fn rejects_non_bool_and_operand() {
-    assert!(
-        build(&read_all("(defn f [x :- i64] :- bool (and (< x 3) x))").unwrap()).is_err()
-    );
+    assert!(build(&read_all("(defn f [x :- i64] :- bool (and (< x 3) x))").unwrap()).is_err());
 }
 
 #[test]
@@ -296,13 +308,11 @@ fn parses_bool_params_and_not() {
 
 // --- Phase 3: deftype + match ---
 
-const SHAPE_DEFTYPE: &str = "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))";
+const SHAPE_DEFTYPE: &str =
+    "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))";
 
 fn build_shape_prog(body: &str) -> HExpr {
-    let src = format!(
-        "{}\n(defn f [s :- Shape] :- f64 {})",
-        SHAPE_DEFTYPE, body
-    );
+    let src = format!("{}\n(defn f [s :- Shape] :- f64 {})", SHAPE_DEFTYPE, body);
     let exprs = read_all(&src).unwrap();
     let fns = build(&exprs).unwrap();
     fns.iter().find(|d| d.name == "f").unwrap().body.clone()
@@ -310,9 +320,8 @@ fn build_shape_prog(body: &str) -> HExpr {
 
 #[test]
 fn builds_match_with_exhaustive_arms() {
-    let body = build_shape_prog(
-        "(match s (Circle [r] (* r r)) (Rect [w h] (* w h)) (Point [] 0.0))",
-    );
+    let body =
+        build_shape_prog("(match s (Circle [r] (* r r)) (Rect [w h] (* w h)) (Point [] 0.0))");
     let HExpr::Match { arms, ty, .. } = body else {
         panic!("expected match");
     };
@@ -409,21 +418,37 @@ fn builds_take_drop_zip_range_sources() {
     .unwrap();
     let fns = build(&exprs).unwrap();
     let get = |n: &str| fns.iter().find(|d| d.name == n).unwrap().body.clone();
-    let HExpr::Reduce(r) = get("f") else { panic!("f reduce") };
-    let HReduce::Pipeline { src, .. } = *r else { panic!("f pipeline") };
+    let HExpr::Reduce(r) = get("f") else {
+        panic!("f reduce")
+    };
+    let HReduce::Pipeline { src, .. } = *r else {
+        panic!("f pipeline")
+    };
     assert!(matches!(src, HSource::Take(_, ref s) if matches!(s.as_ref(), HSource::Drop(..))));
 
-    let HExpr::Reduce(r) = get("g") else { panic!("g reduce") };
-    let HReduce::Pipeline { src, maps, .. } = *r else { panic!("g pipeline") };
+    let HExpr::Reduce(r) = get("g") else {
+        panic!("g reduce")
+    };
+    let HReduce::Pipeline { src, maps, .. } = *r else {
+        panic!("g pipeline")
+    };
     assert!(matches!(src, HSource::Zip(..)));
     assert!(maps[0].el2.is_some(), "zip map binds a second element");
 
-    let HExpr::Reduce(r) = get("h") else { panic!("h reduce") };
-    let HReduce::Pipeline { src, .. } = *r else { panic!("h pipeline") };
+    let HExpr::Reduce(r) = get("h") else {
+        panic!("h reduce")
+    };
+    let HReduce::Pipeline { src, .. } = *r else {
+        panic!("h pipeline")
+    };
     assert!(matches!(src, HSource::Range(..)));
 
-    let HExpr::Reduce(r) = get("k") else { panic!("k reduce") };
-    let HReduce::Pipeline { src, .. } = *r else { panic!("k pipeline") };
+    let HExpr::Reduce(r) = get("k") else {
+        panic!("k reduce")
+    };
+    let HReduce::Pipeline { src, .. } = *r else {
+        panic!("k pipeline")
+    };
     assert!(matches!(
         src,
         HSource::Lit(VLit::I64(ref vs)) if vs == &vec![1, 2, 3]
@@ -437,15 +462,25 @@ fn zip_closure_binds_two_elements() {
     )
     .unwrap();
     let fns = build(&exprs).unwrap();
-    let HExpr::Reduce(r) = &fns[0].body else { panic!("reduce") };
-    let HReduce::Closure { el2, .. } = &**r else { panic!("closure") };
+    let HExpr::Reduce(r) = &fns[0].body else {
+        panic!("reduce")
+    };
+    let HReduce::Closure { el2, .. } = &**r else {
+        panic!("closure")
+    };
     assert!(el2.is_some());
 }
 
 #[test]
 fn builds_get_with_default() {
     let body = build_one("f", "(defn f [xs :- vec] :- i64 (get xs 2 9))");
-    assert!(matches!(body, HExpr::Get { default: Some(_), .. }));
+    assert!(matches!(
+        body,
+        HExpr::Get {
+            default: Some(_),
+            ..
+        }
+    ));
 }
 
 // --- Phase 6: monomorphization ---
@@ -479,7 +514,9 @@ fn explicit_vector_f64_annotation_types() {
 #[test]
 fn get_on_f64_vector_is_f64() {
     let body = build_one("f", "(defn f [xs :- (Vector f64)] :- f64 (get xs 0 1.0))");
-    let HExpr::Get { ty, .. } = body else { panic!("get") };
+    let HExpr::Get { ty, .. } = body else {
+        panic!("get")
+    };
     assert_eq!(ty, Ty::F64);
 }
 
@@ -549,11 +586,7 @@ fn shared_borrows_keep_the_value_usable() {
 fn exclusive_borrow_sigil_is_rejected() {
     // `&!` was removed pre-1.0: uniqueness-driven in-place updates need no
     // user-facing exclusive lend.
-    let exprs = read_all(&format!(
-        "{}\n(defn f [a :- &!Box] :- i64 a)",
-        BOX_DEFTYPE
-    ))
-    .unwrap();
+    let exprs = read_all(&format!("{}\n(defn f [a :- &!Box] :- i64 a)", BOX_DEFTYPE)).unwrap();
     let err = build(&exprs).unwrap_err();
     assert!(err.contains("unsupported borrow sigil"), "got: {}", err);
 }
@@ -604,7 +637,11 @@ fn strings_reject_arithmetic_but_order() {
     assert!(matches!(f.body, HExpr::StrOrd(..)), "got: {:?}", f.body);
     // Mixed str/scalar comparisons remain errors.
     let err = build_err("(defn f [a :- str] :- bool (< a 1))");
-    assert!(err.contains("mixed widths") || !err.is_empty(), "got: {}", err);
+    assert!(
+        err.contains("mixed widths") || !err.is_empty(),
+        "got: {}",
+        err
+    );
 }
 
 #[test]
@@ -631,10 +668,7 @@ fn conj_subvec_str_on_literals_fold_at_compile_time() {
     let body = build_one("f", "(defn f [] :- i64 (count (conj (vec-i64 1 2) 3)))");
     // The whole conj folds into a literal; count reads its static length.
     assert!(matches!(body, HExpr::Count(_)));
-    let exprs = read_all(
-        "(defn f [] :- i64 (count (subvec (vec-i64 1 2 3 4 5) 1 4)))"
-    )
-    .unwrap();
+    let exprs = read_all("(defn f [] :- i64 (count (subvec (vec-i64 1 2 3 4 5) 1 4)))").unwrap();
     let fns = build(&exprs).unwrap();
     // subvec of a literal with constant bounds folds to a literal of 3.
     let ir = cato_llvm::emit_module(&[], &fns);
@@ -685,9 +719,7 @@ fn conj_is_persistent_and_last_use_updates_in_place() {
 
 #[test]
 fn for_requires_control_flow_free_body() {
-    let err = build_err(
-        "(defn main [] (let [w (for [x (vec-i64 1 2)] (if (> x 1) x 0))] 0))"
-    );
+    let err = build_err("(defn main [] (let [w (for [x (vec-i64 1 2)] (if (> x 1) x 0))] 0))");
     assert!(err.contains("control-flow-free"), "got: {}", err);
 }
 
@@ -697,12 +729,22 @@ fn for_requires_control_flow_free_body() {
 fn map_literals_sort_keys_at_compile_time() {
     // The fresh literal is bound (and freed) around the read.
     let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1 0))");
-    let HExpr::Let(binds, inner, _) = body else { panic!("hoisting let") };
+    let HExpr::Let(binds, inner, _) = body else {
+        panic!("hoisting let")
+    };
     assert!(matches!(*inner, HExpr::MapGet { .. }), "mapget");
-    let HExpr::MapLit(pairs) = &binds[0].1 else { panic!("maplit") };
+    let HExpr::MapLit(pairs) = &binds[0].1 else {
+        panic!("maplit")
+    };
     let keys: Vec<i64> = pairs
         .iter()
-        .map(|(k, _)| if let HExpr::ConstI64(c) = k { *c } else { panic!() })
+        .map(|(k, _)| {
+            if let HExpr::ConstI64(c) = k {
+                *c
+            } else {
+                panic!()
+            }
+        })
         .collect();
     assert_eq!(keys, vec![1, 3]);
 }
@@ -720,13 +762,12 @@ fn set_literals_sort_and_dedupe() {
     let exprs = read_all("(defn main [] :- i64 0)").unwrap();
     let fns = build(&exprs).unwrap();
     let _ = fns;
-    let exprs = read_all(
-        "(defn main [] :- i64 (count #{3 3 1 2 1}))",
-    )
-    .unwrap();
+    let exprs = read_all("(defn main [] :- i64 (count #{3 3 1 2 1}))").unwrap();
     let fns = build(&exprs).unwrap();
     // The fresh literal is bound (and freed) around the count.
-    let HExpr::Let(binds, body, _) = &fns[0].body else { panic!("hoisting let") };
+    let HExpr::Let(binds, body, _) = &fns[0].body else {
+        panic!("hoisting let")
+    };
     assert!(matches!(**body, HExpr::Count(_)), "count");
     {
         match &binds[0].1 {
@@ -785,41 +826,49 @@ fn closed_width_rules() {
 #[test]
 fn closures_capture_and_move() {
     // Scalar captures are fine; the closure type is inferred.
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))"
-    ).unwrap()).is_ok());
+    assert!(build(
+        &read_all("(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))").unwrap()
+    )
+    .is_ok());
     // S2: non-Copy captures are legal and move the source binding —
     // using the vector after the capture is rejected.
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (f 5)))"
-    ).unwrap()).is_ok());
+    assert!(build(
+        &read_all(
+            "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (f 5)))"
+        )
+        .unwrap()
+    )
+    .is_ok());
     assert!(build(&read_all(
         "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (do (f 5) (count v))))"
     ).unwrap()).is_err());
     // Capturing moves a non-Copy binding: use after capture is rejected.
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [s \"hi\" f (fn [x :- i64] (+ x 1))] (do (f 1) 0)))"
-    ).unwrap()).is_ok());
+    assert!(build(
+        &read_all("(defn main [] :- i64 (let [s \"hi\" f (fn [x :- i64] (+ x 1))] (do (f 1) 0)))")
+            .unwrap()
+    )
+    .is_ok());
     // Higher-order params type-check the call.
-    assert!(build(&read_all(
-        "(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64 (f (f x)))"
-    ).unwrap()).is_ok());
+    assert!(build(
+        &read_all("(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64 (f (f x)))").unwrap()
+    )
+    .is_ok());
     // Calling a non-function local is still a plain user call (unchanged).
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [x (fn [y :- i64] y)] (x 1)))"
-    ).unwrap()).is_ok());
+    assert!(
+        build(&read_all("(defn main [] :- i64 (let [x (fn [y :- i64] y)] (x 1)))").unwrap())
+            .is_ok()
+    );
 }
 
 #[test]
 fn phase19_patterns() {
     // Vector destructuring with _ and short-pattern defaults.
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [[a _ c] (vec-i64 1 2 3)] (+ a c)))"
-    ).unwrap()).is_ok());
+    assert!(build(
+        &read_all("(defn main [] :- i64 (let [[a _ c] (vec-i64 1 2 3)] (+ a c)))").unwrap()
+    )
+    .is_ok());
     // Destructure requires a vector source.
-    assert!(build(&read_all(
-        "(defn main [] :- i64 (let [[a] 3] a))"
-    ).unwrap()).is_err());
+    assert!(build(&read_all("(defn main [] :- i64 (let [[a] 3] a))").unwrap()).is_err());
     // _ wildcard binders in match arms.
     assert!(build(&read_all(
         "(deftype P (Q [x :- i64 y :- i64]))\n(defn main [] :- i64 (match (Q 1 2) (Q [_ y] y)))"
@@ -891,7 +940,8 @@ fn generics_dispatch_over_collection_types() {
     );
 
     // Element type parameters cannot select methods: methods are concrete.
-    let generic_vec = "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector T)] :- i64 (count v))";
+    let generic_vec =
+        "(defgeneric size [c] :- i64)\n(defmethod size [v :- (Vector T)] :- i64 (count v))";
     assert!(build(&read_all(generic_vec).unwrap()).is_err());
 
     // Map and set specializers are accepted. A pure-collection call
@@ -921,7 +971,11 @@ fn generics_wildcard_vector_specializers() {
     let src = "(defgeneric len [c] :- i64)\n(defmethod len [v :- (Vector _)] :- i64 (count v))\n(defmethod len [v :- (Vector i64)] :- i64 (+ (count v) 100))\n(defn main [] :- i64 (do (len [1 2]) (len [1.5])))";
     let defns = build(&read_all(src).unwrap()).unwrap();
     let names: Vec<&str> = defns.iter().map(|d| d.name.as_str()).collect();
-    assert!(names.contains(&"len__m1"), "exact method present: {:?}", names);
+    assert!(
+        names.contains(&"len__m1"),
+        "exact method present: {:?}",
+        names
+    );
     assert!(
         names.iter().any(|n| n.starts_with("len__m0__vec_f64")),
         "vec_f64 instance expected: {:?}",
@@ -950,7 +1004,11 @@ fn print_is_a_generic_multimethod() {
     let program = cato_core::compile_to_program("(defn main [] :- i64 (print 42))").unwrap();
     let fns = &program.defns;
     let names: Vec<&str> = fns.iter().map(|d| d.name.as_str()).collect();
-    assert!(names.iter().any(|n| n.starts_with("print__m")), "hidden print methods present: {:?}", names);
+    assert!(
+        names.iter().any(|n| n.starts_with("print__m")),
+        "hidden print methods present: {:?}",
+        names
+    );
     // No method exists for maps: clean error.
     assert!(cato_core::compile_to_program("(defn main [] :- i64 (print {1 2}))").is_err());
 }
@@ -972,7 +1030,12 @@ fn generic_adts_parse_instantiate_and_match() {
     // Template + one concrete instance.
     assert_eq!(adts[0].name, "Option");
     assert_eq!(adts[0].ty_params, vec!["a".to_string()]);
-    assert_eq!(adts.len(), 2, "expected the Option__i64 instance: {:?}", adts);
+    assert_eq!(
+        adts.len(),
+        2,
+        "expected the Option__i64 instance: {:?}",
+        adts
+    );
     assert_eq!(adts[1].name, "Option__i64");
     assert!(adts[1].ty_params.is_empty());
     assert_eq!(adts[1].variants[0].1, vec![Ty::I64]);
@@ -1023,16 +1086,19 @@ fn generic_adt_errors() {
     .unwrap();
     let (adts, _) = build_program(&exprs).unwrap();
     let inst = adts.iter().find(|a| a.name == "Option__vec_i64");
-    assert!(inst.is_some(), "{:?}", adts.iter().map(|a| a.name.clone()).collect::<Vec<_>>());
+    assert!(
+        inst.is_some(),
+        "{:?}",
+        adts.iter().map(|a| a.name.clone()).collect::<Vec<_>>()
+    );
     // Wrong arity in an applied field/annotation is an error.
     let err = build_err(
         "(deftype (Option a) (Some [v :- a]) (None))\n(defn f [x :- (Option i64 i64)] 0)",
     );
     assert!(err.contains("type argument"), "got: {}", err);
     // A nullary ctor with no way to infer its parameter.
-    let err = build_err(
-        "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n (None)] 0))",
-    );
+    let err =
+        build_err("(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n (None)] 0))");
     assert!(err.contains("cannot infer"), "got: {}", err);
 }
 
@@ -1051,5 +1117,9 @@ fn let_ascription_pins_nullary_ctors() {
     let err = build_err(
         "(deftype (Option a) (Some [v :- a]) (None))\n(defn main [] (let [n :- (Option i64) (Some 2.5)] 0))",
     );
-    assert!(err.contains("expects") || err.contains("ascribed"), "got: {}", err);
+    assert!(
+        err.contains("expects") || err.contains("ascribed"),
+        "got: {}",
+        err
+    );
 }

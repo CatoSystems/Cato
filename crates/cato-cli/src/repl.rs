@@ -16,13 +16,20 @@
 //! REPL falls back to plain line reading with the same evaluation logic.
 
 use cato_core::ast::Expr;
-use cato_core::reader::read_all_spanned;
 use cato_core::compile_named;
+use cato_core::reader::read_all_spanned;
 use cato_interp::fmt_value;
 use std::io::{BufRead, IsTerminal, Read, Write};
 
 /// Heads whose forms accumulate into the session program.
-const DEF_HEADS: [&str; 6] = ["defn", "deftype", "extern", "defgeneric", "defmethod", "require"];
+const DEF_HEADS: [&str; 6] = [
+    "defn",
+    "deftype",
+    "extern",
+    "defgeneric",
+    "defmethod",
+    "require",
+];
 /// Heads whose forms echo a `#'ns/name` confirmation.
 const NAMED_HEADS: [&str; 3] = ["defn", "defgeneric", "deftype"];
 const HISTORY_FILE: &str = ".cato_history";
@@ -31,14 +38,16 @@ const HISTORY_MAX: usize = 1000;
 pub fn run() {
     let colors = crate::ui::stdout_color_enabled();
     let interactive = std::io::stdin().is_terminal();
-    let history = if interactive { load_history() } else { Vec::new() };
+    let history = if interactive {
+        load_history()
+    } else {
+        Vec::new()
+    };
 
     // Plain startup lines: no ANSI, so the first line is exactly
     // "Cato REPL <version>" on every terminal.
     println!("Cato REPL {}", env!("CARGO_PKG_VERSION"));
-    println!(
-        "definitions accumulate, forms evaluate via the interpreter; :quit or Ctrl-D exits"
-    );
+    println!("definitions accumulate, forms evaluate via the interpreter; :quit or Ctrl-D exits");
 
     let mut session = Session::new();
     let mut pending = String::new();
@@ -281,7 +290,10 @@ struct LineReader {
 
 impl LineReader {
     fn new(interactive: bool, history: Vec<String>) -> LineReader {
-        LineReader { interactive, history }
+        LineReader {
+            interactive,
+            history,
+        }
     }
 
     fn history(&self) -> Vec<String> {
@@ -349,9 +361,7 @@ fn stty(args: &[&str]) -> std::io::Result<String> {
         .stderr(Stdio::null())
         .output()?;
     if !out.status.success() {
-        return Err(std::io::Error::other(
-            "stty failed",
-        ));
+        return Err(std::io::Error::other("stty failed"));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -643,7 +653,9 @@ fn history_path() -> Option<std::path::PathBuf> {
 }
 
 fn load_history() -> Vec<String> {
-    let Some(path) = history_path() else { return Vec::new() };
+    let Some(path) = history_path() else {
+        return Vec::new();
+    };
     match std::fs::read_to_string(&path) {
         Ok(text) => text.lines().map(|l| l.to_string()).collect(),
         Err(_) => Vec::new(),
@@ -658,11 +670,7 @@ fn save_history(history: &[String]) {
         .take(HISTORY_MAX)
         .map(|l| l.as_str())
         .collect();
-    let mut text = tail
-        .into_iter()
-        .rev()
-        .collect::<Vec<&str>>()
-        .join("\n");
+    let mut text = tail.into_iter().rev().collect::<Vec<&str>>().join("\n");
     if !text.is_empty() {
         text.push('\n');
     }

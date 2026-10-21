@@ -151,7 +151,10 @@ fn lower_expect_node(
             }
             if items.iter().all(|e| matches!(e, Expr::LitI64(_))) {
                 Ok(HExpr::VecLit(VLit::I64(vec_lit_i64(items))))
-            } else if items.iter().all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_))) {
+            } else if items
+                .iter()
+                .all(|e| matches!(e, Expr::LitI64(_) | Expr::LitF64(_)))
+            {
                 Ok(HExpr::VecLit(VLit::F64(vec_lit_f64(items))))
             } else {
                 Err("vector literal not supported (use (vec-i64 ...) / (vec-f64 ...))".into())
@@ -187,13 +190,21 @@ fn lower_expect_node(
                     match inner {
                         HExpr::Reduce(mut r) => {
                             let ok = match &*r {
-                                HReduce::Pipeline { combine, init, src, .. } => {
+                                HReduce::Pipeline {
+                                    combine, init, src, ..
+                                } => {
                                     let identity = match combine {
                                         BinOp::Add => {
-                                            matches!(*init, HExpr::ConstI64(0) | HExpr::ConstF64(0.0))
+                                            matches!(
+                                                *init,
+                                                HExpr::ConstI64(0) | HExpr::ConstF64(0.0)
+                                            )
                                         }
                                         BinOp::Mul => {
-                                            matches!(*init, HExpr::ConstI64(1) | HExpr::ConstF64(1.0))
+                                            matches!(
+                                                *init,
+                                                HExpr::ConstI64(1) | HExpr::ConstF64(1.0)
+                                            )
                                         }
                                         _ => false,
                                     };
@@ -231,7 +242,10 @@ fn lower_expect_node(
                         return Ok(inner);
                     }
                     if !src_ty.is_numeric() {
-                        return Err(format!("f64 cast expects a numeric operand, got {:?}", src_ty));
+                        return Err(format!(
+                            "f64 cast expects a numeric operand, got {:?}",
+                            src_ty
+                        ));
                     }
                     Ok(HExpr::ICast(Box::new(inner), src_ty, Ty::F64))
                 }
@@ -245,7 +259,10 @@ fn lower_expect_node(
                         return Ok(inner);
                     }
                     if !src_ty.is_numeric() {
-                        return Err(format!("f32 cast expects a numeric operand, got {:?}", src_ty));
+                        return Err(format!(
+                            "f32 cast expects a numeric operand, got {:?}",
+                            src_ty
+                        ));
                     }
                     Ok(HExpr::ICast(Box::new(inner), src_ty, Ty::F32))
                 }
@@ -336,7 +353,9 @@ fn lower_expect_node(
                 }
                 "nth" => {
                     if items.len() > 4 {
-                        return Err("nth expects (nth <s> <idx>) or (nth <s> <idx> <default>)".into());
+                        return Err(
+                            "nth expects (nth <s> <idx>) or (nth <s> <idx> <default>)".into()
+                        );
                     }
                     let s = lower(&items[1], env, ctx)?;
                     if ty_of(&s, env, ctx) != Ty::Str {
@@ -458,7 +477,9 @@ fn lower_expect_node(
                     }
                     let elem = match ty_of(&v, env, ctx) {
                         Ty::Vec(e) => e,
-                        other => return Err(format!("conj source must be a vector, got {:?}", other)),
+                        other => {
+                            return Err(format!("conj source must be a vector, got {:?}", other))
+                        }
                     };
                     // The element type is the value's expected type: a
                     // literal takes the vector's width (`(conj bytes 7)`).
@@ -513,7 +534,9 @@ fn lower_expect_node(
                     let v = lower(&items[1], env, ctx)?;
                     let elem = match ty_of(&v, env, ctx) {
                         Ty::Vec(e) => e,
-                        other => return Err(format!("subvec source must be a vector, got {:?}", other)),
+                        other => {
+                            return Err(format!("subvec source must be a vector, got {:?}", other))
+                        }
                     };
                     let start = lower(&items[2], env, ctx)?;
                     let end = lower(&items[3], env, ctx)?;
@@ -567,14 +590,18 @@ fn lower_expect_node(
                     let src = lower(&binding[1], env, ctx)?;
                     let elem = match ty_of(&src, env, ctx) {
                         Ty::Vec(e) => e,
-                        other => return Err(format!("for source must be a vector, got {:?}", other)),
+                        other => {
+                            return Err(format!("for source must be a vector, got {:?}", other))
+                        }
                     };
                     let mut child = env.clone();
                     child.insert(el.clone(), elem_ty(elem));
                     let body = lower(&items[2], &child, ctx)?;
                     // The fill loop is single-block: the body must not fork.
                     if has_ctl(&body) {
-                        return Err("for body must be control-flow-free (no if/and/or/match)".into());
+                        return Err(
+                            "for body must be control-flow-free (no if/and/or/match)".into()
+                        );
                     }
                     let res_elem = match ty_of(&body, &child, ctx) {
                         Ty::I64 => Elem::I64,
@@ -747,11 +774,7 @@ fn lower_expect_node(
                         match it {
                             Expr::LitF64(v) => vs.push(*v),
                             Expr::LitI64(v) => vs.push(*v as f64),
-                            _ => {
-                                return Err(
-                                    "vec-f64 elements must be numeric literals".into()
-                                )
-                            }
+                            _ => return Err("vec-f64 elements must be numeric literals".into()),
                         }
                     }
                     Ok(HExpr::VecLit(VLit::F64(vs)))
@@ -778,10 +801,16 @@ fn lower_expect_node(
                     let a = lower(&items[1], env, ctx)?;
                     let t = ty_of(&a, env, ctx);
                     if !t.is_int() {
-                        return Err(format!("bit-not expects an integer, got {}", ty_name(t, ctx)));
+                        return Err(format!(
+                            "bit-not expects an integer, got {}",
+                            ty_name(t, ctx)
+                        ));
                     }
-                    let ones = fit_literal(HExpr::ConstI64(-1), t)
-                        .unwrap_or(HExpr::ICast(Box::new(HExpr::ConstI64(-1)), Ty::I64, t));
+                    let ones = fit_literal(HExpr::ConstI64(-1), t).unwrap_or(HExpr::ICast(
+                        Box::new(HExpr::ConstI64(-1)),
+                        Ty::I64,
+                        t,
+                    ));
                     Ok(HExpr::BinW(BinOp::BitXor, Box::new(a), Box::new(ones), t))
                 }
                 h if BinOp::of_name(h).is_some() => {
@@ -853,11 +882,7 @@ fn lower_expect_node(
                             }
                             None => (adt, fields),
                         };
-                        let nparams = if inst_expected.is_some() {
-                            0
-                        } else {
-                            nparams
-                        };
+                        let nparams = if inst_expected.is_some() { 0 } else { nparams };
                         if items.len() - 1 != fields.len() {
                             return Err(format!(
                                 "constructor {} expects {} argument(s), got {}",
@@ -928,7 +953,12 @@ fn lower_expect_node(
                                 };
                                 // The expected instance must belong to the
                                 // same template; adopt its type arguments.
-                                let rev = ctx.adt_insts.borrow().rev.get(&e).map(|(t, a)| (*t, a.clone()));
+                                let rev = ctx
+                                    .adt_insts
+                                    .borrow()
+                                    .rev
+                                    .get(&e)
+                                    .map(|(t, a)| (*t, a.clone()));
                                 let Some((tpl, exp_args)) = rev else {
                                     return Err(format!(
                                         "cannot infer the type argument(s) of {} for the expected type",
@@ -996,10 +1026,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
         HExpr::ConstB(_) => Ty::Bool,
         // Lowering rejects unbound symbols, so every Var in typed HIR is
         // env-bound; an expect here keeps the invariant honest.
-        HExpr::Var(s) => env
-            .get(s)
-            .copied()
-            .expect("lowering guarantees bound vars"),
+        HExpr::Var(s) => env.get(s).copied().expect("lowering guarantees bound vars"),
         HExpr::BinW(.., t) => *t,
         HExpr::Count(_) => Ty::I64,
         HExpr::StrLit(_) => Ty::Str,
@@ -1093,7 +1120,6 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Phase 14: first-class closures
 // ---------------------------------------------------------------------------
@@ -1107,7 +1133,13 @@ fn collect_captures(
     seen: &mut Vec<String>,
     caps: &mut Vec<(String, Ty)>,
 ) {
-    fn var(env: &Env, params: &[String], seen: &mut Vec<String>, caps: &mut Vec<(String, Ty)>, v: &str) {
+    fn var(
+        env: &Env,
+        params: &[String],
+        seen: &mut Vec<String>,
+        caps: &mut Vec<(String, Ty)>,
+        v: &str,
+    ) {
         if params.iter().any(|p| p == v) || seen.iter().any(|s| s == v) {
             return;
         }
@@ -1126,10 +1158,12 @@ fn collect_captures(
             collect_captures(a, env, params, seen, caps);
             collect_captures(b, env, params, seen, caps);
         }
-        HExpr::Count(x) | HExpr::Abs(x, _) | HExpr::Not(x)
-        | HExpr::Clone(x) | HExpr::DropStmt(x) | HExpr::ICast(x, _, _) => {
-            collect_captures(x, env, params, seen, caps)
-        }
+        HExpr::Count(x)
+        | HExpr::Abs(x, _)
+        | HExpr::Not(x)
+        | HExpr::Clone(x)
+        | HExpr::DropStmt(x)
+        | HExpr::ICast(x, _, _) => collect_captures(x, env, params, seen, caps),
         HExpr::Call(_, args) | HExpr::StrCat(args) | HExpr::SetLit(args) => {
             for a in args {
                 collect_captures(a, env, params, seen, caps);
@@ -1156,7 +1190,9 @@ fn collect_captures(
                 collect_captures(v, env, params, seen, caps);
             }
         }
-        HExpr::Get { src, idx, default, .. } => {
+        HExpr::Get {
+            src, idx, default, ..
+        } => {
             collect_captures(src, env, params, seen, caps);
             collect_captures(idx, env, params, seen, caps);
             if let Some(d) = default {
@@ -1180,14 +1216,18 @@ fn collect_captures(
             collect_captures(m, env, params, seen, caps);
             collect_captures(k, env, params, seen, caps);
         }
-        HExpr::MapGet { src, key, default, .. } => {
+        HExpr::MapGet {
+            src, key, default, ..
+        } => {
             collect_captures(src, env, params, seen, caps);
             collect_captures(key, env, params, seen, caps);
             if let Some(d) = default {
                 collect_captures(d, env, params, seen, caps);
             }
         }
-        HExpr::Conj { v, x, .. } | HExpr::Subs { s: v, start: x, .. } | HExpr::Split { s: v, sep: x } => {
+        HExpr::Conj { v, x, .. }
+        | HExpr::Subs { s: v, start: x, .. }
+        | HExpr::Split { s: v, sep: x } => {
             collect_captures(v, env, params, seen, caps);
             collect_captures(x, env, params, seen, caps);
         }
@@ -1240,7 +1280,13 @@ fn collect_captures(
         // Reduce stage bodies reference the loop's own bindings; vars that
         // live in the enclosing env are captures.
         HExpr::Reduce(r) => match &**r {
-            HReduce::Pipeline { init, src, maps, filters, .. } => {
+            HReduce::Pipeline {
+                init,
+                src,
+                maps,
+                filters,
+                ..
+            } => {
                 collect_captures(init, env, params, seen, caps);
                 collect_source_captures(src, env, params, seen, caps);
                 for m in maps {
@@ -1250,7 +1296,14 @@ fn collect_captures(
                     collect_captures(&f.body, env, params, seen, caps);
                 }
             }
-            HReduce::Closure { init, src, body, maps, filters, .. } => {
+            HReduce::Closure {
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
+            } => {
                 collect_captures(init, env, params, seen, caps);
                 collect_source_captures(src, env, params, seen, caps);
                 collect_captures(body, env, params, seen, caps);
@@ -1275,9 +1328,7 @@ fn collect_source_captures(
 ) {
     match src {
         HSource::Var(v) => {
-            if !params.iter().any(|p| p == v)
-                && !seen.iter().any(|s| s == v)
-            {
+            if !params.iter().any(|p| p == v) && !seen.iter().any(|s| s == v) {
                 if let Some(&t) = env.get(v) {
                     seen.push(v.to_string());
                     caps.push((v.to_string(), t));
@@ -1315,7 +1366,11 @@ pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExp
         let Expr::LitSym(name) = &pitems[i] else {
             return Err("fn param must be a symbol".into());
         };
-        let ty = if pitems.get(i + 1).map(|e| matches!(e, Expr::LitSym(s) if s == ":-")).unwrap_or(false) {
+        let ty = if pitems
+            .get(i + 1)
+            .map(|e| matches!(e, Expr::LitSym(s) if s == ":-"))
+            .unwrap_or(false)
+        {
             let Some(Expr::LitSym(tyname)) = pitems.get(i + 2) else {
                 return Err(format!("fn param {} expects a type annotation", name));
             };
@@ -1375,7 +1430,11 @@ pub(crate) fn lower_closure(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExp
 
 /// How many forms the param annotation at position `i` consumes.
 fn ty_name_len(pitems: &[Expr], i: usize) -> usize {
-    if pitems.get(i + 1).map(|e| matches!(e, Expr::LitSym(s) if s == ":-")).unwrap_or(false) {
+    if pitems
+        .get(i + 1)
+        .map(|e| matches!(e, Expr::LitSym(s) if s == ":-"))
+        .unwrap_or(false)
+    {
         3
     } else {
         1
@@ -1436,7 +1495,8 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
         };
         let init = lower_expect(init_form, &child, ctx, Some(ty))?;
         let it = ty_of(&init, &child, ctx);
-        let empty_vec = matches!((&ty, &init), (Ty::Vec(_), HExpr::VecLit(VLit::I64(vs))) if vs.is_empty());
+        let empty_vec =
+            matches!((&ty, &init), (Ty::Vec(_), HExpr::VecLit(VLit::I64(vs))) if vs.is_empty());
         if it != ty && !(ty == Ty::F64 && it == Ty::I64) && !empty_vec {
             return Err(format!(
                 "loop binding {} ascribed {:?} but the initial value is {:?}",
@@ -1462,8 +1522,7 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
         HExpr::Seq(seq)
     };
     let arity = parsed.len();
-    validate_recurs(&body, arity, true, false)
-        .map_err(|e| format!("loop: {}", e))?;
+    validate_recurs(&body, arity, true, false).map_err(|e| format!("loop: {}", e))?;
     let ty = ty_of(&body, &child, ctx);
     Ok(HExpr::Loop {
         binds: parsed,
@@ -1476,12 +1535,7 @@ pub(crate) fn lower_loop(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, 
 /// `if` branch, a `match` arm body, or a `let`/`do` tail. Crossing a
 /// closure or fused-loop boundary is an error; a nested `loop` was already
 /// validated during its own lowering.
-fn validate_recurs(
-    e: &HExpr,
-    arity: usize,
-    in_loop: bool,
-    crossed: bool,
-) -> Result<(), String> {
+fn validate_recurs(e: &HExpr, arity: usize, in_loop: bool, crossed: bool) -> Result<(), String> {
     let recurred = |where_: &str| {
         Err(format!(
             "recur in {} is not in tail position (recur may end the loop body, an if branch, a match arm, or a let/do tail)",

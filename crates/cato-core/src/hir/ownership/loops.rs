@@ -24,9 +24,14 @@ pub(super) struct LoopFrame {
 #[derive(Clone)]
 pub(super) enum Origin {
     LoopVar,
-    Let { fresh: bool },
+    Let {
+        fresh: bool,
+    },
     /// A match binder; `heap`: its field is a heap object the box owns.
-    Binder { owner: BoxOwner, heap: bool },
+    Binder {
+        owner: BoxOwner,
+        heap: bool,
+    },
 }
 
 #[derive(Clone)]
@@ -45,7 +50,12 @@ pub(super) fn resolve<'s>(scope: &'s [(String, Origin)], name: &str) -> Option<&
 
 /// Does this `recur` argument hand the next iteration a value it owns,
 /// given the current candidate set of owning loop variables?
-pub(super) fn yields_owned(a: &HExpr, scope: &[(String, Origin)], cand: &HashSet<String>, bc: &BCheck) -> bool {
+pub(super) fn yields_owned(
+    a: &HExpr,
+    scope: &[(String, Origin)],
+    cand: &HashSet<String>,
+    bc: &BCheck,
+) -> bool {
     match a {
         HExpr::Var(w) => match resolve(scope, w) {
             Some(Origin::LoopVar) => cand.contains(w),
@@ -64,7 +74,6 @@ pub(super) fn yields_owned(a: &HExpr, scope: &[(String, Origin)], cand: &HashSet
     }
 }
 
-
 /// Does every path through `e` end in a `recur`? Such a branch never
 /// reaches the enclosing merge: control goes back to the loop head.
 pub(super) fn always_recurs(e: &HExpr) -> bool {
@@ -73,7 +82,9 @@ pub(super) fn always_recurs(e: &HExpr) -> bool {
         HExpr::Let(_, body, _) => always_recurs(body),
         HExpr::Seq(vs) => vs.last().map(always_recurs).unwrap_or(false),
         HExpr::If(_, t, f, _) => always_recurs(t) && always_recurs(f),
-        HExpr::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|a| always_recurs(&a.body)),
+        HExpr::Match { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|a| always_recurs(&a.body))
+        }
         _ => false,
     }
 }
@@ -114,7 +125,11 @@ pub(super) fn recur_arg_vars(e: &HExpr, out: &mut HashSet<String>) {
 /// binder is precise: its box slot is skipped and the loop variable takes
 /// the object over. Anything else — a `&T` call over it, a `let` alias,
 /// an element load — would dangle once the box is freed at the jump.)
-pub(super) fn recur_args_may_alias(e: &HExpr, alias: &HashSet<String>, calls: &HashSet<String>) -> bool {
+pub(super) fn recur_args_may_alias(
+    e: &HExpr,
+    alias: &HashSet<String>,
+    calls: &HashSet<String>,
+) -> bool {
     match e {
         HExpr::Recur(args, _) => args.iter().any(|a| {
             !matches!(a, HExpr::Var(v) if alias.contains(v)) && tail_may_alias(a, alias, calls)
@@ -186,7 +201,14 @@ pub(super) fn binds_anywhere(e: &HExpr, name: &str) -> bool {
         HExpr::Reduce(r) => {
             let (maps, filters, extra): (&[MapSpec], &[FilterSpec], Vec<&String>) = match &**r {
                 HReduce::Pipeline { maps, filters, .. } => (maps, filters, Vec::new()),
-                HReduce::Closure { maps, filters, acc, el, el2, .. } => {
+                HReduce::Closure {
+                    maps,
+                    filters,
+                    acc,
+                    el,
+                    el2,
+                    ..
+                } => {
                     let mut v = vec![acc, el];
                     if let Some(e2) = el2 {
                         v.push(e2);
@@ -195,8 +217,12 @@ pub(super) fn binds_anywhere(e: &HExpr, name: &str) -> bool {
                 }
             };
             if extra.iter().any(|b| *b == name)
-                || maps.iter().any(|m| m.el == name || m.el2.as_deref() == Some(name))
-                || filters.iter().any(|f| f.el == name || f.el2.as_deref() == Some(name))
+                || maps
+                    .iter()
+                    .any(|m| m.el == name || m.el2.as_deref() == Some(name))
+                || filters
+                    .iter()
+                    .any(|f| f.el == name || f.el2.as_deref() == Some(name))
             {
                 hit = true;
             }
@@ -273,8 +299,10 @@ impl<'a> BCheck<'a> {
             HExpr::Recur(args, _) => sites.push((args.clone(), scope.clone())),
             HExpr::Let(binds, body, _) => {
                 let mark = scope.len();
-                let saved: Vec<(String, Option<Ty>)> =
-                    binds.iter().map(|(n, _, _)| (n.clone(), tys.get(n).copied())).collect();
+                let saved: Vec<(String, Option<Ty>)> = binds
+                    .iter()
+                    .map(|(n, _, _)| (n.clone(), tys.get(n).copied()))
+                    .collect();
                 for (n, v, t) in binds {
                     let fresh = heap_owning(*t, self.facts) && self.allocates_fresh(v);
                     scope.push((n.clone(), Origin::Let { fresh }));
@@ -326,7 +354,13 @@ impl<'a> BCheck<'a> {
                         let fty = fields.as_ref().and_then(|f| f.get(k).copied());
                         let heap = binder_field_aliases(fty, &self.boxed_full)
                             && !matches!(fty, Some(Ty::Fn(_)));
-                        scope.push((b.clone(), Origin::Binder { owner: owner.clone(), heap }));
+                        scope.push((
+                            b.clone(),
+                            Origin::Binder {
+                                owner: owner.clone(),
+                                heap,
+                            },
+                        ));
                     }
                     self.collect_recur_sites(&arm.body, scope, tys, sites);
                     scope.truncate(mark);
@@ -424,7 +458,9 @@ impl<'a> BCheck<'a> {
         // free and alias-escape rules (moving it would also retire the
         // scrutinee's other binders).
         let mut movers: Vec<String> = Vec::new();
-        let non_copy = |v: &String, tys: &HashMap<String, Ty>| tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false);
+        let non_copy = |v: &String, tys: &HashMap<String, Ty>| {
+            tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false)
+        };
         for l in leaves {
             match l {
                 HExpr::Var(v) if non_copy(v, tys) => {

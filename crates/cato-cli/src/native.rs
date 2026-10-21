@@ -73,10 +73,7 @@ fn resolve_wasm_cc(cli: &Cli) -> Result<String, String> {
         return Ok(cc.clone());
     }
     #[cfg(windows)]
-    let candidates: &[&str] = &[
-        r"C:\Program Files\LLVM\bin\clang.exe",
-        "clang",
-    ];
+    let candidates: &[&str] = &[r"C:\Program Files\LLVM\bin\clang.exe", "clang"];
     #[cfg(not(windows))]
     let candidates: &[&str] = &[
         "/opt/homebrew/opt/llvm/bin/clang",
@@ -164,7 +161,10 @@ fn run_cc(program: &str, args: &[String], what: &str) -> Result<(), String> {
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         let stderr = stderr.trim_end();
-        let mut msg = format!("{what} failed: {program} {}", describe_status(result.status));
+        let mut msg = format!(
+            "{what} failed: {program} {}",
+            describe_status(result.status)
+        );
         if !stderr.is_empty() {
             msg.push_str(":\n");
             msg.push_str(stderr);

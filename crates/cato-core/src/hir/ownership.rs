@@ -13,10 +13,17 @@ fn flag(name: &str) -> bool {
     static CACHE: OnceLock<std::collections::HashMap<String, bool>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            ["CATO_NO_HOIST", "CATO_NO_ARMFREE", "CATO_NO_BRANCHFREE", "CATO_NO_ESCTRANSFER", "CATO_NO_LOOPOWN", "CATO_NO_LOOPDROP"]
-                .iter()
-                .map(|n| (n.to_string(), std::env::var_os(n).is_some()))
-                .collect()
+            [
+                "CATO_NO_HOIST",
+                "CATO_NO_ARMFREE",
+                "CATO_NO_BRANCHFREE",
+                "CATO_NO_ESCTRANSFER",
+                "CATO_NO_LOOPOWN",
+                "CATO_NO_LOOPDROP",
+            ]
+            .iter()
+            .map(|n| (n.to_string(), std::env::var_os(n).is_some()))
+            .collect()
         })
         .get(name)
         .copied()
@@ -47,11 +54,7 @@ pub(crate) fn binder_field_aliases(fty: Option<Ty>, boxed: &[bool]) -> bool {
 /// (the callee's return type, a nested match/if result, an Option `res`)
 /// — mirroring the backend's `adt_of`. `None` = not an ADT (or unknown),
 /// which leaves the binders at the I64 copy stand-in as before.
-fn scrutinee_adt(
-    e: &HExpr,
-    tys: &HashMap<String, Ty>,
-    rets: &HashMap<String, Ty>,
-) -> Option<u32> {
+fn scrutinee_adt(e: &HExpr, tys: &HashMap<String, Ty>, rets: &HashMap<String, Ty>) -> Option<u32> {
     match e {
         HExpr::Var(v) => match tys.get(v) {
             Some(Ty::Adt(i)) => Some(*i),
@@ -74,10 +77,21 @@ fn scrutinee_adt(
             Some(Ty::Adt(i)) => Some(*i),
             _ => None,
         },
-        HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
-        | HExpr::Get { res: Some(Ty::Adt(i)), .. }
-        | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => Some(*i),
-        HExpr::ParseNum { res: Ty::Adt(i), .. } => Some(*i),
+        HExpr::StrNth {
+            res: Some(Ty::Adt(i)),
+            ..
+        }
+        | HExpr::Get {
+            res: Some(Ty::Adt(i)),
+            ..
+        }
+        | HExpr::MapGet {
+            res: Some(Ty::Adt(i)),
+            ..
+        } => Some(*i),
+        HExpr::ParseNum {
+            res: Ty::Adt(i), ..
+        } => Some(*i),
         _ => None,
     }
 }
@@ -224,8 +238,20 @@ pub(crate) fn plan_drops(
     alias_ret: &HashSet<String>,
 ) -> Result<(), String> {
     plan_drops_inner(
-        name, params, borrows, ret, ret_borrowed, body, sigs, ret_borrowed_names, rets, facts,
-        adts, with_param_frees, alias_ret, None,
+        name,
+        params,
+        borrows,
+        ret,
+        ret_borrowed,
+        body,
+        sigs,
+        ret_borrowed_names,
+        rets,
+        facts,
+        adts,
+        with_param_frees,
+        alias_ret,
+        None,
     )
 }
 
@@ -253,8 +279,20 @@ pub(crate) fn kept_params(
     let mut scratch = body.clone();
     let owned = vec![Borrow::Owned; params.len()];
     let _ = plan_drops_inner(
-        name, params, &owned, ret, ret_borrowed, &mut scratch, sigs, ret_borrowed_names, rets,
-        facts, adts, false, alias_ret, Some(&mut kept),
+        name,
+        params,
+        &owned,
+        ret,
+        ret_borrowed,
+        &mut scratch,
+        sigs,
+        ret_borrowed_names,
+        rets,
+        facts,
+        adts,
+        false,
+        alias_ret,
+        Some(&mut kept),
     );
     kept
 }
@@ -291,7 +329,8 @@ fn plan_drops_inner(
         // (recursive/owning) ADTs. Scalars and inline ADTs copy by value,
         // so a borrow of them is meaningless (and a `&` on the return
         // annotation cannot mark an Inline slot).
-        let boxed_ret = matches!(ret, Ty::Adt(i) if boxed_full.get(i as usize).copied().unwrap_or(false));
+        let boxed_ret =
+            matches!(ret, Ty::Adt(i) if boxed_full.get(i as usize).copied().unwrap_or(false));
         if !boxed_ret {
             return Err(
                 "borrowed return: `&T` requires a boxed (recursive or owning) ADT return type"
@@ -457,28 +496,23 @@ fn param_moves_by_value(ty: Ty, facts: &AdtFacts) -> bool {
 fn rebound_in_body(e: &HExpr, name: &str) -> bool {
     match e {
         HExpr::Let(binds, body, _) => {
-            binds.iter()
+            binds
+                .iter()
                 .any(|(n, v, _)| n == name || rebound_in_body(v, name))
                 || rebound_in_body(body, name)
         }
         HExpr::Seq(vs) => vs.iter().any(|v| rebound_in_body(v, name)),
         HExpr::If(c, t, f, _) => {
-            rebound_in_body(c, name)
-                || rebound_in_body(t, name)
-                || rebound_in_body(f, name)
+            rebound_in_body(c, name) || rebound_in_body(t, name) || rebound_in_body(f, name)
         }
         HExpr::Match { scrut, arms, .. } => {
-            rebound_in_body(scrut, name)
-                || arms.iter().any(|a| rebound_in_body(&a.body, name))
+            rebound_in_body(scrut, name) || arms.iter().any(|a| rebound_in_body(&a.body, name))
         }
         HExpr::Loop { binds, body, .. } => {
-            binds.iter().any(|(_, _, i)| rebound_in_body(i, name))
-                || rebound_in_body(body, name)
+            binds.iter().any(|(_, _, i)| rebound_in_body(i, name)) || rebound_in_body(body, name)
         }
         HExpr::Recur(args, _) => args.iter().any(|a| rebound_in_body(a, name)),
-        HExpr::And(a, b) | HExpr::Or(a, b) => {
-            rebound_in_body(a, name) || rebound_in_body(b, name)
-        }
+        HExpr::And(a, b) | HExpr::Or(a, b) => rebound_in_body(a, name) || rebound_in_body(b, name),
         _ => false,
     }
 }
@@ -533,9 +567,9 @@ fn tail_borrow_ok(
                 return false;
             }
             let kinds = sigs.get(name).cloned().unwrap_or_default();
-            args.iter().zip(kinds.iter()).all(|(a, k)| {
-                k.is_owned() || tail_borrow_ok(a, borrows, sigs, ret_borrowed_names)
-            })
+            args.iter()
+                .zip(kinds.iter())
+                .all(|(a, k)| k.is_owned() || tail_borrow_ok(a, borrows, sigs, ret_borrowed_names))
         }
         HExpr::Clone(_) => false,
         HExpr::If(_, then, els, _) => {
@@ -598,7 +632,9 @@ fn tail_nonfresh(e: &HExpr, nonfresh: &HashSet<String>, vars: &HashSet<String>) 
             .last()
             .map(|l| tail_nonfresh(l, nonfresh, vars))
             .unwrap_or(false),
-        HExpr::If(_, t, f, _) => tail_nonfresh(t, nonfresh, vars) || tail_nonfresh(f, nonfresh, vars),
+        HExpr::If(_, t, f, _) => {
+            tail_nonfresh(t, nonfresh, vars) || tail_nonfresh(f, nonfresh, vars)
+        }
         HExpr::Match { arms, .. } => arms.iter().any(|a| tail_nonfresh(&a.body, nonfresh, vars)),
         HExpr::Loop { binds, body, .. } => {
             let mut inner = vars.clone();
@@ -719,17 +755,15 @@ fn tail_leaves<'e>(e: &'e HExpr, out: &mut Vec<&'e HExpr>) {
 /// result may be a parameter — see `compute_alias_ret`), a `let` alias of
 /// one, an element load from an aliased collection, a loop seeded from
 /// one. Fresh values (constructors, clones, owned calls, literals) do not.
-pub fn tail_may_alias(
-    e: &HExpr,
-    alias: &HashSet<String>,
-    alias_calls: &HashSet<String>,
-) -> bool {
+pub fn tail_may_alias(e: &HExpr, alias: &HashSet<String>, alias_calls: &HashSet<String>) -> bool {
     let ret_borrowed_names = alias_calls;
     match e {
         HExpr::Var(v) => alias.contains(v),
         HExpr::Call(name, args) => {
             ret_borrowed_names.contains(name)
-                && args.iter().any(|a| tail_may_alias(a, alias, ret_borrowed_names))
+                && args
+                    .iter()
+                    .any(|a| tail_may_alias(a, alias, ret_borrowed_names))
         }
         HExpr::Let(binds, body, _) => {
             let mut inner = alias.clone();
@@ -761,7 +795,13 @@ pub fn tail_may_alias(
         // A string element points into its vector's buffer; an Option
         // result carries that same pointer; an out-of-range read hands the
         // default back as is.
-        HExpr::Get { src, default, ty, res, .. } => {
+        HExpr::Get {
+            src,
+            default,
+            ty,
+            res,
+            ..
+        } => {
             ((*ty == Ty::Str || res.is_some()) && tail_may_alias(src, alias, ret_borrowed_names))
                 || default
                     .as_ref()
@@ -834,8 +874,7 @@ impl<'a> BCheck<'a> {
             *r -= 1;
         }
         if let Some(ty) = tys.get(v) {
-            if is_non_copy(*ty) && st.get(v) == Some(&VState::Moved)
-            {
+            if is_non_copy(*ty) && st.get(v) == Some(&VState::Moved) {
                 let site = self.site_for(v);
                 self.err(format!("use of moved value {}", v), Some(site));
             }
@@ -918,7 +957,10 @@ impl<'a> BCheck<'a> {
                 self.bump(&v);
                 self.use_var(&v, tys, st);
             }
-            HExpr::StrLit(_) | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::ConstB(..)
+            HExpr::StrLit(_)
+            | HExpr::StrCmp(..)
+            | HExpr::StrOrd(..)
+            | HExpr::ConstB(..)
             | HExpr::CharStr(..) => {}
             HExpr::StrNth { s, idx, .. } => {
                 self.check(s, tys, st, owns);
@@ -930,7 +972,13 @@ impl<'a> BCheck<'a> {
             // owns and hands its arguments to the next one — and a
             // completing path drops the loop variables it does not return.
             HExpr::Loop { binds, body, .. } => {
-                type Saved = (String, Option<VState>, Option<bool>, Option<Ty>, Option<HashSet<String>>);
+                type Saved = (
+                    String,
+                    Option<VState>,
+                    Option<bool>,
+                    Option<Ty>,
+                    Option<HashSet<String>>,
+                );
                 let mut shadowed: Vec<Saved> = Vec::new();
                 let mut seed_owned: HashSet<String> = HashSet::new();
                 let mut seed_roots: Vec<HashSet<String>> = Vec::new();
@@ -976,7 +1024,8 @@ impl<'a> BCheck<'a> {
                     owns.insert(n.clone(), o);
                     // An owning variable roots only itself; a non-owning
                     // one may still point wherever its seed pointed.
-                    self.roots.insert(n.clone(), if o { HashSet::new() } else { r });
+                    self.roots
+                        .insert(n.clone(), if o { HashSet::new() } else { r });
                     saved_owned.push((n.clone(), self.loop_owned.contains(n)));
                     if o {
                         self.loop_owned.insert(n.clone());
@@ -1073,7 +1122,8 @@ impl<'a> BCheck<'a> {
                     let candidate = match &args[ai] {
                         HExpr::Conj { v, .. } => match &**v {
                             HExpr::Var(n)
-                                if conj_counts.get(n) == Some(&1) && self.loop_owned.contains(n) =>
+                                if conj_counts.get(n) == Some(&1)
+                                    && self.loop_owned.contains(n) =>
                             {
                                 let sibling_reads = args.iter().enumerate().any(|(k, o)| {
                                     k != ai && {
@@ -1115,8 +1165,7 @@ impl<'a> BCheck<'a> {
                 // the variable then aliases it and owns nothing.)
                 for a in args.iter() {
                     if let HExpr::Var(v) = a {
-                        if tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false)
-                            && seen.contains(v)
+                        if tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) && seen.contains(v)
                         {
                             self.hand_over(v, st, owns);
                         }
@@ -1132,7 +1181,10 @@ impl<'a> BCheck<'a> {
                 if !flag("CATO_NO_LOOPDROP") {
                     for (n, droppable) in visible {
                         if droppable
-                            && tys.get(&n).map(|t| heap_owning(*t, self.facts)).unwrap_or(false)
+                            && tys
+                                .get(&n)
+                                .map(|t| heap_owning(*t, self.facts))
+                                .unwrap_or(false)
                             && owns.get(&n).copied().unwrap_or(false)
                             && st.get(&n) == Some(&VState::Owned)
                             && !reach.contains(&n)
@@ -1177,7 +1229,9 @@ impl<'a> BCheck<'a> {
                 self.check(k, tys, st, owns);
                 self.check(v, tys, st, owns);
             }
-            HExpr::MapGet { src, key, default, .. } => {
+            HExpr::MapGet {
+                src, key, default, ..
+            } => {
                 self.check(src, tys, st, owns);
                 self.check(key, tys, st, owns);
                 if let Some(d) = default {
@@ -1190,9 +1244,7 @@ impl<'a> BCheck<'a> {
                     self.check(v, tys, st, owns);
                 }
             }
-            HExpr::SetConj { s, x }
-            | HExpr::SetDisj { s, x }
-            | HExpr::SetContains { s, x } => {
+            HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
                 self.check(s, tys, st, owns);
                 self.check(x, tys, st, owns);
             }
@@ -1246,12 +1298,7 @@ impl<'a> BCheck<'a> {
                 self.check(body, tys, st, owns);
                 self.forbid_pred_moves(&pre, &pre_moved, st, tys, "a `for` body");
             }
-            HExpr::Conj {
-                v,
-                x,
-                in_place,
-                ..
-            } => {
+            HExpr::Conj { v, x, in_place, .. } => {
                 self.check(v, tys, st, owns);
                 // Persistent semantics: the source stays valid. In-place
                 // update is chosen only when the source is a last use of a
@@ -1339,12 +1386,17 @@ impl<'a> BCheck<'a> {
                 // inferred lent parameter next to an owned one).
                 for (i, (a, k)) in args.iter().zip(kinds.iter()).enumerate() {
                     let HExpr::Var(v) = a else { continue };
-                    if *k != Borrow::Owned || !tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) {
+                    if *k != Borrow::Owned || !tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false)
+                    {
                         continue;
                     }
-                    let lent_too = args.iter().zip(kinds.iter()).enumerate().any(|(j, (b, kb))| {
-                        j != i && *kb != Borrow::Owned && matches!(b, HExpr::Var(w) if w == v)
-                    });
+                    let lent_too = args
+                        .iter()
+                        .zip(kinds.iter())
+                        .enumerate()
+                        .any(|(j, (b, kb))| {
+                            j != i && *kb != Borrow::Owned && matches!(b, HExpr::Var(w) if w == v)
+                        });
                     if lent_too {
                         let site = self.site_for(v);
                         self.err(
@@ -1371,7 +1423,10 @@ impl<'a> BCheck<'a> {
                             self.move_var(&v, st, owns);
                         }
                     } else if *kind == Borrow::Owned
-                        && matches!(arg, HExpr::If(..) | HExpr::Match { .. } | HExpr::Let(..) | HExpr::Seq(_))
+                        && matches!(
+                            arg,
+                            HExpr::If(..) | HExpr::Match { .. } | HExpr::Let(..) | HExpr::Seq(_)
+                        )
                     {
                         self.move_value_roots(arg, tys, st, owns);
                     } else if let HExpr::Call(callee, _) = arg {
@@ -1486,9 +1541,8 @@ impl<'a> BCheck<'a> {
                     HExpr::Var(sv) => Some(sv.clone()),
                     _ => None,
                 };
-                let temp_fresh = scrut_boxed
-                    && sv_name.is_none()
-                    && fresh_box(scrut, self.ret_borrowed_names);
+                let temp_fresh =
+                    scrut_boxed && sv_name.is_none() && fresh_box(scrut, self.ret_borrowed_names);
                 let var_owned = scrut_boxed
                     && sv_name.as_ref().is_some_and(|sv| {
                         owns.get(sv).copied().unwrap_or(false)
@@ -1586,7 +1640,8 @@ impl<'a> BCheck<'a> {
                     let scope_mark = self.loops.last().map(|f| f.scope.len());
                     let mut saved_roots: Vec<(String, Option<HashSet<String>>)> = Vec::new();
                     for b in arm.binders.iter() {
-                        saved_roots.push((b.clone(), self.roots.insert(b.clone(), scrut_roots.clone())));
+                        saved_roots
+                            .push((b.clone(), self.roots.insert(b.clone(), scrut_roots.clone())));
                         if let Some(f) = self.loops.last_mut() {
                             f.scope.push((b.clone(), false));
                         }
@@ -1744,17 +1799,28 @@ impl<'a> BCheck<'a> {
                 // arm is freed by the arms that kept it.
                 {
                     let sts: Vec<&HashMap<String, VState>> = arm_sts.iter().collect();
-                    let shadow_owned: Vec<Vec<String>> = arms.iter().map(|a| a.binders.clone()).collect();
-                    let shadow: Vec<&[String]> = shadow_owned.iter().map(|v| v.as_slice()).collect();
-                    let mut bodies: Vec<&mut HExpr> = arms.iter_mut().map(|a| &mut a.body).collect();
-                    self.branch_frees(&post_scrut, &post_owns, tys, &mut bodies, &sts, &shadow, sv_name.as_deref());
+                    let shadow_owned: Vec<Vec<String>> =
+                        arms.iter().map(|a| a.binders.clone()).collect();
+                    let shadow: Vec<&[String]> =
+                        shadow_owned.iter().map(|v| v.as_slice()).collect();
+                    let mut bodies: Vec<&mut HExpr> =
+                        arms.iter_mut().map(|a| &mut a.body).collect();
+                    self.branch_frees(
+                        &post_scrut,
+                        &post_owns,
+                        tys,
+                        &mut bodies,
+                        &sts,
+                        &shadow,
+                        sv_name.as_deref(),
+                    );
                 }
                 // A fresh temp frees here, always. A named box frees here
                 // only when some arm transferred an alias out (its scope
                 // free was just suppressed); otherwise it keeps that scope
                 // free and stays readable after the match.
-                let free_here = (temp_fresh || (var_owned && any_arm_escape))
-                    && !flag("CATO_NO_ARMFREE");
+                let free_here =
+                    (temp_fresh || (var_owned && any_arm_escape)) && !flag("CATO_NO_ARMFREE");
                 for ((arm, plan), esc) in arms.iter_mut().zip(arm_plans).zip(arm_escapeds.iter()) {
                     arm.exit_free = if free_here { plan } else { None };
                     // A binder that is the arm's value, with its slot skipped
@@ -1765,7 +1831,9 @@ impl<'a> BCheck<'a> {
                     // the mark would poison.
                     if let Some(skip) = &arm.exit_free {
                         for b in skip {
-                            if flag("CATO_NO_ESCTRANSFER") { break; }
+                            if flag("CATO_NO_ESCTRANSFER") {
+                                break;
+                            }
                             if esc.contains(b) && !post_scrut.contains_key(b) {
                                 st.insert(b.clone(), VState::Moved);
                             }
@@ -1773,7 +1841,9 @@ impl<'a> BCheck<'a> {
                     }
                 }
             }
-            HExpr::Get { src, idx, default, .. } => {
+            HExpr::Get {
+                src, idx, default, ..
+            } => {
                 self.check(src, tys, st, owns);
                 self.check(idx, tys, st, owns);
                 if let Some(d) = default {
@@ -1911,8 +1981,11 @@ impl<'a> BCheck<'a> {
                 // outer binding) holding freed memory.
                 // (A planner-hoisted `~aN` temp is exempt: it is hoisted only
                 // where freeing it after the node is safe.)
-                let value_roots: HashSet<String> =
-                    self.roots_of(body).into_iter().filter(|n| !n.starts_with('~')).collect();
+                let value_roots: HashSet<String> = self
+                    .roots_of(body)
+                    .into_iter()
+                    .filter(|n| !n.starts_with('~'))
+                    .collect();
                 if let (Some(m), Some(f)) = (scope_mark, self.loops.last_mut()) {
                     f.scope.truncate(m);
                 }
@@ -1986,15 +2059,7 @@ impl<'a> BCheck<'a> {
                         el,
                         body,
                         ..
-                    } => (
-                        init,
-                        src,
-                        maps,
-                        filters,
-                        Some(body),
-                        Some(acc),
-                        Some(el),
-                    ),
+                    } => (init, src, maps, filters, Some(body), Some(acc), Some(el)),
                 };
                 let pre: HashSet<String> = st.keys().cloned().collect();
                 let pre_moved: HashSet<String> = st
@@ -2084,7 +2149,10 @@ impl<'a> BCheck<'a> {
             {
                 let site = self.moved_at.get(k).cloned();
                 self.err(
-                    format!("cannot move {} inside {}: the body runs once per element", k, what),
+                    format!(
+                        "cannot move {} inside {}: the body runs once per element",
+                        k, what
+                    ),
                     site,
                 );
             }
@@ -2174,9 +2242,9 @@ impl<'a> BCheck<'a> {
             HExpr::If(_, then, els, _) => {
                 self.tail_yields_owned(then, st) && self.tail_yields_owned(els, st)
             }
-            HExpr::Match { arms, .. } => arms
-                .iter()
-                .all(|arm| self.tail_yields_owned(&arm.body, st)),
+            HExpr::Match { arms, .. } => {
+                arms.iter().all(|arm| self.tail_yields_owned(&arm.body, st))
+            }
             // A loop yields owned duty when every completing value is a
             // fresh allocation or a loop variable that owns its value on
             // every iteration (`loop_owning`: fresh seed *and* owned recur
@@ -2213,7 +2281,9 @@ impl<'a> BCheck<'a> {
     /// a parameter's own buffer (never fresh for the caller).
     fn allocates_fresh(&self, e: &HExpr) -> bool {
         match e {
-            HExpr::Call(c, _) => !self.alias_ret.contains(c) && !self.ret_borrowed_names.contains(c),
+            HExpr::Call(c, _) => {
+                !self.alias_ret.contains(c) && !self.ret_borrowed_names.contains(c)
+            }
             HExpr::Let(_, body, _) => self.allocates_fresh(body),
             other => allocates(other, self.facts),
         }
@@ -2247,9 +2317,13 @@ impl<'a> BCheck<'a> {
                 Some(Ty::Str)
             }
             HExpr::Split { .. } if !boxed_only => Some(Ty::Vec(Elem::Str)),
-            HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } if !boxed_only => Some(Ty::Vec(*elem)),
+            HExpr::Conj { elem, .. } | HExpr::Subvec { elem, .. } if !boxed_only => {
+                Some(Ty::Vec(*elem))
+            }
             HExpr::MapLit(_) | HExpr::MapAssoc { .. } if !boxed_only => Some(Ty::Map),
-            HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } if !boxed_only => Some(Ty::Set),
+            HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } if !boxed_only => {
+                Some(Ty::Set)
+            }
             _ => None,
         }
     }
@@ -2275,7 +2349,9 @@ impl<'a> BCheck<'a> {
             HExpr::Not(a) | HExpr::Abs(a, _) | HExpr::ICast(a, _, _) | HExpr::Count(a) => {
                 Self::order_free(a)
             }
-            HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => Self::order_free(a) && Self::order_free(b),
+            HExpr::StrCmp(_, a, b) | HExpr::StrOrd(_, a, b) => {
+                Self::order_free(a) && Self::order_free(b)
+            }
             HExpr::StrNth { s, idx, res: None } => Self::order_free(s) && Self::order_free(idx),
             _ => false,
         }
@@ -2482,9 +2558,7 @@ impl<'a> BCheck<'a> {
             .iter()
             .map(|st_i| {
                 st_i.iter()
-                    .filter(|(n, v)| {
-                        **v == VState::Moved && pre_st.get(*n) == Some(&VState::Owned)
-                    })
+                    .filter(|(n, v)| **v == VState::Moved && pre_st.get(*n) == Some(&VState::Owned))
                     .map(|(n, _)| n.clone())
                     .collect()
             })
@@ -2550,7 +2624,10 @@ impl<'a> BCheck<'a> {
         // The arm hands the box itself on (moves or returns it): its new
         // holder frees it.
         if let Some(sv) = sv {
-            if arm_st.get(sv) == Some(&VState::Moved) || arm_escaped.contains(sv) || arm_div.contains(sv) {
+            if arm_st.get(sv) == Some(&VState::Moved)
+                || arm_escaped.contains(sv)
+                || arm_div.contains(sv)
+            {
                 return Err("scrutinee-moved");
             }
         }
@@ -2711,10 +2788,14 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
             count_vars(k, counts);
             count_vars(v, counts);
         }
-        HExpr::MapGet { src, key, default, .. } => {
+        HExpr::MapGet {
+            src, key, default, ..
+        } => {
             count_vars(src, counts);
             count_vars(key, counts);
-            if let Some(d) = default.as_ref() { count_vars(d, counts) }
+            if let Some(d) = default.as_ref() {
+                count_vars(d, counts)
+            }
         }
         HExpr::SetLit(vs) => vs.iter().for_each(|v| count_vars(v, counts)),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
@@ -2773,10 +2854,14 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
             count_vars(scrut, counts);
             arms.iter().for_each(|a| count_vars(&a.body, counts));
         }
-        HExpr::Get { src, idx, default, .. } => {
+        HExpr::Get {
+            src, idx, default, ..
+        } => {
             count_vars(src, counts);
             count_vars(idx, counts);
-            if let Some(d) = default.as_ref() { count_vars(d, counts) }
+            if let Some(d) = default.as_ref() {
+                count_vars(d, counts)
+            }
         }
         HExpr::If(c, t, f, _) => {
             count_vars(c, counts);
@@ -2793,7 +2878,14 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
                 count_vars(init, counts);
                 count_source(src, counts);
             }
-            HReduce::Closure { init, src, body, maps, filters, .. } => {
+            HReduce::Closure {
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
+            } => {
                 count_vars(init, counts);
                 count_source(src, counts);
                 count_vars(body, counts);
@@ -2806,8 +2898,12 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
             count_vars(b, counts);
         }
         HExpr::CharStr(c) => count_vars(c, counts),
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::ConstB(_) | HExpr::StrLit(_)
-        | HExpr::VecLit(_) | HExpr::Args => {}
+        HExpr::ConstI64(_)
+        | HExpr::ConstF64(_)
+        | HExpr::ConstB(_)
+        | HExpr::StrLit(_)
+        | HExpr::VecLit(_)
+        | HExpr::Args => {}
     }
 }
 
@@ -2866,7 +2962,9 @@ fn allocates(value: &HExpr, facts: &AdtFacts) -> bool {
         // A fresh box (or fresh inline-owning fields) for an ADT; a fresh
         // collection from a call; an explicit deep copy.
         HExpr::Ctor { adt, .. } => facts.owns.get(*adt as usize).copied().unwrap_or(false),
-        HExpr::ParseNum { res, .. } => matches!(res, Ty::Adt(i) if facts.owns.get(*i as usize).copied().unwrap_or(false)),
+        HExpr::ParseNum { res, .. } => {
+            matches!(res, Ty::Adt(i) if facts.owns.get(*i as usize).copied().unwrap_or(false))
+        }
         // A closure mints its owning env allocation.
         HExpr::Closure { .. } => true,
         HExpr::Call(_, _) | HExpr::Clone(_) | HExpr::Slurp(_) => true,

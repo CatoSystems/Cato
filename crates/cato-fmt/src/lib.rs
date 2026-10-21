@@ -17,7 +17,10 @@ pub struct FmtError {
 
 impl FmtError {
     pub fn new(msg: impl Into<String>, offset: usize) -> Self {
-        FmtError { msg: msg.into(), offset }
+        FmtError {
+            msg: msg.into(),
+            offset,
+        }
     }
 }
 

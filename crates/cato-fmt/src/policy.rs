@@ -21,8 +21,21 @@ use crate::doc::{self, Doc};
 
 /// Atoms that get head-form treatment (plan list, no extras).
 const HEADS: &[&str] = &[
-    "defn", "deftype", "extern", "defgeneric", "defmethod", "let", "match", "fn", "do", "if",
-    "cond", "when", "for", "->", "->>",
+    "defn",
+    "deftype",
+    "extern",
+    "defgeneric",
+    "defmethod",
+    "let",
+    "match",
+    "fn",
+    "do",
+    "if",
+    "cond",
+    "when",
+    "for",
+    "->",
+    "->>",
 ];
 
 /// Heads whose `:- type` annotation after the parameter vector belongs
@@ -123,7 +136,11 @@ fn collect_items(kids: &[Elem]) -> Vec<Item> {
         }
     }
     if !pending.is_empty() {
-        items.push(Item { node: None, own_comments: pending, trailing_comment: None });
+        items.push(Item {
+            node: None,
+            own_comments: pending,
+            trailing_comment: None,
+        });
     }
     items
 }
@@ -272,7 +289,8 @@ fn params_hug_doc(n: &Node) -> Doc {
 
 /// Hug style (head-position vectors): first element stays on the open
 /// delimiter's line when broken; close hugs the last element.
-fn hug_delimited(n: &Node) -> Doc {    let items = collect_items(&n.kids);
+fn hug_delimited(n: &Node) -> Doc {
+    let items = collect_items(&n.kids);
     let close = n.close.as_ref().map(|c| c.text.clone()).unwrap_or_default();
     let mut inner: Vec<Doc> = Vec::new();
     for (i, item) in items.iter().enumerate() {
@@ -378,7 +396,11 @@ fn head_form_doc(items: &[Item], head: &str) -> Doc {
         let clean = it.own_comments.is_empty();
         if clean && matches!(it.node.as_ref().map(|d| d.kind), Some(NodeKind::Vector)) {
             let nd = it.node.as_ref().unwrap();
-            let vd = if head == "let" { let_bindings_doc(nd) } else { node_to_doc_styled(nd, true) };
+            let vd = if head == "let" {
+                let_bindings_doc(nd)
+            } else {
+                node_to_doc_styled(nd, true)
+            };
             parts.push(doc::text(" "));
             parts.push(vd);
             idx += 1;
@@ -422,7 +444,10 @@ fn head_form_doc(items: &[Item], head: &str) -> Doc {
             }
             body_docs.push(item_doc(it));
         }
-        parts.push(doc::nest(2, doc::concat(vec![first_sep, doc::concat(body_docs)])));
+        parts.push(doc::nest(
+            2,
+            doc::concat(vec![first_sep, doc::concat(body_docs)]),
+        ));
         // A trailing or comment-only last body item ends its line at the
         // outer indent, so `)` is never swallowed by the comment or
         // pushed into the body's nest.

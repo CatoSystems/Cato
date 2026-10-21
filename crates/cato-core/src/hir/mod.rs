@@ -127,7 +127,10 @@ impl Ty {
     /// Copy semantics: assignment/argument passing copies instead of moves.
     /// Strings are Copy (aliasing); boxed ADTs are not (unique owner).
     pub fn is_copy_ty(self) -> bool {
-        !matches!(self, Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_) | Ty::Param(_))
+        !matches!(
+            self,
+            Ty::Adt(_) | Ty::Vec(_) | Ty::Map | Ty::Set | Ty::Fn(_) | Ty::Param(_)
+        )
     }
 
     /// Bits of an integer width (unsigned types share the signed width).
@@ -203,7 +206,6 @@ pub enum BinOp {
     Shl,
     Shr,
 }
-
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum HExpr {
@@ -342,11 +344,18 @@ pub enum HExpr {
     ToStr(Box<HExpr>, Ty),
     /// `(parse-i64 s)` / `(parse-f64 s)` — `res` is the `(Option T)`
     /// instance index synthesized by the lowering.
-    ParseNum { s: Box<HExpr>, int: bool, res: Ty },
+    ParseNum {
+        s: Box<HExpr>,
+        int: bool,
+        res: Ty,
+    },
     /// `(slurp path)` — whole-file read; empty string on failure.
     Slurp(Box<HExpr>),
     /// `(spit path content)` — writes (creates/truncates); yields 0.
-    Spit { path: Box<HExpr>, data: Box<HExpr> },
+    Spit {
+        path: Box<HExpr>,
+        data: Box<HExpr>,
+    },
     /// `(args)` — process arguments as a `(Vector str)`; let-bound.
     Args,
     /// `(exit n)` — terminate the process with a status.
@@ -601,17 +610,16 @@ mod ctl;
 mod forms;
 mod generics;
 mod infer;
-mod numeric;
 mod lower;
 mod match_lower;
 mod mono;
+mod numeric;
 mod ownership;
 mod parse;
 mod pipeline;
 mod stagefn;
 mod typing;
 
-pub use numeric::{eval_int_binop, Narrow};
 pub use build::{build_program, build_program_located, build_program_located_with};
 pub(crate) use ctl::*;
 pub(crate) use forms::*;
@@ -619,6 +627,7 @@ pub(crate) use generics::*;
 pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
+pub use numeric::{eval_int_binop, Narrow};
 pub(crate) use ownership::plan_drops;
 pub use ownership::{compute_alias_ret, tail_may_alias};
 pub(crate) use parse::*;
@@ -780,10 +789,7 @@ fn subst_field_ty(
             .copied()
             .ok_or_else(|| format!("unresolved type parameter {} in ADT field", k))?,
         Ty::Adt(j) => {
-            let j_params = base
-                .get(j as usize)
-                .map(|d| d.ty_params.len())
-                .unwrap_or(0);
+            let j_params = base.get(j as usize).map(|d| d.ty_params.len()).unwrap_or(0);
             if j_params > 0 {
                 Ty::Adt(instantiate_adt(base, insts, j, args)?)
             } else {
@@ -828,7 +834,8 @@ pub fn compute_adt_facts(adts: &[AdtDef]) -> AdtFacts {
             for (_, fields) in &d.variants {
                 for f in fields {
                     let direct = matches!(f, Ty::Str | Ty::Vec(_) | Ty::Map | Ty::Set);
-                    let via_adt = matches!(f, Ty::Adt(j) if owns.get(*j as usize).copied().unwrap_or(false));
+                    let via_adt =
+                        matches!(f, Ty::Adt(j) if owns.get(*j as usize).copied().unwrap_or(false));
                     if direct || via_adt {
                         owns[t] = true;
                         changed = true;
@@ -961,7 +968,12 @@ pub fn field_slot_count(f: &Ty, boxed: &[bool], adts: &[AdtDef]) -> usize {
 fn adt_payload_slots(d: &AdtDef, boxed: &[bool], adts: &[AdtDef]) -> usize {
     d.variants
         .iter()
-        .map(|(_, fields)| fields.iter().map(|f| field_slot_count(f, boxed, adts)).sum::<usize>())
+        .map(|(_, fields)| {
+            fields
+                .iter()
+                .map(|f| field_slot_count(f, boxed, adts))
+                .sum::<usize>()
+        })
         .max()
         .unwrap_or(0)
 }
@@ -972,5 +984,3 @@ pub fn adt_total_slots(adts: &[AdtDef], boxed: &[bool], i: u32) -> usize {
         .map(|d| adt_payload_slots(d, boxed, adts))
         .unwrap_or(0)
 }
-
-

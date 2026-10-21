@@ -56,7 +56,9 @@ impl SourceMap {
             .get(line)
             .copied()
             .unwrap_or(self.src.len());
-        self.src[start..end].trim_end_matches('\n').trim_end_matches('\r')
+        self.src[start..end]
+            .trim_end_matches('\n')
+            .trim_end_matches('\r')
     }
 }
 
@@ -130,11 +132,16 @@ pub fn refine(span: Span) -> Span {
     }
     let text = SOURCES.with(|s| {
         let sources = s.borrow();
-        let map = span.file.checked_sub(1).and_then(|i| sources.get(i as usize))?;
+        let map = span
+            .file
+            .checked_sub(1)
+            .and_then(|i| sources.get(i as usize))?;
         map.src.get(span.lo..span.hi).map(|t| t.to_string())
     });
     let Some(text) = text else { return span };
-    let Ok(mut forms) = crate::reader::read_span_trees(&text) else { return span };
+    let Ok(mut forms) = crate::reader::read_span_trees(&text) else {
+        return span;
+    };
     if forms.len() != 1 {
         return span;
     }
@@ -146,7 +153,11 @@ pub fn refine(span: Span) -> Span {
             node = n;
         }
     }
-    Span { lo: span.lo + node.span.lo, hi: span.lo + node.span.hi, file: span.file }
+    Span {
+        lo: span.lo + node.span.lo,
+        hi: span.lo + node.span.hi,
+        file: span.file,
+    }
 }
 
 /// Preorder search for `want` under (`e`, `n`), which share one shape.
@@ -189,21 +200,34 @@ pub fn set_occurrence(sym: &str, k: usize) {
 /// The recorded occurrence's span inside `span` (a top-level form); `span`
 /// itself when there is none or it cannot be matched.
 pub fn refine_occurrence(span: Span) -> Span {
-    let Some((sym, k)) = OCC.with(|o| o.borrow_mut().take()) else { return span };
+    let Some((sym, k)) = OCC.with(|o| o.borrow_mut().take()) else {
+        return span;
+    };
     if k == 0 || span == Span::default() {
         return span;
     }
     let text = SOURCES.with(|s| {
         let sources = s.borrow();
-        let map = span.file.checked_sub(1).and_then(|i| sources.get(i as usize))?;
+        let map = span
+            .file
+            .checked_sub(1)
+            .and_then(|i| sources.get(i as usize))?;
         map.src.get(span.lo..span.hi).map(|t| t.to_string())
     });
     let Some(text) = text else { return span };
-    let Ok(forms) = crate::reader::read_span_trees(&text) else { return span };
-    let Some((form, tree)) = forms.first() else { return span };
+    let Ok(forms) = crate::reader::read_span_trees(&text) else {
+        return span;
+    };
+    let Some((form, tree)) = forms.first() else {
+        return span;
+    };
     let mut left = k;
     match occ_walk(form, tree, &sym, &mut left) {
-        Some(at) => Span { lo: span.lo + at.lo, hi: span.lo + at.hi, file: span.file },
+        Some(at) => Span {
+            lo: span.lo + at.lo,
+            hi: span.lo + at.hi,
+            file: span.file,
+        },
         None => span,
     }
 }
@@ -244,16 +268,23 @@ fn occ_walk(
     match e {
         Expr::LitSym(s) if s == sym => hit(left, n.span),
         Expr::List(xs) => {
-            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = xs.iter().zip(n.kids.iter()).collect();
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> =
+                xs.iter().zip(n.kids.iter()).collect();
             match head_of(e) {
                 Some("ns" | "require" | "deftype" | "defgeneric" | "extern") => None,
                 Some("defn" | "defmethod") => {
                     // (defn name [params] [:- ret] body...)
-                    let skip = if matches!(xs.get(2), Some(Expr::Vector(_))) { 3 } else { 2 };
+                    let skip = if matches!(xs.get(2), Some(Expr::Vector(_))) {
+                        3
+                    } else {
+                        2
+                    };
                     occ_seq(&kids[skip.min(kids.len())..], sym, left)
                 }
                 Some("let" | "loop" | "if-let" | "when-let" | "doseq" | "for" | "dotimes") => {
-                    if let (Some((Expr::Vector(bs), bn)), true) = (kids.get(1).copied(), kids.len() > 1) {
+                    if let (Some((Expr::Vector(bs), bn)), true) =
+                        (kids.get(1).copied(), kids.len() > 1)
+                    {
                         let pairs: Vec<(&Expr, &crate::reader::SpanNode)> =
                             bs.iter().zip(bn.kids.iter()).collect();
                         let mut i = 0;
@@ -292,7 +323,11 @@ fn occ_walk(
                             Expr::List(ys) => {
                                 let ak: Vec<(&Expr, &crate::reader::SpanNode)> =
                                     ys.iter().zip(an.kids.iter()).collect();
-                                let skip = if matches!(ys.get(1), Some(Expr::Vector(_))) { 2 } else { 1 };
+                                let skip = if matches!(ys.get(1), Some(Expr::Vector(_))) {
+                                    2
+                                } else {
+                                    1
+                                };
                                 occ_seq(&ak[skip.min(ak.len())..], sym, left)
                             }
                             other => occ_walk(other, an, sym, left),
@@ -307,12 +342,14 @@ fn occ_walk(
             }
         }
         Expr::Vector(xs) | Expr::SetLit(xs) => {
-            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = xs.iter().zip(n.kids.iter()).collect();
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> =
+                xs.iter().zip(n.kids.iter()).collect();
             occ_seq(&kids, sym, left)
         }
         Expr::MapLit(ps) => {
             let flat: Vec<&Expr> = ps.iter().flat_map(|(k, v)| [k, v]).collect();
-            let kids: Vec<(&Expr, &crate::reader::SpanNode)> = flat.into_iter().zip(n.kids.iter()).collect();
+            let kids: Vec<(&Expr, &crate::reader::SpanNode)> =
+                flat.into_iter().zip(n.kids.iter()).collect();
             occ_seq(&kids, sym, left)
         }
         _ => None,
@@ -350,7 +387,9 @@ pub fn classify(msg: &str) -> &'static str {
     let m = msg;
     if m.contains("use of moved value") {
         "E301"
-    } else if m.contains("Borrowed return requires a borrowed value") || m.contains("borrowed return:") {
+    } else if m.contains("Borrowed return requires a borrowed value")
+        || m.contains("borrowed return:")
+    {
         "E304"
     } else if m.contains("borrowed parameter and still belongs to the caller")
         || m.contains("borrowed result of")
@@ -366,9 +405,12 @@ pub fn classify(msg: &str) -> &'static str {
         "E003"
     } else if m.contains("unclosed delimiter") {
         "E004"
-    } else if m.contains("unsupported borrow sigil") || m.contains("mixed widths")
-        || m.contains("must share a width") || m.contains("in arithmetic")
-        || m.contains("does not fit") || m.contains("ascribed")
+    } else if m.contains("unsupported borrow sigil")
+        || m.contains("mixed widths")
+        || m.contains("must share a width")
+        || m.contains("in arithmetic")
+        || m.contains("does not fit")
+        || m.contains("ascribed")
     {
         // Width/sigil misuse: an explicit cast or syntax fix is required.
         "E202"
@@ -378,8 +420,10 @@ pub fn classify(msg: &str) -> &'static str {
         "E207"
     } else if m.contains("unknown type name") {
         "E208"
-    } else if m.contains("expects exactly") || m.contains("expects 2 operands")
-        || m.contains("expects 1 argument") || m.contains("expects 2 arguments")
+    } else if m.contains("expects exactly")
+        || m.contains("expects 2 operands")
+        || m.contains("expects 1 argument")
+        || m.contains("expects 2 arguments")
         || m.contains("expects 3 arguments")
     {
         "E201"
@@ -441,7 +485,11 @@ pub fn locate(span: Span, msg: &str) -> String {
     }
     SOURCES.with(|s| {
         let sources = s.borrow();
-        match span.file.checked_sub(1).and_then(|i| sources.get(i as usize)) {
+        match span
+            .file
+            .checked_sub(1)
+            .and_then(|i| sources.get(i as usize))
+        {
             Some(map) => render_at(map, span, &head),
             None => head,
         }
@@ -453,7 +501,10 @@ fn render_at(map: &SourceMap, span: Span, head: &str) -> String {
     let text = map.line_text(line);
     // Caret covers the span on its first line (multi-line forms are capped;
     // defn-granularity spans can be long, so clamp the underline width).
-    let width = span.hi.saturating_sub(span.lo).clamp(1, text.len().saturating_sub(col - 1).max(1));
+    let width = span
+        .hi
+        .saturating_sub(span.lo)
+        .clamp(1, text.len().saturating_sub(col - 1).max(1));
     let gutter = line.to_string();
     let pad = " ".repeat(gutter.len());
     format!(

@@ -50,8 +50,7 @@ pub fn build_program_located_with(
     let mut decl_names: Vec<(String, Vec<String>)> = Vec::new();
     for (form, span) in prog.iter() {
         if is_deftype(form) {
-            let (name, params) =
-                parse_deftype_header(form).map_err(|e| locate(*span, &e))?;
+            let (name, params) = parse_deftype_header(form).map_err(|e| locate(*span, &e))?;
             let idx = decl_names.len() as u32;
             if decls.insert(name.clone(), (idx, params.clone())).is_some() {
                 return Err(locate(*span, &format!("duplicate deftype {}", name)));
@@ -63,8 +62,8 @@ pub fn build_program_located_with(
     // Pass 0b: parse variants with the full template table.
     let mut adts: Vec<AdtDef> = Vec::new();
     for ((form, span), (name, params)) in decl_forms.iter().zip(decl_names.iter()) {
-        let variants = parse_deftype_variants(form, name, params, &decls)
-            .map_err(|e| locate(**span, &e))?;
+        let variants =
+            parse_deftype_variants(form, name, params, &decls).map_err(|e| locate(**span, &e))?;
         adts.push(AdtDef {
             name: name.clone(),
             ty_params: params.clone(),
@@ -84,7 +83,6 @@ pub fn build_program_located_with(
         adt_by_name: &adt_by_name,
         insts: &adt_insts,
     };
-
 
     // Generic functions (multimethods): collect the method table and
     // strip the forms; call sites resolve during lowering.
@@ -113,10 +111,8 @@ pub fn build_program_located_with(
         }
         raws.push((raw, *span));
     }
-    let raw_by_name: HashMap<&str, &RawDefn> = raws
-        .iter()
-        .map(|(r, _)| (r.name.as_str(), r))
-        .collect();
+    let raw_by_name: HashMap<&str, &RawDefn> =
+        raws.iter().map(|(r, _)| (r.name.as_str(), r)).collect();
     let ctx = Ctx {
         raw_by_name: &raw_by_name,
         adts: &adts,
@@ -187,14 +183,12 @@ pub fn build_program_located_with(
         .lambdas
         .borrow_mut()
         .drain(..)
-        .map(|(mangled, captures, params, ret, body)| {
-            crate::Lambda {
-                mangled,
-                captures,
-                params,
-                ret,
-                body,
-            }
+        .map(|(mangled, captures, params, ret, body)| crate::Lambda {
+            mangled,
+            captures,
+            params,
+            ret,
+            body,
         })
         .collect();
     // Drain the monomorphized ADT instances; appended below so every
@@ -215,10 +209,7 @@ pub fn build_program_located_with(
 
     // Ownership / borrow check + scope-exit drop planning: needs every
     // callee's borrow kinds, so it runs once all defns are collected.
-    let rets: HashMap<String, Ty> = out
-        .iter()
-        .map(|d| (d.name.clone(), d.ret))
-        .collect();
+    let rets: HashMap<String, Ty> = out.iter().map(|d| (d.name.clone(), d.ret)).collect();
     let ret_borrowed_names: std::collections::HashSet<String> = out
         .iter()
         .filter(|d| d.ret_borrowed)
@@ -226,16 +217,21 @@ pub fn build_program_located_with(
         .collect();
     let alias_ret = compute_alias_ret(&out);
     if infer_lending && !std::env::var_os("CATO_NO_INFER").is_some() {
-        super::infer::infer_param_modes(&mut out, &rets, &ret_borrowed_names, &facts, &adts, &alias_ret);
+        super::infer::infer_param_modes(
+            &mut out,
+            &rets,
+            &ret_borrowed_names,
+            &facts,
+            &adts,
+            &alias_ret,
+        );
     }
     let sigs: HashMap<String, Vec<Borrow>> = out
         .iter()
         .map(|d| (d.name.clone(), d.borrows.clone()))
         .collect();
-    let span_by_name: HashMap<&str, crate::ast::Span> = raws
-        .iter()
-        .map(|(r, s)| (r.name.as_str(), *s))
-        .collect();
+    let span_by_name: HashMap<&str, crate::ast::Span> =
+        raws.iter().map(|(r, s)| (r.name.as_str(), *s)).collect();
     for d in out.iter_mut() {
         if d.is_extern {
             continue;

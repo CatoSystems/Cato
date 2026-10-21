@@ -6,7 +6,13 @@ pub(crate) fn emit_map_get(
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
-    let HExpr::MapGet { src, key, default, res } = e else {
+    let HExpr::MapGet {
+        src,
+        key,
+        default,
+        res,
+    } = e
+    else {
         panic!("codegen: emit_map_get on non-mapget")
     };
     let (ptr, len, cap) = map_val(src, c, mdl, sigs);
@@ -20,7 +26,10 @@ pub(crate) fn emit_map_get(
     c.line(&format!("  {} = and i64 {}, 1", is_hamt, cap));
     let bit = c.temp();
     c.line(&format!("  {} = icmp ne i64 {}, 0", bit, is_hamt));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", bit, bhamt, bflat));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        bit, bhamt, bflat
+    ));
     let lbl = c.open(&bhamt);
     c.line(&format!("{}:", lbl));
     mdl.ensure_decl("declare i64 @cato_hamt_get(ptr, i64, i64)");
@@ -55,7 +64,10 @@ pub(crate) fn emit_map_get(
     let is_empty = c.temp();
     let pre = c.cur.clone();
     c.line(&format!("  {} = icmp eq i64 {}, 0", is_empty, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", is_empty, bexit, bloop));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        is_empty, bexit, bloop
+    ));
 
     let ivar = c.temp();
     let inext = c.temp();
@@ -100,7 +112,10 @@ pub(crate) fn emit_map_get(
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
     let cond = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", cond, inext, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        cond, bloop, bexit
+    ));
 
     let lbl = c.open(&bexit);
     c.line(&format!("{}:", lbl));
@@ -203,18 +218,23 @@ pub(crate) fn emit_map_lit(
         let kf = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
-            kf, p, i * 2
+            kf,
+            p,
+            i * 2
         ));
         c.line(&format!("  store i64 {}, ptr {}, align 8", kv, kf));
         let vf = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
-            vf, p, i * 2 + 1
+            vf,
+            p,
+            i * 2 + 1
         ));
         c.line(&format!("  store i64 {}, ptr {}, align 8", vv, vf));
     }
     let slot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -261,7 +281,10 @@ pub(crate) fn emit_map_assoc(
     let bdone = c.block_name();
     let bit = c.temp();
     c.line(&format!("  {} = icmp ne i64 {}, 0", bit, is_hamt));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", bit, bhamt, bflat));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        bit, bhamt, bflat
+    ));
     let lbl = c.open(&bhamt);
     c.line(&format!("{}:", lbl));
     mdl.ensure_decl("declare ptr @cato_hamt_assoc(ptr, i64, i64)");
@@ -274,7 +297,8 @@ pub(crate) fn emit_map_assoc(
     c.line(&format!("  {} = add i64 {}, 1", newcnt, len));
     // New header {nroot, len+1, cap=1}.
     let hslot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", hslot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", hslot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -302,7 +326,10 @@ pub(crate) fn emit_map_assoc(
     c.line(&format!("  {} = icmp sle i64 {}, 8", room, len));
     let bgrow = c.block_name();
     let bconv = c.block_name();
-    c.line(&format!("  br i1 {}, label %{}, label %{}", room, bgrow, bconv));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        room, bgrow, bconv
+    ));
     let lbl = c.open(&bgrow);
     c.line(&format!("{}:", lbl));
     // Capacity len+1 covers the replace (<= len kept) plus the new entry.
@@ -318,7 +345,10 @@ pub(crate) fn emit_map_assoc(
     let is_empty = c.temp();
     let pre = c.cur.clone();
     c.line(&format!("  {} = icmp eq i64 {}, 0", is_empty, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", is_empty, bexit, bloop));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        is_empty, bexit, bloop
+    ));
 
     let ivar = c.temp();
     let wvar = c.temp();
@@ -380,7 +410,10 @@ pub(crate) fn emit_map_assoc(
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
     let cond = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", cond, inext, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        cond, bloop, bexit
+    ));
 
     let lbl = c.open(&bexit);
     c.line(&format!("{}:", lbl));
@@ -412,7 +445,8 @@ pub(crate) fn emit_map_assoc(
 
     // New header {np, newlen, newlen}.
     let slot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -451,7 +485,8 @@ pub(crate) fn emit_map_assoc(
     let cnt2 = c.temp();
     c.line(&format!("  {} = add i64 {}, 1", cnt2, len));
     let cslot = c.temp();
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", cslot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", cslot));
     let cpf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",

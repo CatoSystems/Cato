@@ -18,7 +18,10 @@ pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Result<Ty, Str
                 Some(Ty::Vec(el)) => el,
                 Some(t) if Narrow::of_ty(t).is_some() => Elem::N(Narrow::of_ty(t).unwrap()),
                 other => {
-                    return Err(format!("unresolved vector element parameter {} ({:?})", i, other))
+                    return Err(format!(
+                        "unresolved vector element parameter {} ({:?})",
+                        i, other
+                    ))
                 }
             },
             other => other,
@@ -177,11 +180,7 @@ fn unify_adts(
 /// Resolve an instantiation of a (possibly generic) callee for the given
 /// concrete argument types. Returns the (mangled) callee name and its
 /// concrete return type. Non-generic callees pass through untouched.
-pub(crate) fn instantiate(
-    name: &str,
-    arg_tys: &[Ty],
-    ctx: &Ctx,
-) -> Result<(String, Ty), String> {
+pub(crate) fn instantiate(name: &str, arg_tys: &[Ty], ctx: &Ctx) -> Result<(String, Ty), String> {
     let raw = match ctx.raw_by_name.get(name) {
         Some(r) => r,
         None => return Err(format!("unknown function {}", name)),
@@ -211,9 +210,10 @@ pub(crate) fn instantiate(
         .iter()
         .enumerate()
         .map(|(i, p)| {
-            subs.get(i).copied().flatten().ok_or_else(|| {
-                format!("cannot infer type parameter {} of {}", p, name)
-            })
+            subs.get(i)
+                .copied()
+                .flatten()
+                .ok_or_else(|| format!("cannot infer type parameter {} of {}", p, name))
         })
         .collect::<Result<_, _>>()?;
     let mangled = format!(
@@ -252,4 +252,3 @@ pub(crate) fn instantiate(
     }
     Ok((mangled, ret))
 }
-

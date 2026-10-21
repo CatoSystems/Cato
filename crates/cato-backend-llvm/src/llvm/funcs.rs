@@ -1,6 +1,10 @@
 use super::*;
 
-pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+pub(crate) fn emit_plain(
+    defn: &Defn,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
     let mut c = FnCtx::new();
     c.fname = defn.name.clone();
     let mut params = Vec::new();
@@ -18,7 +22,15 @@ pub(crate) fn emit_plain(defn: &Defn, mdl: &mut Mdl, sigs: &HashMap<String, (Ty,
                 c.scalar.insert(pname.clone(), (r.clone(), Ty::F64));
                 params.push(format!("double {}", r));
             }
-            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+            t @ (Ty::I64
+            | Ty::I32
+            | Ty::I8
+            | Ty::I16
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize) => {
                 let r = format!("%{}", mangle(pname));
                 c.scalar.insert(pname.clone(), (r.clone(), *t));
                 params.push(format!("{} {}", Mdl::ll_scalar(*t), r));
@@ -269,7 +281,15 @@ pub(crate) fn emit_extern_decl(defn: &Defn, _mdl: &mut Mdl) -> String {
                 let _ = e;
             }
             Ty::F64 => params.push("double".to_string()),
-            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => params.push(Mdl::ll_scalar(*t).to_string()),
+            t @ (Ty::I64
+            | Ty::I32
+            | Ty::I8
+            | Ty::I16
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize) => params.push(Mdl::ll_scalar(*t).to_string()),
             Ty::F32 => params.push("float".to_string()),
             Ty::Bool => params.push("i1".to_string()),
             Ty::Str => params.push("ptr".to_string()),
@@ -304,11 +324,25 @@ pub(crate) fn seq_forms(b: &HExpr) -> Vec<HExpr> {
     }
 }
 
-pub(crate) fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>, ret: Ty) -> String {
+pub(crate) fn emit_for_ret(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+    ret: Ty,
+) -> String {
     match ret {
         Ty::F64 | Ty::F32 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
-        t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+        t @ (Ty::I64
+        | Ty::I32
+        | Ty::I8
+        | Ty::I16
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize) => {
             let _ = t;
             emit_int(e, c, mdl, sigs)
         }
@@ -322,7 +356,12 @@ pub(crate) fn emit_for_ret(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashM
     }
 }
 
-pub(crate) fn emit_stmt(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) {
+pub(crate) fn emit_stmt(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) {
     match e {
         HExpr::Call(name, args) if name == "print-f64" => {
             let v = emit_float(&args[0], c, mdl, sigs);
@@ -376,7 +415,15 @@ pub(crate) fn emit_typed(
     match ty {
         Ty::F64 | Ty::F32 => emit_float(e, c, mdl, sigs),
         Ty::Bool => emit_bool(e, c, mdl, sigs),
-        t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+        t @ (Ty::I64
+        | Ty::I32
+        | Ty::I8
+        | Ty::I16
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize) => {
             let _ = t;
             emit_int(e, c, mdl, sigs)
         }
@@ -398,44 +445,82 @@ pub(crate) fn emit_typed(
             // every `recur` store back into the loop slot, so the in-place
             // append's `len < cap` test was never true and each step
             // re-copied the whole vector — quadratic accumulation.
-            HExpr::Conj { v, x, elem, in_place } => {
+            HExpr::Conj {
+                v,
+                x,
+                elem,
+                in_place,
+            } => {
                 let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
                 let (p, l, cap) = read_grow_slot_full(&slot, c);
                 let s0 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+                    s0, p
+                ));
                 let s1 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+                    s1, s0, l
+                ));
                 let s2 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 {}, i64 {}, 2",
+                    s2, s1, cap
+                ));
                 s2
             }
             _ => {
                 let (p, l, _) = emit_vec_pair(e, c, mdl, sigs);
                 let s0 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+                    s0, p
+                ));
                 let s1 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+                    s1, s0, l
+                ));
                 let s2 = c.temp();
-                c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, l));
+                c.line(&format!(
+                    "  {} = insertvalue %VecI64 {}, i64 {}, 2",
+                    s2, s1, l
+                ));
                 s2
             }
         },
         Ty::Map => {
             let (p, l, cap) = map_val(e, c, mdl, sigs);
             let s0 = c.temp();
-            c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+            c.line(&format!(
+                "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+                s0, p
+            ));
             let s1 = c.temp();
-            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+            c.line(&format!(
+                "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+                s1, s0, l
+            ));
             let s2 = c.temp();
-            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+            c.line(&format!(
+                "  {} = insertvalue %VecI64 {}, i64 {}, 2",
+                s2, s1, cap
+            ));
             s2
         }
         Ty::Set => {
             let (p, l) = set_val(e, c, mdl, sigs);
             let s0 = c.temp();
-            c.line(&format!("  {} = insertvalue %VecI64 undef, ptr {}, 0", s0, p));
+            c.line(&format!(
+                "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+                s0, p
+            ));
             let s1 = c.temp();
-            c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+            c.line(&format!(
+                "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+                s1, s0, l
+            ));
             let s2 = c.temp();
             c.line(&format!("  {} = insertvalue %VecI64 {}, i64 0, 2", s2, s1));
             s2
@@ -467,9 +552,15 @@ pub(crate) fn emit_collection_ret(
         s0, p
     ));
     let s1 = c.temp();
-    c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 1", s1, s0, l));
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+        s1, s0, l
+    ));
     let s2 = c.temp();
-    c.line(&format!("  {} = insertvalue %VecI64 {}, i64 {}, 2", s2, s1, cap));
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 {}, i64 {}, 2",
+        s2, s1, cap
+    ));
     s2
 }
 
@@ -496,7 +587,12 @@ pub(crate) fn emit_vec_pair(
         // A slice or the process arguments in value position — returned,
         // passed, counted — through the same machinery as their let-bound
         // forms.
-        HExpr::Subvec { v, start, end, elem } => {
+        HExpr::Subvec {
+            v,
+            start,
+            end,
+            elem,
+        } => {
             let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
             read_grow_slot(&slot, *elem, c)
         }
@@ -510,7 +606,12 @@ pub(crate) fn emit_vec_pair(
             c.line(&format!("  {} = load i64, ptr {}, align 8", l, lptr));
             (arr, l, Elem::Str)
         }
-        HExpr::Conj { v, x, elem, in_place } => {
+        HExpr::Conj {
+            v,
+            x,
+            elem,
+            in_place,
+        } => {
             // A conj in value position: build through the same slot
             // machinery as a let-bound conj, then read the live header.
             let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
@@ -553,7 +654,8 @@ pub(crate) fn emit_vec_pair(
                 d
             };
             let slot = c.temp();
-            c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+            c.prelude
+                .push(format!("  {} = alloca %VecI64, align 8", slot));
             for (k, v) in [(0, np.clone()), (1, l.clone()), (2, l)] {
                 let f = c.temp();
                 c.line(&format!(
@@ -634,7 +736,16 @@ pub(crate) fn emit_vec_pair(
                     let fields = def.variants[vi as usize].1.clone();
                     let offsets = &mdl.adt_field_offsets(ai)[vi as usize];
                     for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
-                        emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
+                        emit_field_load(
+                            binder,
+                            fty,
+                            offsets[k],
+                            ai,
+                            name.clone(),
+                            scrut_ptr.clone(),
+                            c,
+                            mdl,
+                        );
                     }
                 }
                 let (p, l2, _) = emit_vec_pair(&arm.body, c, mdl, sigs);
@@ -780,16 +891,8 @@ pub(crate) fn static_int_width(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty,
         HExpr::BinW(.., t) => *t,
         HExpr::BinF(..) => Ty::F32,
         HExpr::Abs(_, t) | HExpr::Min(_, _, t) | HExpr::Max(_, _, t) => *t,
-        HExpr::Var(v) => c
-            .scalar
-            .get(v)
-            .map(|(_, t)| *t)
-            .unwrap_or(Ty::I64),
-        HExpr::Call(name, _) => sigs
-            .get(name)
-            .map(|(r, _)| *r)
-            .unwrap_or(Ty::I64),
+        HExpr::Var(v) => c.scalar.get(v).map(|(_, t)| *t).unwrap_or(Ty::I64),
+        HExpr::Call(name, _) => sigs.get(name).map(|(r, _)| *r).unwrap_or(Ty::I64),
         _ => Ty::I64,
     }
 }
-

@@ -162,10 +162,16 @@ pub(crate) fn parse_deftype_variants(
                     return Err(format!("variant {} field name must be a symbol", vname));
                 };
                 let Some(Expr::LitSym(sep)) = fitems.get(i + 1) else {
-                    return Err(format!("variant {} field {} expects (name :- ty)", vname, fname));
+                    return Err(format!(
+                        "variant {} field {} expects (name :- ty)",
+                        vname, fname
+                    ));
                 };
                 if sep != ":-" {
-                    return Err(format!("variant {} field {} expects (name :- ty)", vname, fname));
+                    return Err(format!(
+                        "variant {} field {} expects (name :- ty)",
+                        vname, fname
+                    ));
                 }
                 let Some(ty_expr) = fitems.get(i + 2) else {
                     return Err(format!("variant {} field {} expects a type", vname, fname));
@@ -290,7 +296,6 @@ pub(crate) fn lower_body_expr(
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // Ownership / borrow checking
 // ---------------------------------------------------------------------------
@@ -339,17 +344,11 @@ pub(crate) fn parse_raw(
                             ret_borrowed = true;
                             ret = parse_ty_sym(rest, tcx.adt_by_name, &mut ty_params)?;
                         } else {
-                            ret = parse_ty(
-                                &items[body_start + 1],
-                                tcx,
-                                &mut ty_params,
-                                fnsigs,
-                            )?;
+                            ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
                         }
                     }
                     _ => {
-                        ret =
-                            parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
+                        ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
                     }
                 }
                 body_start += 2;
@@ -362,9 +361,11 @@ pub(crate) fn parse_raw(
             items[body_start].clone()
         } else {
             // Multiple body forms -> implicit sequence.
-            Expr::List(std::iter::once(Expr::LitSym("do".to_string()))
-                .chain(items[body_start..].iter().cloned())
-                .collect())
+            Expr::List(
+                std::iter::once(Expr::LitSym("do".to_string()))
+                    .chain(items[body_start..].iter().cloned())
+                    .collect(),
+            )
         }
     } else {
         return Err("defn body required".into());
@@ -420,10 +421,7 @@ pub(crate) fn parse_params(
                             let (b, rest) = split_borrow(ty_sym)?;
                             (b, parse_ty_sym(rest, tcx.adt_by_name, ty_params)?)
                         }
-                        other => (
-                            Borrow::Owned,
-                            parse_ty(other, tcx, ty_params, fnsigs)?,
-                        ),
+                        other => (Borrow::Owned, parse_ty(other, tcx, ty_params, fnsigs)?),
                     };
                     let borrow = if name_borrow != Borrow::Owned {
                         name_borrow
@@ -437,7 +435,10 @@ pub(crate) fn parse_params(
                 }
             }
         }
-        return Err(format!("function parameter '{}' must have a type annotation (param :- ty)", name));
+        return Err(format!(
+            "function parameter '{}' must have a type annotation (param :- ty)",
+            name
+        ));
     }
     Ok((out, borrows))
 }
@@ -466,10 +467,7 @@ pub(crate) fn parse_ty(
                     ptys.push(parse_scalar_or_vec(p, tcx, ty_params, fnsigs)?);
                 }
                 let ret = parse_scalar_or_vec(&items[2], tcx, ty_params, fnsigs)?;
-                let sig = match fnsigs
-                    .iter()
-                    .position(|(p, r)| *p == ptys && *r == ret)
-                {
+                let sig = match fnsigs.iter().position(|(p, r)| *p == ptys && *r == ret) {
                     Some(i) => i as u32,
                     None => {
                         fnsigs.push((ptys.clone(), ret));
@@ -566,9 +564,7 @@ pub(crate) fn parse_ty_sym(
     match s {
         other => match adt_by_name.get(other) {
             Some(&i) => Ok(Ty::Adt(i)),
-            None if is_ty_param_name(other) => {
-                Ok(Ty::Param(register_ty_param(other, ty_params)))
-            }
+            None if is_ty_param_name(other) => Ok(Ty::Param(register_ty_param(other, ty_params))),
             // Lowercase unknowns are typos, not type variables: reject them
             // instead of silently genericizing the defn.
             None => Err(format!("unknown type name {}", other)),
@@ -611,7 +607,13 @@ pub(crate) fn register_ty_param(name: &str, ty_params: &mut Vec<String>) -> u32 
 pub(crate) fn vec_lit_i64(items: &[Expr]) -> Vec<i64> {
     items
         .iter()
-        .map(|e| if let Expr::LitI64(v) = e { *v } else { unreachable!() })
+        .map(|e| {
+            if let Expr::LitI64(v) = e {
+                *v
+            } else {
+                unreachable!()
+            }
+        })
         .collect()
 }
 

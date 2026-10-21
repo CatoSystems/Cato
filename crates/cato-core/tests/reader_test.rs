@@ -20,12 +20,15 @@ fn reads_atoms() {
 fn reads_bool_literals() {
     expr_eq("true", Expr::LitBool(true));
     expr_eq("false", Expr::LitBool(false));
-    expr_eq("(if true 1 2)", Expr::List(vec![
-        Expr::LitSym("if".to_string()),
-        Expr::LitBool(true),
-        Expr::LitI64(1),
-        Expr::LitI64(2),
-    ]));
+    expr_eq(
+        "(if true 1 2)",
+        Expr::List(vec![
+            Expr::LitSym("if".to_string()),
+            Expr::LitBool(true),
+            Expr::LitI64(1),
+            Expr::LitI64(2),
+        ]),
+    );
 }
 
 #[test]
@@ -48,16 +51,19 @@ fn reads_sym_special() {
 
 #[test]
 fn reads_nested() {
-    expr_eq("(defn f [x] (+ x 1))", Expr::List(vec![
-        Expr::LitSym("defn".to_string()),
-        Expr::LitSym("f".to_string()),
-        Expr::Vector(vec![Expr::LitSym("x".to_string())]),
+    expr_eq(
+        "(defn f [x] (+ x 1))",
         Expr::List(vec![
-            Expr::LitSym("+".to_string()),
-            Expr::LitSym("x".to_string()),
-            Expr::LitI64(1),
+            Expr::LitSym("defn".to_string()),
+            Expr::LitSym("f".to_string()),
+            Expr::Vector(vec![Expr::LitSym("x".to_string())]),
+            Expr::List(vec![
+                Expr::LitSym("+".to_string()),
+                Expr::LitSym("x".to_string()),
+                Expr::LitI64(1),
+            ]),
         ]),
-    ]));
+    );
 }
 
 #[test]

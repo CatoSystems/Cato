@@ -13,7 +13,10 @@ fn borrowed_return_parses() {
     // ownership checker accepts the borrowed field is Task 2's contract.
     match compile_to_program(src) {
         Ok(_) => {}
-        Err(e) => assert!(!e.contains("unknown type name"), "parser must accept &T: {e}"),
+        Err(e) => assert!(
+            !e.contains("unknown type name"),
+            "parser must accept &T: {e}"
+        ),
     }
 }
 

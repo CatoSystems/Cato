@@ -9,7 +9,11 @@ pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String
         return r;
     }
     let t = c.temp();
-    let sll = if src.is_float() { Mdl::ll_scalar(src) } else { Mdl::ll_scalar(src) };
+    let sll = if src.is_float() {
+        Mdl::ll_scalar(src)
+    } else {
+        Mdl::ll_scalar(src)
+    };
     let dll = Mdl::ll_scalar(target);
     if src.is_int() && target.is_int() {
         let (sb, db) = (src.int_bits(), target.int_bits());
@@ -31,13 +35,22 @@ pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String
         c.line(&format!("  {} = {} {} {} to {}", t, op, sll, r, dll));
     } else {
         // float <-> float
-        let op = if target == Ty::F32 { "fptrunc" } else { "fpext" };
+        let op = if target == Ty::F32 {
+            "fptrunc"
+        } else {
+            "fpext"
+        };
         c.line(&format!("  {} = {} {} {} to {}", t, op, sll, r, dll));
     }
     t
 }
 
-pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+pub(crate) fn emit_bool(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
     match e {
         HExpr::ConstB(v) => (if *v { "true" } else { "false" }).to_string(),
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
@@ -81,7 +94,10 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             let bv = emit_str_val(b, c, mdl, sigs);
             mdl.declare("declare i32 @strcmp(ptr, ptr)".to_string());
             let t = c.temp();
-            c.line(&format!("  {} = call i32 @strcmp(ptr {}, ptr {})", t, av, bv));
+            c.line(&format!(
+                "  {} = call i32 @strcmp(ptr {}, ptr {})",
+                t, av, bv
+            ));
             let z = c.temp();
             c.line(&format!(
                 "  {} = icmp {} i32 {}, 0",
@@ -98,7 +114,10 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             let bv = emit_str_val(b, c, mdl, sigs);
             mdl.declare("declare i32 @strcmp(ptr, ptr)".to_string());
             let t = c.temp();
-            c.line(&format!("  {} = call i32 @strcmp(ptr {}, ptr {})", t, av, bv));
+            c.line(&format!(
+                "  {} = call i32 @strcmp(ptr {}, ptr {})",
+                t, av, bv
+            ));
             let cc = match op {
                 CmpOp::Lt => "slt",
                 CmpOp::Gt => "sgt",
@@ -116,7 +135,10 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             let parent = c.cur.clone();
             let rhs = c.block_name();
             let merged = c.block_name();
-            c.line(&format!("  br i1 {}, label %{}, label %{}", la, rhs, merged));
+            c.line(&format!(
+                "  br i1 {}, label %{}, label %{}",
+                la, rhs, merged
+            ));
             let lbl = c.open(&rhs);
             c.line(&format!("{}:", lbl));
             let rb = emit_bool(b, c, mdl, sigs);
@@ -136,7 +158,10 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             let parent = c.cur.clone();
             let rhs = c.block_name();
             let merged = c.block_name();
-            c.line(&format!("  br i1 {}, label %{}, label %{}", la, merged, rhs));
+            c.line(&format!(
+                "  br i1 {}, label %{}, label %{}",
+                la, merged, rhs
+            ));
             let lbl = c.open(&rhs);
             c.line(&format!("{}:", lbl));
             let rb = emit_bool(b, c, mdl, sigs);
@@ -158,19 +183,24 @@ pub(crate) fn emit_bool(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<
             t
         }
         HExpr::Var(v) => {
-            let (r, _) = c.scalar.get(v).unwrap_or_else(|| panic!("codegen: unknown bool var {}", v));
+            let (r, _) = c
+                .scalar
+                .get(v)
+                .unwrap_or_else(|| panic!("codegen: unknown bool var {}", v));
             r.clone()
         }
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_bool(body, c, mdl, sigs))
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_bool(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
             }
             emit_bool(vs.last().unwrap(), c, mdl, sigs)
         }
-        HExpr::If(cond, then, els, Ty::Bool) => emit_if_node(cond, then, els, Ty::Bool, c, mdl, sigs),
+        HExpr::If(cond, then, els, Ty::Bool) => {
+            emit_if_node(cond, then, els, Ty::Bool, c, mdl, sigs)
+        }
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
         HExpr::Call(name, args) if name == "even?" => {
             let v = emit_int(&args[0], c, mdl, sigs);
@@ -232,7 +262,12 @@ pub(crate) fn emit_if_node(
 // ---------------------------------------------------------------------------
 
 /// Which ADT an expression of ADT type denotes (needed to read variant tags).
-pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+pub(crate) fn emit_int(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
     match e {
         HExpr::ConstI64(v) => v.to_string(),
         HExpr::Reduce(_) => panic!("codegen: Reduce in i64 context (rewrite bug)"),
@@ -288,11 +323,21 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 t
             } else if w.is_uint() {
                 let t = c.temp();
-                c.line(&format!("  {} = zext {} {} to i64", t, Mdl::ll_scalar(w), v));
+                c.line(&format!(
+                    "  {} = zext {} {} to i64",
+                    t,
+                    Mdl::ll_scalar(w),
+                    v
+                ));
                 t
             } else {
                 let t = c.temp();
-                c.line(&format!("  {} = sext {} {} to i64", t, Mdl::ll_scalar(w), v));
+                c.line(&format!(
+                    "  {} = sext {} {} to i64",
+                    t,
+                    Mdl::ll_scalar(w),
+                    v
+                ));
                 t
             };
             c.line(&format!("  call void @cato_print_i64(i64 {})", v64));
@@ -383,10 +428,7 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::Call(name, args) => {
             let v = call_user(name, args, c, mdl, sigs);
             // A bool-returning callee used in i64 position widens to 0/1.
-            let is_bool = sigs
-                .get(name)
-                .map(|(r, _)| *r == Ty::Bool)
-                .unwrap_or(false);
+            let is_bool = sigs.get(name).map(|(r, _)| *r == Ty::Bool).unwrap_or(false);
             if is_bool {
                 let t = c.temp();
                 c.line(&format!("  {} = zext i1 {} to i64", t, v));
@@ -395,9 +437,9 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
                 v
             }
         }
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_int(body, c, mdl, sigs))
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_int(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             // `(do s… e)` yields `e`; only a statement-only tail yields 0.
             let Some((last, init)) = vs.split_last() else {
@@ -426,7 +468,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp slt i32 {}, 0", lt, v));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, neg, v));
+            c.line(&format!(
+                "  {} = select i1 {}, i32 {}, i32 {}",
+                t, lt, neg, v
+            ));
             t
         }
         HExpr::Min(a, b, Ty::I32) => {
@@ -435,7 +480,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp slt i32 {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, i32 {}, i32 {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Max(a, b, Ty::I32) => {
@@ -444,7 +492,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp sgt i32 {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i32 {}, i32 {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, i32 {}, i32 {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Abs(e, _) => {
@@ -454,7 +505,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp slt i64 {}, 0", lt, v));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, neg, v));
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 {}",
+                t, lt, neg, v
+            ));
             t
         }
         HExpr::Min(a, b, _) => {
@@ -463,7 +517,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp slt i64 {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Max(a, b, _) => {
@@ -472,7 +529,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let lt = c.temp();
             c.line(&format!("  {} = icmp sgt i64 {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
@@ -490,9 +550,9 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  call void @cato_exit(i64 {})", v));
             "0".to_string()
         }
-        HExpr::ToStr(_, _) | HExpr::ParseNum { .. } | HExpr::Slurp(_) | HExpr::Args => panic!(
-            "codegen: string/Option/vector result must be bound with let"
-        ),
+        HExpr::ToStr(_, _) | HExpr::ParseNum { .. } | HExpr::Slurp(_) | HExpr::Args => {
+            panic!("codegen: string/Option/vector result must be bound with let")
+        }
         HExpr::StrNth { s, idx, .. } => {
             // Bounds-checked byte load, branchless: clamp the index with a
             // select before the GEP so out-of-range reads (and negatives)
@@ -505,7 +565,10 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             let inb = c.temp();
             c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, len));
             let safe = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 0",
+                safe, inb, iv
+            ));
             let p = c.temp();
             c.line(&format!(
                 "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
@@ -519,8 +582,13 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
             c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", r, inb, z));
             r
         }
-        HExpr::And(..) | HExpr::Or(..) | HExpr::Not(..)
-        | HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::CmpW(..) | HExpr::SetContains { .. }
+        HExpr::And(..)
+        | HExpr::Or(..)
+        | HExpr::Not(..)
+        | HExpr::StrCmp(..)
+        | HExpr::StrOrd(..)
+        | HExpr::CmpW(..)
+        | HExpr::SetContains { .. }
         | HExpr::ConstB(..) => {
             // Bool value in i64 position: widen 0/1 (e.g. print-i64 of a test).
             let b = emit_bool(e, c, mdl, sigs);
@@ -539,13 +607,13 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
         HExpr::Clone(inner) => emit_int(inner, c, mdl, sigs),
         HExpr::DropStmt(_) => "0".to_string(),
         HExpr::StrLit(_) => panic!("codegen: string literal in i64 context"),
-        HExpr::Conj { .. } | HExpr::Subvec { .. } | HExpr::For { .. } => panic!(
-            "codegen: heap vector value must be bound with let"
-        ),
+        HExpr::Conj { .. } | HExpr::Subvec { .. } | HExpr::For { .. } => {
+            panic!("codegen: heap vector value must be bound with let")
+        }
         HExpr::StrCat(_) => panic!("codegen: str result must be bound with let"),
-        HExpr::MapLit(_) | HExpr::MapAssoc { .. } => panic!(
-            "codegen: map value must be bound with let"
-        ),
+        HExpr::MapLit(_) | HExpr::MapAssoc { .. } => {
+            panic!("codegen: map value must be bound with let")
+        }
         HExpr::MapGet { .. } => emit_map_get(e, c, mdl, sigs),
         HExpr::ClosureCall { .. } => emit_closure_call(e, c, mdl, sigs),
         HExpr::Closure { .. } => {
@@ -578,16 +646,11 @@ pub(crate) fn emit_int(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<S
     .to_string()
 }
 
-
 /// Can this expression only denote a vector (never a string)? Used to
 /// route `count` results: vector values contribute their length, string
 /// values their byte length. Calls resolve through the signature table,
 /// control flow through its annotation, and lets through the body.
-fn count_expr_is_vec(
-    e: &HExpr,
-    c: &FnCtx,
-    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-) -> bool {
+fn count_expr_is_vec(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> bool {
     match e {
         HExpr::Call(name, _) => {
             matches!(sigs.get(name), Some((Ty::Vec(_), _)))
@@ -611,7 +674,10 @@ fn count_expr_is_vec(
                 .any(|(n, _, t)| n == v && matches!(t, Ty::Vec(_))),
             b => count_expr_is_vec(b, c, sigs),
         },
-        HExpr::Seq(vs) => vs.last().map(|x| count_expr_is_vec(x, c, sigs)).unwrap_or(false),
+        HExpr::Seq(vs) => vs
+            .last()
+            .map(|x| count_expr_is_vec(x, c, sigs))
+            .unwrap_or(false),
         HExpr::Var(v) => c.vecs.contains_key(v) || c.grow.contains_key(v),
         _ => false,
     }

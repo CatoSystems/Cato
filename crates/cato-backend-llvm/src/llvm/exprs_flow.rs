@@ -1,16 +1,19 @@
 use super::*;
 
-pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) -> String {
+pub(crate) fn emit_float(
+    e: &HExpr,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) -> String {
     match e {
         HExpr::ConstF64(v) => llvm_f64(*v),
         HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-                emit_float(body, c, mdl, sigs)
-            })
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_float(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -30,7 +33,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 BinOp::Mul => "fmul",
                 BinOp::Div => "fdiv",
                 BinOp::Rem => "frem",
-                o => panic!("codegen: integer-only {:?} on floats (lowering rejects it)", o),
+                o => panic!(
+                    "codegen: integer-only {:?} on floats (lowering rejects it)",
+                    o
+                ),
             };
             let t = c.temp();
             c.line(&format!("  {} = {} float {}, {}", t, op, av, bv));
@@ -45,7 +51,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 BinOp::Mul => "fmul",
                 BinOp::Div => "fdiv",
                 BinOp::Rem => "frem",
-                o => panic!("codegen: integer-only {:?} on floats (lowering rejects it)", o),
+                o => panic!(
+                    "codegen: integer-only {:?} on floats (lowering rejects it)",
+                    o
+                ),
             };
             let t = c.temp();
             c.line(&format!("  {} = {} double {}, {}", t, op, av, bv));
@@ -73,11 +82,9 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
                 call_user(name, args, c, mdl, sigs)
             }
         }
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-                emit_float(body, c, mdl, sigs)
-            })
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_float(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -97,7 +104,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             let lt = c.temp();
             c.line(&format!("  {} = fcmp olt double {}, 0.000000e+00", lt, v));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, neg, v));
+            c.line(&format!(
+                "  {} = select i1 {}, double {}, double {}",
+                t, lt, neg, v
+            ));
             t
         }
         HExpr::Min(a, b, _) => {
@@ -106,7 +116,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             let lt = c.temp();
             c.line(&format!("  {} = fcmp olt double {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, double {}, double {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Max(a, b, _) => {
@@ -115,7 +128,10 @@ pub(crate) fn emit_float(e: &HExpr, c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap
             let lt = c.temp();
             c.line(&format!("  {} = fcmp ogt double {}, {}", lt, av, bv));
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, double {}, double {}", t, lt, av, bv));
+            c.line(&format!(
+                "  {} = select i1 {}, double {}, double {}",
+                t, lt, av, bv
+            ));
             t
         }
         HExpr::Match { .. } => emit_match_node(e, c, mdl, sigs),
@@ -250,9 +266,7 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
         HExpr::Var(v) => v == name,
         HExpr::Conj { v, x, .. } => arg_reads_var(v, name) || arg_reads_var(x, name),
         HExpr::Subvec { v, start, end, .. } => {
-            arg_reads_var(v, name)
-                || arg_reads_var(start, name)
-                || arg_reads_var(end, name)
+            arg_reads_var(v, name) || arg_reads_var(start, name) || arg_reads_var(end, name)
         }
         HExpr::StrCat(vs) => vs.iter().any(|a| arg_reads_var(a, name)),
         HExpr::BinW(_, a, b, _) | HExpr::CmpW(_, a, b, _) | HExpr::BinF(_, a, b) => {
@@ -265,19 +279,22 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
         HExpr::MapAssoc { m, k, v } => {
             arg_reads_var(m, name) || arg_reads_var(k, name) || arg_reads_var(v, name)
         }
-        HExpr::MapGet { src, key, default, .. } => {
+        HExpr::MapGet {
+            src, key, default, ..
+        } => {
             arg_reads_var(src, name)
                 || arg_reads_var(key, name)
-                || default.as_ref().map(|d| arg_reads_var(d, name)).unwrap_or(false)
+                || default
+                    .as_ref()
+                    .map(|d| arg_reads_var(d, name))
+                    .unwrap_or(false)
         }
         HExpr::SetLit(vs) => vs.iter().any(|a| arg_reads_var(a, name)),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
             arg_reads_var(s, name) || arg_reads_var(x, name)
         }
         HExpr::Subs { s, start, end } => {
-            arg_reads_var(s, name)
-                || arg_reads_var(start, name)
-                || arg_reads_var(end, name)
+            arg_reads_var(s, name) || arg_reads_var(start, name) || arg_reads_var(end, name)
         }
         HExpr::Split { s, sep } => arg_reads_var(s, name) || arg_reads_var(sep, name),
         HExpr::Join { sep, xs } => arg_reads_var(sep, name) || arg_reads_var(xs, name),
@@ -289,47 +306,54 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
         HExpr::Exit(c) => arg_reads_var(c, name),
         HExpr::Count(v) => arg_reads_var(v, name),
         HExpr::Clone(inner) => arg_reads_var(inner, name),
-        HExpr::Closure { captures, .. } => {
-            captures.iter().any(|(n, _)| n == name)
-        }
+        HExpr::Closure { captures, .. } => captures.iter().any(|(n, _)| n == name),
         HExpr::ClosureCall { f, args, .. } => {
             arg_reads_var(f, name) || args.iter().any(|a| arg_reads_var(a, name))
         }
         HExpr::Call(_, args) => args.iter().any(|a| arg_reads_var(a, name)),
         HExpr::Ctor { args, .. } => args.iter().any(|a| arg_reads_var(a, name)),
         HExpr::Match { scrut, arms, .. } => {
-            arg_reads_var(scrut, name)
-                || arms.iter().any(|a| arg_reads_var(&a.body, name))
+            arg_reads_var(scrut, name) || arms.iter().any(|a| arg_reads_var(&a.body, name))
         }
-        HExpr::Get { src, idx, default, .. } => {
+        HExpr::Get {
+            src, idx, default, ..
+        } => {
             arg_reads_var(src, name)
                 || arg_reads_var(idx, name)
-                || default.as_ref().map(|d| arg_reads_var(d, name)).unwrap_or(false)
+                || default
+                    .as_ref()
+                    .map(|d| arg_reads_var(d, name))
+                    .unwrap_or(false)
         }
         HExpr::If(c, t, f, _) => {
-            arg_reads_var(c, name)
-                || arg_reads_var(t, name)
-                || arg_reads_var(f, name)
+            arg_reads_var(c, name) || arg_reads_var(t, name) || arg_reads_var(f, name)
         }
         HExpr::Let(binds, body, _) => {
-            binds.iter().any(|(_, v, _)| arg_reads_var(v, name))
-                || arg_reads_var(body, name)
+            binds.iter().any(|(_, v, _)| arg_reads_var(v, name)) || arg_reads_var(body, name)
         }
         HExpr::Seq(vs) => vs.iter().any(|v| arg_reads_var(v, name)),
         HExpr::And(a, b) | HExpr::Or(a, b) => arg_reads_var(a, name) || arg_reads_var(b, name),
         HExpr::Not(v) | HExpr::Abs(v, _) | HExpr::DropStmt(v) => arg_reads_var(v, name),
-        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => arg_reads_var(a, name) || arg_reads_var(b, name),
+        HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => {
+            arg_reads_var(a, name) || arg_reads_var(b, name)
+        }
         HExpr::Recur(args, _) => args.iter().any(|a| arg_reads_var(a, name)),
         HExpr::Loop { binds, body, .. } => {
-            binds.iter().any(|(_, _, i)| arg_reads_var(i, name))
-                || arg_reads_var(body, name)
+            binds.iter().any(|(_, _, i)| arg_reads_var(i, name)) || arg_reads_var(body, name)
         }
         HExpr::For { src, body, .. } => arg_reads_var(src, name) || arg_reads_var(body, name),
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline { init, src, .. } => {
                 arg_reads_var(init, name) || source_reads_var(src, name)
             }
-            HReduce::Closure { init, src, body, maps, filters, .. } => {
+            HReduce::Closure {
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
+            } => {
                 arg_reads_var(init, name)
                     || source_reads_var(src, name)
                     || arg_reads_var(body, name)
@@ -341,8 +365,12 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
             arg_reads_var(a, name) || arg_reads_var(b, name)
         }
         HExpr::CharStr(c) => arg_reads_var(c, name),
-        HExpr::ConstI64(_) | HExpr::ConstF64(_) | HExpr::ConstB(_) | HExpr::StrLit(_)
-        | HExpr::VecLit(_) | HExpr::Args => false,
+        HExpr::ConstI64(_)
+        | HExpr::ConstF64(_)
+        | HExpr::ConstB(_)
+        | HExpr::StrLit(_)
+        | HExpr::VecLit(_)
+        | HExpr::Args => false,
     }
 }
 
@@ -369,7 +397,10 @@ fn emit_loop_tail(
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> Option<String> {
-    let (slots, head) = c.loop_frame.clone().expect("codegen: loop tail outside loop");
+    let (slots, head) = c
+        .loop_frame
+        .clone()
+        .expect("codegen: loop tail outside loop");
     match e {
         HExpr::Recur(args, drops) => {
             // `(recur ... (conj v x) ...)` where the i-th argument is exactly
@@ -389,9 +420,7 @@ fn emit_loop_tail(
                 }
             }
             let mut vals: Vec<(String, String, Ty)> = Vec::with_capacity(args.len());
-            for (ai, (a, (name, slot, vty))) in
-                args.iter().zip(slots.iter()).enumerate()
-            {
+            for (ai, (a, (name, slot, vty))) in args.iter().zip(slots.iter()).enumerate() {
                 let self_update = match a {
                     HExpr::Conj { v, .. } => matches!(&**v, HExpr::Var(n) if n == name),
                     _ => false,
@@ -474,7 +503,12 @@ fn emit_loop_tail(
                     let r = c.temp();
                     c.line(&format!(
                         "  {} = phi {} [ {}, %{} ], [ {}, %{} ]",
-                        r, lty, tv, tp.unwrap(), ev, ep.unwrap()
+                        r,
+                        lty,
+                        tv,
+                        tp.unwrap(),
+                        ev,
+                        ep.unwrap()
                     ));
                     Some(r)
                 }

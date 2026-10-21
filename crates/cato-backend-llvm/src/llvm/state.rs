@@ -67,7 +67,10 @@ impl Mdl {
             Some(l[at..end].to_string())
         };
         let dup = match sym(&line) {
-            Some(s) => self.decls.iter().any(|d| sym(d).as_deref() == Some(s.as_str())),
+            Some(s) => self
+                .decls
+                .iter()
+                .any(|d| sym(d).as_deref() == Some(s.as_str())),
             None => self.decls.contains(&line),
         };
         if !dup {
@@ -172,10 +175,7 @@ impl Mdl {
         let id = self.counter;
         self.counter += 1;
         let label = format!("@g_str_{}", id);
-        let mut items: Vec<String> = s
-            .bytes()
-            .map(|b| format!("i8 {}", b))
-            .collect();
+        let mut items: Vec<String> = s.bytes().map(|b| format!("i8 {}", b)).collect();
         items.push("i8 0".to_string()); // NUL terminator
         self.vec_globals.push(format!(
             "{} = private unnamed_addr constant [{} x i8] [{}]",
@@ -221,10 +221,22 @@ impl Mdl {
     /// One element's store: its LLVM type at its own alignment (a narrow
     /// element is not 8-byte aligned — claiming `align 8` would be UB).
     pub(crate) fn elem_store(&self, e: Elem, v: &str, p: &str) -> String {
-        format!("  store {} {}, ptr {}, align {}", self.elem_ll(e), v, p, e.bytes())
+        format!(
+            "  store {} {}, ptr {}, align {}",
+            self.elem_ll(e),
+            v,
+            p,
+            e.bytes()
+        )
     }
     pub(crate) fn elem_load(&self, e: Elem, dst: &str, p: &str) -> String {
-        format!("  {} = load {}, ptr {}, align {}", dst, self.elem_ll(e), p, e.bytes())
+        format!(
+            "  {} = load {}, ptr {}, align {}",
+            dst,
+            self.elem_ll(e),
+            p,
+            e.bytes()
+        )
     }
     pub(crate) fn globals(&self) -> &[String] {
         &self.vec_globals

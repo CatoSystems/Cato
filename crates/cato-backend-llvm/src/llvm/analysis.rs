@@ -35,15 +35,14 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::BinF(_, a, b) => has_ctl(a) || has_ctl(b),
         HExpr::ICast(inner, _, _) => has_ctl(inner),
         HExpr::StrCat(args) => args.iter().any(has_ctl),
-        HExpr::MapLit(pairs) => pairs
-            .iter()
-            .any(|(k, v)| has_ctl(k) || has_ctl(v)),
+        HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
-        HExpr::MapGet { src, key, default, res } => {
-            has_ctl(src)
-                || has_ctl(key)
-                || default.as_deref().map(has_ctl).unwrap_or(false)
-        }
+        HExpr::MapGet {
+            src,
+            key,
+            default,
+            res,
+        } => has_ctl(src) || has_ctl(key) || default.as_deref().map(has_ctl).unwrap_or(false),
         HExpr::SetLit(vs) => vs.iter().any(has_ctl),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
             has_ctl(s) || has_ctl(x)
@@ -65,17 +64,33 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         }
         HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
-        HExpr::Var(_) | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_)
+        HExpr::Var(_)
+        | HExpr::ConstI64(_)
+        | HExpr::ConstB(_)
+        | HExpr::ConstF64(_)
         | HExpr::VecLit(_) => false,
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
         HExpr::Reduce(r) => match &**r {
-            HReduce::Pipeline { init, maps, filters, src, .. } => {
+            HReduce::Pipeline {
+                init,
+                maps,
+                filters,
+                src,
+                ..
+            } => {
                 has_ctl(init)
                     || has_ctl_source(src)
                     || maps.iter().any(|m| has_ctl(&m.body))
                     || filters.iter().any(|f| has_ctl(&f.body))
             }
-            HReduce::Closure { init, src, body, maps, filters, .. } => {
+            HReduce::Closure {
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
+            } => {
                 has_ctl(init)
                     || has_ctl_source(src)
                     || has_ctl(body)
@@ -109,7 +124,11 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
         }
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline {
-                init, maps, filters, src, ..
+                init,
+                maps,
+                filters,
+                src,
+                ..
             } => {
                 collect_vars(init, f);
                 walk_source(src, f);
@@ -161,7 +180,10 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
                 collect_vars(v, f);
             }
         }
-        HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_)
+        HExpr::ConstI64(_)
+        | HExpr::ConstB(_)
+        | HExpr::ConstF64(_)
+        | HExpr::VecLit(_)
         | HExpr::StrLit(_) => {}
         HExpr::StrCmp(_, a, b) => {
             collect_vars(a, f);
@@ -225,7 +247,12 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(k, f);
             collect_vars(v, f);
         }
-        HExpr::MapGet { src, key, default, res } => {
+        HExpr::MapGet {
+            src,
+            key,
+            default,
+            res,
+        } => {
             collect_vars(src, f);
             collect_vars(key, f);
             if let Some(d) = default {
@@ -258,7 +285,9 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             // The lambda body is emitted out of line; captures are read
             // into the env here and are already emitted by the let.
         }
-        HExpr::ClosureCall { f: callee, args, .. } => {
+        HExpr::ClosureCall {
+            f: callee, args, ..
+        } => {
             collect_vars(callee, f);
             for a in args {
                 collect_vars(a, f);
@@ -268,12 +297,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(v, f);
             collect_vars(x, f);
         }
-        HExpr::Subvec {
-            v,
-            start,
-            end,
-            ..
-        } => {
+        HExpr::Subvec { v, start, end, .. } => {
             collect_vars(v, f);
             collect_vars(start, f);
             collect_vars(end, f);

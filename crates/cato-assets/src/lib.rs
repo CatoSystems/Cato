@@ -74,11 +74,7 @@ define_target!(
     ]
 );
 #[cfg(cato_macos_assets)]
-define_target!(
-    X86_64_MACOS,
-    "x86_64-macos",
-    ["runtime.o", "libSystem.tbd"]
-);
+define_target!(X86_64_MACOS, "x86_64-macos", ["runtime.o", "libSystem.tbd"]);
 #[cfg(cato_macos_assets)]
 define_target!(
     AARCH64_MACOS,
@@ -141,7 +137,13 @@ mod tests {
             ] {
                 assert!(names.contains(&req), "{t} missing {req}: {names:?}");
             }
-            assert!(!a.files.iter().find(|(n, _)| *n == "runtime.o").unwrap().1.is_empty());
+            assert!(!a
+                .files
+                .iter()
+                .find(|(n, _)| *n == "runtime.o")
+                .unwrap()
+                .1
+                .is_empty());
         }
     }
 

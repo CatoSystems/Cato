@@ -119,7 +119,12 @@ pub(crate) fn lower_cmp(op: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Resul
     ))
 }
 
-pub(crate) fn lower_and_or(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+pub(crate) fn lower_and_or(
+    kind: &str,
+    items: &[Expr],
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<HExpr, String> {
     if items.len() != 3 {
         return Err(format!("{} expects 2 operands", kind));
     }
@@ -158,7 +163,12 @@ pub(crate) fn lower_abs(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     Ok(HExpr::Abs(Box::new(e), t))
 }
 
-pub(crate) fn lower_min_max(kind: &str, items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, String> {
+pub(crate) fn lower_min_max(
+    kind: &str,
+    items: &[Expr],
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<HExpr, String> {
     if items.len() != 3 {
         return Err(format!("{} expects 2 operands", kind));
     }
@@ -203,7 +213,12 @@ pub(crate) fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                 res,
             });
         }
-        other => return Err(format!("get source must be a vector or map, got {:?}", other)),
+        other => {
+            return Err(format!(
+                "get source must be a vector or map, got {:?}",
+                other
+            ))
+        }
     };
     let idx = lower(&items[2], env, ctx)?;
     let default = match items.get(3) {
@@ -320,7 +335,10 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                     return Err(format!("let binding {} expects a type after :-", name));
                 };
                 let Some(value_form) = binds.get(i + 3) else {
-                    return Err(format!("let binding {} expects a value after the type", name));
+                    return Err(format!(
+                        "let binding {} expects a value after the type",
+                        name
+                    ));
                 };
                 let t = resolve_ann_ty(ann, ctx)?;
                 let value = lower_expect(value_form, &child, ctx, Some(t))?;
@@ -356,8 +374,6 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     };
     Ok(HExpr::Let(resolved, Box::new(body), Vec::new()))
 }
-
-
 
 /// Does every path through `e` end in a `recur`? Such an expression never
 /// completes with a value, so an `if` with it on one side takes the other

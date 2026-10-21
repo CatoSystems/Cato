@@ -11,8 +11,7 @@ fn bin() -> &'static str {
 }
 
 fn scratch(label: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("cato-fmt-cli-{}-{}", std::process::id(), label));
+    let dir = std::env::temp_dir().join(format!("cato-fmt-cli-{}-{}", std::process::id(), label));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -35,7 +34,10 @@ fn format_rewrites_in_place_and_is_quiet() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(out.stdout.is_empty(), "stdout should be empty in rewrite mode");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty in rewrite mode"
+    );
     assert!(out.stderr.is_empty(), "stderr should be empty on success");
     assert_eq!(fs::read_to_string(&file).unwrap(), NEAT);
     // A second run changes nothing (idempotent through the CLI).
@@ -57,7 +59,12 @@ fn check_mode_reports_and_writes_nothing() {
         .args(["format", "--check", file.to_str().unwrap()])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(1), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(fs::read(&file).unwrap(), before, "--check must not write");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
@@ -75,7 +82,12 @@ fn check_mode_clean_file_exits_zero() {
         .args(["format", "--check", file.to_str().unwrap()])
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(out.stdout.is_empty(), "clean check should print nothing");
 }
 
@@ -90,11 +102,18 @@ fn width_flag_controls_breaking() {
         .args(["format", "--width", "40", file.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let formatted = fs::read_to_string(&file).unwrap();
     let expected = cato_fmt::format_source(src, 40).unwrap();
     assert_eq!(formatted, expected);
-    assert!(formatted.lines().count() > 1, "width 40 should break the form:\n{formatted}");
+    assert!(
+        formatted.lines().count() > 1,
+        "width 40 should break the form:\n{formatted}"
+    );
 }
 
 #[test]
@@ -125,7 +144,10 @@ fn unknown_flag_exits_two_with_suggestion() {
         .unwrap();
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("--check"), "suggestion expected, got: {stderr}");
+    assert!(
+        stderr.contains("--check"),
+        "suggestion expected, got: {stderr}"
+    );
 }
 
 #[test]
@@ -137,15 +159,27 @@ fn stdin_dash_formats_to_stdout() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(MESSY.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(MESSY.as_bytes())
+        .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), NEAT);
 }
 
 #[test]
 fn missing_file_exits_one() {
-    let out = Command::new(bin()).args(["format", "nope.cato"]).output().unwrap();
+    let out = Command::new(bin())
+        .args(["format", "nope.cato"])
+        .output()
+        .unwrap();
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cato: "), "got: {stderr}");
@@ -156,7 +190,10 @@ fn missing_file_exits_one() {
 fn help_lists_format() {
     let out = Command::new(bin()).arg("help").output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("format"), "help should list format:\n{stdout}");
+    assert!(
+        stdout.contains("format"),
+        "help should list format:\n{stdout}"
+    );
 }
 
 #[test]
@@ -174,8 +211,16 @@ fn malformed_file_exits_one_and_keeps_other_files() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cato: "), "got: {stderr}");
     assert!(stderr.contains("bad.cato"), "got: {stderr}");
-    assert_eq!(fs::read_to_string(&good).unwrap(), NEAT, "later files still formatted");
-    assert_eq!(fs::read_to_string(&bad).unwrap(), "(defn f [\n", "bad file untouched");
+    assert_eq!(
+        fs::read_to_string(&good).unwrap(),
+        NEAT,
+        "later files still formatted"
+    );
+    assert_eq!(
+        fs::read_to_string(&bad).unwrap(),
+        "(defn f [\n",
+        "bad file untouched"
+    );
 }
 
 #[test]
@@ -187,7 +232,12 @@ fn check_mode_on_stdin_reports_change_without_writing() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(MESSY.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(MESSY.as_bytes())
+        .unwrap();
     let out = child.wait_with_output().unwrap();
     assert_eq!(
         out.status.code(),
@@ -196,7 +246,11 @@ fn check_mode_on_stdin_reports_change_without_writing() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert_eq!(stdout.trim(), "-", "stdout must be only the operand, got: {stdout}");
+    assert_eq!(
+        stdout.trim(),
+        "-",
+        "stdout must be only the operand, got: {stdout}"
+    );
     assert!(
         !stdout.contains("defn"),
         "check mode must not print formatted source, got: {stdout}"
@@ -212,10 +266,23 @@ fn check_mode_on_clean_stdin_exits_zero() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(NEAT.as_bytes()).unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(NEAT.as_bytes())
+        .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(0), "stderr: {}", String::from_utf8_lossy(&out.stderr));
-    assert!(out.stdout.is_empty(), "clean stdin check should print nothing");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "clean stdin check should print nothing"
+    );
 }
 
 #[test]
@@ -229,11 +296,18 @@ fn rewrite_replaces_file_atomically() {
         .args(["format", file.to_str().unwrap()])
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     // Atomic replacement (rename over the original) changes the inode;
     // truncate-in-place would keep it. No temp debris may remain.
     let ino_after = fs::metadata(&file).unwrap().ino();
-    assert_ne!(ino_before, ino_after, "rewrite must replace via rename, not truncate-in-place");
+    assert_ne!(
+        ino_before, ino_after,
+        "rewrite must replace via rename, not truncate-in-place"
+    );
     assert_eq!(fs::read_to_string(&file).unwrap(), NEAT);
     let entries: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
     assert_eq!(entries.len(), 1, "no temp files may be left behind");

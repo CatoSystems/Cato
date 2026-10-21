@@ -30,11 +30,22 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         HExpr::Let(_, body, _) => adt_of(body, c, sigs),
         // The loop's recorded completing type.
         HExpr::Loop { ty: Ty::Adt(i), .. } => *i,
-        HExpr::StrNth { res: Some(Ty::Adt(i)), .. }
-        | HExpr::Get { res: Some(Ty::Adt(i)), .. }
-        | HExpr::MapGet { res: Some(Ty::Adt(i)), .. } => *i,
+        HExpr::StrNth {
+            res: Some(Ty::Adt(i)),
+            ..
+        }
+        | HExpr::Get {
+            res: Some(Ty::Adt(i)),
+            ..
+        }
+        | HExpr::MapGet {
+            res: Some(Ty::Adt(i)),
+            ..
+        } => *i,
         // parse-i64/parse-f64: the runtime's Option box, typed by `res`.
-        HExpr::ParseNum { res: Ty::Adt(i), .. } => *i,
+        HExpr::ParseNum {
+            res: Ty::Adt(i), ..
+        } => *i,
         other => panic!("codegen: expected an ADT value, got {:?}", other),
     }
 }
@@ -54,19 +65,33 @@ pub(crate) fn emit_adt(
             .unwrap_or_else(|| panic!("codegen: unknown ADT var {}", v)),
         // Option-returning lookups are inline ADT values in any position
         // (e.g. a match scrutinee).
-        HExpr::StrNth { s, idx, res: Some(res_ty) } => {
+        HExpr::StrNth {
+            s,
+            idx,
+            res: Some(res_ty),
+        } => {
             if let Ty::Adt(adt) = res_ty {
                 return emit_strnth_opt(s, idx, *adt, c, mdl, sigs);
             }
             panic!("codegen: StrNth Option result must be an ADT")
         }
-        HExpr::Get { src, idx, res: Some(res_ty), .. } => {
+        HExpr::Get {
+            src,
+            idx,
+            res: Some(res_ty),
+            ..
+        } => {
             if let Ty::Adt(adt) = res_ty {
                 return emit_get_opt(src, idx, *adt, c, mdl, sigs);
             }
             panic!("codegen: Get Option result must be an ADT")
         }
-        HExpr::MapGet { src, key, res: Some(res_ty), .. } => {
+        HExpr::MapGet {
+            src,
+            key,
+            res: Some(res_ty),
+            ..
+        } => {
             if let Ty::Adt(adt) = res_ty {
                 return emit_map_get_opt(src, key, *adt, c, mdl, sigs);
             }
@@ -94,8 +119,21 @@ pub(crate) fn emit_adt(
             c.line(&format!("  store i64 {}, ptr {}, align 8", variant, t_tg));
             let def = mdl.adts[*adt as usize].clone();
             let offsets = &mdl.adt_field_offsets(*adt)[*variant as usize];
-            for (k, (arg, fty)) in args.iter().zip(def.variants[*variant as usize].1.iter()).enumerate() {
-                emit_field_store(arg, fty, offsets[k], name.clone(), slot.clone(), c, mdl, sigs);
+            for (k, (arg, fty)) in args
+                .iter()
+                .zip(def.variants[*variant as usize].1.iter())
+                .enumerate()
+            {
+                emit_field_store(
+                    arg,
+                    fty,
+                    offsets[k],
+                    name.clone(),
+                    slot.clone(),
+                    c,
+                    mdl,
+                    sigs,
+                );
             }
             slot
         }
@@ -108,9 +146,7 @@ pub(crate) fn emit_adt(
                 let r = c.temp();
                 c.line(&format!(
                     "  {} = call ptr @clone__{}(ptr {})",
-                    r,
-                    mdl.adts[ai as usize].name,
-                    v
+                    r, mdl.adts[ai as usize].name, v
                 ));
                 return r;
             }
@@ -127,9 +163,9 @@ pub(crate) fn emit_adt(
         HExpr::If(cond, then, els, Ty::Adt(i)) => {
             emit_if_node(cond, then, els, Ty::Adt(*i), c, mdl, sigs)
         }
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| emit_adt(body, c, mdl, sigs))
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_adt(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -184,7 +220,16 @@ pub(crate) fn emit_arm_exit_free(
 
 /// A pending arm exit, run at a `recur` that leaves the arm.
 pub(crate) fn emit_pending_exit(pe: &PendingExit, c: &mut FnCtx, mdl: &mut Mdl) {
-    emit_exit_free_parts(&pe.skip, pe.variant, &pe.binders, &pe.scrut_ptr, pe.ai, &pe.name, c, mdl);
+    emit_exit_free_parts(
+        &pe.skip,
+        pe.variant,
+        &pe.binders,
+        &pe.scrut_ptr,
+        pe.ai,
+        &pe.name,
+        c,
+        mdl,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -290,7 +335,16 @@ pub(crate) fn emit_match_node(
             let fields = def.variants[vi as usize].1.clone();
             let offsets = &mdl.adt_field_offsets(ai)[vi as usize];
             for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
-                emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
+                emit_field_load(
+                    binder,
+                    fty,
+                    offsets[k],
+                    ai,
+                    name.clone(),
+                    scrut_ptr.clone(),
+                    c,
+                    mdl,
+                );
             }
         }
         let v = emit_typed(&arm.body, *ty, c, mdl, sigs);
@@ -343,7 +397,13 @@ pub(crate) fn emit_match_in_loop(
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-    loop_tail: &dyn Fn(&HExpr, Ty, &mut FnCtx, &mut Mdl, &HashMap<String, (Ty, Vec<Ty>)>) -> Option<String>,
+    loop_tail: &dyn Fn(
+        &HExpr,
+        Ty,
+        &mut FnCtx,
+        &mut Mdl,
+        &HashMap<String, (Ty, Vec<Ty>)>,
+    ) -> Option<String>,
 ) -> Option<String> {
     let HExpr::Match { scrut, arms, ty } = e else {
         panic!("codegen: emit_match_in_loop on non-match")
@@ -394,7 +454,16 @@ pub(crate) fn emit_match_in_loop(
             let fields = def.variants[vi as usize].1.clone();
             let offsets = &mdl.adt_field_offsets(ai)[vi as usize];
             for (k, (binder, fty)) in arm.binders.iter().zip(fields.iter()).enumerate() {
-                emit_field_load(binder, fty, offsets[k], ai, name.clone(), scrut_ptr.clone(), c, mdl);
+                emit_field_load(
+                    binder,
+                    fty,
+                    offsets[k],
+                    ai,
+                    name.clone(),
+                    scrut_ptr.clone(),
+                    c,
+                    mdl,
+                );
             }
         }
         // A `recur` inside this arm leaves it: register the arm's exit
@@ -639,7 +708,9 @@ pub(crate) fn emit_field_load(
                 let t_k = c.temp();
                 c.line(&format!(
                     "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
-                    t_k, name, scrut_ptr,
+                    t_k,
+                    name,
+                    scrut_ptr,
                     off + k
                 ));
                 let t_l = c.temp();
@@ -668,8 +739,7 @@ pub(crate) fn emit_field_load(
                 c.scalar.insert(binder.to_string(), (t_p, Ty::Adt(*j)));
             } else {
                 // Bind a pointer into the parent's embedded region.
-                c.scalar
-                    .insert(binder.to_string(), (t_f, Ty::Adt(*j)));
+                c.scalar.insert(binder.to_string(), (t_f, Ty::Adt(*j)));
             }
             let _ = ai;
         }
@@ -677,16 +747,9 @@ pub(crate) fn emit_field_load(
     }
 }
 
-
 /// A heap copy of a possibly-static vector: str elements strdup via
 /// cato_str_vec_copy, numerics memcpy into a fresh same-length buffer.
-fn heap_copy_vec(
-    p: &str,
-    l: &str,
-    elem: Elem,
-    c: &mut FnCtx,
-    mdl: &mut Mdl,
-) -> String {
+fn heap_copy_vec(p: &str, l: &str, elem: Elem, c: &mut FnCtx, mdl: &mut Mdl) -> String {
     if elem == Elem::Str {
         mdl.ensure_decl("declare ptr @cato_str_vec_copy(ptr, i64, i64)");
         let d = c.temp();
@@ -886,25 +949,15 @@ fn copy_field(
                 ));
                 out.push_str(&format!("  %vl{u}k{k} = load i64, ptr %vf{u}k{k}\n"));
             }
-            out.push_str(&format!(
-                "  %vptr{u} = inttoptr i64 %vl{u}k0 to ptr\n"
-            ));
+            out.push_str(&format!("  %vptr{u} = inttoptr i64 %vl{u}k0 to ptr\n"));
             if *elem == Elem::Str {
                 out.push_str(&format!(
                     "  %vcp{u} = call ptr @cato_str_vec_copy(ptr %vptr{u}, i64 %vl{u}k1, i64 %vl{u}k2)\n"
                 ));
             } else {
-                out.push_str(&format!(
-                    "  %vnb{u} = mul i64 %vl{u}k2, {}\n",
-                    elem.bytes()
-                ));
-                out.push_str(&format!(
-                    "  %vcp{u} = call ptr @malloc(i64 %vnb{u})\n"
-                ));
-                out.push_str(&format!(
-                    "  %vcb{u} = mul i64 %vl{u}k1, {}\n",
-                    elem.bytes()
-                ));
+                out.push_str(&format!("  %vnb{u} = mul i64 %vl{u}k2, {}\n", elem.bytes()));
+                out.push_str(&format!("  %vcp{u} = call ptr @malloc(i64 %vnb{u})\n"));
+                out.push_str(&format!("  %vcb{u} = mul i64 %vl{u}k1, {}\n", elem.bytes()));
                 out.push_str(&format!(
                     "  call void @llvm.memcpy.p0.p0.i64(ptr %vcp{u}, ptr %vptr{u}, i64 %vcb{u}, i1 false, i1 false)\n"
                 ));
@@ -915,22 +968,14 @@ fn copy_field(
                     off + k
                 ));
                 if k == 0 {
-                    out.push_str(&format!(
-                        "  %vni{u}k{k} = ptrtoint ptr %vcp{u} to i64\n"
-                    ));
-                    out.push_str(&format!(
-                        "  store i64 %vni{u}k{k}, ptr %vd{u}k{k}\n"
-                    ));
+                    out.push_str(&format!("  %vni{u}k{k} = ptrtoint ptr %vcp{u} to i64\n"));
+                    out.push_str(&format!("  store i64 %vni{u}k{k}, ptr %vd{u}k{k}\n"));
                 } else {
-                    out.push_str(&format!(
-                        "  store i64 %vl{u}k{k}, ptr %vd{u}k{k}\n"
-                    ));
+                    out.push_str(&format!("  store i64 %vl{u}k{k}, ptr %vd{u}k{k}\n"));
                 }
             }
         }
-        Ty::Adt(j)
-            if boxed.get(*j as usize).copied().unwrap_or(false) =>
-        {
+        Ty::Adt(j) if boxed.get(*j as usize).copied().unwrap_or(false) => {
             // Owning boxed child: clone recursively.
             let child = &adts[*j as usize].name;
             out.push_str(&format!(

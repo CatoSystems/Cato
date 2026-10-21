@@ -141,7 +141,10 @@ pub fn run(args: &[String]) {
 /// over the original, so a failed write never truncates the user's file.
 fn write_atomic(path: &str, contents: &str) -> std::io::Result<()> {
     let p = std::path::Path::new(path);
-    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let tmp = p.with_file_name(format!("{}.cato-fmt-{}.tmp", name, std::process::id()));
     std::fs::write(&tmp, contents)?;
     if let Err(e) = std::fs::rename(&tmp, p) {

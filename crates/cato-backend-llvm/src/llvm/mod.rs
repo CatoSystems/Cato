@@ -3,15 +3,15 @@
 //! construction. All items are crate-internal; the public surface is
 //! `LlvmBackend` plus the legacy free functions re-exported by the crate root.
 
-mod comprehension;
 mod adt;
-mod closures;
 mod analysis;
 mod calls;
+mod closures;
+mod comprehension;
 mod emit_loop;
 mod exprs;
-mod exprs_val;
 mod exprs_flow;
+mod exprs_val;
 mod fnctx;
 mod funcs;
 mod heap_map;
@@ -23,27 +23,27 @@ mod rewrite;
 mod state;
 
 pub(crate) use adt::*;
-pub(crate) use intops::*;
-pub(crate) use closures::*;
-pub(crate) use comprehension::*;
 pub(crate) use analysis::*;
 pub(crate) use calls::*;
+pub(crate) use closures::*;
+pub(crate) use comprehension::*;
 pub(crate) use emit_loop::*;
 pub(crate) use exprs::*;
-pub(crate) use exprs_val::*;
 pub(crate) use exprs_flow::*;
+pub(crate) use exprs_val::*;
 pub(crate) use fnctx::*;
 pub(crate) use funcs::*;
 pub(crate) use heap_map::*;
 pub(crate) use heap_set::*;
 pub(crate) use heap_vec::*;
+pub(crate) use intops::*;
 pub(crate) use loops_spec::*;
 pub(crate) use rewrite::*;
 pub(crate) use state::*;
 
 use cato_core::hir::*;
-use cato_core::{hir::AdtDef, hir::Defn, Backend};
 use cato_core::Lambda;
+use cato_core::{hir::AdtDef, hir::Defn, Backend};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -72,7 +72,13 @@ pub fn emit_module_fast(
     let mut loops: Vec<LoopSpec> = Vec::new();
     let mut idmap: HashMap<String, usize> = HashMap::new();
     let mut plain: Vec<Defn> = Vec::new();
-    let mut mdl = Mdl::new(adts.to_vec(), fast, fn_sigs.to_vec(), lambdas.to_vec(), threads);
+    let mut mdl = Mdl::new(
+        adts.to_vec(),
+        fast,
+        fn_sigs.to_vec(),
+        lambdas.to_vec(),
+        threads,
+    );
     for d in fns.iter().filter(|d| d.is_extern && d.ret == Ty::Str) {
         mdl.extern_str.insert(d.name.clone(), d.ret_owned);
     }

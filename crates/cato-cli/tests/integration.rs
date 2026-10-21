@@ -29,8 +29,12 @@ fn compile_produces_running_binary() {
     let bin = manifest.join("../../target/cli_build_demo");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("-o").arg(&bin)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "compile failed");
 
     let out = Command::new(&bin).output().expect("run built binary");
@@ -58,12 +62,19 @@ fn run_native_matches_interpreter() {
 
     let bin = manifest.join("../../target/cli_runparity_bin");
     let status = Command::new(cato)
-        .arg("compile").arg(&src).arg("-o").arg(&bin)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "compile failed");
     let native = Command::new(&bin).output().expect("native run");
-    assert!(native.status.success(), "native run failed: {}",
-        String::from_utf8_lossy(&native.stderr));
+    assert!(
+        native.status.success(),
+        "native run failed: {}",
+        String::from_utf8_lossy(&native.stderr)
+    );
 
     assert_eq!(
         String::from_utf8_lossy(&interp.stdout),
@@ -81,9 +92,14 @@ fn compile_keeps_ir_with_emit_ll() {
     let ll = manifest.join("../../target/cli_emitll_demo.ll");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("-o").arg(&bin)
-        .arg("--emit-ll").arg(&ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .arg("--emit-ll")
+        .arg(&ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "compile failed");
 
     let ir = std::fs::read_to_string(&ll).expect("emit-ll file");
@@ -106,9 +122,13 @@ fn compile_honors_opt_level_and_asan_flags() {
 
     for extra in [&["-O0"][..], &["--opt-level", "3"][..], &["--asan"][..]] {
         let status = Command::new(cato)
-            .arg("compile").arg(&src).arg("-o").arg(&bin)
+            .arg("compile")
+            .arg(&src)
+            .arg("-o")
+            .arg(&bin)
             .args(extra)
-            .status().expect("cato compile");
+            .status()
+            .expect("cato compile");
         assert!(status.success(), "compile with {:?} failed", extra);
         let out = Command::new(&bin).output().expect("run built binary");
         assert_eq!(String::from_utf8_lossy(&out.stdout), "2.5\n20\n");
@@ -129,10 +149,12 @@ fn interp_driver_needs_no_c_compiler() {
         .env("CC", "/no/such/compiler")
         .output()
         .expect("interp run");
-    assert!(out.status.success(), "interp run must not need a C compiler");
+    assert!(
+        out.status.success(),
+        "interp run must not need a C compiler"
+    );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "2.5\n20\n");
 }
-
 
 #[test]
 fn cli_rejects_dangling_o_flag() {
@@ -144,7 +166,10 @@ fn cli_rejects_dangling_o_flag() {
         .args(["-o"])
         .output()
         .expect("run binary");
-    assert!(!out.status.success(), "expected -o without filename to fail");
+    assert!(
+        !out.status.success(),
+        "expected -o without filename to fail"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("-o requires a filename"), "got: {}", stderr);
 }
@@ -174,13 +199,22 @@ fn compiles_slice_to_expected_output() {
     let exe = manifest.join("../../target/slice_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang link failed");
 
     let out = Command::new(&exe).output().expect("run binary");
@@ -192,18 +226,31 @@ fn compile_and_run(src_name: &str, src: &str) -> String {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src_path = manifest.join("../../target").join(src_name);
     std::fs::write(&src_path, src).expect("write source");
-    let out_ll = manifest.join("../../target").join(format!("{}.ll", src_name));
+    let out_ll = manifest
+        .join("../../target")
+        .join(format!("{}.ll", src_name));
     let rt = manifest.join("../../runtime/runtime.c");
-    let exe = manifest.join("../../target").join(format!("{}_bin", src_name));
+    let exe = manifest
+        .join("../../target")
+        .join(format!("{}_bin", src_name));
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src_path).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src_path)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang link failed");
 
     let out = Command::new(&exe).output().expect("run binary");
@@ -291,10 +338,7 @@ fn compiles_loops_to_expected_output() {
 fn compiles_options_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/options.cato")).unwrap();
-    assert_eq!(
-        compile_and_run("options", &src),
-        "41\n7\n99\n1.5\n10\n1\n"
-    );
+    assert_eq!(compile_and_run("options", &src), "41\n7\n99\n1.5\n10\n1\n");
 }
 
 #[test]
@@ -375,20 +419,28 @@ fn compiles_sets_to_expected_output() {
     let exe = manifest.join("../../target/sets_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang link failed");
 
     let out = Command::new(&exe).output().expect("run binary");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        stdout,
-        "3\n1\n0\n3\n0\n1\n3\nb\na-b-c\nb-\n",
+        stdout, "3\n1\n0\n3\n0\n1\n3\nb\na-b-c\nb-\n",
         "sets.cato output"
     );
 }
@@ -424,20 +476,28 @@ fn compiles_widths2_to_expected_output() {
     let exe = manifest.join("../../target/widths2_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang link failed");
 
     let out = Command::new(&exe).output().expect("run binary");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert_eq!(
-        stdout,
-        "44\n99\n-56\n4294967295\n1\n0\n4464\n0.1\n7\n2.5\n",
+        stdout, "44\n99\n-56\n4294967295\n1\n0\n4464\n0.1\n7\n2.5\n",
         "widths2.cato output"
     );
 }
@@ -448,28 +508,57 @@ fn compiles_widths2_to_expected_output() {
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let rt = manifest.join("../../runtime/runtime.c");
-    for name in ["heap", "maps", "sets", "slice", "narrow_vectors", "intops", "closures_escape", "lending", "mem/ffi_own"] {
+    for name in [
+        "heap",
+        "maps",
+        "sets",
+        "slice",
+        "narrow_vectors",
+        "intops",
+        "closures_escape",
+        "lending",
+        "mem/ffi_own",
+    ] {
         // (mem/ cases are covered by their own sanitizer tests below)
-        let src = manifest.join("../../examples").join(format!("{}.cato", name));
+        let src = manifest
+            .join("../../examples")
+            .join(format!("{}.cato", name));
         let stem = name.replace('/', "_");
-        let out_ll = manifest.join("../../target").join(format!("frees_{}.ll", stem));
-        let exe = manifest.join("../../target").join(format!("frees_{}_bin", stem));
+        let out_ll = manifest
+            .join("../../target")
+            .join(format!("frees_{}.ll", stem));
+        let exe = manifest
+            .join("../../target")
+            .join(format!("frees_{}_bin", stem));
 
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-            .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
-            .status().expect("cato compile");
+            .arg("compile")
+            .arg(&src)
+            .args(["--emit-ir", "--asan", "-o"])
+            .arg(&out_ll)
+            .status()
+            .expect("cato compile");
         assert!(status.success(), "{}: cato compile failed", name);
 
         let cc = Command::new("clang")
             .args(["-fsanitize=address"])
-            .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-            .status().expect("clang link");
+            .arg(&out_ll)
+            .arg(&rt)
+            .arg("-o")
+            .arg(&exe)
+            .status()
+            .expect("clang link");
         assert!(cc.success(), "{}: clang failed", name);
 
         let out = Command::new(&exe).output().expect("run binary");
         assert!(out.status.success(), "{}: binary failed", name);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(!stderr.contains("AddressSanitizer"), "{}: sanitizer error:\n{}", name, stderr);
+        assert!(
+            !stderr.contains("AddressSanitizer"),
+            "{}: sanitizer error:\n{}",
+            name,
+            stderr
+        );
     }
 }
 
@@ -493,10 +582,7 @@ fn compiles_options2_to_expected_output() {
 fn compiles_strvec_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = std::fs::read_to_string(manifest.join("../../examples/strvec.cato")).unwrap();
-    assert_eq!(
-        compile_and_run("strvec", &src),
-        "3\n4\n5\nd\n!\na\n"
-    );
+    assert_eq!(compile_and_run("strvec", &src), "3\n4\n5\nd\n!\na\n");
 }
 
 #[test]
@@ -508,20 +594,32 @@ fn strvec_is_sanitizer_clean() {
     let exe = manifest.join("../../target/strvec_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--asan", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
         .args(["-fsanitize=address"])
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang failed");
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+    assert!(
+        !stderr.contains("AddressSanitizer"),
+        "sanitizer error:\n{}",
+        stderr
+    );
 }
 
 #[test]
@@ -533,21 +631,33 @@ fn vec_field_adt_is_sanitizer_clean() {
     let exe = manifest.join("../../target/vec_field_adt_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--asan", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
         .args(["-fsanitize=address"])
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang failed");
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+    assert!(
+        !stderr.contains("AddressSanitizer"),
+        "sanitizer error:\n{}",
+        stderr
+    );
 }
 
 #[test]
@@ -559,21 +669,33 @@ fn moved_param_return_is_sanitizer_clean_without_opt() {
     let exe = manifest.join("../../target/moved_param_return_bin");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "--no-opt", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--asan", "--no-opt", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let cc = Command::new("clang")
         .args(["-fsanitize=address"])
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang failed");
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+    assert!(
+        !stderr.contains("AddressSanitizer"),
+        "sanitizer error:\n{}",
+        stderr
+    );
 }
 
 // A move transfers the drop duty: the source binding frees nothing, the
@@ -585,13 +707,21 @@ fn move_transfers_the_drop_duty_exactly_once() {
     let out_ll = manifest.join("../../target/moved_param_transfer.ll");
 
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--no-opt", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
     let ir = std::fs::read_to_string(&out_ll).unwrap();
     let count = ir.matches("call void @drop__").count();
-    assert_eq!(count, 1, "the returned box must be dropped exactly once (in the final consumer), IR:\n{}", ir);
+    assert_eq!(
+        count, 1,
+        "the returned box must be dropped exactly once (in the final consumer), IR:\n{}",
+        ir
+    );
 }
 
 // Phase 13: frees are annotated in HIR for non-escaping bindings.
@@ -627,8 +757,14 @@ fn non_escaping_bindings_get_free_annotations() {
     let frees: Vec<&Vec<String>> = lets(&main.body);
     assert!(!frees.is_empty(), "expected annotated lets");
     let names: Vec<String> = frees.iter().flat_map(|f| f.iter().cloned()).collect();
-    assert!(names.contains(&"m".to_string()), "map binding should be freed");
-    assert!(names.contains(&"s".to_string()), "set binding should be freed");
+    assert!(
+        names.contains(&"m".to_string()),
+        "map binding should be freed"
+    );
+    assert!(
+        names.contains(&"s".to_string()),
+        "set binding should be freed"
+    );
 }
 
 // Phase 18: `(parallel (reduce ...))` — chunked across pthreads, same
@@ -643,12 +779,22 @@ fn parallel_reduce_matches_sequential() {
         let out_ll = manifest.join("../../target/par_test.ll");
         let exe = manifest.join("../../target/par_test_bin");
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-            .arg("compile").arg(&src).args(["--threads", t]).arg("--emit-ir").arg("-o").arg(&out_ll)
-            .status().expect("cato compile");
+            .arg("compile")
+            .arg(&src)
+            .args(["--threads", t])
+            .arg("--emit-ir")
+            .arg("-o")
+            .arg(&out_ll)
+            .status()
+            .expect("cato compile");
         assert!(status.success(), "cato compile failed");
         let cc = Command::new("clang")
-            .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-            .status().expect("clang link");
+            .arg(&out_ll)
+            .arg(&rt)
+            .arg("-o")
+            .arg(&exe)
+            .status()
+            .expect("clang link");
         assert!(cc.success(), "clang link failed");
         let out = Command::new(&exe).output().expect("run binary");
         assert!(out.status.success(), "binary failed at {} threads", t);
@@ -668,9 +814,16 @@ fn parallel_reduce_matches_sequential() {
 fn parallel_rejects_unqualified_reduces() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let bad = manifest.join("../../target/par_bad.cato");
-    std::fs::write(&bad, "(defn main [] :- i64 (parallel (reduce (fn [a x] (- a x)) 0 (vec-i64 1 2 3))))").unwrap();
+    std::fs::write(
+        &bad,
+        "(defn main [] :- i64 (parallel (reduce (fn [a x] (- a x)) 0 (vec-i64 1 2 3))))",
+    )
+    .unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&bad).output().expect("run binary");
+        .arg("compile")
+        .arg(&bad)
+        .output()
+        .expect("run binary");
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("identity init"), "got: {}", stderr);
@@ -694,7 +847,11 @@ fn repl_evaluates_forms() {
     let out = child.wait_with_output().expect("repl output");
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("#'user/sq"), "got: {}", stdout);
-    assert!(stdout.contains("user=> "), "clojure-style prompt: {}", stdout);
+    assert!(
+        stdout.contains("user=> "),
+        "clojure-style prompt: {}",
+        stdout
+    );
     assert!(stdout.contains("\n144"), "got: {}", stdout);
     assert!(stdout.contains("\n7"), "got: {}", stdout);
 }
@@ -706,9 +863,13 @@ fn build_and_run_native(name: &str, src: &str, extra: &[&str]) -> std::process::
     std::fs::write(&src_path, src).expect("write source");
     let exe = manifest.join("../../target").join(format!("{name}_bin"));
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src_path).arg("-o").arg(&exe)
+        .arg("compile")
+        .arg(&src_path)
+        .arg("-o")
+        .arg(&exe)
         .args(extra)
-        .status().expect("cato compile");
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed for {name}");
     let out = Command::new(&exe).output().expect("run binary");
     let _ = std::fs::remove_file(&exe);
@@ -727,7 +888,11 @@ fn do_block_yields_its_last_value_natively() {
         &[],
     );
     assert_eq!(String::from_utf8_lossy(&out.stdout), "x\n");
-    assert_eq!(out.status.code(), Some(2), "the do block's value is the exit status");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "the do block's value is the exit status"
+    );
 }
 
 // Re-binding an owned (Vector str) in the same let (`[a (split ..) a
@@ -787,13 +952,25 @@ fn narrow_vectors_store_at_element_width() {
     let src = manifest.join("../../examples/narrow_vectors.cato");
     let out_ll = manifest.join("../../target/narrow_vectors_width.ll");
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--no-opt", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--no-opt", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success());
     let ir = std::fs::read_to_string(&out_ll).unwrap();
-    assert!(ir.contains("private constant [3 x i8] [i8 1, i8 2, i8 250]"), "u8 literal not narrow:\n{}", ir);
+    assert!(
+        ir.contains("private constant [3 x i8] [i8 1, i8 2, i8 250]"),
+        "u8 literal not narrow:\n{}",
+        ir
+    );
     assert!(ir.contains("load i8, ptr") && !ir.contains("load i8, ptr %t0, align 8"));
-    assert!(!ir.lines().any(|l| l.contains("load i8") && l.contains("align 8")), "byte load claims 8-byte alignment");
+    assert!(
+        !ir.lines()
+            .any(|l| l.contains("load i8") && l.contains("align 8")),
+        "byte load claims 8-byte alignment"
+    );
 }
 
 // `recur` is a scope exit: every loop shape in loop_drops.cato frees what
@@ -807,17 +984,29 @@ fn loop_drops_are_sanitizer_clean() {
     let out_ll = manifest.join("../../target/loop_drops.ll");
     let exe = manifest.join("../../target/loop_drops_bin");
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--asan", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success(), "cato compile failed");
     let cc = Command::new("clang")
         .args(["-O0", "-fsanitize=address", "-w"])
-        .arg(&out_ll).arg(&rt).arg("-o").arg(&exe)
-        .status().expect("clang link");
+        .arg(&out_ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang link");
     assert!(cc.success(), "clang failed");
     let out = Command::new(&exe).output().expect("run binary");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!stderr.contains("AddressSanitizer"), "sanitizer error:\n{}", stderr);
+    assert!(
+        !stderr.contains("AddressSanitizer"),
+        "sanitizer error:\n{}",
+        stderr
+    );
     assert!(out.status.success(), "binary failed");
     assert_eq!(String::from_utf8_lossy(&out.stdout), "345800\n21\n");
 }
@@ -831,32 +1020,48 @@ fn mem_examples_leave_nothing_live() {
     let root = manifest.join("../..");
     let dylib = root.join("target/alloc_live_test.dylib");
     let cc = Command::new("clang")
-        .args(["-dynamiclib", "-O2", "-o"]).arg(&dylib)
+        .args(["-dynamiclib", "-O2", "-o"])
+        .arg(&dylib)
         .arg(root.join("tools/alloc_live.c"))
-        .status().expect("build alloc_live");
+        .status()
+        .expect("build alloc_live");
     assert!(cc.success());
     for name in ["loop_drops", "ffi_own"] {
         let exe = root.join(format!("target/{}_live_bin", name));
         let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-            .arg("compile").arg(root.join(format!("examples/mem/{}.cato", name))).arg("-o").arg(&exe)
-            .status().expect("cato compile");
+            .arg("compile")
+            .arg(root.join(format!("examples/mem/{}.cato", name)))
+            .arg("-o")
+            .arg(&exe)
+            .status()
+            .expect("cato compile");
         assert!(status.success());
         let out = Command::new(&exe)
             .env("DYLD_INSERT_LIBRARIES", &dylib)
-            .output().expect("run");
+            .output()
+            .expect("run");
         let stderr = String::from_utf8_lossy(&out.stderr);
         let live: i64 = stderr
             .lines()
-            .find_map(|l| l.strip_prefix("LIVE_EXIT ").map(|v| v.trim().parse().unwrap()))
+            .find_map(|l| {
+                l.strip_prefix("LIVE_EXIT ")
+                    .map(|v| v.trim().parse().unwrap())
+            })
             .unwrap_or_else(|| panic!("{}: no LIVE_EXIT line:\n{}", name, stderr));
-        assert!(live < 200_000, "{}: {} bytes still live at exit", name, live);
+        assert!(
+            live < 200_000,
+            "{}: {} bytes still live at exit",
+            name,
+            live
+        );
     }
 }
 
 #[test]
 fn compiles_closures_escape_to_expected_output() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(manifest.join("../../examples/closures_escape.cato")).unwrap();
+    let src =
+        std::fs::read_to_string(manifest.join("../../examples/closures_escape.cato")).unwrap();
     assert_eq!(compile_and_run("closures_escape", &src), "8\n111\n5\n");
 }
 
@@ -877,11 +1082,19 @@ fn vector_values_in_value_position() {
 fn integer_division_by_zero_traps() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let src = manifest.join("../../target/div0_trap.cato");
-    std::fs::write(&src, "(defn d [a :- i64 b :- i64] :- i64 (/ a b))\n(defn main [] (print-i64 (d 7 0)))\n").unwrap();
+    std::fs::write(
+        &src,
+        "(defn d [a :- i64 b :- i64] :- i64 (/ a b))\n(defn main [] (print-i64 (d 7 0)))\n",
+    )
+    .unwrap();
     let exe = manifest.join("../../target/div0_trap_bin");
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(&src).arg("-o").arg(&exe)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("cato compile");
     assert!(status.success());
     let out = Command::new(&exe).output().expect("run");
     assert!(!out.status.success(), "division by zero must not exit 0");
@@ -895,13 +1108,19 @@ fn asan_ir_carries_sanitize_address() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let out_ll = manifest.join("../../target/asan_attr.ll");
     let status = Command::new(env!("CARGO_BIN_EXE_cato"))
-        .arg("compile").arg(manifest.join("../../examples/heap.cato"))
-        .args(["--emit-ir", "--asan", "-o"]).arg(&out_ll)
-        .status().expect("cato compile");
+        .arg("compile")
+        .arg(manifest.join("../../examples/heap.cato"))
+        .args(["--emit-ir", "--asan", "-o"])
+        .arg(&out_ll)
+        .status()
+        .expect("cato compile");
     assert!(status.success());
     let ir = std::fs::read_to_string(&out_ll).unwrap();
     assert!(ir.contains("sanitize_address"));
-    assert!(ir.lines().filter(|l| l.starts_with("define ")).all(|l| l.contains("#9001")));
+    assert!(ir
+        .lines()
+        .filter(|l| l.starts_with("define "))
+        .all(|l| l.contains("#9001")));
 }
 
 #[test]

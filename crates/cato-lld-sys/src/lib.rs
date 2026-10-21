@@ -51,9 +51,15 @@ pub fn link(flavor: Flavor, argv: &[&CStr]) -> Result<(), String> {
         let err = if out_err.is_null() {
             "lld failed".to_string()
         } else {
-            let s = unsafe { CStr::from_ptr(out_err) }.to_string_lossy().to_string();
+            let s = unsafe { CStr::from_ptr(out_err) }
+                .to_string_lossy()
+                .to_string();
             unsafe { cato_lld_free_err(out_err) };
-            if s.is_empty() { "lld failed".to_string() } else { s }
+            if s.is_empty() {
+                "lld failed".to_string()
+            } else {
+                s
+            }
         };
         Err(err)
     }

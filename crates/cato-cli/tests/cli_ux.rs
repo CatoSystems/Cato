@@ -32,7 +32,11 @@ fn help_is_on_stdout_and_exits_zero() {
         assert!(out.stderr.is_empty(), "{} must not print to stderr", help);
         let text = String::from_utf8_lossy(&out.stdout);
         assert!(text.contains("USAGE"), "{} must show usage", help);
-        assert!(text.contains("EXIT STATUS"), "{} must document exit codes", help);
+        assert!(
+            text.contains("EXIT STATUS"),
+            "{} must document exit codes",
+            help
+        );
     }
 }
 
@@ -42,14 +46,23 @@ fn no_args_shows_friendly_banner() {
     assert_eq!(out.status.code(), Some(2), "no args is a usage error");
     assert!(out.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("quick start"), "banner must guide: {}", stderr);
+    assert!(
+        stderr.contains("quick start"),
+        "banner must guide: {}",
+        stderr
+    );
     assert!(stderr.contains("--help"), "banner must point at help");
 }
 
 #[test]
 fn unknown_flag_suggests_closest_match() {
     let src = demo_source();
-    let out = cato().arg("compile").arg(&src).arg("--emit-irr").output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-irr")
+        .output()
+        .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -77,7 +90,11 @@ fn bare_file_requires_subcommand() {
     assert!(out.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("subcommand required"), "got: {}", stderr);
-    assert!(stderr.contains("cato compile"), "must suggest compile: {}", stderr);
+    assert!(
+        stderr.contains("cato compile"),
+        "must suggest compile: {}",
+        stderr
+    );
 }
 
 // The retired build command gets an explicit migration message.
@@ -117,7 +134,12 @@ fn help_documents_contract_surface() {
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     for needle in ["cato compile", "--rtlib", "--runtime", "EXIT STATUS"] {
-        assert!(text.contains(needle), "help must document {:?}:\n{}", needle, text);
+        assert!(
+            text.contains(needle),
+            "help must document {:?}:\n{}",
+            needle,
+            text
+        );
     }
     assert!(
         text.contains("forwarded verbatim"),
@@ -134,9 +156,12 @@ fn help_documents_contract_surface() {
 #[test]
 fn emit_ir_and_emit_ll_together_rejected() {
     let src = demo_source();
-    let out = cato().arg("compile").arg(&src)
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
         .args(["--emit-ir", "--emit-ll", "/tmp/should_not_exist_x.ll"])
-        .output().expect("run cato");
+        .output()
+        .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("--emit-ir"), "got: {}", stderr);
@@ -146,7 +171,12 @@ fn emit_ir_and_emit_ll_together_rejected() {
 #[test]
 fn two_positional_files_are_rejected() {
     let src = demo_source();
-    let out = cato().arg("compile").arg(&src).arg(&src).output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg(&src)
+        .output()
+        .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -166,12 +196,22 @@ fn check_mode_summarizes_on_stderr() {
         .parent()
         .unwrap()
         .join("target/ux_bin_demo");
-    let out = cato().arg("compile").arg(&src).arg("-o").arg(&bin).output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .expect("run cato");
     assert!(out.status.success());
     assert!(out.stdout.is_empty(), "stdout must stay clean");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("compiled"), "got: {}", stderr);
-    assert!(stderr.contains("ms"), "summary should include timing: {}", stderr);
+    assert!(
+        stderr.contains("ms"),
+        "summary should include timing: {}",
+        stderr
+    );
     let _ = std::fs::remove_file(&bin);
 }
 
@@ -198,7 +238,12 @@ fn exit_code_tiers() {
 #[test]
 fn short_flag_typo_suggests_opt_level() {
     let src = demo_source();
-    let out = cato().arg("compile").arg(&src).arg("-O").output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("-O")
+        .output()
+        .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("did you mean '-O2'"), "got: {}", stderr);
@@ -225,7 +270,11 @@ fn subcommands_answer_help_and_reject_stray_args() {
     }
     for sub in ["repl", "lsp"] {
         let out = cato().arg(sub).arg("extra").output().expect("run cato");
-        assert_eq!(out.status.code(), Some(2), "{sub} with an argument is a usage error");
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{sub} with an argument is a usage error"
+        );
     }
 }
 
@@ -237,21 +286,33 @@ fn toolchain_failures_name_the_compiler() {
     let src = demo_source();
     let bin = std::env::temp_dir().join(format!("cato_ux_cc_{}", std::process::id()));
     let missing = cato()
-        .arg("compile").arg(&src).arg("-o").arg(&bin)
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
         .args(["--cc", "/definitely/not/a/cc"])
-        .output().expect("run cato");
+        .output()
+        .expect("run cato");
     assert_eq!(missing.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&missing.stderr);
     assert!(stderr.contains("'/definitely/not/a/cc'"), "got: {}", stderr);
     assert!(stderr.contains("--cc"), "must point at the fix: {}", stderr);
 
     let failing = cato()
-        .arg("compile").arg(&src).arg("-o").arg(&bin)
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
         .args(["--cc", "false"])
-        .output().expect("run cato");
+        .output()
+        .expect("run cato");
     assert_eq!(failing.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&failing.stderr);
-    assert!(stderr.contains("false exited with status 1"), "got: {}", stderr);
+    assert!(
+        stderr.contains("false exited with status 1"),
+        "got: {}",
+        stderr
+    );
     assert!(!stderr.contains("exit exit"), "got: {}", stderr);
     assert_eq!(stderr.matches("cato:").count(), 1, "one lead: {}", stderr);
 }
@@ -265,13 +326,20 @@ fn diagnostics_point_at_the_failing_subform() {
         .parent()
         .unwrap()
         .join("target/ux_errloc.cato");
-    std::fs::write(&bad, "(defn main [] :- i64\n  (let [a 1]\n    (+ a \"x\")))\n")
-        .expect("write bad");
+    std::fs::write(
+        &bad,
+        "(defn main [] :- i64\n  (let [a 1]\n    (+ a \"x\")))\n",
+    )
+    .expect("write bad");
     let out = cato().arg("compile").arg(&bad).output().expect("run cato");
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("ux_errloc.cato:3:5"), "got: {}", stderr);
-    assert!(stderr.contains("(+ a \"x\")"), "snippet shows the form: {}", stderr);
+    assert!(
+        stderr.contains("(+ a \"x\")"),
+        "snippet shows the form: {}",
+        stderr
+    );
 }
 
 // Ownership errors point at the offending occurrence, not the defn.
@@ -296,5 +364,9 @@ fn ownership_errors_point_at_the_occurrence() {
     assert_eq!(out.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("use of moved value xs"), "got: {}", stderr);
-    assert!(stderr.contains("ux_errloc_move.cato:5:26"), "got: {}", stderr);
+    assert!(
+        stderr.contains("ux_errloc_move.cato:5:26"),
+        "got: {}",
+        stderr
+    );
 }

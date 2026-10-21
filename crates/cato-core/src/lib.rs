@@ -13,7 +13,9 @@ pub mod opt;
 pub mod reader;
 
 pub use ast::Expr;
-pub use hir::{adt_total_slots, compute_adt_facts, compute_boxed, field_slot_count, AdtDef, AdtFacts, Defn};
+pub use hir::{
+    adt_total_slots, compute_adt_facts, compute_boxed, field_slot_count, AdtDef, AdtFacts, Defn,
+};
 
 /// A closure body emitted out-of-line by code backends: the calling
 /// convention is `@lambda_N(ptr env, params...) -> ret`, where `env` points
@@ -73,8 +75,7 @@ pub fn compile_named_with(file: &str, src: &str, optimize: bool) -> Result<Progr
         let located = expand_file(file, src, "", &mut ctx)?;
         // The prelude defines `print` as a multimethod over the builtin
         // types; it participates in the same pipeline as user code.
-        let (prelude_forms, _) = reader::read_all_spanned(PRELUDE)
-            .map_err(|e| e.msg)?;
+        let (prelude_forms, _) = reader::read_all_spanned(PRELUDE).map_err(|e| e.msg)?;
         let located: Vec<_> = prelude_forms
             .into_iter()
             .map(|f| (f, crate::ast::Span::default()))
@@ -412,11 +413,13 @@ fn expand_file(
     // Register this file's text so its spans render against it, not the
     // entry file, and stamp the id onto every span the reader produced.
     let fid = diagnostics::register_source(file, src);
-    let (all_forms, all_spans) = reader::read_all_spanned(src)
-        .map_err(|e| {
-            let span = crate::ast::Span { file: fid, ..e.span };
-            diagnostics::locate(span, &e.msg)
-        })?;
+    let (all_forms, all_spans) = reader::read_all_spanned(src).map_err(|e| {
+        let span = crate::ast::Span {
+            file: fid,
+            ..e.span
+        };
+        diagnostics::locate(span, &e.msg)
+    })?;
     let all_spans: Vec<crate::ast::Span> = all_spans
         .into_iter()
         .map(|s| crate::ast::Span { file: fid, ..s })
@@ -429,10 +432,7 @@ fn expand_file(
                 match items.get(1) {
                     Some(Expr::LitSym(name)) => {
                         if ctx.ns.contains(name) {
-                            return Err(diagnostics::locate(
-                                s,
-                                &format!("duplicate ns {}", name),
-                            ));
+                            return Err(diagnostics::locate(s, &format!("duplicate ns {}", name)));
                         }
                         ctx.ns.push(name.clone());
                     }

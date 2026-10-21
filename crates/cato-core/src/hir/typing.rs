@@ -66,7 +66,12 @@ pub(crate) fn fit_literal(e: HExpr, want: Ty) -> Result<HExpr, String> {
 }
 
 /// A literal operand adopts the width of the other operand.
-pub(crate) fn fit_operands(a: HExpr, b: HExpr, env: &Env, ctx: &Ctx) -> Result<(HExpr, HExpr), String> {
+pub(crate) fn fit_operands(
+    a: HExpr,
+    b: HExpr,
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<(HExpr, HExpr), String> {
     let at = ty_of(&a, env, ctx);
     let bt = ty_of(&b, env, ctx);
     if at == bt || !at.is_numeric() || !bt.is_numeric() {
@@ -106,7 +111,12 @@ pub(crate) fn narrow_vec_lit(items: &[Expr], n: Narrow) -> Result<HExpr, String>
                     n.name()
                 ))
             }
-            _ => return Err(format!("a (Vector {}) literal takes integer literals", n.name())),
+            _ => {
+                return Err(format!(
+                    "a (Vector {}) literal takes integer literals",
+                    n.name()
+                ))
+            }
         }
     }
     Ok(HExpr::VecLit(VLit::N(n, vs)))
@@ -116,7 +126,13 @@ pub(crate) fn narrow_vec_lit(items: &[Expr], n: Narrow) -> Result<HExpr, String>
 /// of its declared type (after contextual literal typing). Before this
 /// check, `(f 5)` against a two-parameter `f` compiled and read an
 /// undefined register, and a mistyped argument reached the backend.
-pub(crate) fn check_call_args(head: &str, params: &[Ty], args: &[HExpr], env: &Env, ctx: &Ctx) -> Result<(), String> {
+pub(crate) fn check_call_args(
+    head: &str,
+    params: &[Ty],
+    args: &[HExpr],
+    env: &Env,
+    ctx: &Ctx,
+) -> Result<(), String> {
     if params.len() != args.len() {
         return Err(format!(
             "{} expects exactly {} argument{}, got {}",
@@ -129,8 +145,8 @@ pub(crate) fn check_call_args(head: &str, params: &[Ty], args: &[HExpr], env: &E
     for (k, (p, a)) in params.iter().zip(args.iter()).enumerate() {
         let at = ty_of(a, env, ctx);
         // `[]` has no elements to type: it is any vector (same header).
-        let empty_vec = matches!(a, HExpr::VecLit(VLit::I64(v)) if v.is_empty())
-            && matches!(p, Ty::Vec(_));
+        let empty_vec =
+            matches!(a, HExpr::VecLit(VLit::I64(v)) if v.is_empty()) && matches!(p, Ty::Vec(_));
         if at != *p && !empty_vec {
             return Err(format!(
                 "{}: argument {} must be {}, got {}",

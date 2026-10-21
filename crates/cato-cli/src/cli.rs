@@ -26,7 +26,8 @@ const FLAGS: &[&str] = &[
 /// Known commands for did-you-mean suggestions (live commands only).
 const COMMANDS: &[&str] = &["compile", "repl", "lsp", "format", "help"];
 
-#[derive(Clone, Debug)] pub struct Cli {
+#[derive(Clone, Debug)]
+pub struct Cli {
     pub file: String,
     pub out: Option<String>,
     /// Emit LLVM IR text (`--emit-ir`): stop before linking.
@@ -121,7 +122,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                 other => {
                     let got = other.unwrap_or("<missing>");
                     let names = crate::driver::target_names().join(", ");
-                    eprintln!("{} unknown --target '{got}' (known: {names})", ui::error_lead());
+                    eprintln!(
+                        "{} unknown --target '{got}' (known: {names})",
+                        ui::error_lead()
+                    );
                     std::process::exit(2);
                 }
             },
@@ -199,7 +203,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                         i += 2;
                     }
                     _ => {
-                        eprintln!("{} --threads expects a number between 1 and 1024", ui::error_lead());
+                        eprintln!(
+                            "{} --threads expects a number between 1 and 1024",
+                            ui::error_lead()
+                        );
                         std::process::exit(2);
                     }
                 },
@@ -214,7 +221,10 @@ pub fn parse_args(args: &[String]) -> Cli {
                     i += 2;
                 }
                 None => {
-                    eprintln!("{} --explain requires a code (e.g. --explain E301)", ui::error_lead());
+                    eprintln!(
+                        "{} --explain requires a code (e.g. --explain E301)",
+                        ui::error_lead()
+                    );
                     std::process::exit(2);
                 }
             },
@@ -244,13 +254,17 @@ pub fn parse_args(args: &[String]) -> Cli {
                 std::process::exit(0);
             }
             "build" if file.is_none() => {
-                eprintln!("{} 'build' was renamed to 'compile' (cato compile <file> [-o out])", ui::error_lead());
+                eprintln!(
+                    "{} 'build' was renamed to 'compile' (cato compile <file> [-o out])",
+                    ui::error_lead()
+                );
                 std::process::exit(2);
             }
             "run" if file.is_none() => {
                 eprintln!(
                     "{} 'run' was removed — 'cato compile' produces a binary; \
-                     the interpreter lives in 'cato repl'", ui::error_lead()
+                     the interpreter lives in 'cato repl'",
+                    ui::error_lead()
                 );
                 std::process::exit(2);
             }
@@ -307,7 +321,8 @@ pub fn parse_args(args: &[String]) -> Cli {
     // Flag-combination validation before touching any files.
     if cli.emit_ir && cli.emit_ll.is_some() {
         eprintln!(
-            "{} --emit-ir stops before linking; --emit-ll only applies when linking", ui::error_lead()
+            "{} --emit-ir stops before linking; --emit-ll only applies when linking",
+            ui::error_lead()
         );
         std::process::exit(2);
     }
@@ -334,7 +349,10 @@ pub fn parse_args(args: &[String]) -> Cli {
             std::process::exit(2);
         }
         None if saw_command => {
-            eprintln!("{} compile requires an input file (.cato)", ui::error_lead());
+            eprintln!(
+                "{} compile requires an input file (.cato)",
+                ui::error_lead()
+            );
             std::process::exit(2);
         }
         None => {

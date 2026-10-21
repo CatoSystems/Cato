@@ -13,8 +13,13 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
     // (checked here by lowering the scrutinee to find its ADT).
     for (ai, arm) in items[2..].iter().enumerate() {
         let Expr::List(arm_items) = arm else { continue };
-        let Some(Expr::Vector(bs)) = arm_items.get(1) else { continue };
-        let Some(wpos) = bs.iter().position(|b| matches!(b, Expr::LitSym(s) if s == ":when")) else {
+        let Some(Expr::Vector(bs)) = arm_items.get(1) else {
+            continue;
+        };
+        let Some(wpos) = bs
+            .iter()
+            .position(|b| matches!(b, Expr::LitSym(s) if s == ":when"))
+        else {
             continue;
         };
         if arm_items.len() != 3 || wpos + 2 != bs.len() {
@@ -47,18 +52,14 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
                 _ => None,
             })
             .collect();
-        let rest_total = rest_heads.contains(&"_")
-            || all.iter().all(|v| rest_heads.contains(v));
+        let rest_total = rest_heads.contains(&"_") || all.iter().all(|v| rest_heads.contains(v));
         if !rest_total {
             return Err(format!(
                 "guard arm {} falls through, but the later arms do not cover every variant (add a _ arm)",
                 vname
             ));
         }
-        let mut inner: Vec<Expr> = vec![
-            Expr::LitSym("match".into()),
-            items[1].clone(),
-        ];
+        let mut inner: Vec<Expr> = vec![Expr::LitSym("match".into()), items[1].clone()];
         inner.extend(rest.clone());
         let rewritten = Expr::List(vec![
             arm_items[0].clone(),
@@ -72,10 +73,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
         ]);
         // Routing wildcard: every variant other than the guarded one goes
         // straight to the fall-through match.
-        let route = Expr::List(vec![
-            Expr::LitSym("_".into()),
-            Expr::List(inner),
-        ]);
+        let route = Expr::List(vec![Expr::LitSym("_".into()), Expr::List(inner)]);
         let mut next: Vec<Expr> = items[..2 + ai].to_vec();
         next.push(rewritten);
         next.push(route);
@@ -126,10 +124,7 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
             .find(|(_, (n, _))| n == head)
             .map(|(vi, v)| (vi, v.clone()))
         else {
-            return Err(format!(
-                "{} is not a variant of {}",
-                head, adt_def.name
-            ));
+            return Err(format!("{} is not a variant of {}", head, adt_def.name));
         };
         if covered[vi] {
             return Err(format!("match covers {} more than once", head));
@@ -169,11 +164,11 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
                 bindernames.push(bn.clone());
             }
         }
-            let body = lower_expect(&arm_items[2], &child, ctx, Some(Ty::Adt(adt)))?;
-            let bty = ty_of(&body, &child, ctx);
-            arm_recur.push(all_paths_recur(&body));
-            arm_tys.push(bty);
-            arm_exprs.push((Some(vi as u32), bindernames, body));
+        let body = lower_expect(&arm_items[2], &child, ctx, Some(Ty::Adt(adt)))?;
+        let bty = ty_of(&body, &child, ctx);
+        arm_recur.push(all_paths_recur(&body));
+        arm_tys.push(bty);
+        arm_exprs.push((Some(vi as u32), bindernames, body));
     }
 
     // Exhaustiveness: every variant covered, or a wildcard arm present.
@@ -208,17 +203,11 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
             Some(m) => {
                 if *t == Ty::F64 || m == Ty::F64 {
                     if *t != m && *t != Ty::I64 && m != Ty::I64 {
-                        return Err(format!(
-                            "match arm result types differ: {:?} vs {:?}",
-                            m, t
-                        ));
+                        return Err(format!("match arm result types differ: {:?} vs {:?}", m, t));
                     }
                     merged = Some(Ty::F64);
                 } else if *t != m {
-                    return Err(format!(
-                        "match arm result types differ: {:?} vs {:?}",
-                        m, t
-                    ));
+                    return Err(format!("match arm result types differ: {:?} vs {:?}", m, t));
                 }
             }
         }
@@ -241,4 +230,3 @@ pub(crate) fn lower_match(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr,
         ty: merged,
     })
 }
-

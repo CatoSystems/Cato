@@ -1,6 +1,6 @@
-use cato_llvm::{emit_module, emit_module_fast};
 use cato_core::hir::build;
 use cato_core::reader::read_all;
+use cato_llvm::{emit_module, emit_module_fast};
 
 fn emit(src: &str) -> String {
     let fns = build(&read_all(src).unwrap()).unwrap();
@@ -171,7 +171,8 @@ fn min_max_use_select() {
 
 // --- Phase 3: deftype + match ---
 
-const SHAPE_SRC: &str = "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))
+const SHAPE_SRC: &str =
+    "(deftype Shape (Circle [radius :- f64]) (Rect [w :- f64 h :- f64]) (Point []))
 
 (defn area [s :- Shape] :- f64
   (match s
@@ -293,7 +294,11 @@ fn string_literals_mint_i8_globals_and_use_strcmp() {
     let exprs = read_all(src).unwrap();
     let fns = build(&exprs).unwrap();
     let ir = emit_module(&[], &fns);
-    assert!(ir.contains("private unnamed_addr constant [5 x i8]"), "{}", ir);
+    assert!(
+        ir.contains("private unnamed_addr constant [5 x i8]"),
+        "{}",
+        ir
+    );
     assert!(ir.contains("call i32 @strcmp("), "{}", ir);
     assert!(ir.contains("call void @cato_print_string("), "{}", ir);
 }

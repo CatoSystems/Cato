@@ -17,10 +17,17 @@ impl<'a> Scope<'a> {
     fn with(&self, more: impl IntoIterator<Item = (String, Ty)>) -> Scope<'a> {
         let mut vars = self.vars.clone();
         vars.extend(more);
-        Scope { vars, adts: self.adts }
+        Scope {
+            vars,
+            adts: self.adts,
+        }
     }
     fn ty_of_var(&self, v: &str) -> Option<Ty> {
-        self.vars.iter().rev().find(|(n, _)| n == v).map(|(_, t)| *t)
+        self.vars
+            .iter()
+            .rev()
+            .find(|(n, _)| n == v)
+            .map(|(_, t)| *t)
     }
     /// Field types of a match arm's binders, when the scrutinee's ADT is
     /// known (a typed variable, or a call through the signature table).
@@ -39,10 +46,18 @@ impl<'a> Scope<'a> {
         let (Some(Ty::Adt(i)), Some(vi)) = (adt, arm.variant) else {
             return Vec::new();
         };
-        let Some(fields) = self.adts.get(i as usize).and_then(|d| d.variants.get(vi as usize)) else {
+        let Some(fields) = self
+            .adts
+            .get(i as usize)
+            .and_then(|d| d.variants.get(vi as usize))
+        else {
             return Vec::new();
         };
-        arm.binders.iter().cloned().zip(fields.1.iter().copied()).collect()
+        arm.binders
+            .iter()
+            .cloned()
+            .zip(fields.1.iter().copied())
+            .collect()
     }
 }
 
@@ -69,12 +84,7 @@ pub(crate) fn rewrite_body(
             res: *res,
         },
         HExpr::CharStr(c) => HExpr::CharStr(Box::new(rewrite_body(
-            c,
-            fnprefix,
-            params,
-            idmap,
-            loops,
-            sigs,
+            c, fnprefix, params, idmap, loops, sigs,
         )?)),
         HExpr::Loop { binds, body, ty } => HExpr::Loop {
             binds: binds
@@ -113,12 +123,7 @@ pub(crate) fn rewrite_body(
             res: *res,
         },
         HExpr::Slurp(p) => HExpr::Slurp(Box::new(rewrite_body(
-            p,
-            fnprefix,
-            params,
-            idmap,
-            loops,
-            sigs,
+            p, fnprefix, params, idmap, loops, sigs,
         )?)),
         HExpr::Spit { path, data } => HExpr::Spit {
             path: Box::new(rewrite_body(path, fnprefix, params, idmap, loops, sigs)?),
@@ -126,18 +131,13 @@ pub(crate) fn rewrite_body(
         },
         HExpr::Args => HExpr::Args,
         HExpr::Exit(c) => HExpr::Exit(Box::new(rewrite_body(
-            c,
-            fnprefix,
-            params,
-            idmap,
-            loops,
-            sigs,
+            c, fnprefix, params, idmap, loops, sigs,
         )?)),
         HExpr::Var(v) => HExpr::Var(v.clone()),
         HExpr::VecLit(vs) => HExpr::VecLit(vs.clone()),
-        HExpr::Count(e) => {
-            HExpr::Count(Box::new(rewrite_body(e, fnprefix, params, idmap, loops, sigs)?))
-        }
+        HExpr::Count(e) => HExpr::Count(Box::new(rewrite_body(
+            e, fnprefix, params, idmap, loops, sigs,
+        )?)),
         HExpr::If(c, t, e, ty) => HExpr::If(
             Box::new(rewrite_body(c, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(t, fnprefix, params, idmap, loops, sigs)?),
@@ -152,10 +152,13 @@ pub(crate) fn rewrite_body(
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
-        HExpr::Not(v) => HExpr::Not(Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?)),
-        HExpr::Abs(v, t) => {
-            HExpr::Abs(Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?), *t)
-        }
+        HExpr::Not(v) => HExpr::Not(Box::new(rewrite_body(
+            v, fnprefix, params, idmap, loops, sigs,
+        )?)),
+        HExpr::Abs(v, t) => HExpr::Abs(
+            Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?),
+            *t,
+        ),
         HExpr::Min(a, b, t) => HExpr::Min(
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
@@ -177,7 +180,11 @@ pub(crate) fn rewrite_body(
             let mut scope = params.with(std::iter::empty());
             let mut out = Vec::with_capacity(binds.len());
             for (n, e, t) in binds {
-                out.push((n.clone(), rewrite_body(e, fnprefix, &scope, idmap, loops, sigs)?, *t));
+                out.push((
+                    n.clone(),
+                    rewrite_body(e, fnprefix, &scope, idmap, loops, sigs)?,
+                    *t,
+                ));
                 scope.vars.push((n.clone(), *t));
             }
             HExpr::Let(
@@ -272,7 +279,12 @@ pub(crate) fn rewrite_body(
             k: Box::new(rewrite_body(k, fnprefix, params, idmap, loops, sigs)?),
             v: Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?),
         },
-        HExpr::MapGet { src, key, default, res } => HExpr::MapGet {
+        HExpr::MapGet {
+            src,
+            key,
+            default,
+            res,
+        } => HExpr::MapGet {
             src: Box::new(rewrite_body(src, fnprefix, params, idmap, loops, sigs)?),
             key: Box::new(rewrite_body(key, fnprefix, params, idmap, loops, sigs)?),
             default: match default {
@@ -288,7 +300,12 @@ pub(crate) fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        HExpr::Conj { v, x, elem, in_place } => HExpr::Conj {
+        HExpr::Conj {
+            v,
+            x,
+            elem,
+            in_place,
+        } => HExpr::Conj {
             v: Box::new(rewrite_body(v, fnprefix, params, idmap, loops, sigs)?),
             x: Box::new(rewrite_body(x, fnprefix, params, idmap, loops, sigs)?),
             elem: *elem,
@@ -330,9 +347,9 @@ pub(crate) fn rewrite_body(
             Box::new(rewrite_body(a, fnprefix, params, idmap, loops, sigs)?),
             Box::new(rewrite_body(b, fnprefix, params, idmap, loops, sigs)?),
         ),
-        HExpr::Clone(inner) => {
-            HExpr::Clone(Box::new(rewrite_body(inner, fnprefix, params, idmap, loops, sigs)?))
-        }
+        HExpr::Clone(inner) => HExpr::Clone(Box::new(rewrite_body(
+            inner, fnprefix, params, idmap, loops, sigs,
+        )?)),
         HExpr::DropStmt(inner) => HExpr::DropStmt(Box::new(rewrite_body(
             inner, fnprefix, params, idmap, loops, sigs,
         )?)),
@@ -354,7 +371,14 @@ pub(crate) fn rewrite_body(
             ty: *ty,
             res: *res,
         },
-        HExpr::Closure { sig, mangled, params, captures, capture_owns, body } => HExpr::Closure {
+        HExpr::Closure {
+            sig,
+            mangled,
+            params,
+            captures,
+            capture_owns,
+            body,
+        } => HExpr::Closure {
             sig: *sig,
             mangled: mangled.clone(),
             params: params.clone(),
@@ -437,9 +461,12 @@ pub(crate) fn rewrite_body(
 /// the ownership planner already accounted for.
 pub(crate) fn own_str_return(e: &HExpr) -> HExpr {
     match e {
-        HExpr::StrLit(_) | HExpr::Get { ty: Ty::Str, res: None, .. } => {
-            HExpr::Clone(Box::new(e.clone()))
-        }
+        HExpr::StrLit(_)
+        | HExpr::Get {
+            ty: Ty::Str,
+            res: None,
+            ..
+        } => HExpr::Clone(Box::new(e.clone())),
         HExpr::Seq(vs) => HExpr::Seq(
             vs.iter()
                 .enumerate()

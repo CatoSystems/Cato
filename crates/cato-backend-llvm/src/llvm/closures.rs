@@ -47,7 +47,8 @@ pub(crate) fn emit_closure_creation(
     }
     // The closure header.
     let slot = c.temp();
-    c.prelude.push(format!("  {} = alloca %Closure, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %Closure, align 8", slot));
     let codef = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %Closure, ptr {}, i32 0, i32 0",
@@ -95,7 +96,9 @@ fn store_capture(
         let g = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i64, ptr {}, i64 {}",
-            g, env, at + k
+            g,
+            env,
+            at + k
         ));
         g
     };
@@ -500,16 +503,9 @@ pub(crate) fn emit_lambda_drop(
     let mut label: usize = 0;
     for (ty, off, bit) in slots.iter().rev() {
         let mask = format!("%m{}", label);
-        out.push_str(&format!(
-            "  {} = and i64 %bm, {}\n",
-            mask,
-            1i64 << bit
-        ));
+        out.push_str(&format!("  {} = and i64 %bm, {}\n", mask, 1i64 << bit));
         let cond = format!("%c{}", label);
-        out.push_str(&format!(
-            "  {} = icmp ne i64 {}, 0\n",
-            cond, mask
-        ));
+        out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", cond, mask));
         let free_lbl = format!("own{}", label);
         let done_lbl = format!("done{}", label);
         label += 1;
@@ -521,7 +517,9 @@ pub(crate) fn emit_lambda_drop(
         let word = |k: i64, out: &mut String| {
             let f = format!(
                 "  %w{}_{} = getelementptr inbounds i64, ptr %env, i64 {}\n",
-                label, k, off + k
+                label,
+                k,
+                off + k
             );
             let l = format!("  %v{}_{} = load ptr, ptr %w{}_{}\n", label, k, label, k);
             out.push_str(&f);
@@ -542,8 +540,7 @@ pub(crate) fn emit_lambda_drop(
                     label,
                     off + 2
                 );
-                let capl =
-                    format!("  %cv{} = load i64, ptr %cw{}\n", label, label);
+                let capl = format!("  %cv{} = load i64, ptr %cw{}\n", label, label);
                 out.push_str(&capw);
                 out.push_str(&capl);
                 mdl.ensure_decl("declare void @cato_map_release_pair(ptr, i64)");

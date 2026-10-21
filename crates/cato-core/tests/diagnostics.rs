@@ -10,17 +10,42 @@ const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/errors");
 const CASES: &[(&str, &str, usize, &str)] = &[
     ("use_moved.cato", "E301", 7, "use of moved value xs"),
     ("loop_var_moved.cato", "E301", 11, "use of moved value p"),
-    ("literal_does_not_fit.cato", "E202", 4, "integer literal 300 does not fit u8"),
-    ("call_arity.cato", "E201", 3, "f expects exactly 2 arguments, got 1"),
-    ("call_arg_type.cato", "E202", 3, "f: argument 1 must be str, got i64"),
-    ("own_scalar.cato", "E202", 3, "an (own T) result must be a str or a vector"),
+    (
+        "literal_does_not_fit.cato",
+        "E202",
+        4,
+        "integer literal 300 does not fit u8",
+    ),
+    (
+        "call_arity.cato",
+        "E201",
+        3,
+        "f expects exactly 2 arguments, got 1",
+    ),
+    (
+        "call_arg_type.cato",
+        "E202",
+        3,
+        "f: argument 1 must be str, got i64",
+    ),
+    (
+        "own_scalar.cato",
+        "E202",
+        3,
+        "an (own T) result must be a str or a vector",
+    ),
     (
         "exclusive_sigil.cato",
         "E202",
         3,
         "unsupported borrow sigil `&!`",
     ),
-    ("nonexhaustive_match.cato", "E401", 6, "does not cover: Circle"),
+    (
+        "nonexhaustive_match.cato",
+        "E401",
+        6,
+        "does not cover: Circle",
+    ),
     ("bad_arity.cato", "E201", 2, "expects 2 operands"),
     ("bad_type.cato", "E202", 2, "conj source must be a vector"),
     (
@@ -47,8 +72,18 @@ const CASES: &[(&str, &str, usize, &str)] = &[
         8,
         "can never be selected",
     ),
-    ("unbound_variable.cato", "E206", 3, "unbound variable undefined-var"),
-    ("unknown_function.cato", "E207", 3, "unknown function mystery-fn"),
+    (
+        "unbound_variable.cato",
+        "E206",
+        3,
+        "unbound variable undefined-var",
+    ),
+    (
+        "unknown_function.cato",
+        "E207",
+        3,
+        "unknown function mystery-fn",
+    ),
     (
         "unknown_type_name.cato",
         "E208",
@@ -67,13 +102,24 @@ const CASES: &[(&str, &str, usize, &str)] = &[
 fn errors_suite_reports_code_location_and_caret() {
     for (file, code, line, msg) in CASES {
         let path = format!("{}/{}", DIR, file);
-        let src = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {}", path, e));
+        let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {}", path, e));
         let err = compile_named(file, &src)
             .err()
             .unwrap_or_else(|| panic!("{} should fail to compile", file));
-        assert!(err.contains(code), "{}: expected code {} in:\n{}", file, code, err);
-        assert!(err.contains(msg), "{}: expected '{}' in:\n{}", file, msg, err);
+        assert!(
+            err.contains(code),
+            "{}: expected code {} in:\n{}",
+            file,
+            code,
+            err
+        );
+        assert!(
+            err.contains(msg),
+            "{}: expected '{}' in:\n{}",
+            file,
+            msg,
+            err
+        );
         assert!(
             err.contains(&format!("--> {}:{}", file, line)),
             "{}: expected location {}:{} in:\n{}",
@@ -84,7 +130,8 @@ fn errors_suite_reports_code_location_and_caret() {
         );
         // Caret snippet: the source line echoed under a location line.
         assert!(
-            err.lines().any(|l| l.trim_start().starts_with('|') && l.trim_end().ends_with('^')),
+            err.lines()
+                .any(|l| l.trim_start().starts_with('|') && l.trim_end().ends_with('^')),
             "{}: expected caret snippet in:\n{}",
             file,
             err
@@ -98,7 +145,9 @@ fn reader_errors_carry_exact_spans() {
     assert!(err.contains("E004"), "got: {}", err);
     assert!(err.contains("--> t.cato:1:1"), "got: {}", err);
 
-    let err = compile_named("t.cato", "(defn main [] \"abc").err().unwrap();
+    let err = compile_named("t.cato", "(defn main [] \"abc")
+        .err()
+        .unwrap();
     assert!(err.contains("E002"), "got: {}", err);
     assert!(err.contains("--> t.cato:1:15"), "got: {}", err);
 
@@ -115,11 +164,22 @@ fn required_file_errors_render_against_the_required_file() {
     std::fs::create_dir_all(&dir).unwrap();
     let root = dir.join("root.cato");
     let child = dir.join("child.cato");
-    std::fs::write(&root, "(ns t.main)\n(require [\"child.cato\" :as c])\n(defn main [] :- i64 (c/f 1))\n").unwrap();
+    std::fs::write(
+        &root,
+        "(ns t.main)\n(require [\"child.cato\" :as c])\n(defn main [] :- i64 (c/f 1))\n",
+    )
+    .unwrap();
     // Padding pushes the defn past the entry file's length: a span rendered
     // against the entry file would land on a phantom line past its EOF.
     let pad = "; padding\n".repeat(80);
-    std::fs::write(&child, format!("(ns t.child)\n{}\n(defn f [x :- i64] :- i64 (mystery-fn x))\n", pad)).unwrap();
+    std::fs::write(
+        &child,
+        format!(
+            "(ns t.child)\n{}\n(defn f [x :- i64] :- i64 (mystery-fn x))\n",
+            pad
+        ),
+    )
+    .unwrap();
     let src = std::fs::read_to_string(&root).unwrap();
     let err = compile_named(root.to_str().unwrap(), &src)
         .err()
@@ -153,7 +213,10 @@ fn explain_docs_exist_for_all_codes() {
 fn classify_maps_pipeline_messages_to_codes() {
     let f = cato_core::diagnostics::classify;
     assert_eq!(f("use of moved value xs"), "E301");
-    assert_eq!(f("match on Shape does not cover: Circle (add arms or a _ wildcard)"), "E401");
+    assert_eq!(
+        f("match on Shape does not cover: Circle (add arms or a _ wildcard)"),
+        "E401"
+    );
     assert_eq!(f("binary op + expects 2 operands"), "E201");
     assert_eq!(f("conj source must be a vector, got I64"), "E202");
     assert_eq!(f("unbalanced delimiter ')'"), "E001");

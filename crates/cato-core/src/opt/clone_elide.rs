@@ -107,10 +107,7 @@ fn remove_frees_entries(e: &mut HExpr, names: &HashSet<String>) {
         HExpr::Let(binds, body, frees) => HExpr::Let(
             binds,
             body,
-            frees
-                .into_iter()
-                .filter(|f| !names.contains(f))
-                .collect(),
+            frees.into_iter().filter(|f| !names.contains(f)).collect(),
         ),
         other => other,
     });

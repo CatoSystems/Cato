@@ -64,24 +64,42 @@ fn compile_capture(src: &std::path::Path, extra: &[&str]) -> Vec<String> {
 fn parsed_options_then_passthrough_then_inputs() {
     let src = root().join("examples/slice.cato");
     let args = compile_capture(&src, &["-g", "--", "-DEXTRA"]);
-    let ll_idx = args.iter().position(|a| a.ends_with(".ll")).expect("ll input");
-    let rt_idx = args.iter().position(|a| a.ends_with("runtime.c")).expect("runtime input");
+    let ll_idx = args
+        .iter()
+        .position(|a| a.ends_with(".ll"))
+        .expect("ll input");
+    let rt_idx = args
+        .iter()
+        .position(|a| a.ends_with("runtime.c"))
+        .expect("runtime input");
     let o_idx = args.iter().position(|a| a == "-o").expect("-o");
     // Parsed options in contract order (-O, -g, -rtlib), then
     // passthrough, then inputs, -o last.
-    assert_eq!(&args[ll_idx - 4..ll_idx], ["-O2", "-g", "-rtlib=compiler-rt", "-DEXTRA"],
-        "args: {args:?}");
+    assert_eq!(
+        &args[ll_idx - 4..ll_idx],
+        ["-O2", "-g", "-rtlib=compiler-rt", "-DEXTRA"],
+        "args: {args:?}"
+    );
     assert_eq!(rt_idx, ll_idx + 1, "runtime right after ll: {args:?}");
     assert_eq!(o_idx + 2, args.len(), "-o out last: {args:?}");
-    assert_eq!(args[o_idx + 1], root().join("target/fake_out").display().to_string());
+    assert_eq!(
+        args[o_idx + 1],
+        root().join("target/fake_out").display().to_string()
+    );
 }
 
 #[test]
 fn passthrough_rtlib_replaces_parsed_default() {
     let src = root().join("examples/slice.cato");
     let args = compile_capture(&src, &["--", "--rtlib=libgcc"]);
-    assert!(args.contains(&"--rtlib=libgcc".to_string()), "args: {args:?}");
-    assert!(!args.contains(&"-rtlib=compiler-rt".to_string()), "args: {args:?}");
+    assert!(
+        args.contains(&"--rtlib=libgcc".to_string()),
+        "args: {args:?}"
+    );
+    assert!(
+        !args.contains(&"-rtlib=compiler-rt".to_string()),
+        "args: {args:?}"
+    );
 }
 
 #[test]
@@ -89,7 +107,10 @@ fn parsed_rtlib_flag_reaches_argv() {
     let src = root().join("examples/slice.cato");
     let args = compile_capture(&src, &["--rtlib", "myrt"]);
     assert!(args.contains(&"-rtlib=myrt".to_string()), "args: {args:?}");
-    assert!(!args.contains(&"-rtlib=compiler-rt".to_string()), "args: {args:?}");
+    assert!(
+        !args.contains(&"-rtlib=compiler-rt".to_string()),
+        "args: {args:?}"
+    );
 }
 
 #[test]
@@ -161,6 +182,12 @@ fn cross_target_probe_rejects_unsupported_cc() {
         .expect("cato compile");
     assert_eq!(result.status.code(), Some(1), "tool failure is exit 1");
     let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(stderr.contains("does not support target"), "stderr: {stderr}");
-    assert!(stderr.contains("x86_64-unknown-linux-gnu"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("does not support target"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("x86_64-unknown-linux-gnu"),
+        "stderr: {stderr}"
+    );
 }

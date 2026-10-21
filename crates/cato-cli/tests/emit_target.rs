@@ -37,10 +37,19 @@ fn write_demo() -> PathBuf {
 fn compile_check_mode_is_silent() {
     let src = write_demo();
     let bin = manifest_root().join("target/optin_bin_demo");
-    let out = cato().arg("compile").arg(&src).arg("-o").arg(&bin).output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("-o")
+        .arg(&bin)
+        .output()
+        .expect("run cato");
     assert!(out.status.success(), "compile failed");
-    assert!(out.stdout.is_empty(), "compile must print nothing to stdout, got {:?}",
-        String::from_utf8_lossy(&out.stdout));
+    assert!(
+        out.stdout.is_empty(),
+        "compile must print nothing to stdout, got {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
     let _ = std::fs::remove_file(&bin);
 }
 
@@ -57,7 +66,12 @@ fn compile_check_mode_reports_errors() {
 #[test]
 fn ir_is_opt_in_via_emit_ir() {
     let src = write_demo();
-    let out = cato().arg("compile").arg(&src).arg("--emit-ir").output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .output()
+        .expect("run cato");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("define i32 @main"), "IR must contain main");
@@ -67,17 +81,29 @@ fn ir_is_opt_in_via_emit_ir() {
 #[test]
 fn wasm_target_emits_wasm_module_header() {
     let src = write_demo();
-    let out = cato().arg("compile").arg(&src).args(["--emit-ir", "--target", "wasm32"])
-        .output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--target", "wasm32"])
+        .output()
+        .expect("run cato");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains(r#"target triple = "wasm32-unknown-unknown""#));
     assert!(stdout.contains(r#"target datalayout = "e-m:e-p:32:32"#));
 
     // Native emission must NOT claim a wasm triple.
-    let native = cato().arg("compile").arg(&src).arg("--emit-ir").output().expect("run cato");
+    let native = cato()
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .output()
+        .expect("run cato");
     let stdout = String::from_utf8_lossy(&native.stdout);
-    assert!(!stdout.contains("wasm32"), "native IR must not claim wasm32");
+    assert!(
+        !stdout.contains("wasm32"),
+        "native IR must not claim wasm32"
+    );
 }
 
 // The emitted wasm32 IR is real: LLVM's wasm codegen accepts it and emits
@@ -86,7 +112,9 @@ fn wasm_target_emits_wasm_module_header() {
 #[test]
 fn wasm_ir_passes_through_llvm_wasm_codegen() {
     let llvm_bin = wasm_llvm_bin();
-    let Some(llc) = llvm_bin.map(|p| p.join("llc")) else { return };
+    let Some(llc) = llvm_bin.map(|p| p.join("llc")) else {
+        return;
+    };
     if !llc.exists() {
         return;
     }
@@ -97,20 +125,41 @@ fn wasm_ir_passes_through_llvm_wasm_codegen() {
 
     let src = write_demo();
     let ir = manifest_root().join("target/optin_wasm.ll");
-    let status = cato().arg("compile").arg(&src).args(["--emit-ir", "--target", "wasm32"])
-        .arg("-o").arg(&ir)
-        .status().expect("emit wasm ir");
+    let status = cato()
+        .arg("compile")
+        .arg(&src)
+        .args(["--emit-ir", "--target", "wasm32"])
+        .arg("-o")
+        .arg(&ir)
+        .status()
+        .expect("emit wasm ir");
     assert!(status.success(), "wasm IR emission failed");
 
     let bc = manifest_root().join("target/optin_wasm.bc");
     let obj = manifest_root().join("target/optin_wasm.o");
-    let asm = Command::new(&as_).arg(&ir).arg("-o").arg(&bc).output().expect("llvm-as");
-    assert!(asm.status.success(), "llvm-as failed: {}",
-        String::from_utf8_lossy(&asm.stderr));
-    let gen = Command::new(&llc).args(["-march=wasm32", "-filetype=obj"])
-        .arg(&bc).arg("-o").arg(&obj).output().expect("llc");
-    assert!(gen.status.success(), "llc wasm codegen failed: {}",
-        String::from_utf8_lossy(&gen.stderr));
+    let asm = Command::new(&as_)
+        .arg(&ir)
+        .arg("-o")
+        .arg(&bc)
+        .output()
+        .expect("llvm-as");
+    assert!(
+        asm.status.success(),
+        "llvm-as failed: {}",
+        String::from_utf8_lossy(&asm.stderr)
+    );
+    let gen = Command::new(&llc)
+        .args(["-march=wasm32", "-filetype=obj"])
+        .arg(&bc)
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .expect("llc");
+    assert!(
+        gen.status.success(),
+        "llc wasm codegen failed: {}",
+        String::from_utf8_lossy(&gen.stderr)
+    );
 
     let bytes = std::fs::read(&obj).expect("read wasm object");
     assert_eq!(&bytes[..4], b"\0asm", "output must be a WebAssembly binary");
@@ -123,20 +172,36 @@ fn wasm_build_links_or_explains() {
     if wasm_link_toolchain_present() {
         let src = write_demo();
         let out = manifest_root().join("target/optin_demo.wasm");
-        let status = cato().arg("compile").arg("--target").arg("wasm32")
-            .arg(&src).arg("-o").arg(&out)
-            .status().expect("cato compile wasm");
+        let status = cato()
+            .arg("compile")
+            .arg("--target")
+            .arg("wasm32")
+            .arg(&src)
+            .arg("-o")
+            .arg(&out)
+            .status()
+            .expect("cato compile wasm");
         assert!(status.success(), "wasm build failed on a capable toolchain");
         let bytes = std::fs::read(&out).expect("read wasm");
         assert_eq!(&bytes[..4], b"\0asm");
     } else {
         let src = write_demo();
-        let out = cato().arg("compile").arg("--target").arg("wasm32")
-            .arg(&src).arg("-o").arg("/tmp/optin_demo.wasm")
-            .output().expect("cato compile wasm");
+        let out = cato()
+            .arg("compile")
+            .arg("--target")
+            .arg("wasm32")
+            .arg(&src)
+            .arg("-o")
+            .arg("/tmp/optin_demo.wasm")
+            .output()
+            .expect("cato compile wasm");
         assert!(!out.status.success(), "wasm build must not silently no-op");
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(stderr.contains("wasm"), "error must mention wasm: {}", stderr);
+        assert!(
+            stderr.contains("wasm"),
+            "error must mention wasm: {}",
+            stderr
+        );
     }
 }
 
@@ -144,8 +209,13 @@ fn wasm_build_links_or_explains() {
 #[test]
 fn unknown_target_lists_known_names() {
     let src = write_demo();
-    let out = cato().arg("compile").arg(&src).args(["--target", "powerpc"])
-        .arg("--emit-ir").output().expect("run cato");
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
+        .args(["--target", "powerpc"])
+        .arg("--emit-ir")
+        .output()
+        .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("powerpc"), "got: {}", stderr);
@@ -158,18 +228,23 @@ fn unknown_target_lists_known_names() {
 #[test]
 fn cross_target_emits_triple_in_ir() {
     let src = write_demo();
-    let out = cato().arg("compile").arg(&src)
+    let out = cato()
+        .arg("compile")
+        .arg(&src)
         .args(["--target", "aarch64-linux", "--emit-ir"])
-        .output().expect("run cato");
+        .output()
+        .expect("run cato");
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         stdout.contains(r#"target triple = "aarch64-unknown-linux-gnu""#),
-        "got: {}", stdout
+        "got: {}",
+        stdout
     );
     assert!(
         !stdout.contains("target datalayout"),
-        "cross triple must not carry a datalayout: {}", stdout
+        "cross triple must not carry a datalayout: {}",
+        stdout
     );
 }
 
@@ -197,18 +272,20 @@ fn wasm_link_toolchain_present() -> bool {
             continue;
         }
         let targets = Command::new(&cc).arg("--print-targets").output();
-        let has_wasm = targets.map(|o| {
-            String::from_utf8_lossy(&o.stdout).contains("wasm32")
-        }).unwrap_or(false);
+        let has_wasm = targets
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("wasm32"))
+            .unwrap_or(false);
         if !has_wasm {
             continue;
         }
         let ld = Command::new(&cc).arg("-print-file-name=wasm-ld").output();
-        let has_ld = ld.map(|o| {
-            let s = String::from_utf8_lossy(&o.stdout);
-            let s = s.trim();
-            s != "wasm-ld" && std::path::Path::new(s).exists()
-        }).unwrap_or(false);
+        let has_ld = ld
+            .map(|o| {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let s = s.trim();
+                s != "wasm-ld" && std::path::Path::new(s).exists()
+            })
+            .unwrap_or(false);
         if has_ld {
             return true;
         }

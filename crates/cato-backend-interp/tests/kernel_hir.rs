@@ -40,7 +40,10 @@ fn setup() -> Paths {
         .arg(&bin)
         .status()
         .expect("cato compile");
-    assert!(status.success(), "seed failed to compile the kernel hir driver");
+    assert!(
+        status.success(),
+        "seed failed to compile the kernel hir driver"
+    );
 
     Paths { root, bin }
 }
@@ -88,7 +91,10 @@ fn line_diff(got: &str, want: &str) -> String {
     let (g, w): (Vec<&str>, Vec<&str>) = (got.lines().collect(), want.lines().collect());
     let mut out = String::new();
     for i in 0..g.len().max(w.len()) {
-        let (a, b) = (g.get(i).copied().unwrap_or("<none>"), w.get(i).copied().unwrap_or("<none>"));
+        let (a, b) = (
+            g.get(i).copied().unwrap_or("<none>"),
+            w.get(i).copied().unwrap_or("<none>"),
+        );
         if a != b {
             out.push_str(&format!("kernel: {}\nseed:   {}\n", a, b));
         }
@@ -218,12 +224,13 @@ fn oracle_ast(src: &str) -> String {
 fn kernel_expander_matches_the_seed_over_the_whole_corpus() {
     let paths = setup();
     for file in paths.expander_corpus() {
-        let src =
-            std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
+        let src = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
         let want = oracle_ast(&src);
         let got = paths.run_kernel(&file, "ast");
         assert_eq!(
-            got, want,
+            got,
+            want,
             "kernel expander disagrees with the seed on {}",
             file.display()
         );
@@ -359,18 +366,33 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
         HExpr::StrLit(s) => format!("(str {})", esc(s)),
         HExpr::VecLit(VLit::I64(vs)) => format!(
             "(veclit 0 [{}])",
-            vs.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
+            vs.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
         ),
         HExpr::VecLit(VLit::F64(vs)) => format!(
             "(veclit 1 [{}])",
             vs.iter().map(|v| f64_g(*v)).collect::<Vec<_>>().join(" ")
         ),
         HExpr::BinW(op, a, b, t) => {
-            format!("(binw {} {} {} {})", bin_op(op), ser_hir(a), ser_hir(b), ty_name(t))
+            format!(
+                "(binw {} {} {} {})",
+                bin_op(op),
+                ser_hir(a),
+                ser_hir(b),
+                ty_name(t)
+            )
         }
         HExpr::BinF(op, a, b) => format!("(binf {} {} {})", bin_op(op), ser_hir(a), ser_hir(b)),
         HExpr::CmpW(op, a, b, t) => {
-            format!("(cmp {} {} {} {})", cmp_op(op), ser_hir(a), ser_hir(b), ty_name(t))
+            format!(
+                "(cmp {} {} {} {})",
+                cmp_op(op),
+                ser_hir(a),
+                ser_hir(b),
+                ty_name(t)
+            )
         }
         HExpr::ICast(x, from, to) => {
             format!("(icast {} {} {})", ser_hir(x), ty_name(from), ty_name(to))
@@ -379,7 +401,10 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
         HExpr::ToStr(x, t) => format!("(tostr {} {})", ser_hir(x), ty_name(t)),
         HExpr::StrCat(args) => format!(
             "(strcat{})",
-            args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            args.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Subs { s, start, end, .. } => {
             format!("(subs {} {} {})", ser_hir(s), ser_hir(start), ser_hir(end))
@@ -391,12 +416,23 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
         }
         HExpr::CharStr(x) => format!("(charstr {})", ser_hir(x)),
         HExpr::StrCmp(p, a, b) => {
-            format!("(strcmp {} {} {})", if *p { 1 } else { 0 }, ser_hir(a), ser_hir(b))
+            format!(
+                "(strcmp {} {} {})",
+                if *p { 1 } else { 0 },
+                ser_hir(a),
+                ser_hir(b)
+            )
         }
         HExpr::StrOrd(op, a, b) => {
             format!("(strord {} {} {})", cmp_op(op), ser_hir(a), ser_hir(b))
         }
-        HExpr::Get { src, idx, default, ty, res } => match default {
+        HExpr::Get {
+            src,
+            idx,
+            default,
+            ty,
+            res,
+        } => match default {
             Some(d) => format!(
                 "(get {} {} {} {} {})",
                 ser_hir(src),
@@ -413,7 +449,12 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
                 opt_res(res)
             ),
         },
-        HExpr::Conj { v, x, elem, in_place } => format!(
+        HExpr::Conj {
+            v,
+            x,
+            elem,
+            in_place,
+        } => format!(
             "(conj {} {} {} {})",
             ser_hir(v),
             ser_hir(x),
@@ -435,7 +476,10 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
         HExpr::Max(a, b, t) => format!("(max {} {} {})", ser_hir(a), ser_hir(b), ty_name(t)),
         HExpr::Seq(vs) => format!(
             "(seq{})",
-            vs.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            vs.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Let(binds, body, frees) => {
             let mut parts = Vec::new();
@@ -454,17 +498,28 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
             for (n, t, e) in binds {
                 parts.push(format!("{} {} {}", n, ty_name(t), ser_hir(e)));
             }
-            format!("(loop [{}] {} {})", parts.join(" "), ty_name(ty), ser_hir(body))
+            format!(
+                "(loop [{}] {} {})",
+                parts.join(" "),
+                ty_name(ty),
+                ser_hir(body)
+            )
         }
         HExpr::Recur(args, _) => format!(
             "(recur{})",
-            args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            args.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Ctor { adt, variant, args } => format!(
             "(ctor {} {}{})",
             adt,
             variant,
-            args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            args.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Match { scrut, arms, ty } => {
             let mut out = format!("(match {} {}", ser_hir(scrut), ty_name(ty));
@@ -493,7 +548,14 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
         }
         HExpr::Clone(x) => format!("(clone {})", ser_hir(x)),
         HExpr::DropStmt(x) => format!("(drop {})", ser_hir(x)),
-        HExpr::Closure { sig, mangled, params, captures, capture_owns, body } => format!(
+        HExpr::Closure {
+            sig,
+            mangled,
+            params,
+            captures,
+            capture_owns,
+            body,
+        } => format!(
             "(closure {} {} [{}] [{}] {})",
             sig,
             mangled,
@@ -514,12 +576,18 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
             "(closurecall {} {}{})",
             ser_hir(f),
             sig,
-            args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            args.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Call(name, args) => format!(
             "(call {}{})",
             name,
-            args.iter().map(ser_hir).map(|s| format!(" {}", s)).collect::<String>()
+            args.iter()
+                .map(ser_hir)
+                .map(|s| format!(" {}", s))
+                .collect::<String>()
         ),
         HExpr::Slurp(p) => format!("(slurp {})", ser_hir(p)),
         HExpr::Spit { path, data, .. } => {
@@ -585,10 +653,7 @@ fn oracle_hir(src: &str) -> String {
     let base = adts.len() - num_insts(&adts, &defns);
     for (i, a) in adts.iter().enumerate() {
         if i < base {
-            let params = format!(
-                "[{}]",
-                a.ty_params.join(" ")
-            );
+            let params = format!("[{}]", a.ty_params.join(" "));
             let variants = a
                 .variants
                 .iter()
@@ -604,10 +669,7 @@ fn oracle_hir(src: &str) -> String {
             lines.push(format!("(adt {} {} {} [{}])", i, a.name, params, variants));
         } else {
             let tpl_name = a.name.split("__").next().unwrap_or("");
-            let tpl = adts
-                .iter()
-                .position(|x| x.name == tpl_name)
-                .unwrap_or(0);
+            let tpl = adts.iter().position(|x| x.name == tpl_name).unwrap_or(0);
             lines.push(format!("(adtinst {} {} {})", i, tpl, a.name));
         }
     }
@@ -678,8 +740,8 @@ fn kernel_hir_dump_matches_the_seed_over_the_fixtures() {
     let fixtures = walk(&paths.root.join("selfhost/cato/hir/fixtures"));
     let mut ran = 0;
     for file in fixtures {
-        let src =
-            std::fs::read_to_string(&file).unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
+        let src = std::fs::read_to_string(&file)
+            .unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
         let want = oracle_hir(&src);
         // Fixtures the seed itself rejects (expansion-error corpus files,
         // the seed-only macros fixture) are out of the IR contract.

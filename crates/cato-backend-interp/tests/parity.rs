@@ -45,16 +45,37 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
     for name in EXAMPLES {
         let src = root.join("examples").join(format!("{}.cato", name));
         // Interpreter output.
-        let out = Command::new(root.join("target/debug/cato-interp-run")).arg(&src).output().expect("interp run");
-        assert!(out.status.success(), "{}: interp failed: {}", name, String::from_utf8_lossy(&out.stderr));
+        let out = Command::new(root.join("target/debug/cato-interp-run"))
+            .arg(&src)
+            .output()
+            .expect("interp run");
+        assert!(
+            out.status.success(),
+            "{}: interp failed: {}",
+            name,
+            String::from_utf8_lossy(&out.stderr)
+        );
         let interp = String::from_utf8_lossy(&out.stdout).to_string();
 
         // LLVM output: emit IR, compile, run.
         let ll = root.join("target").join(format!("parity_{}.ll", name));
         let exe = root.join("target").join(format!("parity_{}_bin", name));
-        let status = Command::new(&cato).arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("cato emit");
+        let status = Command::new(&cato)
+            .arg("compile")
+            .arg(&src)
+            .arg("--emit-ir")
+            .arg("-o")
+            .arg(&ll)
+            .status()
+            .expect("cato emit");
         assert!(status.success(), "{}: emit failed", name);
-        let cc = Command::new("clang").arg(&ll).arg(&rt).arg("-o").arg(&exe).status().expect("clang");
+        let cc = Command::new("clang")
+            .arg(&ll)
+            .arg(&rt)
+            .arg("-o")
+            .arg(&exe)
+            .status()
+            .expect("clang");
         assert!(cc.success(), "{}: clang failed", name);
         let out = Command::new(&exe).output().expect("llvm run");
         let llvm = String::from_utf8_lossy(&out.stdout).to_string();
@@ -339,15 +360,35 @@ fn modules_agree_between_backends() {
     let rt = root.join("runtime/runtime.c");
     let src = root.join("examples/modules/main.cato");
 
-    let out = Command::new(root.join("target/debug/cato-interp-run")).arg(&src).output().expect("interp run");
-    assert!(out.status.success(), "interp: {}", String::from_utf8_lossy(&out.stderr));
+    let out = Command::new(root.join("target/debug/cato-interp-run"))
+        .arg(&src)
+        .output()
+        .expect("interp run");
+    assert!(
+        out.status.success(),
+        "interp: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let interp = String::from_utf8_lossy(&out.stdout).to_string();
 
     let ll = root.join("target/modules_main.ll");
     let exe = root.join("target/modules_main_bin");
-    let status = Command::new(&cato).arg("compile").arg(&src).arg("--emit-ir").arg("-o").arg(&ll).status().expect("emit");
+    let status = Command::new(&cato)
+        .arg("compile")
+        .arg(&src)
+        .arg("--emit-ir")
+        .arg("-o")
+        .arg(&ll)
+        .status()
+        .expect("emit");
     assert!(status.success());
-    let cc = Command::new("clang").arg(&ll).arg(&rt).arg("-o").arg(&exe).status().expect("clang");
+    let cc = Command::new("clang")
+        .arg(&ll)
+        .arg(&rt)
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("clang");
     assert!(cc.success());
     let out = Command::new(&exe).output().expect("llvm run");
     let llvm = String::from_utf8_lossy(&out.stdout).to_string();

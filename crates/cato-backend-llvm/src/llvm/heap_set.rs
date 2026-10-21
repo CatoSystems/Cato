@@ -3,7 +3,8 @@ use super::*;
 /// Store a `{ptr, len, cap}` header into an alloca'd slot (the set / map
 /// header shape, shared with `%VecI64`).
 pub(crate) fn store_header(slot: &str, p: &str, len: &str, c: &mut FnCtx) {
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", slot));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", slot));
     let pf = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 0",
@@ -122,19 +123,16 @@ pub(crate) fn emit_set_lit(
 /// Shared filter-copy core for conj/disj: copy every entry whose value
 /// `!= x` into `np` with a write pointer. Returns (write-pointer-out
 /// register name, loop blocks wired). The caller appends and sets len.
-fn emit_set_filter_copy(
-    ptr: &str,
-    len: &str,
-    xv: &str,
-    np: &str,
-    c: &mut FnCtx,
-) -> String {
+fn emit_set_filter_copy(ptr: &str, len: &str, xv: &str, np: &str, c: &mut FnCtx) -> String {
     let bloop = c.block_name();
     let bexit = c.block_name();
     let is_empty = c.temp();
     let pre = c.cur.clone();
     c.line(&format!("  {} = icmp eq i64 {}, 0", is_empty, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", is_empty, bexit, bloop));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        is_empty, bexit, bloop
+    ));
 
     let ivar = c.temp();
     let wvar = c.temp();
@@ -175,7 +173,10 @@ fn emit_set_filter_copy(
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
     let cond = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", cond, inext, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        cond, bloop, bexit
+    ));
 
     let lbl = c.open(&bexit);
     c.line(&format!("{}:", lbl));
@@ -257,7 +258,10 @@ pub(crate) fn emit_set_contains(
     let is_empty = c.temp();
     let pre = c.cur.clone();
     c.line(&format!("  {} = icmp eq i64 {}, 0", is_empty, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", is_empty, bexit, bloop));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        is_empty, bexit, bloop
+    ));
 
     let ivar = c.temp();
     let inext = c.temp();
@@ -282,14 +286,14 @@ pub(crate) fn emit_set_contains(
     ));
     c.line(&format!("  {} = load i64, ptr {}, align 8", vreg, f));
     c.line(&format!("  {} = icmp eq i64 {}, {}", m, vreg, xv));
-    c.line(&format!(
-        "  {} = or i1 {}, {}",
-        res2, m, rphi
-    ));
+    c.line(&format!("  {} = or i1 {}, {}", res2, m, rphi));
     c.line(&format!("  {} = add i64 {}, 1", inext, ivar));
     let cond = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", cond, inext, len));
-    c.line(&format!("  br i1 {}, label %{}, label %{}", cond, bloop, bexit));
+    c.line(&format!(
+        "  br i1 {}, label %{}, label %{}",
+        cond, bloop, bexit
+    ));
 
     let lbl = c.open(&bexit);
     c.line(&format!("{}:", lbl));

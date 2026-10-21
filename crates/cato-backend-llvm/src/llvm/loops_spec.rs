@@ -15,7 +15,8 @@ pub(crate) struct LoopSpec {
 /// Parallel eligibility at the ABI level: every capture must be a scalar
 /// (the runner stores them into a plain arg block).
 fn caps_parallel_ok(caps: &[(String, Ty)]) -> bool {
-    caps.iter().all(|(_, t)| t.is_int() || matches!(t, Ty::F64 | Ty::F32 | Ty::Bool | Ty::Str))
+    caps.iter()
+        .all(|(_, t)| t.is_int() || matches!(t, Ty::F64 | Ty::F32 | Ty::Bool | Ty::Str))
 }
 
 /// Element type of each base vector of a loop source (argument order).
@@ -25,7 +26,10 @@ pub(crate) fn source_base_elems(src: &HSource, params: &[(String, Ty)]) -> Vec<E
         // source is a compiler bug — never a guessed element width.
         HSource::Var(v) => vec![match params.iter().rev().find(|(n, _)| n == v) {
             Some((_, Ty::Vec(e))) => *e,
-            other => panic!("codegen: loop source {} has no vector type in scope ({:?})", v, other),
+            other => panic!(
+                "codegen: loop source {} has no vector type in scope ({:?})",
+                v, other
+            ),
         }],
         HSource::Lit(vl) => vec![vl.elem()],
         HSource::Zip(a, b) => {
@@ -56,9 +60,7 @@ pub(crate) fn make_loop_spec(helper: &str, reduce: HReduce, params: &[(String, T
     caps.sort_by(|a, b| a.0.cmp(&b.0));
     let base_elems = source_base_elems(reduce_src(&reduce), params);
     let requested = match &reduce {
-        HReduce::Pipeline { parallel, src, .. } => {
-            *parallel && matches!(src, HSource::Var(_))
-        }
+        HReduce::Pipeline { parallel, src, .. } => *parallel && matches!(src, HSource::Var(_)),
         _ => false,
     };
     let parallel = requested && caps_parallel_ok(&caps);
@@ -251,7 +253,6 @@ impl VarSet {
         });
     }
 }
-
 
 pub(crate) fn unwrap_source(src: &HSource) -> (Vec<(&HExpr, bool)>, &HSource) {
     let mut wrappers = Vec::new();

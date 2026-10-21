@@ -163,7 +163,10 @@ fn unknown_alias_is_a_build_error() {
                 "main.cato",
                 "(ns m) (require [\"lib.cato\" :as x])\n(defn main [] :- i64 (z/sq 3))\n",
             ),
-            ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
+            (
+                "lib.cato",
+                "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n",
+            ),
         ],
     );
     // `z` is never required, so `z/sq` stays unrewritten and fails to resolve.

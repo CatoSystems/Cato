@@ -24,7 +24,9 @@ fn main() {
     let has_inproc = env::var_os("CARGO_FEATURE_IN_PROCESS_LLD").is_some();
     if has_static && !has_inproc {
         let host = host_target_name().expect("hermetic build: unsupported host target");
-        let mut path = PathBuf::from("../cato-assets/assets/lld").join(host).join("lld");
+        let mut path = PathBuf::from("../cato-assets/assets/lld")
+            .join(host)
+            .join("lld");
         if cfg!(target_os = "windows") {
             path.set_extension("exe");
         }

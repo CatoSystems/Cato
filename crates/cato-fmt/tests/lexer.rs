@@ -29,10 +29,15 @@ fn fixtures() -> Vec<std::path::PathBuf> {
 fn concat_of_token_texts_equals_input() {
     for path in fixtures() {
         let src = std::fs::read_to_string(&path).expect("read fixture");
-        let tokens = lex(&src)
-            .unwrap_or_else(|e| panic!("lex failed for {}: {:?}", path.display(), e));
+        let tokens =
+            lex(&src).unwrap_or_else(|e| panic!("lex failed for {}: {:?}", path.display(), e));
         let joined: String = tokens.iter().map(|t| t.text.clone()).collect();
-        assert_eq!(joined, src, "lossless identity failed for {}", path.display());
+        assert_eq!(
+            joined,
+            src,
+            "lossless identity failed for {}",
+            path.display()
+        );
     }
 }
 
@@ -82,10 +87,7 @@ fn set_literal_opens_as_one_token() {
     assert_eq!(tokens[0].kind, TokKind::Open);
     assert_eq!(tokens[0].text, "#{");
     let kinds: Vec<_> = tokens.iter().map(|t| t.kind).collect();
-    assert_eq!(
-        kinds,
-        vec![TokKind::Open, TokKind::Atom, TokKind::Close]
-    );
+    assert_eq!(kinds, vec![TokKind::Open, TokKind::Atom, TokKind::Close]);
 }
 
 #[test]

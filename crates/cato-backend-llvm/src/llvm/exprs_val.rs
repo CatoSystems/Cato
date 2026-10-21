@@ -1,6 +1,5 @@
 use super::*;
 
-
 pub(crate) fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) {
     let HExpr::VecLit(lit) = value else {
         panic!("codegen: can only materialize vector literal bindings")
@@ -10,7 +9,8 @@ pub(crate) fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl:
     // The slot hoists to the entry prelude: a literal evaluated inside a
     // loop body would otherwise alloca once per iteration and walk the
     // stack (the same discipline as emit_conj's growable slots).
-    c.prelude.push(format!("  {} = alloca %VecI64, align 8", t_v));
+    c.prelude
+        .push(format!("  {} = alloca %VecI64, align 8", t_v));
     c.line(&format!(
         "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
         label, len, len, t_v
@@ -74,7 +74,8 @@ pub(crate) fn vec_arg(
             let (label, len, elem) = mdl.mint_vec(lit);
             let t_v = c.temp();
             // Hoisted to the entry prelude: loop-safe, like materialize_vec_lit.
-            c.prelude.push(format!("  {} = alloca %VecI64, align 8", t_v));
+            c.prelude
+                .push(format!("  {} = alloca %VecI64, align 8", t_v));
             c.line(&format!(
                 "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
                 label, len, len, t_v
@@ -113,10 +114,7 @@ pub(crate) fn emit_str_val(
             .get(v)
             .map(|(r, _)| r.clone())
             .unwrap_or_else(|| panic!("codegen: unknown string var {}", v)),
-        HExpr::Subs { s, start, end } => {
-            
-            emit_subs(s, start, end, c, mdl, sigs)
-        }
+        HExpr::Subs { s, start, end } => emit_subs(s, start, end, c, mdl, sigs),
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
         HExpr::StrCat(args) => emit_strcat(args, c, mdl, sigs),
         HExpr::ToStr(inner, t) => {
@@ -126,7 +124,10 @@ pub(crate) fn emit_str_val(
                     let f = emit_float(inner, c, mdl, sigs);
                     mdl.declare("declare ptr @cato_f64_to_str(double)".to_string());
                     let r = c.temp();
-                    c.line(&format!("  {} = call ptr @cato_f64_to_str(double {})", r, f));
+                    c.line(&format!(
+                        "  {} = call ptr @cato_f64_to_str(double {})",
+                        r, f
+                    ));
                     r
                 }
                 Ty::Bool => {
@@ -180,11 +181,9 @@ pub(crate) fn emit_str_val(
         }
         HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
         HExpr::Match { ty: Ty::Str, .. } => emit_match_node(e, c, mdl, sigs),
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-                emit_str_val(body, c, mdl, sigs)
-            })
-        }
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_str_val(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -206,7 +205,10 @@ pub(crate) fn emit_str_val(
             let inb = c.temp();
             c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
             let safe = c.temp();
-            c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+            c.line(&format!(
+                "  {} = select i1 {}, i64 {}, i64 0",
+                safe, inb, iv
+            ));
             let p = c.temp();
             c.line(&format!(
                 "  {} = getelementptr inbounds ptr, ptr {}, i64 {}",
@@ -245,7 +247,6 @@ pub(crate) fn emit_str_val(
     }
 }
 
-
 /// `(get vec idx [default])` — branchless bounds-checked element load. The
 /// result has the vector's element type, so this is valid in int and float
 /// contexts alike.
@@ -271,7 +272,10 @@ pub(crate) fn emit_get(
     let inb = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
     let safe = c.temp();
-    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 0",
+        safe, inb, iv
+    ));
     let p = oob_safe_elem_ptr(&inb, &safe, ll, &d, c, mdl);
     let v = c.temp();
     c.line(&mdl.elem_load(elem, &v, &p));
@@ -281,12 +285,7 @@ pub(crate) fn emit_get(
             let r = c.temp();
             c.line(&format!(
                 "  {} = select i1 {}, {} {}, {} {}",
-                r,
-                inb,
-                ll,
-                v,
-                ll,
-                dvv
+                r, inb, ll, v, ll, dvv
             ));
             r
         }
@@ -315,7 +314,10 @@ pub(crate) fn emit_get_opt(
     let inb = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, l));
     let safe = c.temp();
-    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 0",
+        safe, inb, iv
+    ));
     let p = oob_safe_elem_ptr(&inb, &safe, ll, &d, c, mdl);
     let payload = match elem {
         Elem::I64 | Elem::F64 => {
@@ -328,7 +330,12 @@ pub(crate) fn emit_get_opt(
     materialize_option(c, mdl, adt, &inb, &payload)
 }
 
-pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut Mdl, sigs: &HashMap<String, (Ty, Vec<Ty>)>) {
+pub(crate) fn emit_let(
+    binds: &[(String, HExpr, Ty)],
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) {
     for (name, value, ty) in binds {
         // Calls returning vectors bind as plain (read-only) vec values.
         if let HExpr::Call(..) = value {
@@ -349,10 +356,7 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 // the current block, so they must land there too.
                 for i in 0..3 {
                     let v = c.temp();
-                    c.line(&format!(
-                        "  {} = extractvalue %VecI64 {}, {}",
-                        v, st, i
-                    ));
+                    c.line(&format!("  {} = extractvalue %VecI64 {}, {}", v, st, i));
                     let pf = c.temp();
                     c.line(&format!(
                         "  {} = getelementptr inbounds %VecI64, ptr {}, i32 0, i32 {}",
@@ -386,8 +390,7 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
             }
             HExpr::Args => {
                 let lptr = c.temp();
-                c.prelude
-                    .push(format!("  {} = alloca i64, align 8", lptr));
+                c.prelude.push(format!("  {} = alloca i64, align 8", lptr));
                 mdl.ensure_decl("declare ptr @cato_args(ptr)");
                 let arr = c.temp();
                 c.line(&format!("  {} = call ptr @cato_args(ptr {})", arr, lptr));
@@ -433,7 +436,12 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
         }
         // Heap-constructing values bind as growable slots.
         match value {
-            HExpr::Conj { v, x, elem, in_place } => {
+            HExpr::Conj {
+                v,
+                x,
+                elem,
+                in_place,
+            } => {
                 let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
                 c.grow.insert(name.clone(), (slot, *elem));
                 continue;
@@ -515,7 +523,15 @@ pub(crate) fn emit_let(binds: &[(String, HExpr, Ty)], c: &mut FnCtx, mdl: &mut M
                 let v = emit_str_val(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, Ty::Str));
             }
-            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+            t @ (Ty::I64
+            | Ty::I32
+            | Ty::I8
+            | Ty::I16
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize) => {
                 let v = emit_int(value, c, mdl, sigs);
                 c.scalar.insert(name.clone(), (v, *t));
             }
@@ -638,14 +654,10 @@ pub(crate) fn emit_closure_val(
             captures,
             capture_owns,
             ..
-        } => {
-            emit_closure_creation(mangled, *sig, captures, capture_owns, c, mdl, sigs)
-        }
-        HExpr::Let(binds, body, frees) => {
-            emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-                emit_closure_val(body, c, mdl, sigs)
-            })
-        }
+        } => emit_closure_creation(mangled, *sig, captures, capture_owns, c, mdl, sigs),
+        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
+            emit_closure_val(body, c, mdl, sigs)
+        }),
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -680,7 +692,10 @@ pub(crate) fn emit_strnth_opt(
     let inb = c.temp();
     c.line(&format!("  {} = icmp ult i64 {}, {}", inb, iv, len));
     let safe = c.temp();
-    c.line(&format!("  {} = select i1 {}, i64 {}, i64 0", safe, inb, iv));
+    c.line(&format!(
+        "  {} = select i1 {}, i64 {}, i64 0",
+        safe, inb, iv
+    ));
     let p = c.temp();
     c.line(&format!(
         "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
@@ -712,6 +727,9 @@ pub(crate) fn oob_safe_elem_ptr(
         p, ll, d, safe
     ));
     let q = c.temp();
-    c.line(&format!("  {} = select i1 {}, ptr {}, ptr @cato_oob_zero", q, inb, p));
+    c.line(&format!(
+        "  {} = select i1 {}, ptr {}, ptr @cato_oob_zero",
+        q, inb, p
+    ));
     q
 }

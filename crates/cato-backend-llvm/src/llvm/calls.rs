@@ -11,7 +11,10 @@ pub(crate) fn emit_vec_call(
     };
     let elem = match sigs.get(name).map(|(r, _)| *r) {
         Some(Ty::Vec(el)) => el,
-        other => panic!("codegen: call {} does not return a vector ({:?})", name, other),
+        other => panic!(
+            "codegen: call {} does not return a vector ({:?})",
+            name, other
+        ),
     };
     let st = call_user(name, args, c, mdl, sigs);
     let p = c.temp();
@@ -39,7 +42,10 @@ pub(crate) fn call_user(
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-) -> String {    let (ret_ty, arg_tys) = sigs.get(name).unwrap_or_else(|| panic!("codegen: unknown call {}", name));
+) -> String {
+    let (ret_ty, arg_tys) = sigs
+        .get(name)
+        .unwrap_or_else(|| panic!("codegen: unknown call {}", name));
     let arg_tys = arg_tys.clone();
     let mut ll_args = Vec::new();
     for (expr, ty) in args.iter().zip(arg_tys.iter()) {
@@ -53,7 +59,15 @@ pub(crate) fn call_user(
                 let v = emit_float(expr, c, mdl, sigs);
                 ll_args.push(format!("double {}", v));
             }
-            t @ (Ty::I64 | Ty::I32 | Ty::I8 | Ty::I16 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize) => {
+            t @ (Ty::I64
+            | Ty::I32
+            | Ty::I8
+            | Ty::I16
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize) => {
                 let v = emit_int(expr, c, mdl, sigs);
                 ll_args.push(format!("{} {}", Mdl::ll_scalar(*t), v));
             }
@@ -87,10 +101,7 @@ pub(crate) fn call_user(
                     o => panic!("codegen: closure arg must be a var, got {:?}", o),
                 };
                 let lv = c.temp();
-                c.line(&format!(
-                    "  {} = load %Closure, ptr {}, align 8",
-                    lv, slot
-                ));
+                c.line(&format!("  {} = load %Closure, ptr {}, align 8", lv, slot));
                 ll_args.push(format!("%Closure {}", lv));
             }
             Ty::Str => {
@@ -159,14 +170,18 @@ pub(crate) fn call_user(
         let z = c.temp();
         c.line(&format!("  {} = icmp eq ptr {}, null", z, t));
         let r = c.temp();
-        c.line(&format!("  {} = select i1 {}, ptr @cato_empty_str, ptr {}", r, z, t));
+        c.line(&format!(
+            "  {} = select i1 {}, ptr @cato_empty_str, ptr {}",
+            r, z, t
+        ));
         return r;
     }
     if matches!(ret_ty, Ty::Fn(_)) {
         // A returned closure arrives by value; the caller holds closures
         // in %Closure slots (as let-bound ones and params).
         let slot = c.temp();
-        c.prelude.push(format!("  {} = alloca %Closure, align 8", slot));
+        c.prelude
+            .push(format!("  {} = alloca %Closure, align 8", slot));
         c.line(&format!("  store %Closure {}, ptr {}, align 8", t, slot));
         return slot;
     }

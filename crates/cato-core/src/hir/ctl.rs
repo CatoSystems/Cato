@@ -12,8 +12,13 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
             has_ctl(idx) || default.as_deref().map(has_ctl).unwrap_or(false)
         }
         HExpr::Min(a, b, _) | HExpr::Max(a, b, _) => has_ctl(a) || has_ctl(b),
-        HExpr::StrCmp(..) | HExpr::StrOrd(..) | HExpr::Var(_)
-        | HExpr::ConstI64(_) | HExpr::ConstB(_) | HExpr::ConstF64(_) | HExpr::VecLit(_)
+        HExpr::StrCmp(..)
+        | HExpr::StrOrd(..)
+        | HExpr::Var(_)
+        | HExpr::ConstI64(_)
+        | HExpr::ConstB(_)
+        | HExpr::ConstF64(_)
+        | HExpr::VecLit(_)
         | HExpr::StrLit(_) => false,
         HExpr::StrNth { s, idx, .. } => has_ctl(s) || has_ctl(idx),
         HExpr::CharStr(c) => has_ctl(c),
@@ -34,11 +39,9 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::ICast(inner, _, _) => has_ctl(inner),
         HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
-        HExpr::MapGet { src, key, default, .. } => {
-            has_ctl(src)
-                || has_ctl(key)
-                || default.as_deref().map(has_ctl).unwrap_or(false)
-        }
+        HExpr::MapGet {
+            src, key, default, ..
+        } => has_ctl(src) || has_ctl(key) || default.as_deref().map(has_ctl).unwrap_or(false),
         HExpr::SetLit(vs) => vs.iter().any(has_ctl),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
             has_ctl(s) || has_ctl(x)
@@ -48,19 +51,30 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Join { sep, xs } => has_ctl(sep) || has_ctl(xs),
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Closure { body, .. } => has_ctl(body),
-        HExpr::ClosureCall { f, args, .. } => {
-            has_ctl(f) || args.iter().any(has_ctl)
-        }
+        HExpr::ClosureCall { f, args, .. } => has_ctl(f) || args.iter().any(has_ctl),
         HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Reduce(r) => match &**r {
-            HReduce::Pipeline { init, maps, filters, src, .. } => {
+            HReduce::Pipeline {
+                init,
+                maps,
+                filters,
+                src,
+                ..
+            } => {
                 has_ctl(init)
                     || has_ctl_source(src)
                     || maps.iter().any(|m| has_ctl(&m.body))
                     || filters.iter().any(|f| has_ctl(&f.body))
             }
-            HReduce::Closure { init, src, body, maps, filters, .. } => {
+            HReduce::Closure {
+                init,
+                src,
+                body,
+                maps,
+                filters,
+                ..
+            } => {
                 has_ctl(init)
                     || has_ctl_source(src)
                     || has_ctl(body)
@@ -79,4 +93,3 @@ pub(crate) fn has_ctl_source(src: &HSource) -> bool {
         HSource::Take(n, inner) | HSource::Drop(n, inner) => has_ctl(n) || has_ctl_source(inner),
     }
 }
-

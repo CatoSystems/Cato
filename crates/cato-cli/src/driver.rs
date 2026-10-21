@@ -167,7 +167,10 @@ fn passthrough_key(tok: &str) -> String {
 }
 
 fn passthrough_keys(opts: &LinkOpts) -> Vec<String> {
-    opts.passthrough.iter().map(|t| passthrough_key(t)).collect()
+    opts.passthrough
+        .iter()
+        .map(|t| passthrough_key(t))
+        .collect()
 }
 
 /// Parsed options in contract order, minus any whose key appears in the
@@ -293,13 +296,28 @@ mod tests {
     fn native_link_argv_baseline() {
         let spec = lookup("native").unwrap();
         let o = opts();
-        let v = link_invocations(spec, "clang", Path::new("a.ll"),
-                                 Path::new("runtime/runtime.c"), Path::new("a"), &o);
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("runtime/runtime.c"),
+            Path::new("a"),
+            &o,
+        );
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].program, "clang");
         assert_eq!(v[0].what, "link");
-        assert_eq!(v[0].args, ["-O2", "-rtlib=compiler-rt", "a.ll",
-                               "runtime/runtime.c", "-o", "a"]);
+        assert_eq!(
+            v[0].args,
+            [
+                "-O2",
+                "-rtlib=compiler-rt",
+                "a.ll",
+                "runtime/runtime.c",
+                "-o",
+                "a"
+            ]
+        );
     }
 
     #[test]
@@ -307,11 +325,23 @@ mod tests {
         let spec = lookup("native").unwrap();
         let mut o = opts();
         o.passthrough = vec!["--rtlib=libgcc".into()];
-        let v = link_invocations(spec, "clang", Path::new("a.ll"),
-                                 Path::new("rt.c"), Path::new("a"), &o);
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("rt.c"),
+            Path::new("a"),
+            &o,
+        );
         let args = &v[0].args;
-        assert!(args.contains(&"--rtlib=libgcc".to_string()), "args: {args:?}");
-        assert!(!args.contains(&"-rtlib=compiler-rt".to_string()), "args: {args:?}");
+        assert!(
+            args.contains(&"--rtlib=libgcc".to_string()),
+            "args: {args:?}"
+        );
+        assert!(
+            !args.contains(&"-rtlib=compiler-rt".to_string()),
+            "args: {args:?}"
+        );
     }
 
     #[test]
@@ -319,8 +349,14 @@ mod tests {
         let spec = lookup("native").unwrap();
         let mut o = opts();
         o.passthrough = vec!["-O3".into()];
-        let v = link_invocations(spec, "clang", Path::new("a.ll"),
-                                 Path::new("rt.c"), Path::new("a"), &o);
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("rt.c"),
+            Path::new("a"),
+            &o,
+        );
         let args = &v[0].args;
         assert!(args.contains(&"-O3".to_string()), "args: {args:?}");
         assert!(!args.contains(&"-O2".to_string()), "args: {args:?}");
@@ -332,29 +368,65 @@ mod tests {
         let mut o = opts();
         o.debug = true;
         o.asan = true;
-        let v = link_invocations(spec, "clang", Path::new("a.ll"),
-                                 Path::new("rt.c"), Path::new("a"), &o);
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("rt.c"),
+            Path::new("a"),
+            &o,
+        );
         let args = &v[0].args;
         assert!(args.contains(&"-g".to_string()), "args: {args:?}");
-        assert!(args.contains(&"-fsanitize=address".to_string()), "args: {args:?}");
+        assert!(
+            args.contains(&"-fsanitize=address".to_string()),
+            "args: {args:?}"
+        );
     }
 
     #[test]
     fn wasm_produces_two_invocations() {
         let spec = lookup("wasm32").unwrap();
         let o = opts();
-        let v = link_invocations(spec, "clang", Path::new("a.ll"),
-                                 Path::new("runtime/runtime.c"), Path::new("out"), &o);
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("runtime/runtime.c"),
+            Path::new("out"),
+            &o,
+        );
         assert_eq!(v.len(), 2);
         let rt_o_str = "out.runtime.o".to_string();
         assert_eq!(v[0].what, "wasm runtime");
-        assert_eq!(v[0].args, ["--target=wasm32-unknown-unknown", "-c", "-O2",
-                               "-ffreestanding", "runtime/runtime.c", "-o", &rt_o_str]);
+        assert_eq!(
+            v[0].args,
+            [
+                "--target=wasm32-unknown-unknown",
+                "-c",
+                "-O2",
+                "-ffreestanding",
+                "runtime/runtime.c",
+                "-o",
+                &rt_o_str
+            ]
+        );
         assert_eq!(v[1].what, "wasm link");
-        assert_eq!(v[1].args, ["--target=wasm32-unknown-unknown", "-O2", "-nostdlib",
-                               "a.ll", &rt_o_str,
-                               "-Wl,--no-entry", "-Wl,--allow-undefined",
-                               "-Wl,--export=main", "-o", "out"]);
+        assert_eq!(
+            v[1].args,
+            [
+                "--target=wasm32-unknown-unknown",
+                "-O2",
+                "-nostdlib",
+                "a.ll",
+                &rt_o_str,
+                "-Wl,--no-entry",
+                "-Wl,--allow-undefined",
+                "-Wl,--export=main",
+                "-o",
+                "out"
+            ]
+        );
     }
 
     #[test]
@@ -387,12 +459,42 @@ mod tests {
     fn target_table_matches_spec() {
         let expect: &[(&str, Option<&str>, &str, Flavor)] = &[
             ("native", None, "", Flavor::Native),
-            ("wasm32", Some("wasm32-unknown-unknown"), ".wasm", Flavor::Wasm),
-            ("x86_64-linux", Some("x86_64-unknown-linux-gnu"), "", Flavor::Native),
-            ("aarch64-linux", Some("aarch64-unknown-linux-gnu"), "", Flavor::Native),
-            ("x86_64-macos", Some("x86_64-apple-darwin"), "", Flavor::Native),
-            ("aarch64-macos", Some("aarch64-apple-darwin"), "", Flavor::Native),
-            ("x86_64-windows", Some("x86_64-w64-mingw32"), ".exe", Flavor::Native),
+            (
+                "wasm32",
+                Some("wasm32-unknown-unknown"),
+                ".wasm",
+                Flavor::Wasm,
+            ),
+            (
+                "x86_64-linux",
+                Some("x86_64-unknown-linux-gnu"),
+                "",
+                Flavor::Native,
+            ),
+            (
+                "aarch64-linux",
+                Some("aarch64-unknown-linux-gnu"),
+                "",
+                Flavor::Native,
+            ),
+            (
+                "x86_64-macos",
+                Some("x86_64-apple-darwin"),
+                "",
+                Flavor::Native,
+            ),
+            (
+                "aarch64-macos",
+                Some("aarch64-apple-darwin"),
+                "",
+                Flavor::Native,
+            ),
+            (
+                "x86_64-windows",
+                Some("x86_64-w64-mingw32"),
+                ".exe",
+                Flavor::Native,
+            ),
         ];
         assert_eq!(TARGETS.len(), expect.len(), "TARGETS: {TARGETS:?}");
         for (spec, (name, triple, suffix, flavor)) in TARGETS.iter().zip(expect) {

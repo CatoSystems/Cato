@@ -20,7 +20,11 @@ impl Span {
             hi: self.hi.max(other.hi),
             // The joined range starts at the lower offset; attribute it to
             // the file that side came from.
-            file: if self.lo <= other.lo { self.file } else { other.file },
+            file: if self.lo <= other.lo {
+                self.file
+            } else {
+                other.file
+            },
         }
     }
 }

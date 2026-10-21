@@ -214,13 +214,17 @@ pub(crate) fn collect_generics(
     let mut variant_of: HashMap<&str, (u32, u32)> = HashMap::new();
     for (ai, adt) in tcx.adts.iter().enumerate() {
         for (vi, (vn, _)) in adt.variants.iter().enumerate() {
-            variant_of.entry(vn.as_str()).or_insert((ai as u32, vi as u32));
+            variant_of
+                .entry(vn.as_str())
+                .or_insert((ai as u32, vi as u32));
         }
     }
 
     for (form, span) in prog {
         if is_defgeneric(form) {
-            let Expr::List(items) = form else { unreachable!() };
+            let Expr::List(items) = form else {
+                unreachable!()
+            };
             let bad = |m: &str| locate(*span, m);
             let Some(Expr::LitSym(name)) = items.get(1) else {
                 return Err(bad("defgeneric expects a name"));
@@ -271,7 +275,9 @@ pub(crate) fn collect_generics(
             continue;
         }
         if is_defmethod(form) {
-            let Expr::List(items) = form else { unreachable!() };
+            let Expr::List(items) = form else {
+                unreachable!()
+            };
             let bad = |m: &str| locate(*span, m);
             let Some(Expr::LitSym(name)) = items.get(1) else {
                 return Err(bad("defmethod expects a generic name"));
@@ -311,9 +317,7 @@ pub(crate) fn collect_generics(
                     // (Variant binders...) — destructuring specializer.
                     Expr::List(vi) => {
                         let Some(Expr::LitSym(vname)) = vi.first() else {
-                            return Err(
-                                bad("destructuring specializer must start with a variant")
-                            );
+                            return Err(bad("destructuring specializer must start with a variant"));
                         };
                         let Some(&(a, v)) = variant_of.get(vname.as_str()) else {
                             return Err(bad(&format!("unknown variant {}", vname)));
@@ -329,7 +333,9 @@ pub(crate) fn collect_generics(
                         if binders.len() != nfields {
                             return Err(bad(&format!(
                                 "variant {} has {} field(s) but the specializer binds {}",
-                                vname, nfields, binders.len()
+                                vname,
+                                nfields,
+                                binders.len()
                             )));
                         }
                         names.push(format!("__p{}", sp.len()));
@@ -339,9 +345,8 @@ pub(crate) fn collect_generics(
                     }
                     // name :- Type
                     Expr::LitSym(pname) => {
-                        let bad_spec = || {
-                            bad("specializers expect (name :- Type) or (Variant binders...)")
-                        };
+                        let bad_spec =
+                            || bad("specializers expect (name :- Type) or (Variant binders...)");
                         let Some(Expr::LitSym(sep)) = specs.get(k + 1) else {
                             return Err(bad_spec());
                         };
@@ -624,8 +629,14 @@ pub(crate) fn generic_call(
         }
         (
             g.ret,
-            g.methods.iter().map(|m| m.hidden.clone()).collect::<Vec<_>>(),
-            g.methods.iter().map(|m| m.specs.clone()).collect::<Vec<_>>(),
+            g.methods
+                .iter()
+                .map(|m| m.hidden.clone())
+                .collect::<Vec<_>>(),
+            g.methods
+                .iter()
+                .map(|m| m.specs.clone())
+                .collect::<Vec<_>>(),
         )
     };
 
@@ -679,7 +690,10 @@ pub(crate) fn generic_call(
             .filter(|mi| {
                 !applicable.iter().any(|ni| {
                     ni != mi
-                        && specs_all[*ni].iter().zip(specs_all[*mi].iter()).all(|(s2, s1)| s2.at_least(s1))
+                        && specs_all[*ni]
+                            .iter()
+                            .zip(specs_all[*mi].iter())
+                            .all(|(s2, s1)| s2.at_least(s1))
                         && specs_all[*ni]
                             .iter()
                             .zip(specs_all[*mi].iter())
@@ -703,10 +717,7 @@ pub(crate) fn generic_call(
         // methods without wildcards keep their classic hidden name.
         let mi = maximal[0];
         let (hidden, r) = resolve_method_instance(name, mi, Some(arg_tys.clone()), ctx)?;
-        ctx.gens
-            .borrow_mut()
-            .call_rets
-            .insert(hidden.clone(), r);
+        ctx.gens.borrow_mut().call_rets.insert(hidden.clone(), r);
         return Ok(HExpr::Call(hidden, args));
     }
 
@@ -817,8 +828,7 @@ pub(crate) fn generic_call(
     }
     let mut ret: Option<Ty> = None;
     for (_, mi) in &chosen {
-        let r = instance_rets[*mi]
-            .expect("selected method instantiated above");
+        let r = instance_rets[*mi].expect("selected method instantiated above");
         match ret {
             None => ret = Some(r),
             Some(prev) if prev != r => {
@@ -865,7 +875,10 @@ pub(crate) fn generic_call(
         ret_borrowed: false,
         ret_owned: false,
     });
-    ctx.gens.borrow_mut().dispatch_cache.insert(key.clone(), key.clone());
+    ctx.gens
+        .borrow_mut()
+        .dispatch_cache
+        .insert(key.clone(), key.clone());
     ctx.gens.borrow_mut().call_rets.insert(key.clone(), ret);
     Ok(HExpr::Call(key, args))
 }
@@ -973,7 +986,14 @@ fn resolve_method_instance(
             // concrete types.
             Some(gv) if has_wildcard => {
                 let hidden = format!("{}__{}", m.hidden, grounds_key(&gv, ctx));
-                (hidden, gv, m.names.clone(), m.destructure.clone(), m.body.clone(), m.ret)
+                (
+                    hidden,
+                    gv,
+                    m.names.clone(),
+                    m.destructure.clone(),
+                    m.body.clone(),
+                    m.ret,
+                )
             }
             // Classic: lower once under the method's own hidden name.
             _ => {
@@ -1055,5 +1075,9 @@ fn resolve_method_instance(
 
 /// Symbol-safe cache key for a ground signature.
 fn grounds_key(grounds: &[Ty], ctx: &Ctx) -> String {
-    grounds.iter().map(|t| ty_key(*t, ctx)).collect::<Vec<_>>().join("_")
+    grounds
+        .iter()
+        .map(|t| ty_key(*t, ctx))
+        .collect::<Vec<_>>()
+        .join("_")
 }

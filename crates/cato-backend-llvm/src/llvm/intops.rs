@@ -81,13 +81,19 @@ fn emit_divlike(op: BinOp, av: &str, bv: &str, ty: Ty, c: &mut FnCtx) -> String 
     let m1 = c.temp();
     c.line(&format!("  {} = icmp eq {} {}, -1", m1, ll, bv));
     let bs = c.temp();
-    c.line(&format!("  {} = select i1 {}, {} 1, {} {}", bs, m1, ll, ll, bv));
+    c.line(&format!(
+        "  {} = select i1 {}, {} 1, {} {}",
+        bs, m1, ll, ll, bv
+    ));
     match op {
         BinOp::Div => {
             let q = bin(c, "sdiv", av, &bs);
             let neg = bin(c, "sub", "0", av);
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, {} {}, {} {}", t, m1, ll, neg, ll, q));
+            c.line(&format!(
+                "  {} = select i1 {}, {} {}, {} {}",
+                t, m1, ll, neg, ll, q
+            ));
             t
         }
         BinOp::Rem => bin(c, "srem", av, &bs),
@@ -103,7 +109,10 @@ fn emit_divlike(op: BinOp, av: &str, bv: &str, ty: Ty, c: &mut FnCtx) -> String 
             c.line(&format!("  {} = and i1 {}, {}", fix, neg, nz));
             let rb = bin(c, "add", &r, bv);
             let t = c.temp();
-            c.line(&format!("  {} = select i1 {}, {} {}, {} {}", t, fix, ll, rb, ll, r));
+            c.line(&format!(
+                "  {} = select i1 {}, {} {}, {} {}",
+                t, fix, ll, rb, ll, r
+            ));
             t
         }
     }
