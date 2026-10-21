@@ -372,7 +372,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
     } else {
         lower(&items[2], &child, ctx)?
     };
-    Ok(HExpr::Let(resolved, Box::new(body), Vec::new()))
+    Ok(HExpr::Let(resolved, Box::new(body), Vec::new(), Vec::new()))
 }
 
 /// Does every path through `e` end in a `recur`? Such an expression never
@@ -383,7 +383,7 @@ pub(crate) fn all_paths_recur(e: &HExpr) -> bool {
         HExpr::Recur(..) => true,
         HExpr::If(_, t, f, _) => all_paths_recur(t) && all_paths_recur(f),
         HExpr::Match { arms, .. } => arms.iter().all(|a| all_paths_recur(&a.body)),
-        HExpr::Let(_, body, _) => all_paths_recur(body),
+        HExpr::Let(_, body, _, _) => all_paths_recur(body),
         HExpr::Seq(vs) => vs.last().map(all_paths_recur).unwrap_or(false),
         _ => false,
     }

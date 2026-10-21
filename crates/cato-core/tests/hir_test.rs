@@ -166,7 +166,7 @@ fn builds_multi_type_let_sequence() {
              (+ d 0.5)))",
     );
     match body {
-        HExpr::Let(binds, inner, _) => {
+        HExpr::Let(binds, inner, _, _) => {
             assert_eq!(binds.len(), 2);
             let HExpr::BinW(BinOp::Add, _, _, Ty::F64) = *inner else {
                 panic!("expected f64 add body after both bindings")
@@ -702,7 +702,7 @@ fn conj_is_persistent_and_last_use_updates_in_place() {
                 walk(v, flags);
                 walk(x, flags);
             }
-            HExpr::Let(binds, body, _) => {
+            HExpr::Let(binds, body, _, _) => {
                 binds.iter().for_each(|(_, v2, _)| walk(v2, flags));
                 walk(body, flags);
             }
@@ -729,7 +729,7 @@ fn for_requires_control_flow_free_body() {
 fn map_literals_sort_keys_at_compile_time() {
     // The fresh literal is bound (and freed) around the read.
     let body = build_one("f", "(defn f [] :- i64 (get {3 30 1 10} 1 0))");
-    let HExpr::Let(binds, inner, _) = body else {
+    let HExpr::Let(binds, inner, _, _) = body else {
         panic!("hoisting let")
     };
     assert!(matches!(*inner, HExpr::MapGet { .. }), "mapget");
@@ -765,7 +765,7 @@ fn set_literals_sort_and_dedupe() {
     let exprs = read_all("(defn main [] :- i64 (count #{3 3 1 2 1}))").unwrap();
     let fns = build(&exprs).unwrap();
     // The fresh literal is bound (and freed) around the count.
-    let HExpr::Let(binds, body, _) = &fns[0].body else {
+    let HExpr::Let(binds, body, _, _) = &fns[0].body else {
         panic!("hoisting let")
     };
     assert!(matches!(**body, HExpr::Count(_)), "count");

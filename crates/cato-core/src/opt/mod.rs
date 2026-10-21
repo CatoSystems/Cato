@@ -114,7 +114,7 @@ fn recompute_frees(program: &mut Program) {
 fn clear_frees(body: &mut HExpr) {
     let taken = std::mem::replace(body, HExpr::ConstI64(0));
     *body = walk::rewrite(taken, &mut |e| match e {
-        HExpr::Let(binds, body, _) => HExpr::Let(binds, body, Vec::new()),
+        HExpr::Let(binds, body, _, _) => HExpr::Let(binds, body, Vec::new(), Vec::new()),
         HExpr::Recur(args, _) => HExpr::Recur(args, Vec::new()),
         HExpr::Match {
             scrut,

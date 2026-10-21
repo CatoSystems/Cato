@@ -181,9 +181,11 @@ pub(crate) fn emit_str_val(
         }
         HExpr::If(cond, then, els, Ty::Str) => emit_if_node(cond, then, els, Ty::Str, c, mdl, sigs),
         HExpr::Match { ty: Ty::Str, .. } => emit_match_node(e, c, mdl, sigs),
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_str_val(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_str_val(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -332,22 +334,92 @@ pub(crate) fn emit_get_opt(
 
 pub(crate) fn emit_let(
     binds: &[(String, HExpr, Ty)],
+    rebind: &[(String, usize)],
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) {
-    for (name, value, ty) in binds {
+    for (i, (name, value, ty)) in binds.iter().enumerate() {
+        let shadowed = rebind.iter().any(|(n, idx)| n == name && *idx == i);
+        if !shadowed {
+            bind_one(name, value, *ty, c, mdl, sigs);
+            continue;
+        }
+        // A rebind shadows a prior buffer of the same name. The initializer
+        // may still read that buffer (`[a x a (conj a y)]` copies from the
+        // old `a`), so the old storage is released only after the new value
+        // exists. Snapshot the name-keyed maps before binding, put them back
+        // so `free_binding_storage` sees the *predecessor*, drop it, then
+        // reinstall the new entry — reusing the one tested drop routine
+        // instead of a parallel release path.
+        let saved = snapshot_binds(name, c);
+        bind_one(name, value, *ty, c, mdl, sigs);
+        let fresh = snapshot_binds(name, c);
+        apply_binds(name, &saved, c);
+        free_binding_storage(name, c, mdl);
+        apply_binds(name, &fresh, c);
+    }
+}
+
+/// The four name-keyed storage maps' entries for `name`, for save/restore
+/// around a rebind's deferred release.
+struct BindSnapshot {
+    scalar: Option<(String, Ty)>,
+    vecs: Option<(String, String, Elem)>,
+    grow: Option<(String, Elem)>,
+    growm: Option<(String, Ty)>,
+}
+
+fn snapshot_binds(name: &str, c: &FnCtx) -> BindSnapshot {
+    BindSnapshot {
+        scalar: c.scalar.get(name).cloned(),
+        vecs: c.vecs.get(name).cloned(),
+        grow: c.grow.get(name).cloned(),
+        growm: c.growm.get(name).cloned(),
+    }
+}
+
+fn apply_binds(name: &str, s: &BindSnapshot, c: &mut FnCtx) {
+    set_or_remove(&mut c.scalar, name, s.scalar.clone());
+    set_or_remove(&mut c.vecs, name, s.vecs.clone());
+    set_or_remove(&mut c.grow, name, s.grow.clone());
+    set_or_remove(&mut c.growm, name, s.growm.clone());
+}
+
+fn set_or_remove<V: Clone>(m: &mut HashMap<String, V>, name: &str, v: Option<V>) {
+    match v {
+        Some(v) => {
+            m.insert(name.to_string(), v);
+        }
+        None => {
+            m.remove(name);
+        }
+    }
+}
+
+/// Bind a single `let` binding: evaluate its initializer and install the
+/// stororage under `name` in the name-keyed maps. Split out so `emit_let`
+/// can release a shadowed predecessor *after* this returns.
+fn bind_one(
+    name: &str,
+    value: &HExpr,
+    ty: Ty,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+    sigs: &HashMap<String, (Ty, Vec<Ty>)>,
+) {
+    {
         // Calls returning vectors bind as plain (read-only) vec values.
         if let HExpr::Call(..) = value {
-            if let Ty::Vec(el) = *ty {
+            if let Ty::Vec(el) = ty {
                 let (p, l, _) = emit_vec_call(value, c, mdl, sigs);
-                c.vecs.insert(name.clone(), (p, l, el));
-                continue;
+                c.vecs.insert(name.to_string(), (p, l, el));
+                return;
             }
             // Calls returning maps/sets: the %VecI64 header goes into a
             // fresh local slot (map/set ops read and owned growth rewrites
             // the local slot only).
-            if matches!(*ty, Ty::Map | Ty::Set) {
+            if matches!(ty, Ty::Map | Ty::Set) {
                 let st = call_user_node(value, c, mdl, sigs);
                 let slot = c.temp();
                 c.prelude
@@ -368,8 +440,8 @@ pub(crate) fn emit_let(
                         c.line(&format!("  store i64 {}, ptr {}, align 8", v, pf));
                     }
                 }
-                c.growm.insert(name.clone(), (slot, *ty));
-                continue;
+                c.growm.insert(name.to_string(), (slot, ty));
+                return;
             }
         }
         // S3 host values.
@@ -385,8 +457,8 @@ pub(crate) fn emit_let(
                 };
                 let p = c.temp();
                 c.line(&format!("  {} = call ptr @{}(ptr {})", p, helper, sv));
-                c.scalar.insert(name.clone(), (p, *ty));
-                continue;
+                c.scalar.insert(name.to_string(), (p, ty));
+                return;
             }
             HExpr::Args => {
                 let lptr = c.temp();
@@ -396,8 +468,8 @@ pub(crate) fn emit_let(
                 c.line(&format!("  {} = call ptr @cato_args(ptr {})", arr, lptr));
                 let l = c.temp();
                 c.line(&format!("  {} = load i64, ptr {}, align 8", l, lptr));
-                c.vecs.insert(name.clone(), (arr, l, Elem::Str));
-                continue;
+                c.vecs.insert(name.to_string(), (arr, l, Elem::Str));
+                return;
             }
             _ => {}
         }
@@ -410,8 +482,8 @@ pub(crate) fn emit_let(
         } = value
         {
             let slot = emit_get_opt(src, idx, *adt, c, mdl, sigs);
-            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
-            continue;
+            c.scalar.insert(name.to_string(), (slot, Ty::Adt(*adt)));
+            return;
         }
         if let HExpr::MapGet {
             src,
@@ -421,8 +493,8 @@ pub(crate) fn emit_let(
         } = value
         {
             let slot = emit_map_get_opt(src, key, *adt, c, mdl, sigs);
-            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
-            continue;
+            c.scalar.insert(name.to_string(), (slot, Ty::Adt(*adt)));
+            return;
         }
         if let HExpr::StrNth {
             s,
@@ -431,8 +503,8 @@ pub(crate) fn emit_let(
         } = value
         {
             let slot = emit_strnth_opt(s, idx, *adt, c, mdl, sigs);
-            c.scalar.insert(name.clone(), (slot, Ty::Adt(*adt)));
-            continue;
+            c.scalar.insert(name.to_string(), (slot, Ty::Adt(*adt)));
+            return;
         }
         // Heap-constructing values bind as growable slots.
         match value {
@@ -443,8 +515,8 @@ pub(crate) fn emit_let(
                 in_place,
             } => {
                 let slot = emit_conj(v, x, *elem, *in_place, c, mdl, sigs);
-                c.grow.insert(name.clone(), (slot, *elem));
-                continue;
+                c.grow.insert(name.to_string(), (slot, *elem));
+                return;
             }
             HExpr::Subvec {
                 v,
@@ -453,8 +525,8 @@ pub(crate) fn emit_let(
                 elem,
             } => {
                 let slot = emit_subvec(v, start, end, *elem, c, mdl, sigs);
-                c.grow.insert(name.clone(), (slot, *elem));
-                continue;
+                c.grow.insert(name.to_string(), (slot, *elem));
+                return;
             }
             HExpr::For {
                 el,
@@ -464,24 +536,24 @@ pub(crate) fn emit_let(
                 res_elem,
             } => {
                 let slot = emit_for(el, src, *elem, body, *res_elem, c, mdl, sigs);
-                c.grow.insert(name.clone(), (slot, *res_elem));
-                continue;
+                c.grow.insert(name.to_string(), (slot, *res_elem));
+                return;
             }
             HExpr::StrCat(args) => {
                 let p = emit_strcat(args, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (p, Ty::Str));
-                continue;
+                c.scalar.insert(name.to_string(), (p, Ty::Str));
+                return;
             }
             HExpr::MapLit(pairs) => {
                 let slot = emit_map_lit(pairs, c, mdl, sigs);
-                c.growm.insert(name.clone(), (slot, Ty::Map));
-                continue;
+                c.growm.insert(name.to_string(), (slot, Ty::Map));
+                return;
             }
             HExpr::MapAssoc { m, k, v } => {
                 let slot = emit_map_assoc(value, c, mdl, sigs);
-                c.growm.insert(name.clone(), (slot, Ty::Map));
+                c.growm.insert(name.to_string(), (slot, Ty::Map));
                 let _ = (m, k, v);
-                continue;
+                return;
             }
             HExpr::SetLit(_) | HExpr::SetConj { .. } | HExpr::SetDisj { .. } => {
                 let slot = match value {
@@ -490,38 +562,38 @@ pub(crate) fn emit_let(
                     HExpr::SetDisj { .. } => emit_set_disj(value, c, mdl, sigs),
                     _ => unreachable!(),
                 };
-                c.growm.insert(name.clone(), (slot, Ty::Set));
-                continue;
+                c.growm.insert(name.to_string(), (slot, Ty::Set));
+                return;
             }
             HExpr::Subs { s, start, end } => {
                 let p = emit_subs(s, start, end, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (p, Ty::Str));
-                continue;
+                c.scalar.insert(name.to_string(), (p, Ty::Str));
+                return;
             }
             HExpr::Split { s, sep } => {
                 let (arr, l) = emit_split(s, sep, c, mdl, sigs);
-                c.vecs.insert(name.clone(), (arr, l, Elem::Str));
-                continue;
+                c.vecs.insert(name.to_string(), (arr, l, Elem::Str));
+                return;
             }
             HExpr::Join { sep, xs } => {
                 let p = emit_join(sep, xs, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (p, Ty::Str));
-                continue;
+                c.scalar.insert(name.to_string(), (p, Ty::Str));
+                return;
             }
             _ => {}
         }
         match ty {
             Ty::F64 => {
                 let v = emit_float(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::F64));
+                c.scalar.insert(name.to_string(), (v, Ty::F64));
             }
             Ty::Bool => {
                 let v = emit_bool(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::Bool));
+                c.scalar.insert(name.to_string(), (v, Ty::Bool));
             }
             Ty::Str => {
                 let v = emit_str_val(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::Str));
+                c.scalar.insert(name.to_string(), (v, Ty::Str));
             }
             t @ (Ty::I64
             | Ty::I32
@@ -533,54 +605,54 @@ pub(crate) fn emit_let(
             | Ty::U64
             | Ty::Usize) => {
                 let v = emit_int(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, *t));
+                c.scalar.insert(name.to_string(), (v, t));
             }
             Ty::F32 => {
                 let v = emit_float(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::F32));
+                c.scalar.insert(name.to_string(), (v, Ty::F32));
             }
             Ty::Fn(_) => {
                 let slot = emit_closure_val(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (slot, *ty));
+                c.scalar.insert(name.to_string(), (slot, ty));
             }
             Ty::Vec(_) => {
                 // Destructuring temps (and plain aliases) share the source
                 // vector's (ptr, len); literals materialize a static global.
                 if let HExpr::Var(src) = value {
                     if let Some((slot, elem)) = c.grow.get(src).cloned() {
-                        c.grow.insert(name.clone(), (slot, elem));
-                        continue;
+                        c.grow.insert(name.to_string(), (slot, elem));
+                        return;
                     }
                     if let Some((p, l, elem)) = c.vecs.get(src).cloned() {
-                        c.vecs.insert(name.clone(), (p, l, elem));
-                        continue;
+                        c.vecs.insert(name.to_string(), (p, l, elem));
+                        return;
                     }
                     if let Some((slot, _)) = c.growm.get(src).cloned() {
-                        c.growm.insert(name.clone(), (slot, Ty::Map));
-                        continue;
+                        c.growm.insert(name.to_string(), (slot, Ty::Map));
+                        return;
                     }
                 }
                 // Any other vector-valued form (literal, if, match, clone,
                 // conj): evaluate it and bind the (ptr, len) read-only.
                 let (p, l, elem) = emit_vec_pair(value, c, mdl, sigs);
-                c.vecs.insert(name.clone(), (p, l, elem));
+                c.vecs.insert(name.to_string(), (p, l, elem));
             }
             Ty::Adt(_) => {
                 let v = emit_adt(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, *ty));
+                c.scalar.insert(name.to_string(), (v, ty));
             }
             Ty::Map | Ty::Set => {
                 // Alias: share the source header slot (set ops read only
                 // ptr/len; map ops see the same representation tag).
                 if let HExpr::Var(src) = value {
                     if let Some((slot, _)) = c.growm.get(src).cloned() {
-                        c.growm.insert(name.clone(), (slot, *ty));
-                        continue;
+                        c.growm.insert(name.to_string(), (slot, ty));
+                        return;
                     }
                 }
                 // Any other value form: evaluate to (ptr, len[, cap]) and
                 // materialize a local header slot.
-                let (p, l, cap) = if *ty == Ty::Map {
+                let (p, l, cap) = if ty == Ty::Map {
                     map_val(value, c, mdl, sigs)
                 } else {
                     let (p, l) = set_val(value, c, mdl, sigs);
@@ -609,11 +681,11 @@ pub(crate) fn emit_let(
                     cf, slot
                 ));
                 c.line(&format!("  store i64 {}, ptr {}, align 8", cap, cf));
-                c.growm.insert(name.clone(), (slot, *ty));
+                c.growm.insert(name.to_string(), (slot, ty));
             }
             _ => {
                 let v = emit_int(value, c, mdl, sigs);
-                c.scalar.insert(name.clone(), (v, Ty::I64));
+                c.scalar.insert(name.to_string(), (v, Ty::I64));
             }
         }
     }
@@ -625,6 +697,7 @@ pub(crate) fn emit_let(
 pub(crate) fn emit_let_scoped(
     binds: &[(String, HExpr, Ty)],
     frees: &[String],
+    rebind: &[(String, usize)],
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
@@ -632,7 +705,7 @@ pub(crate) fn emit_let_scoped(
 ) -> String {
     let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
     let scope = c.save_binds(&names);
-    emit_let(binds, c, mdl, sigs);
+    emit_let(binds, rebind, c, mdl, sigs);
     let v = emit_body(c, mdl);
     emit_let_frees(frees, c, mdl);
     c.restore_binds(scope);
@@ -655,9 +728,11 @@ pub(crate) fn emit_closure_val(
             capture_owns,
             ..
         } => emit_closure_creation(mangled, *sig, captures, capture_owns, c, mdl, sigs),
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_closure_val(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_closure_val(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);

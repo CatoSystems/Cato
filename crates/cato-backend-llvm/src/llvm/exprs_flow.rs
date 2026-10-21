@@ -11,9 +11,11 @@ pub(crate) fn emit_float(
         HExpr::Get { ty: Ty::F64, .. } => emit_get(e, c, mdl, sigs),
         HExpr::Clone(inner) => emit_float(inner, c, mdl, sigs),
         HExpr::Loop { .. } => emit_loop_node(e, c, mdl, sigs),
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_float(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_float(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -82,9 +84,11 @@ pub(crate) fn emit_float(
                 call_user(name, args, c, mdl, sigs)
             }
         }
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_float(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_float(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -164,6 +168,47 @@ fn loop_slot_ty(mdl: &Mdl, ty: Ty) -> &'static str {
     }
 }
 
+/// Clone a static vector literal's elements onto the heap, returning the new
+/// `%VecI64 { ptr, len, cap }` header. A literal lives in read-only global
+/// data, so it can never be freed or grown; the loop seed that owns it needs
+/// a buffer of its own. `cap` is `len` — the caller only appends through the
+/// grow path, which reallocates.
+fn emit_heap_vec_copy(
+    src: &str,
+    len: &str,
+    elem: Elem,
+    cap: i64,
+    c: &mut FnCtx,
+    mdl: &mut Mdl,
+) -> String {
+    let nbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, {}", nbytes, cap, elem.bytes()));
+    let p = emit_malloc(c, mdl, &nbytes);
+    let cbytes = c.temp();
+    c.line(&format!("  {} = mul i64 {}, {}", cbytes, len, elem.bytes()));
+    mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
+    c.line(&format!(
+        "  call void @llvm.memcpy.p0.p0.i64(ptr {}, ptr {}, i64 {}, i1 false, i1 false)",
+        p, src, cbytes
+    ));
+    let s0 = c.temp();
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 undef, ptr {}, 0",
+        s0, p
+    ));
+    let s1 = c.temp();
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 {}, i64 {}, 1",
+        s1, s0, len
+    ));
+    let s2 = c.temp();
+    c.line(&format!(
+        "  {} = insertvalue %VecI64 {}, i64 {}, 2",
+        s2, s1, len
+    ));
+    s2
+}
+
 /// `(loop [x :- ty init ...] body)`: one alloca per variable, inits stored
 /// before the head; each iteration loads fresh registers at the head;
 /// `recur` stores its arguments and branches back; the completing path
@@ -192,7 +237,25 @@ pub(crate) fn emit_loop_node(
         let slot = c.temp();
         c.prelude
             .push(format!("  {} = alloca {}, align 8", slot, llt));
-        let v = emit_typed(init, *ty, c, mdl, sigs);
+        // A heap-owning seed that is static read-only data (a vector or
+        // string literal) is cloned onto the heap, so the loop variable owns
+        // a freeable buffer from the first iteration — the same invariant
+        // every other owning binding holds. That is what lets a loop result
+        // be handed to a caller as owned even when the body never runs.
+        let v = match (ty, init) {
+            (Ty::Vec(elem), HExpr::VecLit(lit)) => {
+                let (p, l, _) = vec_arg(init, c, mdl, sigs);
+                emit_heap_vec_copy(&p, &l, *elem, lit.len() as i64, c, mdl)
+            }
+            (Ty::Str, HExpr::StrLit(_)) => {
+                let p = emit_str_val(init, c, mdl, sigs);
+                mdl.ensure_decl("declare ptr @strdup(ptr)");
+                let d = c.temp();
+                c.line(&format!("  {} = call ptr @strdup(ptr {})", d, p));
+                d
+            }
+            _ => emit_typed(init, *ty, c, mdl, sigs),
+        };
         c.line(&format!("  store {} {}, ptr {}, align 8", llt, v, slot));
         slots.push((name.clone(), slot, *ty));
     }
@@ -328,7 +391,7 @@ fn arg_reads_var(e: &HExpr, name: &str) -> bool {
         HExpr::If(c, t, f, _) => {
             arg_reads_var(c, name) || arg_reads_var(t, name) || arg_reads_var(f, name)
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             binds.iter().any(|(_, v, _)| arg_reads_var(v, name)) || arg_reads_var(body, name)
         }
         HExpr::Seq(vs) => vs.iter().any(|v| arg_reads_var(v, name)),
@@ -519,10 +582,10 @@ fn emit_loop_tail(
                 }
             }
         }
-        HExpr::Let(binds, body, frees) => {
+        HExpr::Let(binds, body, frees, rebind) => {
             let names: Vec<String> = binds.iter().map(|(n, _, _)| n.clone()).collect();
             let scope = c.save_binds(&names);
-            emit_let(binds, c, mdl, sigs);
+            emit_let(binds, rebind, c, mdl, sigs);
             let v = emit_loop_tail(body, ty, c, mdl, sigs);
             // Scope-exit frees run only on the completing path — a `recur`
             // leaves this scope and must not release anything.

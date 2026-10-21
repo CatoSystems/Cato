@@ -175,7 +175,7 @@ pub(crate) fn rewrite_body(
                 .map(|a| rewrite_body(a, fnprefix, params, idmap, loops, sigs))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
-        HExpr::Let(binds, body, frees) => {
+        HExpr::Let(binds, body, frees, rebind) => {
             // Sequential: each value sees the bindings before it.
             let mut scope = params.with(std::iter::empty());
             let mut out = Vec::with_capacity(binds.len());
@@ -191,6 +191,7 @@ pub(crate) fn rewrite_body(
                 out,
                 Box::new(rewrite_body(body, fnprefix, &scope, idmap, loops, sigs)?),
                 frees.clone(),
+                rebind.clone(),
             )
         }
         HExpr::Seq(vs) => HExpr::Seq(
@@ -485,9 +486,12 @@ pub(crate) fn own_str_return(e: &HExpr) -> HExpr {
             Box::new(own_str_return(f)),
             *ty,
         ),
-        HExpr::Let(binds, body, frees) => {
-            HExpr::Let(binds.clone(), Box::new(own_str_return(body)), frees.clone())
-        }
+        HExpr::Let(binds, body, frees, rebind) => HExpr::Let(
+            binds.clone(),
+            Box::new(own_str_return(body)),
+            frees.clone(),
+            rebind.clone(),
+        ),
         HExpr::Match { scrut, arms, ty } => HExpr::Match {
             scrut: scrut.clone(),
             arms: arms

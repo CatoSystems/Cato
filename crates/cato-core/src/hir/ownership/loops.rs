@@ -79,7 +79,7 @@ pub(super) fn yields_owned(
 pub(super) fn always_recurs(e: &HExpr) -> bool {
     match e {
         HExpr::Recur(..) => true,
-        HExpr::Let(_, body, _) => always_recurs(body),
+        HExpr::Let(_, body, _, _) => always_recurs(body),
         HExpr::Seq(vs) => vs.last().map(always_recurs).unwrap_or(false),
         HExpr::If(_, t, f, _) => always_recurs(t) && always_recurs(f),
         HExpr::Match { arms, .. } => {
@@ -101,7 +101,7 @@ pub(super) fn recur_arg_vars(e: &HExpr, out: &mut HashSet<String>) {
                 }
             }
         }
-        HExpr::Let(_, body, _) => recur_arg_vars(body, out),
+        HExpr::Let(_, body, _, _) => recur_arg_vars(body, out),
         HExpr::Seq(vs) => {
             if let Some(last) = vs.last() {
                 recur_arg_vars(last, out);
@@ -134,7 +134,7 @@ pub(super) fn recur_args_may_alias(
         HExpr::Recur(args, _) => args.iter().any(|a| {
             !matches!(a, HExpr::Var(v) if alias.contains(v)) && tail_may_alias(a, alias, calls)
         }),
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             let mut inner = alias.clone();
             for (n, value, _) in binds {
                 if tail_may_alias(value, &inner, calls) {
@@ -173,7 +173,7 @@ pub(super) fn recur_args_may_alias(
 pub(super) fn binds_anywhere(e: &HExpr, name: &str) -> bool {
     let mut hit = false;
     crate::opt::walk::visit_nodes(e, &mut |n| match n {
-        HExpr::Let(binds, _, _) => {
+        HExpr::Let(binds, _, _, _) => {
             if binds.iter().any(|(b, _, _)| b == name) {
                 hit = true;
             }
@@ -297,7 +297,7 @@ impl<'a> BCheck<'a> {
     ) {
         match e {
             HExpr::Recur(args, _) => sites.push((args.clone(), scope.clone())),
-            HExpr::Let(binds, body, _) => {
+            HExpr::Let(binds, body, _, _) => {
                 let mark = scope.len();
                 let saved: Vec<(String, Option<Ty>)> = binds
                     .iter()
@@ -382,7 +382,7 @@ impl<'a> BCheck<'a> {
     ) {
         match e {
             HExpr::Recur(..) => {}
-            HExpr::Let(binds, body, _) => {
+            HExpr::Let(binds, body, _, _) => {
                 let mut ex = extra.clone();
                 for (n, v, _) in binds.iter() {
                     let mut r = HashSet::new();
@@ -431,7 +431,7 @@ impl<'a> BCheck<'a> {
                 let here: Vec<String> = drops.iter().filter(|d| !r.contains(*d)).cloned().collect();
                 if !here.is_empty() {
                     let taken = std::mem::replace(e, HExpr::ConstI64(0));
-                    *e = HExpr::Let(Vec::new(), Box::new(taken), here);
+                    *e = HExpr::Let(Vec::new(), Box::new(taken), here, Vec::new());
                 }
             }
         }

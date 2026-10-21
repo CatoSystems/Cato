@@ -38,13 +38,23 @@ pub(crate) fn emit_conj(
             HExpr::Var(n) => n.as_str(),
             _ => "",
         });
-    // Freeing stays tied to the planner's last-use verdict alone.
+    // The fast path reuses the buffer when `len < cap`; otherwise the grow
+    // path reallocates. On the grow path the old buffer is dead exactly when
+    // the planner proved this append owns the source: `in_place` (a `let`
+    // initializer that is the source's last use) or `self_update` (the loop's
+    // own accumulator update, where `recur_ok` established that no sibling
+    // recur argument reaches the old header). Every growable binding — loop
+    // seeds included — holds a heap buffer (a literal seed is cloned onto the
+    // heap at loop entry), so the pointer is always the heap's to release.
     let mut freeable = false;
     let may_update_in_place = in_place || self_update;
+    // The buffer may be released on the reallocating path.
+    let mut freeable_grow = false;
     let (ptr, len, cap) = match v {
         HExpr::Var(name) => {
             if let Some((slot, _)) = c.grow.get(name) {
                 freeable = true;
+                freeable_grow = true;
                 let slot = slot.clone();
                 let pf = c.temp();
                 c.line(&format!(
@@ -95,17 +105,22 @@ pub(crate) fn emit_conj(
     c.line(&format!("  {} = add i64 {}, 1", one, len));
 
     // Fast path when len < cap and the append may reuse the buffer; otherwise
-    // always take the copy path. The buffer is freed under the planner's
-    // in-place verdict alone (the source is a proven last use of a buffer
-    // the binding really owns) — the loop's own accumulator update
-    // (`self_update`) may append in place but must never free: the slot's
-    // current buffer is only known to the planner, and a `[]`-literal seed
-    // makes it read-only static data.
+    // always take the copy path. The old buffer is released on the grow path
+    // when the planner proved the append owns the source: `in_place` for a
+    // last-use `let` initializer, `self_update` for the loop accumulator,
+    // where a sibling `recur` argument provably does not reach the old header.
+    // Static sources (global data, `ptr` starting with `@`) stay unfreeable.
     if ptr.starts_with('@') {
         freeable = false;
+        freeable_grow = false;
     }
     if !in_place {
         freeable = false;
+    }
+    // Only the `self_update` path may release on reallocation while
+    // `in_place` is false.
+    if !may_update_in_place {
+        freeable_grow = false;
     }
     let has_room = c.temp();
     let bfast = c.block_name();
@@ -207,7 +222,7 @@ pub(crate) fn emit_conj(
         Elem::Param(_) => panic!("unresolved element"),
         e => c.line(&mdl.elem_store(e, &xv, &gp)),
     }
-    if freeable {
+    if freeable || freeable_grow {
         mdl.ensure_decl("declare void @free(ptr)");
         c.line(&format!("  call void @free(ptr {})", ptr));
     }

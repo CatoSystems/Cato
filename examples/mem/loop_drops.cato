@@ -56,6 +56,12 @@
   (loop [i :- i64 0 a :- (Vector i64) [1] b :- (Vector i64) [2 2]]
     (if (>= i n) (+ (* 10 (count a)) (count b)) (recur (+ i 1) b a))))
 
+; a str literal seed is cloned (strdup) onto the heap at loop entry, so the
+; variable owns a freeable buffer; the completing path must free it.
+(defn str-seed [n :- i64] :- i64
+  (loop [i :- i64 0 s :- str "seed"]
+    (if (>= i n) (count s) (recur (+ i 1) s))))
+
 (defn main []
   (loop [r :- i64 0 tot :- i64 0]
     (if (< r 200)
@@ -63,4 +69,4 @@
              (+ tot (+ (walk (build 50 (CNil)))
                        (+ (drain (build 50 (CNil)))
                           (+ (lets 50) (+ (temps 50) (+ (rebind 50) (frames))))))))
-      (do (print-i64 tot) (print-i64 (swap 1))))))
+      (do (print-i64 tot) (print-i64 (swap 1)) (print-i64 (+ (str-seed 3) (str-seed 0)))))))

@@ -393,6 +393,13 @@ pub enum HExpr {
         /// bindings (Vec/Map/Set) that are provably unique here — never
         /// consumed by a call or conj, and never escaped by return.
         Vec<String>,
+        /// Shadowed buffers to free while binding: `(name, index)` frees the
+        /// storage `name` held *before* bind `index` overwrites it. A name
+        /// rebound in one `let` (`[a x a (conj a y) ...]`) leaves each
+        /// intermediate buffer unreachable once the next bind replaces the
+        /// slot; the planner records those here so codegen releases them at
+        /// the rebind instead of losing them.
+        Vec<(String, usize)>,
     ),
     Seq(Vec<HExpr>),
     If(Box<HExpr>, Box<HExpr>, Box<HExpr>, Ty),

@@ -35,13 +35,21 @@
       (count v)
       (recur (+ i 1) (conj v "x")))))
 
-; a vec literal seed is a static constant the loop never owns (k = 0 would
-; otherwise free it)
+; a vec literal seed is cloned onto the heap at loop entry, so the loop owns
+; it from the first iteration: k = 0 completes on the seed and frees it.
 (defn lit-seed [k :- i64] :- i64
   (loop [i :- i64 0 v :- (Vector i64) (vec-i64 0)]
     (if (= i k)
       (count v)
       (recur (+ i 1) v))))
 
+; a str literal seed is cloned the same way: the loop variable owns the
+; strdup'd buffer and frees it on the completing path.
+(defn str-seed [k :- i64] :- i64
+  (loop [i :- i64 0 s :- str "seed"]
+    (if (= i k)
+      (count s)
+      (recur (+ i 1) s))))
+
 (defn main [] :- i64
-  (+ (total (cells 3)) (+ (churn 4) (+ (count-only 5) (+ (lit-seed 3) (lit-seed 0))))))
+  (+ (total (cells 3)) (+ (churn 4) (+ (count-only 5) (+ (lit-seed 3) (+ (lit-seed 0) (+ (str-seed 3) (str-seed 0))))))))

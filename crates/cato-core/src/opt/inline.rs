@@ -204,7 +204,7 @@ fn expand_site(
     if impure_binds.is_empty() {
         template
     } else {
-        HExpr::Let(impure_binds, Box::new(template), Vec::new())
+        HExpr::Let(impure_binds, Box::new(template), Vec::new(), Vec::new())
     }
 }
 

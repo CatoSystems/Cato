@@ -52,7 +52,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::Clone(x) | HExpr::DropStmt(x) => has_ctl(x),
         HExpr::Closure { body, .. } => has_ctl(body),
         HExpr::ClosureCall { f, args, .. } => has_ctl(f) || args.iter().any(has_ctl),
-        HExpr::Let(binds, body, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
+        HExpr::Let(binds, body, _, _) => binds.iter().any(|(_, e, _)| has_ctl(e)) || has_ctl(body),
         HExpr::Seq(vs) => vs.iter().any(has_ctl),
         HExpr::Reduce(r) => match &**r {
             HReduce::Pipeline {

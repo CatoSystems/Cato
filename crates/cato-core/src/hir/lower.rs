@@ -1091,7 +1091,7 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
                 .copied()
                 .unwrap_or(Ty::I64)
         }
-        HExpr::Let(binds, b, _) => {
+        HExpr::Let(binds, b, _, _) => {
             let mut child = env.clone();
             for (n, _, t) in binds.iter() {
                 child.insert(n.clone(), *t);
@@ -1179,7 +1179,7 @@ fn collect_captures(
             collect_captures(t, env, params, seen, caps);
             collect_captures(f, env, params, seen, caps);
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             for (_, v, _) in binds {
                 collect_captures(v, env, params, seen, caps);
             }
@@ -1564,7 +1564,7 @@ fn validate_recurs(e: &HExpr, arity: usize, in_loop: bool, crossed: bool) -> Res
             validate_recurs(t, arity, in_loop, crossed)?;
             validate_recurs(f, arity, in_loop, crossed)
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             for (_, v, _) in binds {
                 validate_recurs(v, arity, false, crossed)?;
             }

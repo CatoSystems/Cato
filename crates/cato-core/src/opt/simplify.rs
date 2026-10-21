@@ -33,7 +33,7 @@ fn simplify_body(body: &mut HExpr) -> bool {
 
 fn simplify_one(e: HExpr, changed: &Cell<bool>) -> HExpr {
     match e {
-        HExpr::Let(binds, body, frees) => simplify_let(binds, *body, frees, changed),
+        HExpr::Let(binds, body, frees, _) => simplify_let(binds, *body, frees, changed),
         HExpr::Seq(vs) => {
             if vs.len() <= 1 {
                 return HExpr::Seq(vs);
@@ -133,13 +133,13 @@ fn simplify_let(
     }
 
     if !any {
-        return HExpr::Let(new_binds, Box::new(body), frees);
+        return HExpr::Let(new_binds, Box::new(body), frees, Vec::new());
     }
     changed.set(true);
     if new_binds.is_empty() {
         body
     } else {
-        HExpr::Let(new_binds, Box::new(body), frees)
+        HExpr::Let(new_binds, Box::new(body), frees, Vec::new())
     }
 }
 

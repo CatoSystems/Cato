@@ -27,7 +27,7 @@ pub(crate) fn adt_of(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         // The planner's own `let` around a scrutinee call: its bindings are
         // hoisted argument temps, freed before the arms, and the value is
         // the call's.
-        HExpr::Let(_, body, _) => adt_of(body, c, sigs),
+        HExpr::Let(_, body, _, _) => adt_of(body, c, sigs),
         // The loop's recorded completing type.
         HExpr::Loop { ty: Ty::Adt(i), .. } => *i,
         HExpr::StrNth {
@@ -163,9 +163,11 @@ pub(crate) fn emit_adt(
         HExpr::If(cond, then, els, Ty::Adt(i)) => {
             emit_if_node(cond, then, els, Ty::Adt(*i), c, mdl, sigs)
         }
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_adt(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_adt(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);

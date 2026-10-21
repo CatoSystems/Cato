@@ -66,7 +66,7 @@ fn scrutinee_adt(e: &HExpr, tys: &HashMap<String, Ty>, rets: &HashMap<String, Ty
         HExpr::Clone(inner) => scrutinee_adt(inner, tys, rets),
         // The planner's own `let` around a scrutinee call (hoisted argument
         // temps, freed before the arms run) has the call's type.
-        HExpr::Let(_, body, _) => scrutinee_adt(body, tys, rets),
+        HExpr::Let(_, body, _, _) => scrutinee_adt(body, tys, rets),
         // Let/Seq scrutinees are rejected in `check` (their owning box frees
         // inside a scope the binder-escape suppression cannot reach), so
         // they never reach the alias analysis here. A loop's recorded
@@ -455,7 +455,7 @@ fn plan_drops_inner(
         }
         if !bc.param_frees.is_empty() {
             let taken = std::mem::replace(body, HExpr::ConstI64(0));
-            *body = HExpr::Let(Vec::new(), Box::new(taken), bc.param_frees);
+            *body = HExpr::Let(Vec::new(), Box::new(taken), bc.param_frees, Vec::new());
         }
     }
 
@@ -495,7 +495,7 @@ fn param_moves_by_value(ty: Ty, facts: &AdtFacts) -> bool {
 /// each frees its own buffer.
 fn rebound_in_body(e: &HExpr, name: &str) -> bool {
     match e {
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             binds
                 .iter()
                 .any(|(n, v, _)| n == name || rebound_in_body(v, name))
@@ -520,7 +520,7 @@ fn rebound_in_body(e: &HExpr, name: &str) -> bool {
 /// Vars referenced in tail position of a body (the returned value chain).
 fn tail_escape(e: &HExpr, escaped: &mut HashSet<String>) {
     match e {
-        HExpr::Let(_, body, _) => tail_escape(body, escaped),
+        HExpr::Let(_, body, _, _) => tail_escape(body, escaped),
         HExpr::Seq(vs) => {
             if let Some(last) = vs.last() {
                 tail_escape(last, escaped);
@@ -590,7 +590,7 @@ fn tail_borrow_ok(
                 tail_borrow_ok(&arm.body, &arm_borrows, sigs, ret_borrowed_names)
             })
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             let mut inner = borrows.clone();
             for (n, value, _) in binds {
                 if tail_borrow_ok(value, &inner, sigs, ret_borrowed_names) {
@@ -619,7 +619,7 @@ fn tail_nonfresh(e: &HExpr, nonfresh: &HashSet<String>, vars: &HashSet<String>) 
         // owned copies by the backend (`own_str_return`), so a literal is
         // fresh there. A vector literal has no such copy: it is static.
         HExpr::VecLit(_) => true,
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             let mut inner = vars.clone();
             for (n, value, _) in binds {
                 if tail_nonfresh(value, nonfresh, &inner) {
@@ -639,7 +639,9 @@ fn tail_nonfresh(e: &HExpr, nonfresh: &HashSet<String>, vars: &HashSet<String>) 
         HExpr::Loop { binds, body, .. } => {
             let mut inner = vars.clone();
             for (n, _, init) in binds {
-                if tail_nonfresh(init, nonfresh, &inner) {
+                // A literal seed is fresh: the loop entry clones it onto the
+                // heap, so the variable never carries static data.
+                if !seed_is_owned_copy(init) && tail_nonfresh(init, nonfresh, &inner) {
                     inner.insert(n.clone());
                 }
             }
@@ -707,7 +709,7 @@ fn fresh_box(e: &HExpr, ret_borrowed_names: &HashSet<String>) -> bool {
         HExpr::Call(name, _) => !ret_borrowed_names.contains(name),
         HExpr::Ctor { .. } | HExpr::Clone(_) => true,
         // A planner-made `let` around a call (hoisted argument temps).
-        HExpr::Let(_, body, _) => fresh_box(body, ret_borrowed_names),
+        HExpr::Let(_, body, _, _) => fresh_box(body, ret_borrowed_names),
         _ => false,
     }
 }
@@ -717,7 +719,7 @@ fn fresh_box(e: &HExpr, ret_borrowed_names: &HashSet<String>) -> bool {
 fn tail_has_recur(e: &HExpr) -> bool {
     match e {
         HExpr::Recur(..) => true,
-        HExpr::Let(_, body, _) => tail_has_recur(body),
+        HExpr::Let(_, body, _, _) => tail_has_recur(body),
         HExpr::Seq(vs) => vs.last().map(tail_has_recur).unwrap_or(false),
         HExpr::If(_, t, f, _) => tail_has_recur(t) || tail_has_recur(f),
         HExpr::Match { arms, .. } => arms.iter().any(|a| tail_has_recur(&a.body)),
@@ -729,7 +731,7 @@ fn tail_has_recur(e: &HExpr) -> bool {
 /// tail-position `let`/`do`/`if`/`match` structure.
 fn tail_leaves<'e>(e: &'e HExpr, out: &mut Vec<&'e HExpr>) {
     match e {
-        HExpr::Let(_, body, _) => tail_leaves(body, out),
+        HExpr::Let(_, body, _, _) => tail_leaves(body, out),
         HExpr::Seq(vs) => {
             if let Some(last) = vs.last() {
                 tail_leaves(last, out);
@@ -765,7 +767,7 @@ pub fn tail_may_alias(e: &HExpr, alias: &HashSet<String>, alias_calls: &HashSet<
                     .iter()
                     .any(|a| tail_may_alias(a, alias, ret_borrowed_names))
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             let mut inner = alias.clone();
             for (n, value, _) in binds {
                 if tail_may_alias(value, &inner, ret_borrowed_names) {
@@ -993,7 +995,13 @@ impl<'a> BCheck<'a> {
                             owned = owns.get(v).copied().unwrap_or(false);
                             self.move_var(v, st, owns);
                         }
-                    } else if heap_owning(*ty, self.facts) && self.allocates_fresh(init) {
+                    } else if heap_owning(*ty, self.facts)
+                        && (self.allocates_fresh(init) || seed_is_owned_copy(init))
+                    {
+                        // A fresh allocating initializer owns its buffer, and
+                        // so does a literal seed: codegen clones read-only
+                        // literal data onto the heap at loop entry, so the
+                        // variable owns a freeable buffer from iteration one.
                         owned = true;
                     }
                     if owned {
@@ -1473,7 +1481,7 @@ impl<'a> BCheck<'a> {
                 // share the shape; their tail var is owned by an enclosing
                 // binding the match cannot suppress either.)
                 let user_let = match &**scrut {
-                    HExpr::Let(binds, _, _) => binds.iter().any(|(n, _, _)| !n.starts_with('~')),
+                    HExpr::Let(binds, _, _, _) => binds.iter().any(|(n, _, _)| !n.starts_with('~')),
                     HExpr::Seq(_) => true,
                     _ => false,
                 };
@@ -1902,13 +1910,29 @@ impl<'a> BCheck<'a> {
                     }
                 }
             }
-            HExpr::Let(binds, body, frees) => {
+            HExpr::Let(binds, body, frees, rebind) => {
                 // Inside a loop, the bindings join the iteration's scope (a
                 // `recur` in the body drops what they still own), and every
                 // binding records what its value may point into.
                 let scope_mark = self.loops.last().map(|f| f.scope.len());
                 let mut saved_roots: Vec<(String, Option<HashSet<String>>)> = Vec::new();
-                for (name, value, ty) in binds.iter_mut() {
+                let mut rebinds_out: Vec<(String, usize)> = Vec::new();
+                let mut seen: HashSet<String> = HashSet::new();
+                for (i, (name, value, ty)) in binds.iter_mut().enumerate() {
+                    // A name rebound in this same `let` (`[a x a (conj a y)]`)
+                    // shadows the earlier binding: its buffer becomes
+                    // unreachable once this slot is overwritten. Capture the
+                    // prior duty *before* checking this initializer (which may
+                    // move or consume the old binding, transferring the duty).
+                    if seen.contains(name)
+                        && heap_owning(*ty, self.facts)
+                        && owns.get(name).copied().unwrap_or(false)
+                        && st.get(name) == Some(&VState::Owned)
+                        && !self.consumed.contains(name)
+                    {
+                        rebinds_out.push((name.clone(), i));
+                    }
+                    seen.insert(name.clone());
                     self.check(value, tys, st, owns);
                     let r = self.roots_of(value);
                     saved_roots.push((name.clone(), self.roots.insert(name.clone(), r)));
@@ -2005,8 +2029,8 @@ impl<'a> BCheck<'a> {
                 // A name re-bound within this let (`[a x a (conj a y)]`)
                 // is checked once, for its last binding: the state maps
                 // describe only that binding, and a second entry would free
-                // the same buffer twice. The shadowed buffer is not freed
-                // (a leak, the same contract as `rebound_in_body`).
+                // the same buffer twice. The earlier buffers are released at
+                // their rebind instead (the `rebind` list below).
                 let mut out: Vec<String> = Vec::new();
                 for (i, (name, _, ty)) in binds.iter().enumerate() {
                     if binds[i + 1..].iter().any(|(n, _, _)| n == name) {
@@ -2028,6 +2052,7 @@ impl<'a> BCheck<'a> {
                     }
                 }
                 *frees = out;
+                *rebind = rebinds_out;
             }
             HExpr::Seq(vs) => {
                 for v in vs {
@@ -2209,7 +2234,7 @@ impl<'a> BCheck<'a> {
                     self.move_var(v, st, owns);
                 }
             }
-            HExpr::Let(_, body, _) => self.move_tail(body, tys, st, owns),
+            HExpr::Let(_, body, _, _) => self.move_tail(body, tys, st, owns),
             HExpr::Seq(vs) => {
                 if let Some(last) = vs.last() {
                     self.move_tail(last, tys, st, owns);
@@ -2234,7 +2259,7 @@ impl<'a> BCheck<'a> {
     fn tail_yields_owned(&self, e: &HExpr, st: &HashMap<String, VState>) -> bool {
         match e {
             HExpr::Var(v) => st.get(v) == Some(&VState::Moved),
-            HExpr::Let(_, body, _) => self.tail_yields_owned(body, st),
+            HExpr::Let(_, body, _, _) => self.tail_yields_owned(body, st),
             HExpr::Seq(vs) => vs
                 .last()
                 .map(|last| self.tail_yields_owned(last, st))
@@ -2284,7 +2309,7 @@ impl<'a> BCheck<'a> {
             HExpr::Call(c, _) => {
                 !self.alias_ret.contains(c) && !self.ret_borrowed_names.contains(c)
             }
-            HExpr::Let(_, body, _) => self.allocates_fresh(body),
+            HExpr::Let(_, body, _, _) => self.allocates_fresh(body),
             other => allocates(other, self.facts),
         }
     }
@@ -2529,7 +2554,7 @@ impl<'a> BCheck<'a> {
             }
         }
         let taken = std::mem::replace(e, HExpr::ConstI64(0));
-        *e = HExpr::Let(binds, Box::new(taken), Vec::new());
+        *e = HExpr::Let(binds, Box::new(taken), Vec::new(), Vec::new());
     }
 
     /// Branch-local frees. A binding moved on some branches of an `if` or
@@ -2604,7 +2629,7 @@ impl<'a> BCheck<'a> {
             }
             if !frees.is_empty() {
                 let taken = std::mem::replace(*body, HExpr::ConstI64(0));
-                **body = HExpr::Let(Vec::new(), Box::new(taken), frees);
+                **body = HExpr::Let(Vec::new(), Box::new(taken), frees, Vec::new());
             }
         }
     }
@@ -2868,7 +2893,7 @@ fn count_vars(e: &HExpr, counts: &mut HashMap<String, i64>) {
             count_vars(t, counts);
             count_vars(f, counts);
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             binds.iter().for_each(|(_, v, _)| count_vars(v, counts));
             count_vars(body, counts);
         }
@@ -2934,6 +2959,15 @@ fn heap_owning(ty: Ty, facts: &AdtFacts) -> bool {
     }
 }
 
+/// Does the backend turn this loop seed into an owned heap buffer? A vector
+/// or string literal lives in read-only global data, so the loop entry clones
+/// it onto the heap: the variable then owns a freeable buffer from the first
+/// iteration, and the loop's completed value is the caller's to free. Mirrors
+/// the materialization in the backend's loop-entry code.
+fn seed_is_owned_copy(init: &HExpr) -> bool {
+    matches!(init, HExpr::VecLit(_) | HExpr::StrLit(_))
+}
+
 /// Does this value expression allocate a fresh heap buffer that the binding
 /// uniquely owns? Aliases (`Var`), element loads (`Get`), and control-flow
 /// results are excluded — control-flow merges leak as today until per-arm
@@ -2970,7 +3004,7 @@ fn allocates(value: &HExpr, facts: &AdtFacts) -> bool {
         HExpr::Call(_, _) | HExpr::Clone(_) | HExpr::Slurp(_) => true,
         // A `let`'s value is its body's (the planner's hoisted-temp lets
         // wrap allocating calls).
-        HExpr::Let(_, body, _) => allocates(body, facts),
+        HExpr::Let(_, body, _, _) => allocates(body, facts),
         _ => false,
     }
 }

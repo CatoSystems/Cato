@@ -481,7 +481,7 @@ fn ser_hir(e: &cato_core::hir::HExpr) -> String {
                 .map(|s| format!(" {}", s))
                 .collect::<String>()
         ),
-        HExpr::Let(binds, body, frees) => {
+        HExpr::Let(binds, body, frees, _) => {
             let mut parts = Vec::new();
             for (n, v, t) in binds {
                 parts.push(format!("{} {} {}", n, ser_hir(v), ty_name(t)));

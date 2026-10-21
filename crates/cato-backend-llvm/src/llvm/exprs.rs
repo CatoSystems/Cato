@@ -189,9 +189,11 @@ pub(crate) fn emit_bool(
                 .unwrap_or_else(|| panic!("codegen: unknown bool var {}", v));
             r.clone()
         }
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_bool(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_bool(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             for v in &vs[..vs.len() - 1] {
                 emit_stmt(v, c, mdl, sigs);
@@ -437,9 +439,11 @@ pub(crate) fn emit_int(
                 v
             }
         }
-        HExpr::Let(binds, body, frees) => emit_let_scoped(binds, frees, c, mdl, sigs, |c, mdl| {
-            emit_int(body, c, mdl, sigs)
-        }),
+        HExpr::Let(binds, body, frees, rebind) => {
+            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
+                emit_int(body, c, mdl, sigs)
+            })
+        }
         HExpr::Seq(vs) => {
             // `(do s… e)` yields `e`; only a statement-only tail yields 0.
             let Some((last, init)) = vs.split_last() else {
@@ -666,7 +670,7 @@ fn count_expr_is_vec(e: &HExpr, c: &FnCtx, sigs: &HashMap<String, (Ty, Vec<Ty>)>
         HExpr::Conj { .. } => true,
         HExpr::Subvec { .. } => true,
         HExpr::Clone(inner) => count_expr_is_vec(inner, c, sigs),
-        HExpr::Let(binds, body, _) => match body.as_ref() {
+        HExpr::Let(binds, body, _, _) => match body.as_ref() {
             // An inlined body aliases its bind: the bind's recorded type
             // decides (the binding itself is not emitted yet).
             HExpr::Var(v) => binds

@@ -663,6 +663,9 @@
 
 ; --- alias-returning functions (the seed's compute_alias_ret) -----------------
 
+; Loop seeds that are read-only literals are cloned onto the heap at loop
+; entry (see hexpr/literal?). `literal?` is the shared HIR test.
+
 ; Is the value of e not fresh: a call to a nonfresh function, a var bound
 ; to such a value, or a static vec literal? (the seed's tail_nonfresh)
 (defn b-tail-nonfresh [e :- &HExpr nonfresh :- &Sids vars :- &Sids] :- bool
@@ -674,7 +677,7 @@
     (HSeq [es] (b-tnf-last es nonfresh vars))
     (HIf [_c t2 e2 _] (or (b-tail-nonfresh t2 nonfresh vars) (b-tail-nonfresh e2 nonfresh vars)))
     (HMatch [_s arms _] (b-tnf-arms arms nonfresh vars))
-    (HLoop [binds _ty body] (b-tnf-leaves body nonfresh (b-tnf-binds binds nonfresh (clone vars))))
+    (HLoop [binds _ty body] (b-tnf-leaves body nonfresh (b-tnf-loop-binds binds nonfresh (clone vars))))
     (_ false)))
 
 (defn b-tnf-binds [binds :- &Binds nonfresh :- &Sids vars :- Sids] :- Sids
@@ -687,6 +690,24 @@
         (b-tail-nonfresh v nonfresh (clone vars))
         (b-tnf-binds next nonfresh (SCons n vars))
         (b-tnf-binds next nonfresh vars))
+    )))
+
+; Loop seeds differ from `let` bindings: a literal seed is cloned onto the
+; heap at loop entry, so the variable is fresh even though the literal is
+; static data. Only seeds that really carry a non-fresh value join `vars`.
+(defn b-tnf-loop-binds [binds :- &Binds nonfresh :- &Sids vars :- Sids] :- Sids
+  (match binds
+    (BNil [] vars)
+    (
+      BCons
+      [n v _ty next]
+      (if
+        (hexpr/literal? v)
+        (b-tnf-loop-binds next nonfresh vars)
+        (if
+          (b-tail-nonfresh v nonfresh (clone vars))
+          (b-tnf-loop-binds next nonfresh (SCons n vars))
+          (b-tnf-loop-binds next nonfresh vars)))
     )))
 
 (defn b-tnf-last [es :- &HExprs nonfresh :- &Sids vars :- &Sids] :- bool
@@ -1519,16 +1540,18 @@
       (loops/roots-of e (scope-roots scp) retb (SNil))
     )))
 
-; The loop variables seeded by a vec literal.
+; The loop variables seeded by a read-only literal (vec or str), which the
+; emitter clones onto the heap so they own a freeable buffer.
 (defn b-literal-seeded [binds :- &Binds] :- Sids
   (match binds
     (BNil [] (SNil))
     (
       BCons
       [n v _t next]
-      (match v
-        (HVecLit [_el _vs] (SCons n (b-literal-seeded next)))
-        (_ (b-literal-seeded next)))
+      (if
+        (hexpr/literal? v)
+        (SCons n (b-literal-seeded next))
+        (b-literal-seeded next))
     )))
 
 ; The loop variables whose seed handed them an owned value.
@@ -3486,14 +3509,16 @@
           ; on every iteration is the seed and every recur argument in that
           ; position (loops/loop-owning).
           (let [binds3 (hexpr/binds-rev binds2 (BNil))
-            seedo (b-owned-names binds3 owns1)
+            ; A vec literal seed is cloned onto the heap at loop entry, so
+            ; the variable owns a freeable buffer from the first iteration —
+            ; exactly like a seed that hands it an owned value. Ownership and
+            ; in-place self-update therefore share one seed set: the constant
+            ; never sits in the slot.
+            seedo (alias/sids-into (b-literal-seeded binds3) (b-owned-names binds3 owns1))
             owning (b-loop-owning-of binds3 body seedo tys1 bcx)
             ; In-place self-update conj needs every value the slot holds to
-            ; be unaliased; a vec literal seed qualifies too (its capacity
-            ; equals its length, so the first append moves to a fresh
-            ; buffer and the constant is never written or freed).
-            inplace
-            (b-loop-owning-of binds3 body (alias/sids-into (b-literal-seeded binds3) (clone seedo)) tys1 bcx)
+            ; be unaliased; an owned seed qualifies too.
+            inplace (b-loop-owning-of binds3 body (clone seedo) tys1 bcx)
             owns1b (b-set-loop-owns binds3 owning owns1)
             scp2 (scope-loop scp (b-loop-frame binds3 owning) inplace)]
             (match

@@ -724,7 +724,7 @@ fn non_escaping_bindings_get_free_annotations() {
     fn lets(e: &cato_core::hir::HExpr) -> Vec<&Vec<String>> {
         use cato_core::hir::HExpr;
         match e {
-            HExpr::Let(_, body, frees) => {
+            HExpr::Let(_, body, frees, _) => {
                 let mut all = vec![frees];
                 all.extend(lets(body));
                 all
@@ -748,8 +748,8 @@ fn non_escaping_bindings_get_free_annotations() {
     );
 }
 
-// Phase 18: `(parallel (reduce ...))` — chunked across pthreads, same
-// result as the sequential loop at every thread count.
+// Phase 18: `(parallel (reduce ...))` — chunked across the runtime's
+// thread shim, same result as the sequential loop at every thread count.
 #[test]
 fn parallel_reduce_matches_sequential() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -978,7 +978,7 @@ fn loop_drops_are_sanitizer_clean() {
         "binary failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(stdout_of(&out), "345800\n21\n");
+    assert_eq!(stdout_of(&out), "345800\n21\n8\n");
 }
 
 // ...and leak-free: 200 rounds of every shape leave nothing live at exit

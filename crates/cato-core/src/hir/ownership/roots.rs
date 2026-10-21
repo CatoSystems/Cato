@@ -92,7 +92,7 @@ impl<'a> BCheck<'a> {
                     self.roots_into(d, extra, out);
                 }
             }
-            HExpr::Let(binds, body, _) => {
+            HExpr::Let(binds, body, _, _) => {
                 let mut ex = extra.clone();
                 for (n, v, _) in binds {
                     let mut r = HashSet::new();
@@ -132,12 +132,22 @@ impl<'a> BCheck<'a> {
                 self.roots_into(body, &ex, out);
             }
             HExpr::Closure { captures, .. } => {
-                for (n, _) in captures {
-                    var(n, out);
+                // A str capture is the env's own copy (the backend strdups
+                // it), so the closure does not point into the source binding:
+                // that binding keeps its duty and is freed at scope exit.
+                // Non-Copy captures move into the env (their source loses
+                // `owns`), so rooting them here changes nothing.
+                for (n, ty) in captures {
+                    if *ty != Ty::Str {
+                        var(n, out);
+                    }
                 }
             }
-            HExpr::ClosureCall { f, args, .. } => {
-                self.roots_into(f, extra, out);
+            HExpr::ClosureCall { args, .. } => {
+                // Calling a closure reads the callee binding (a borrow): the
+                // result never points into the closure *value* itself, so the
+                // callee is not a root and keeps its scope-exit free. A result
+                // that aliases a capture is the closure body's concern.
                 for a in args {
                     self.roots_into(a, extra, out);
                 }

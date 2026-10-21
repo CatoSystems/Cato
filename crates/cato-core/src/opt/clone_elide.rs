@@ -49,7 +49,7 @@ fn elide_in_body(body: &mut HExpr) -> bool {
     // eliding its clone would share a buffer that dies with the source.
     let mut freeable: HashSet<String> = HashSet::new();
     visit_nodes(body, &mut |n| {
-        if let HExpr::Let(_, _, frees) = n {
+        if let HExpr::Let(_, _, frees, _) = n {
             for f in frees {
                 freeable.insert(f.clone());
             }
@@ -58,7 +58,7 @@ fn elide_in_body(body: &mut HExpr) -> bool {
     // Static literals bind no heap: aliasing them is always sound.
     let mut static_bound: HashSet<String> = HashSet::new();
     visit_nodes(body, &mut |n| {
-        if let HExpr::Let(binds, _, _) = n {
+        if let HExpr::Let(binds, _, _, _) = n {
             for (n2, v, _) in binds {
                 if matches!(v, HExpr::VecLit(_) | HExpr::StrLit(_)) {
                     static_bound.insert(n2.clone());
@@ -104,10 +104,16 @@ fn elide_in_body(body: &mut HExpr) -> bool {
 fn remove_frees_entries(e: &mut HExpr, names: &HashSet<String>) {
     let taken = std::mem::replace(e, HExpr::ConstI64(0));
     *e = rewrite(taken, &mut |node| match node {
-        HExpr::Let(binds, body, frees) => HExpr::Let(
+        HExpr::Let(binds, body, frees, rebind) => HExpr::Let(
             binds,
             body,
             frees.into_iter().filter(|f| !names.contains(f)).collect(),
+            // A transferred binding's shadowed-buffer frees go with its exit
+            // free: the destination owns every buffer the name held.
+            rebind
+                .into_iter()
+                .filter(|(f, _)| !names.contains(f))
+                .collect(),
         ),
         other => other,
     });
@@ -116,7 +122,7 @@ fn remove_frees_entries(e: &mut HExpr, names: &HashSet<String>) {
 fn binder_occurrences(e: &HExpr, name: &str) -> usize {
     let mut count = 0usize;
     visit_nodes(e, &mut |node| match node {
-        HExpr::Let(binds, _, _) => {
+        HExpr::Let(binds, _, _, _) => {
             for (n, _, _) in binds {
                 if n == name {
                     count += 1;

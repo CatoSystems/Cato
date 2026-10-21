@@ -772,3 +772,18 @@
       [variant binders body ef next]
       (HACons variant binders (own-str-return body) ef (osr-arms next))
     )))
+
+; Is the expression a read-only literal that codegen must clone onto the heap
+; before an owning binding (a loop seed) can hold it: a vector or string
+; literal. Takes the expression by borrow so callers keep using it.
+(defn vec-lit? [e :- &HExpr] :- bool
+  (match e
+    (HVecLit [_el _vs] true)
+    (_ false)))
+
+(defn str-lit? [e :- &HExpr] :- bool
+  (match e
+    (HStrLit [_s] true)
+    (_ false)))
+
+(defn literal? [e :- &HExpr] :- bool (or (vec-lit? e) (str-lit? e)))

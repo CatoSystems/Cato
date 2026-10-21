@@ -1862,22 +1862,36 @@
               (
                 ETRes
                 [st1 slot]
-                (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))]
+                (let [st2 (em-pre st1 (str slot " = alloca %VecI64, align 8"))
+                  lit (hexpr/vec-lit? v)]
                   (match
                     (heap/emit-vec-pair v st2)
                     (
                       EVRes
                       [st3 d l el]
                       (match
-                        (loop-slot-vec-init d l st3)
+                        ; A literal seed names read-only global data; the
+                        ; loop variable must own a freeable buffer, so clone
+                        ; it onto the heap. An owned or aliased seed is
+                        ; already a value the loop may hand over as is.
+                        (if
+                          lit
+                          (heap/vec-clone-buf d l el st3)
+                          (ETRes st3 d))
                         (
-                          ESRes
-                          [st4 hdr]
-                          (let [st5
-                            (em-line st4 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))]
-                            (loop-slots next st5 (ESlots2 name slot (clone ty) acc)))
-                        ))
-                    )))
+                          ETRes
+                          [st3b d2]
+                          (match
+                            (loop-slot-vec-init d2 l st3b)
+                            (
+                              ESRes
+                              [st4 hdr]
+                              (let [st5
+                                (em-line st4 (str "  store %VecI64 " hdr ", ptr " slot ", align 8"))]
+                                (loop-slots next st5 (ESlots2 name slot (clone ty) acc)))
+                            ))
+                        )
+                      ))))
               ))
             (match
               (em-temp st)
@@ -1893,33 +1907,55 @@
                         em-pre
                         st1
                         (str slot " = alloca " (state/ll-loop-slot-ty ty mdl) ", align 8")
-                      )]
+                      )
+                      lit (hexpr/str-lit? v)]
                       (match
                         (emit-typed v (clone ty) st2)
                         (
                           ESRes
                           [st3 init]
-                          (match st3
-                            (
-                              Emit
-                              [c3 m3 s3]
-                              (let [st4
-                                (
-                                  em-line
+                          (match
+                            ; A str literal seed is read-only global data;
+                            ; clone it so the loop owns a freeable buffer.
+                            (if
+                              lit
+                              (match
+                                (em-ins
                                   st3
-                                  (
-                                    str
-                                    "  store "
-                                    (state/ll-loop-slot-ty ty m3)
-                                    " "
-                                    init
-                                    ", ptr "
-                                    slot
-                                    ", align 8"
-                                  )
-                                )]
-                                (loop-slots next st4 (ESlots2 name slot (clone ty) acc)))
-                            ))
+                                  (str "  ~ = call ptr @strdup(ptr " init ")")
+                                )
+                                (
+                                  ETRes
+                                  [st3b dup]
+                                  (ETRes (em-decl st3b "declare ptr @strdup(ptr)") dup)
+                                ))
+                              (ETRes st3 init))
+                            (
+                              ETRes
+                              [st3b init2]
+                              (match st3b
+                                (
+                                  Emit
+                                  [c3 m3 s3]
+                                  (let [st4
+                                    (
+                                      em-line
+                                      st3b
+                                      (
+                                        str
+                                        "  store "
+                                        (state/ll-loop-slot-ty ty m3)
+                                        " "
+                                        init2
+                                        ", ptr "
+                                        slot
+                                        ", align 8"
+                                      )
+                                    )]
+                                    (loop-slots next st4 (ESlots2 name slot (clone ty) acc)))
+                                ))
+                            )
+                          )
                         )))
                   ))
               )))

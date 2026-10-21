@@ -294,7 +294,7 @@ fn recompute_keeps_free_lists_consistent() {
 fn check_no_dangling_frees(e: &HExpr) {
     use std::collections::HashSet;
     cato_core::opt::walk::visit_nodes(e, &mut |n| match n {
-        HExpr::Let(binds, _, frees) => {
+        HExpr::Let(binds, _, frees, _) => {
             let bound: HashSet<&String> = binds.iter().map(|(n, _, _)| n).collect();
             for f in frees {
                 assert!(bound.contains(f), "dangling free entry {}", f);

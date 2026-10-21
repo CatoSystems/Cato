@@ -24,13 +24,14 @@ pub fn rewrite(e: HExpr, f: &mut dyn FnMut(HExpr) -> HExpr) -> HExpr {
         | HExpr::VecLit(_) => return f(e),
         HExpr::Count(a) => HExpr::Count(Box::new(rewrite(*a, f))),
         HExpr::Call(n, args) => HExpr::Call(n, args.into_iter().map(|a| rewrite(a, f)).collect()),
-        HExpr::Let(binds, body, frees) => HExpr::Let(
+        HExpr::Let(binds, body, frees, rebind) => HExpr::Let(
             binds
                 .into_iter()
                 .map(|(n, e, t)| (n, rewrite(e, f), t))
                 .collect(),
             Box::new(rewrite(*body, f)),
             frees,
+            rebind,
         ),
         HExpr::Seq(vs) => HExpr::Seq(vs.into_iter().map(|v| rewrite(v, f)).collect()),
         HExpr::If(c, t, e2, ty) => HExpr::If(
@@ -554,7 +555,7 @@ fn count_walk(
                 count_walk(a, targets, shadowed, counts);
             }
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             let mut pushed = 0;
             for (n, init, _) in binds {
                 count_walk(init, targets, shadowed, counts);
@@ -681,7 +682,7 @@ fn count_source(
 pub fn substitute(e: HExpr, name: &str, replacement: &HExpr) -> HExpr {
     match e {
         HExpr::Var(v) if v == name => replacement.clone(),
-        HExpr::Let(binds, body, frees) => {
+        HExpr::Let(binds, body, frees, rebind) => {
             let mut binds = binds;
             let mut shadowed_at = None;
             for (i, (n, init, _)) in binds.iter_mut().enumerate() {
@@ -695,9 +696,14 @@ pub fn substitute(e: HExpr, name: &str, replacement: &HExpr) -> HExpr {
             if shadowed_at.is_some() {
                 // Shadowing binder found: inits from there on and the body
                 // are out of scope for `name`.
-                HExpr::Let(binds, body, frees)
+                HExpr::Let(binds, body, frees, rebind)
             } else {
-                HExpr::Let(binds, Box::new(substitute(*body, name, replacement)), frees)
+                HExpr::Let(
+                    binds,
+                    Box::new(substitute(*body, name, replacement)),
+                    frees,
+                    rebind,
+                )
             }
         }
         HExpr::Match { scrut, arms, ty } => HExpr::Match {
@@ -817,7 +823,7 @@ pub fn is_drop_safe(e: &HExpr) -> bool {
         HExpr::And(a, b) | HExpr::Or(a, b) => is_drop_safe(a) && is_drop_safe(b),
         HExpr::StrCat(args) => args.iter().all(is_drop_safe),
         HExpr::Seq(vs) => vs.iter().all(is_drop_safe),
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             binds.iter().all(|(_, e, _)| is_drop_safe(e)) && is_drop_safe(body)
         }
         // Everything else is either effectful (Call, Conj, DropStmt, For),
@@ -878,7 +884,7 @@ pub fn contains_reduce(e: &HExpr) -> bool {
 /// Every name that appears in any `Let` free list of the tree.
 pub fn all_frees_names(e: &HExpr, out: &mut HashSet<String>) {
     visit_nodes(e, &mut |n| {
-        if let HExpr::Let(_, _, frees) = n {
+        if let HExpr::Let(_, _, frees, _) = n {
             for name in frees {
                 out.insert(name.clone());
             }
@@ -1070,7 +1076,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
                 visit_nodes(a, f);
             }
         }
-        HExpr::Let(binds, body, _) => {
+        HExpr::Let(binds, body, _, _) => {
             for (_, init, _) in binds {
                 visit_nodes(init, f);
             }
@@ -1142,7 +1148,7 @@ fn visit_source(s: &HSource, f: &mut dyn FnMut(&HExpr)) {
 /// params). Used to mint collision-free fresh names.
 pub fn all_binders(e: &HExpr, out: &mut HashSet<String>) {
     visit_nodes(e, &mut |n| match n {
-        HExpr::Let(binds, _, _) => {
+        HExpr::Let(binds, _, _, _) => {
             for (name, _, _) in binds {
                 out.insert(name.clone());
             }
