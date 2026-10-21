@@ -172,6 +172,14 @@
   (let [triple (target-triple target-i)]
     (if (= triple "") (cato-host-linux)
       (linux-triple? triple))))
+
+; The parallel runners reach threads through the runtime's shim, which uses
+; pthreads on POSIX hosts; older glibc and musl still want an explicit
+; -lpthread. Same target test as -lm.
+(defn libpthread-required [target-i :- i64] :- bool
+  (let [triple (target-triple target-i)]
+    (if (= triple "") (cato-host-linux)
+      (linux-triple? triple))))
 (defn parsed-opts [acc :- (Vector str) target-i :- i64 opt :- i64 debug :- i64 asan :- i64 rtlib :- str] :- (Vector str)
   (let [v acc
         v (conj v (str "-O" opt))
@@ -204,5 +212,6 @@
         with-ll (conj with-pass ll)
         with-rt (conj with-ll rt)
         with-lm (if (libm-required target-i) (conj with-rt "-lm") with-rt)
-        with-o (conj with-lm "-o")]
+        with-lp (if (libpthread-required target-i) (conj with-lm "-lpthread") with-lm)
+        with-o (conj with-lp "-o")]
     (conj with-o out)))

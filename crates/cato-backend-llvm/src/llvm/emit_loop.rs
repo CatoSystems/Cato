@@ -461,12 +461,12 @@ pub(crate) fn combine_step(op: BinOp, val: &str, acc: &str, ty: Ty, _c: &mut FnC
 // Phase 18: parallel chunk runners
 // ---------------------------------------------------------------------------
 
-/// Emit the pthread runner pair for a parallel loop. The fused loop helper
+/// Emit the thread runner pair for a parallel loop. The fused loop helper
 /// itself is the chunk function: because the combine is associative and
 /// commutative and the init is its identity, folding each contiguous chunk
 /// from the identity and combining the partials in any order is exact.
 ///
-/// - `@H_tramp(ptr arg)` — pthread entry: unpacks the arg record
+/// - `@H_tramp(ptr arg)` — thread entry: unpacks the arg record
 ///   `{ data, start, end, slot, caps... }`, calls the chunk fn, stores the
 ///   partial.
 /// - `@H_par(data, len, caps...)` — spawns `--threads` workers over
@@ -500,8 +500,8 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     let ncaps = spec.caps.len();
     let stride = 32 + 8 + 8 * ncaps;
 
-    mdl.ensure_decl("declare i32 @pthread_create(ptr, ptr, ptr, ptr)");
-    mdl.ensure_decl("declare i32 @pthread_join(ptr, ptr)");
+    mdl.ensure_decl("declare i64 @cato_thread_spawn(ptr, ptr, ptr)");
+    mdl.ensure_decl("declare i64 @cato_thread_join(ptr)");
     mdl.ensure_decl("declare ptr @malloc(i64)");
     mdl.ensure_decl("declare void @free(ptr)");
 
@@ -691,18 +691,17 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
         let hn = &handles[i];
         let treg = c.temp();
         c.line(&format!(
-            "  {} = call i32 @pthread_create(ptr {}, ptr null, ptr @{}_tramp, ptr {})",
+            "  {} = call i64 @cato_thread_spawn(ptr {}, ptr @{}_tramp, ptr {})",
             treg, hn, h, base
         ));
     }
     for i in 0..t {
-        // pthread_join takes the handle BY VALUE: load it from the alloca
-        // pthread_create wrote.
+        // The shim wrote the opaque handle into the slot; join reads it back.
         let hv = c.temp();
         c.line(&format!("  {} = load ptr, ptr {}, align 8", hv, handles[i]));
         let treg = c.temp();
         c.line(&format!(
-            "  {} = call i32 @pthread_join(ptr {}, ptr null)",
+            "  {} = call i64 @cato_thread_join(ptr {})",
             treg, hv
         ));
     }

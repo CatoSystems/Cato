@@ -708,3 +708,56 @@ int64_t cato_stderr(const char *s) {
     fflush(stderr);
     return 0;
 }
+
+/* Threads for the `parallel` loop runners. The emitter calls a single pair
+   of helpers instead of naming a platform's thread API, so the generated IR
+   links everywhere: POSIX hosts take pthreads, Windows takes the Win32
+   thread API. The emitter passes a handle *slot*, and the shim writes an
+   opaque handle into it — so the IR never has to know the platform's
+   thread-id size or representation. On Windows the start routine has its
+   own signature, so a thunk carries the `void *(*)(void *)` the emitter
+   supplies. */
+#ifdef _WIN32
+#include <windows.h>
+typedef struct {
+    void *(*fn)(void *);
+    void *arg;
+} CatoThreadStart;
+static DWORD WINAPI cato_thread_thunk(LPVOID p) {
+    CatoThreadStart *s = (CatoThreadStart *)p;
+    s->fn(s->arg);
+    free(s);
+    return 0;
+}
+int64_t cato_thread_spawn(void *handle_out, void *(*fn)(void *), void *arg) {
+    CatoThreadStart *s = malloc(sizeof(CatoThreadStart));
+    if (!s) return 1;
+    s->fn = fn;
+    s->arg = arg;
+    HANDLE h = CreateThread(NULL, 0, cato_thread_thunk, s, 0, NULL);
+    if (h == NULL) { free(s); return 1; }
+    *(void **)handle_out = (void *)h;
+    return 0;
+}
+int64_t cato_thread_join(void *handle) {
+    WaitForSingleObject((HANDLE)handle, INFINITE);
+    CloseHandle((HANDLE)handle);
+    return 0;
+}
+#else
+#include <pthread.h>
+int64_t cato_thread_spawn(void *handle_out, void *(*fn)(void *), void *arg) {
+    pthread_t *th = malloc(sizeof(pthread_t));
+    if (!th) return 1;
+    int rc = pthread_create(th, NULL, fn, arg);
+    if (rc != 0) return rc;
+    *(pthread_t **)handle_out = th;
+    return 0;
+}
+int64_t cato_thread_join(void *handle) {
+    pthread_t *th = (pthread_t *)handle;
+    int rc = pthread_join(*th, NULL);
+    free(th);
+    return rc;
+}
+#endif

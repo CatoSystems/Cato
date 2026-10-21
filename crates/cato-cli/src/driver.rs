@@ -217,6 +217,16 @@ fn libm_required(triple: Option<&str>) -> bool {
     }
 }
 
+/// The `parallel` runners reach threads through `runtime.c`'s shim, which on
+/// POSIX hosts uses pthreads. Recent glibc folded them into libc, but older
+/// glibc and musl still want `-lpthread`; naming it is harmless elsewhere.
+fn libpthread_required(triple: Option<&str>) -> bool {
+    match triple {
+        Some(t) => t.contains("-linux-"),
+        None => cfg!(target_os = "linux"),
+    }
+}
+
 pub fn link_invocations(
     spec: &TargetSpec,
     cc: &str,
@@ -237,6 +247,9 @@ pub fn link_invocations(
             // with the inputs (before -o) so "-o out last" still holds.
             if libm_required(spec.triple) {
                 args.push("-lm".to_string());
+            }
+            if libpthread_required(spec.triple) {
+                args.push("-lpthread".to_string());
             }
             args.push("-o".to_string());
             args.push(out.display().to_string());
@@ -325,6 +338,7 @@ mod tests {
         let mut expected = vec!["-O2", "-rtlib=compiler-rt", "a.ll", "runtime/runtime.c"];
         if cfg!(target_os = "linux") {
             expected.push("-lm");
+            expected.push("-lpthread");
         }
         expected.extend(["-o", "a"]);
         assert_eq!(v[0].args, expected);
@@ -343,6 +357,11 @@ mod tests {
         );
         assert!(
             v[0].args.contains(&"-lm".to_string()),
+            "args: {:?}",
+            v[0].args
+        );
+        assert!(
+            v[0].args.contains(&"-lpthread".to_string()),
             "args: {:?}",
             v[0].args
         );
