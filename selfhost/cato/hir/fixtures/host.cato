@@ -9,8 +9,8 @@
     (do
       (print-str text)
       (print-i64 (count text))
-      (spit "/tmp/cato_s6_host.txt" "host round trip")
-      (print-i64 (count (slurp "/tmp/cato_s6_host.txt")))
+      (spit "cato_host_tmp.txt" "host round trip")
+      (print-i64 (count (slurp "cato_host_tmp.txt")))
       (print-i64 (strlen "cato"))
       (print-f64 2.5)
       (print-string a)

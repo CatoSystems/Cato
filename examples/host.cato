@@ -16,8 +16,10 @@
       (print (match f (Some [v] v) (None [] 0.0)))    ; 2.5
       (print-str text)                                ; 42 3.5 1 (no \n)
       (print (count text))                            ; 8
-      (spit "/tmp/cato_s3_host.txt" "host round trip")
-      (print (count (slurp "/tmp/cato_s3_host.txt"))) ; 15
+      ; A path relative to the process's working directory: /tmp does not
+      ; exist on Windows.
+      (spit "cato_host_tmp.txt" "host round trip")
+      (print (count (slurp "cato_host_tmp.txt"))) ; 15
       ; Arguments: the parity harness runs with none.
       (print (count argv))                            ; 0
       (print (if (> (count argv) 0) (get argv 0 "none") "none")))))

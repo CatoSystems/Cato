@@ -97,10 +97,7 @@ fn run_native_matches_interpreter() {
         String::from_utf8_lossy(&native.stderr)
     );
 
-    assert_eq!(
-        String::from_utf8_lossy(&interp.stdout),
-        String::from_utf8_lossy(&native.stdout),
-    );
+    assert_eq!(stdout_of(&interp), stdout_of(&native),);
     let _ = std::fs::remove_file(&bin);
 }
 
@@ -141,13 +138,20 @@ fn compile_honors_opt_level_and_asan_flags() {
     let bin = manifest.join("../../target/cli_flags_demo");
     let cato = env!("CARGO_BIN_EXE_cato");
 
-    for extra in [&["-O0"][..], &["--opt-level", "3"][..], &["--asan"][..]] {
+    // Only these cases need no sanitizer runtime: Windows ships none, so
+    // the ASan link there would produce a binary that cannot start.
+    let cases: &[&[&str]] = if cfg!(target_os = "windows") {
+        &[&["-O0"][..], &["--opt-level", "3"][..]]
+    } else {
+        &[&["-O0"][..], &["--opt-level", "3"][..], &["--asan"][..]]
+    };
+    for extra in cases {
         let status = Command::new(cato)
             .arg("compile")
             .arg(&src)
             .arg("-o")
             .arg(&bin)
-            .args(extra)
+            .args(*extra)
             .status()
             .expect("cato compile");
         assert!(status.success(), "compile with {:?} failed", extra);
@@ -263,7 +267,9 @@ fn compile_and_run(src_name: &str, src: &str) -> String {
     let out = Command::new(&exe).output().expect("run binary");
     assert!(
         out.status.success(),
-        "binary failed:\n{}",
+        "binary failed ({:?}):\n{}\n{}",
+        out.status,
+        String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
     stdout_of(&out).to_string()
@@ -501,6 +507,9 @@ fn compiles_widths2_to_expected_output() {
 
 // Phase 13: scope-exit frees — heap bindings are released, with no
 // double-frees or use-after-frees (checked under AddressSanitizer).
+// The Windows CI toolchain ships no ASan runtime, so the instrumentation
+// would link but not run; the Linux job is the leak-detecting one.
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn scope_exit_frees_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -578,6 +587,7 @@ fn compiles_strvec_to_expected_output() {
     assert_eq!(compile_and_run("strvec", &src), "3\n4\n5\nd\n!\na\n");
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn strvec_is_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -611,6 +621,7 @@ fn strvec_is_sanitizer_clean() {
     );
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn vec_field_adt_is_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -645,6 +656,7 @@ fn vec_field_adt_is_sanitizer_clean() {
     );
 }
 
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn moved_param_return_is_sanitizer_clean_without_opt() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -871,7 +883,7 @@ fn do_block_yields_its_last_value_natively() {
 
 // Re-binding an owned (Vector str) in the same let (`[a (split ..) a
 // (conj a ..)]`) used to free the last buffer twice at scope exit.
-#[cfg(not(feature = "static-llvm"))]
+#[cfg(all(not(feature = "static-llvm"), not(target_os = "windows")))]
 #[test]
 fn let_rebinding_an_owned_str_vec_frees_once() {
     let out = build_and_run_native(
@@ -950,6 +962,7 @@ fn narrow_vectors_store_at_element_width() {
 // `recur` is a scope exit: every loop shape in loop_drops.cato frees what
 // each iteration owned. Sanitizer-clean at -O0 (no double free, no use
 // after free) and the right answers (the vector swap prints 21).
+#[cfg(not(target_os = "windows"))]
 #[test]
 fn loop_drops_are_sanitizer_clean() {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
