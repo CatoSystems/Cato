@@ -208,6 +208,15 @@ fn effective_opt(opts: &LinkOpts) -> String {
     }
 }
 
+/// ELF links need `-lm` explicitly: glibc splits math symbols out of libc,
+/// while libSystem and the Windows CRT carry them already.
+fn libm_required(triple: Option<&str>) -> bool {
+    match triple {
+        Some(t) => t.contains("-linux-"),
+        None => cfg!(target_os = "linux"),
+    }
+}
+
 pub fn link_invocations(
     spec: &TargetSpec,
     cc: &str,
@@ -225,6 +234,11 @@ pub fn link_invocations(
             args.push(runtime.display().to_string());
             args.push("-o".to_string());
             args.push(out.display().to_string());
+            // glibc keeps math symbols in libm; libSystem and the Windows
+            // CRT already carry them, so only ELF links need -lm.
+            if libm_required(spec.triple) {
+                args.push("-lm".to_string());
+            }
             vec![Invocation {
                 program,
                 args,
@@ -307,16 +321,35 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].program, "clang");
         assert_eq!(v[0].what, "link");
-        assert_eq!(
-            v[0].args,
-            [
-                "-O2",
-                "-rtlib=compiler-rt",
-                "a.ll",
-                "runtime/runtime.c",
-                "-o",
-                "a"
-            ]
+        let mut expected = vec![
+            "-O2",
+            "-rtlib=compiler-rt",
+            "a.ll",
+            "runtime/runtime.c",
+            "-o",
+            "a",
+        ];
+        if cfg!(target_os = "linux") {
+            expected.push("-lm");
+        }
+        assert_eq!(v[0].args, expected);
+    }
+
+    #[test]
+    fn linux_triples_link_libm() {
+        let spec = lookup("x86_64-linux").unwrap();
+        let v = link_invocations(
+            spec,
+            "clang",
+            Path::new("a.ll"),
+            Path::new("rt.c"),
+            Path::new("a"),
+            &opts(),
+        );
+        assert!(
+            v[0].args.contains(&"-lm".to_string()),
+            "args: {:?}",
+            v[0].args
         );
     }
 
