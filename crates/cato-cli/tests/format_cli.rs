@@ -287,11 +287,16 @@ fn check_mode_on_clean_stdin_exits_zero() {
 
 #[test]
 fn rewrite_replaces_file_atomically() {
-    use std::os::unix::fs::MetadataExt;
     let dir = scratch("atomic");
     let file = dir.join("a.cato");
     fs::write(&file, MESSY).unwrap();
-    let ino_before = fs::metadata(&file).unwrap().ino();
+    // Inode identity is the portable signal on Unix; Windows has no
+    // stable equivalent, so that part of the check is Unix-only.
+    #[cfg(unix)]
+    let ino_before = {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(&file).unwrap().ino()
+    };
     let out = Command::new(bin())
         .args(["format", file.to_str().unwrap()])
         .output()
@@ -303,11 +308,15 @@ fn rewrite_replaces_file_atomically() {
     );
     // Atomic replacement (rename over the original) changes the inode;
     // truncate-in-place would keep it. No temp debris may remain.
-    let ino_after = fs::metadata(&file).unwrap().ino();
-    assert_ne!(
-        ino_before, ino_after,
-        "rewrite must replace via rename, not truncate-in-place"
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ino_after = fs::metadata(&file).unwrap().ino();
+        assert_ne!(
+            ino_before, ino_after,
+            "rewrite must replace via rename, not truncate-in-place"
+        );
+    }
     assert_eq!(fs::read_to_string(&file).unwrap(), NEAT);
     let entries: Vec<_> = fs::read_dir(&dir).unwrap().flatten().collect();
     assert_eq!(entries.len(), 1, "no temp files may be left behind");
