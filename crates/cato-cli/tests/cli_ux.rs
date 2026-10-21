@@ -3,24 +3,33 @@
 //! asserted without color codes.
 
 use std::process::Command;
+use std::sync::OnceLock;
 
 fn cato() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cato"))
 }
 
-fn demo_source() -> std::path::PathBuf {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("target/ux_demo.cato");
-    std::fs::write(
-        &path,
-        "(defn sq [x :- i64] (* x x))\n(defn main [] (print (sq 7)))\n",
-    )
-    .expect("write demo");
-    path
+/// Shared demo program for the checks below. Every test compiles this same
+/// source, so it is written exactly once: rewriting it on each call would
+/// let one test truncate the file while another is compiling it, which shows
+/// up as a spurious "undefined reference to `main`" under `cargo test`'s
+/// parallel test threads.
+fn demo_source() -> &'static std::path::Path {
+    static PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("target/ux_demo.cato");
+        std::fs::write(
+            &path,
+            "(defn sq [x :- i64] (* x x))\n(defn main [] (print (sq 7)))\n",
+        )
+        .expect("write demo");
+        path
+    })
 }
 
 #[test]

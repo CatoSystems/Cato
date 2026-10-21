@@ -16,32 +16,44 @@ mod common;
 use common::link_ir;
 use std::process::Command;
 
+#[derive(Clone)]
 struct Paths {
     root: std::path::PathBuf,
     entry: std::path::PathBuf,
     exe: std::path::PathBuf,
 }
 
+/// Build the kernel reader once and share the paths with every test in this
+/// binary. Both tests call `setup()`, and `cargo test` runs them on parallel
+/// threads: rebuilding the same `-o` paths per call would let one test rewrite
+/// (or truncate) the executable while the other is running it, which surfaces
+/// as a spurious "No such file or directory" from `Command::output`.
 fn setup() -> Paths {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
-    let cato = root.join("target/debug/cato");
+    use std::sync::OnceLock;
+    static PATHS: OnceLock<Paths> = OnceLock::new();
+    PATHS
+        .get_or_init(|| {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
+            let cato = root.join("target/debug/cato");
 
-    let entry = root.join("selfhost/cato/reader/reader_ref.cato");
-    let ll = root.join("target/selfhost_reader.ll");
-    let exe = root.join("target/selfhost_reader_bin");
-    let status = Command::new(&cato)
-        .arg("compile")
-        .arg(&entry)
-        .arg("--emit-ir")
-        .arg("-o")
-        .arg(&ll)
-        .status()
-        .expect("cato emit");
-    assert!(status.success(), "seed failed to compile the kernel reader");
-    link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
+            let entry = root.join("selfhost/cato/reader/reader_ref.cato");
+            let ll = root.join("target/selfhost_reader.ll");
+            let exe = root.join("target/selfhost_reader_bin");
+            let status = Command::new(&cato)
+                .arg("compile")
+                .arg(&entry)
+                .arg("--emit-ir")
+                .arg("-o")
+                .arg(&ll)
+                .status()
+                .expect("cato emit");
+            assert!(status.success(), "seed failed to compile the kernel reader");
+            link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
 
-    Paths { root, entry, exe }
+            Paths { root, entry, exe }
+        })
+        .clone()
 }
 
 impl Paths {

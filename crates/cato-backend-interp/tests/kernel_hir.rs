@@ -16,36 +16,48 @@ use cato_core::ast::Expr;
 use cato_core::reader::read_all_spanned;
 use std::process::Command;
 
+#[derive(Clone)]
 struct Paths {
     root: std::path::PathBuf,
     bin: std::path::PathBuf,
 }
 
+/// Build the kernel driver once and share the paths with every test in this
+/// binary. Both tests call `setup()`, and `cargo test` runs them on parallel
+/// threads: rebuilding the same `-o` path per call would let one test rewrite
+/// (or truncate) the executable while the other is running it, which surfaces
+/// as a spurious "No such file or directory" from `Command::output`.
 fn setup() -> Paths {
-    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
-    let cato = root.join("target/debug/cato");
+    use std::sync::OnceLock;
+    static PATHS: OnceLock<Paths> = OnceLock::new();
+    PATHS
+        .get_or_init(|| {
+            let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let root = manifest.parent().unwrap().parent().unwrap().to_path_buf();
+            let cato = root.join("target/debug/cato");
 
-    // The S6 driver (`hir_ref.cato`) `require`s the lib, reader and hir
-    // modules; its `main` defines the only entry point.
-    let entry = root.join("selfhost/cato/hir/hir_ref.cato");
+            // The S6 driver (`hir_ref.cato`) `require`s the lib, reader and hir
+            // modules; its `main` defines the only entry point.
+            let entry = root.join("selfhost/cato/hir/hir_ref.cato");
 
-    // The driver is compiled natively once (the same kernel source the
-    // interpreter would run, ~100x faster per fixture).
-    let bin = root.join("target/selfhost_hir_ref");
-    let status = Command::new(&cato)
-        .arg("compile")
-        .arg(&entry)
-        .arg("-o")
-        .arg(&bin)
-        .status()
-        .expect("cato compile");
-    assert!(
-        status.success(),
-        "seed failed to compile the kernel hir driver"
-    );
+            // The driver is compiled natively once (the same kernel source the
+            // interpreter would run, ~100x faster per fixture).
+            let bin = root.join("target/selfhost_hir_ref");
+            let status = Command::new(&cato)
+                .arg("compile")
+                .arg(&entry)
+                .arg("-o")
+                .arg(&bin)
+                .status()
+                .expect("cato compile");
+            assert!(
+                status.success(),
+                "seed failed to compile the kernel hir driver"
+            );
 
-    Paths { root, bin }
+            Paths { root, bin }
+        })
+        .clone()
 }
 
 impl Paths {
