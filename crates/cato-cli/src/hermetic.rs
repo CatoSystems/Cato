@@ -124,7 +124,9 @@ pub(super) fn hermetic_link_argv(
 ) -> Result<(LldFlavor, Vec<String>), String> {
     let out_str = out.to_string_lossy().to_string();
     let staged_str = staged.to_string_lossy().to_string();
-    let _assets = assets_for(target_name)?;
+    // The argv shape is a pure function of the target; asset presence is
+    // enforced by the caller (`build_hermetic` stages them first). Keeping
+    // this arm free of `assets_for` lets the shape be tested on any host.
     match target_name {
         "x86_64-linux" => Ok((
             LldFlavor::Elf,
@@ -228,18 +230,9 @@ pub(super) fn hermetic_link_argv(
                 "-lSystem".to_string(),
             ],
         )),
-        _ => {
-            let _ = assets_for(target_name);
-            Err(format!(
-                "cato: no embedded assets for target '{}{}'",
-                target_name,
-                if target_name == "wasm32" {
-                    " (this cato build does not embed wasm32)"
-                } else {
-                    ""
-                }
-            ))
-        }
+        _ => Err(assets_for(target_name)
+            .err()
+            .unwrap_or_else(|| format!("cato: no embedded assets for target '{target_name}'"))),
     }
 }
 
