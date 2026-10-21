@@ -261,7 +261,11 @@ fn compile_and_run(src_name: &str, src: &str) -> String {
     link_ir(&out_ll, &rt, &exe, &[]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    assert!(out.status.success(), "binary failed");
+    assert!(
+        out.status.success(),
+        "binary failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     stdout_of(&out).to_string()
 }
 
@@ -535,7 +539,12 @@ fn scope_exit_frees_are_sanitizer_clean() {
 
         link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
         let out = Command::new(&exe).output().expect("run binary");
-        assert!(out.status.success(), "{}: binary failed", name);
+        assert!(
+            out.status.success(),
+            "{}: binary failed:\n{}",
+            name,
+            String::from_utf8_lossy(&out.stderr)
+        );
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(
             !stderr.contains("AddressSanitizer"),
@@ -589,7 +598,11 @@ fn strvec_is_sanitizer_clean() {
     link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    assert!(out.status.success(), "binary failed");
+    assert!(
+        out.status.success(),
+        "binary failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("AddressSanitizer"),
@@ -618,7 +631,11 @@ fn vec_field_adt_is_sanitizer_clean() {
     link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    assert!(out.status.success(), "binary failed");
+    assert!(
+        out.status.success(),
+        "binary failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stdout_of(&out), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -648,7 +665,11 @@ fn moved_param_return_is_sanitizer_clean_without_opt() {
     link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    assert!(out.status.success(), "binary failed");
+    assert!(
+        out.status.success(),
+        "binary failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stdout_of(&out), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -952,7 +973,11 @@ fn loop_drops_are_sanitizer_clean() {
         "sanitizer error:\n{}",
         stderr
     );
-    assert!(out.status.success(), "binary failed");
+    assert!(
+        out.status.success(),
+        "binary failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert_eq!(stdout_of(&out), "345800\n21\n");
 }
 
