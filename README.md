@@ -48,11 +48,16 @@ standard library.
 - [x] Core language, ownership, persistent collections
 - [x] LLVM + interpreter backends, stream fusion
 - [x] Self-hosting kernel (reader through emitter)
-- [ ] Stage 1: kernel builds itself
-- [ ] Fixpoint + CI, seed freeze
-- [ ] Diagnostics, REPL/LSP, macros, more backends
-- [ ] Editor integration (VS Code, Neovim, Helix, Emacs via `cato lsp`)
+- [x] Kernel builds itself
+- [ ] Fixpoint + CI, seed freeze (Ongoing, Partially Implemented)
+- [ ] Diagnostics, REPL/LSP, macros, more backends (Ongoing, Partial)
+- [ ] Editor integration (VS Code, Neovim, Helix, Emacs via `cato lsp`) (Ongoing, Partial)
 - [ ] First-class struct/pointer types to call C libraries directly (no FFI shims)
+- [ ] Migrate the IR to MLIR to reach non-CPU targets (GPU offload and beyond)
+- [ ] GPU programming syntax: kernels, thread/block hierarchy, host/device code
+- [ ] Compile-time computation (`comptime` evaluated while compiling)
+- [ ] More Clojure-style syntax: protocols/multimethods, `condp`, richer destructuring
+- [ ] Standard library enrichment and redesign
 
 ## Non-goals
 
