@@ -1,5 +1,26 @@
 // tests/integration.rs
+use std::path::Path;
 use std::process::Command;
+
+/// Link emitted IR plus the C runtime into `exe`. `extra` carries
+/// test-specific flags (sanitizers, opt levels) ahead of the inputs.
+/// glibc keeps math symbols in libm, so ELF links add `-lm`; libSystem
+/// and the Windows CRT already carry them.
+fn link_ir(ll: &Path, rt: &Path, exe: &Path, extra: &[&str]) {
+    let mut cmd = Command::new("clang");
+    cmd.args(extra).arg(ll).arg(rt).arg("-o").arg(exe);
+    if cfg!(target_os = "linux") {
+        cmd.arg("-lm");
+    }
+    let status = cmd.status().expect("clang link");
+    assert!(status.success(), "clang link failed");
+}
+
+/// Child stdout as text, with Windows CRLF normalized so expectations
+/// can be written with plain LF.
+fn stdout_of(out: &std::process::Output) -> String {
+    String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n")
+}
 
 #[test]
 fn cli_hello_runs() {
@@ -17,7 +38,7 @@ fn cli_version_prints_version() {
         .output()
         .expect("run binary");
     assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert!(stdout.contains("cato "), "got: {}", stdout);
 }
 
@@ -39,7 +60,7 @@ fn compile_produces_running_binary() {
 
     let out = Command::new(&bin).output().expect("run built binary");
     assert!(out.status.success(), "built binary failed");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "2.5\n20\n");
+    assert_eq!(stdout_of(&out), "2.5\n20\n");
 
     // Default output name: the input stem next to the source is not
     // required — with -o given, nothing else is created.
@@ -131,7 +152,7 @@ fn compile_honors_opt_level_and_asan_flags() {
             .expect("cato compile");
         assert!(status.success(), "compile with {:?} failed", extra);
         let out = Command::new(&bin).output().expect("run built binary");
-        assert_eq!(String::from_utf8_lossy(&out.stdout), "2.5\n20\n");
+        assert_eq!(stdout_of(&out), "2.5\n20\n");
     }
     let _ = std::fs::remove_file(&bin);
 }
@@ -153,7 +174,7 @@ fn interp_driver_needs_no_c_compiler() {
         out.status.success(),
         "interp run must not need a C compiler"
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "2.5\n20\n");
+    assert_eq!(stdout_of(&out), "2.5\n20\n");
 }
 
 #[test]
@@ -208,17 +229,10 @@ fn compiles_slice_to_expected_output() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang link failed");
+    link_ir(&out_ll, &rt, &exe, &[]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert_eq!(stdout, "2.5\n20\n");
 }
 
@@ -244,18 +258,11 @@ fn compile_and_run(src_name: &str, src: &str) -> String {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang link failed");
+    link_ir(&out_ll, &rt, &exe, &[]);
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
-    String::from_utf8_lossy(&out.stdout).to_string()
+    stdout_of(&out).to_string()
 }
 
 #[test]
@@ -395,7 +402,7 @@ fn explain_prints_diagnostic_docs() {
         .output()
         .expect("run binary");
     assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert!(stdout.contains("E301"), "got: {}", stdout);
     assert!(stdout.contains("moved"), "got: {}", stdout);
 }
@@ -428,17 +435,10 @@ fn compiles_sets_to_expected_output() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang link failed");
+    link_ir(&out_ll, &rt, &exe, &[]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert_eq!(
         stdout, "3\n1\n0\n3\n0\n1\n3\nb\na-b-c\nb-\n",
         "sets.cato output"
@@ -485,17 +485,10 @@ fn compiles_widths2_to_expected_output() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang link failed");
+    link_ir(&out_ll, &rt, &exe, &[]);
 
     let out = Command::new(&exe).output().expect("run binary");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert_eq!(
         stdout, "44\n99\n-56\n4294967295\n1\n0\n4464\n0.1\n7\n2.5\n",
         "widths2.cato output"
@@ -540,16 +533,7 @@ fn scope_exit_frees_are_sanitizer_clean() {
             .expect("cato compile");
         assert!(status.success(), "{}: cato compile failed", name);
 
-        let cc = Command::new("clang")
-            .args(["-fsanitize=address"])
-            .arg(&out_ll)
-            .arg(&rt)
-            .arg("-o")
-            .arg(&exe)
-            .status()
-            .expect("clang link");
-        assert!(cc.success(), "{}: clang failed", name);
-
+        link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
         let out = Command::new(&exe).output().expect("run binary");
         assert!(out.status.success(), "{}: binary failed", name);
         let stderr = String::from_utf8_lossy(&out.stderr);
@@ -602,15 +586,7 @@ fn strvec_is_sanitizer_clean() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .args(["-fsanitize=address"])
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang failed");
+    link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
@@ -639,19 +615,11 @@ fn vec_field_adt_is_sanitizer_clean() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .args(["-fsanitize=address"])
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang failed");
+    link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
+    assert_eq!(stdout_of(&out), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("AddressSanitizer"),
@@ -677,19 +645,11 @@ fn moved_param_return_is_sanitizer_clean_without_opt() {
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
 
-    let cc = Command::new("clang")
-        .args(["-fsanitize=address"])
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang failed");
+    link_ir(&out_ll, &rt, &exe, &["-fsanitize=address"]);
 
     let out = Command::new(&exe).output().expect("run binary");
     assert!(out.status.success(), "binary failed");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "41\n");
+    assert_eq!(stdout_of(&out), "41\n");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         !stderr.contains("AddressSanitizer"),
@@ -788,17 +748,10 @@ fn parallel_reduce_matches_sequential() {
             .status()
             .expect("cato compile");
         assert!(status.success(), "cato compile failed");
-        let cc = Command::new("clang")
-            .arg(&out_ll)
-            .arg(&rt)
-            .arg("-o")
-            .arg(&exe)
-            .status()
-            .expect("clang link");
-        assert!(cc.success(), "clang link failed");
+        link_ir(&out_ll, &rt, &exe, &[]);
         let out = Command::new(&exe).output().expect("run binary");
         assert!(out.status.success(), "binary failed at {} threads", t);
-        outputs.push(String::from_utf8_lossy(&out.stdout).to_string());
+        outputs.push(stdout_of(&out).to_string());
     }
     // Sequential first line and every parallel line agree at all counts.
     for o in &outputs[1..] {
@@ -845,7 +798,7 @@ fn repl_evaluates_forms() {
         .write_all(b"(defn sq [x :- i64] :- i64 (* x x))\n(sq 12)\n(let [[a b] (vec-i64 3 4)] (+ a b))\n:quit\n")
         .expect("write repl");
     let out = child.wait_with_output().expect("repl output");
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = stdout_of(&out);
     assert!(stdout.contains("#'user/sq"), "got: {}", stdout);
     assert!(
         stdout.contains("user=> "),
@@ -887,7 +840,7 @@ fn do_block_yields_its_last_value_natively() {
          (defn main [] (let [a (args)] (exit (d (get a 0 \"\")))))\n",
         &[],
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "x\n");
+    assert_eq!(stdout_of(&out), "x\n");
     assert_eq!(
         out.status.code(),
         Some(2),
@@ -911,7 +864,7 @@ fn let_rebinding_an_owned_str_vec_frees_once() {
         "ASAN run failed:\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "4\n");
+    assert_eq!(stdout_of(&out), "4\n");
 }
 
 // The reduce accumulator's type comes from the init's real type, not its
@@ -991,15 +944,7 @@ fn loop_drops_are_sanitizer_clean() {
         .status()
         .expect("cato compile");
     assert!(status.success(), "cato compile failed");
-    let cc = Command::new("clang")
-        .args(["-O0", "-fsanitize=address", "-w"])
-        .arg(&out_ll)
-        .arg(&rt)
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("clang link");
-    assert!(cc.success(), "clang failed");
+    link_ir(&out_ll, &rt, &exe, &["-O0", "-fsanitize=address", "-w"]);
     let out = Command::new(&exe).output().expect("run binary");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
@@ -1008,7 +953,7 @@ fn loop_drops_are_sanitizer_clean() {
         stderr
     );
     assert!(out.status.success(), "binary failed");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "345800\n21\n");
+    assert_eq!(stdout_of(&out), "345800\n21\n");
 }
 
 // ...and leak-free: 200 rounds of every shape leave nothing live at exit
