@@ -21,6 +21,9 @@ jobs:
       - name: Install LLVM (Windows)
         if: runner.os == 'Windows'
         run: choco install llvm -y
+      - name: Set up MSVC / Windows SDK (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
       - run: cargo build --workspace
       - run: cargo test --workspace
 
