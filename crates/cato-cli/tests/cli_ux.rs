@@ -203,7 +203,11 @@ fn check_mode_summarizes_on_stderr() {
         .arg(&bin)
         .output()
         .expect("run cato");
-    assert!(out.status.success());
+    assert!(
+        out.status.success(),
+        "compile must succeed; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(out.stdout.is_empty(), "stdout must stay clean");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("compiled"), "got: {}", stderr);
