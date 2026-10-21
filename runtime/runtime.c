@@ -641,6 +641,17 @@ char *cato_getenv(const char *name) {
 #endif
 }
 
+/* Whether the runtime was built for a Linux host. The driver needs this to
+   decide if an ELF link must name libm: glibc keeps math symbols out of
+   libc, while libSystem and the Windows CRT already carry them. */
+bool cato_host_linux(void) {
+#if defined(__linux__)
+    return true;
+#else
+    return false;
+#endif
+}
+
 bool cato_file_exists(const char *path) {
 #if defined(__wasm__)
     (void)path;

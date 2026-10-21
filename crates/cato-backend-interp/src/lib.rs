@@ -263,6 +263,9 @@ impl<'p> Interpreter<'p> {
                     return Ok(Value::Bool(std::path::Path::new(p.as_str()).exists()));
                 }
             }
+            "cato-host-linux" => {
+                return Ok(Value::Bool(cfg!(target_os = "linux")));
+            }
             "stdin-getline" => {
                 let mut line = String::new();
                 let n = std::io::stdin().read_line(&mut line).unwrap_or(0);

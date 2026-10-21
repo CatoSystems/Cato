@@ -1,6 +1,7 @@
 (ns cato.lib.driver)
 
 (extern cato-getenv [name :- str] :- (own str))
+(extern cato-host-linux [] :- bool)
 (extern cato-file-exists [path :- str] :- bool)
 (extern cato-spawn [argv :- (Vector str)] :- i64)
 (extern cato-stderr [s :- str] :- i64)
@@ -158,6 +159,19 @@
 ; whose key appears in the passthrough is dropped (the passthrough wins).
 ; -Wno-override-module: kernel IR carries no target triple, so clang would
 ; otherwise warn on every link.
+
+; Does this target's link need libm named explicitly? glibc splits the math
+; symbols out of libc, while libSystem and the Windows CRT carry them. A
+; cross triple answers on its own; the native target falls back to the host
+; the runtime was built for.
+(defn linux-triple? [triple :- str] :- bool
+  (or (= triple "x86_64-unknown-linux-gnu")
+      (= triple "aarch64-unknown-linux-gnu")))
+
+(defn libm-required [target-i :- i64] :- bool
+  (let [triple (target-triple target-i)]
+    (if (= triple "") (cato-host-linux)
+      (linux-triple? triple))))
 (defn parsed-opts [acc :- (Vector str) target-i :- i64 opt :- i64 debug :- i64 asan :- i64 rtlib :- str] :- (Vector str)
   (let [v acc
         v (conj v (str "-O" opt))
@@ -189,5 +203,6 @@
         with-pass (append-all (clone rest) 0 (count (clone rest)) filtered)
         with-ll (conj with-pass ll)
         with-rt (conj with-ll rt)
-        with-o (conj with-rt "-o")]
+        with-lm (if (libm-required target-i) (conj with-rt "-lm") with-rt)
+        with-o (conj with-lm "-o")]
     (conj with-o out)))
