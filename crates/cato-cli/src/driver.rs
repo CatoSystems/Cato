@@ -232,13 +232,14 @@ pub fn link_invocations(
             args.extend(opts.passthrough.iter().cloned());
             args.push(ll.display().to_string());
             args.push(runtime.display().to_string());
-            args.push("-o".to_string());
-            args.push(out.display().to_string());
             // glibc keeps math symbols in libm; libSystem and the Windows
-            // CRT already carry them, so only ELF links need -lm.
+            // CRT already carry them, so only ELF links need -lm. It sits
+            // with the inputs (before -o) so "-o out last" still holds.
             if libm_required(spec.triple) {
                 args.push("-lm".to_string());
             }
+            args.push("-o".to_string());
+            args.push(out.display().to_string());
             vec![Invocation {
                 program,
                 args,
@@ -321,17 +322,11 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].program, "clang");
         assert_eq!(v[0].what, "link");
-        let mut expected = vec![
-            "-O2",
-            "-rtlib=compiler-rt",
-            "a.ll",
-            "runtime/runtime.c",
-            "-o",
-            "a",
-        ];
+        let mut expected = vec!["-O2", "-rtlib=compiler-rt", "a.ll", "runtime/runtime.c"];
         if cfg!(target_os = "linux") {
             expected.push("-lm");
         }
+        expected.extend(["-o", "a"]);
         assert_eq!(v[0].args, expected);
     }
 

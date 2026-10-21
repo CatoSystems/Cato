@@ -158,6 +158,16 @@ fn run_cc(program: &str, args: &[String], what: &str) -> Result<(), String> {
             format!("cannot run C compiler '{program}' for the {what} step: {e}")
         }
     })?;
+    // Some platforms report a missing program as a successful spawn that
+    // exits 127 (command not found) or 126 (not executable) instead of an
+    // NotFound io error, so the actionable message must fire on the status,
+    // not only on the error.
+    if matches!(result.status.code(), Some(126) | Some(127)) {
+        return Err(format!(
+            "cannot run C compiler '{program}' for the {what} step: not found \
+             (pass --cc <path> or set CATO_CC)"
+        ));
+    }
     if !result.status.success() {
         let stderr = String::from_utf8_lossy(&result.stderr);
         let stderr = stderr.trim_end();
