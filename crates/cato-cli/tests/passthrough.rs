@@ -44,7 +44,7 @@ fn compile_capture(src: &std::path::Path, extra: &[&str]) -> Vec<String> {
         N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let out = root().join("target/fake_out");
-    let status = Command::new(root().join("target/debug/cato"))
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
         .arg("compile")
         .arg(src)
         .arg("-o")
@@ -129,7 +129,7 @@ fn runtime_flag_overrides_default_runtime_source() {
     let cc = fake_cc();
     let cap = root().join("target/fake_cc_argv_runtime.txt");
     let out = root().join("target/fake_out");
-    let status = Command::new(root().join("target/debug/cato"))
+    let status = Command::new(env!("CARGO_BIN_EXE_cato"))
         .arg("compile")
         .arg(&src)
         .arg("-o")
@@ -169,7 +169,7 @@ fn cross_target_probe_rejects_unsupported_cc() {
 
     let src = root().join("examples/slice.cato");
     let out = root().join("target/fake_out");
-    let result = Command::new(root().join("target/debug/cato"))
+    let result = Command::new(env!("CARGO_BIN_EXE_cato"))
         .arg("compile")
         .arg(&src)
         .arg("-o")
