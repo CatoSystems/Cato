@@ -1,0 +1,147 @@
+name: release
+# Tag push (v*) publishes a GitHub Release; workflow_dispatch is a dry run:
+# it builds and packages every target but skips the release job.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Gate: the tag must match the Cargo workspace version and the
+  # hand-maintained changelog must have a section for it, then test.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Resolve version
+        shell: bash
+        run: |
+          CARGO_VERSION="$(awk -F'"' '/^\[workspace\.package\]/{p=1; next} /^\[/{p=0} p && /^version =/{print $2; exit}' Cargo.toml)"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$CARGO_VERSION"
+          fi
+          {
+            echo "VERSION=$VERSION"
+            echo "CARGO_VERSION=$CARGO_VERSION"
+          } >> "$GITHUB_ENV"
+      - name: Tag must match Cargo workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if [[ "$VERSION" != "$CARGO_VERSION" ]]; then
+            echo "tag v$VERSION does not match Cargo workspace version $CARGO_VERSION" >&2
+            exit 1
+          fi
+      - name: Changelog must have a section for this version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          if ! awk -v ver="## [$VERSION]" 'index($0, ver) == 1 {found=1} END {exit !found}' CHANGELOG.md; then
+            echo "CHANGELOG.md has no '## [$VERSION]' section (changelog is hand-maintained)" >&2
+            exit 1
+          fi
+      - run: cargo test --workspace
+
+  # One native build per release target. Linux uses musl targets (fully
+  # static executables); Windows links the CRT statically; macOS cannot
+  # be fully static (Apple only allows linking libSystem).
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            musl: true
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            musl: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(awk -F'"' '/^\[workspace\.package\]/{p=1; next} /^\[/{p=0} p && /^version =/{print $2; exit}' Cargo.toml)"
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Install musl tools
+        if: matrix.musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Build release binary
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo build --release -p cato-cli --target ${{ matrix.target }}
+      - name: Package
+        shell: bash
+        run: |
+          bin="target/${{ matrix.target }}/release/cato"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then bin="$bin.exe"; fi
+          tar -czf "cato-$VERSION-${{ matrix.target }}.tar.gz" -C "$(dirname "$bin")" "$(basename "$bin")"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cato-${{ matrix.target }}
+          path: cato-*.tar.gz
+          if-no-files-found: error
+
+  # Publishes the GitHub Release with the hand-maintained changelog
+  # section as notes, all tarballs, and a SHA-256 checksum file.
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Extract changelog section for release notes
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="## [$VERSION]" '
+            index($0, ver) == 1 {f=1; next}
+            /^## \[/ && f {exit}
+            f {print}
+          ' CHANGELOG.md > notes.md
+          if [[ ! -s notes.md ]]; then
+            echo "CHANGELOG.md has no content under '## [$VERSION]'" >&2
+            exit 1
+          fi
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum -- *.tar.gz > SHA256SUMS.txt
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Cato ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            dist/*.tar.gz dist/SHA256SUMS.txt
