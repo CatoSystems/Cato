@@ -5,7 +5,7 @@
 //! `align 8` loop data, `--fast` vectorization metadata.
 
 mod llvm;
-pub use llvm::{emit_module, emit_module_fast, LlvmBackend, Target};
+pub use llvm::{LlvmBackend, Target, emit_module, emit_module_fast};
 
 /// Attach a function attribute to every definition in emitted IR (e.g.
 /// `sanitize_address`). Clang instruments only the `.ll` functions that

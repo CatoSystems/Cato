@@ -638,7 +638,7 @@ pub(crate) use generics::*;
 pub(crate) use lower::*;
 pub(crate) use match_lower::*;
 pub(crate) use mono::*;
-pub use numeric::{eval_int_binop, Narrow};
+pub use numeric::{Narrow, eval_int_binop};
 pub(crate) use ownership::plan_drops;
 pub use ownership::{compute_alias_ret, tail_may_alias};
 pub(crate) use parse::*;
@@ -874,10 +874,10 @@ fn cycle_boxed(adts: &[AdtDef]) -> Vec<bool> {
     for (t, d) in adts.iter().enumerate() {
         for (_, fields) in &d.variants {
             for f in fields {
-                if let Ty::Adt(u) = f {
-                    if (*u as usize) < n {
-                        edges[t].push(*u);
-                    }
+                if let Ty::Adt(u) = f
+                    && (*u as usize) < n
+                {
+                    edges[t].push(*u);
                 }
             }
         }

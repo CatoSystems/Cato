@@ -21,7 +21,7 @@ pub(crate) fn subst_ty(ty: Ty, subs: &[Option<Ty>], ctx: &Ctx) -> Result<Ty, Str
                     return Err(format!(
                         "unresolved vector element parameter {} ({:?})",
                         i, other
-                    ))
+                    ));
                 }
             },
             other => other,

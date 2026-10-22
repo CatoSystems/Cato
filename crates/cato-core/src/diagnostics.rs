@@ -293,10 +293,10 @@ fn occ_walk(
                             if matches!(pairs.get(i), Some((Expr::LitSym(t), _)) if t == ":-") {
                                 i += 2; // `:- type`
                             }
-                            if let Some((v, vn)) = pairs.get(i) {
-                                if let Some(at) = occ_walk(v, vn, sym, left) {
-                                    return Some(at);
-                                }
+                            if let Some((v, vn)) = pairs.get(i)
+                                && let Some(at) = occ_walk(v, vn, sym, left)
+                            {
+                                return Some(at);
                             }
                             i += 1;
                         }
@@ -441,24 +441,78 @@ pub fn classify(msg: &str) -> &'static str {
 }
 
 const EXPLAIN: &[(&str, &str)] = &[
-    ("E000", "Uncategorized error.\n\nThe message did not match a known diagnostic class.\nPlease report this — it should have a code."),
-    ("E001", "Unbalanced delimiter.\n\nA closing `)` / `]` / `}` did not match the innermost\nopening delimiter. Check nesting and delimiter kind."),
-    ("E002", "Unterminated string.\n\nA string literal was opened with `\"` but the file (or line)\nended before the closing quote. Escape inner quotes as `\\\"`."),
-    ("E003", "Map literal missing a value.\n\n`{k1 v1 k2 v2}` requires an even number of forms: each key\nmust be immediately followed by its value."),
-    ("E004", "Unclosed delimiter.\n\nThe file ended while a `(`, `[` or `{` was still open."),
-    ("E101", "Macro expansion error.\n\nA macro (`when`, `cond`, `if-let`, `->`, ...) received the\nwrong shape. See the macro's expected form in the message."),
-    ("E201", "Arity error.\n\nA form received the wrong number of operands. Builtins fix\ntheir arity (`(+ a b)`, `(count xs)`, ...); check the call."),
-    ("E202", "Invalid form or argument type.\n\nThe form is shaped right but an operand has the wrong type\n(e.g. `conj` on a scalar), or the form itself is malformed."),
-    ("E301", "Use of moved value.\n\nNon-Copy values (vectors, ADTs, maps) move when passed to an\nowned parameter or bound again. After the move the binding is\ndead. Clone it first (`(clone x)`) or borrow it (`&x`)."),
-    ("E401", "Non-exhaustive match.\n\nA `match` over an ADT did not cover every variant and had no\n`_` wildcard arm. Add the missing variants or a default arm."),
-    ("E203", "Ambiguous generic-function dispatch.\n\nTwo applicable methods are incomparable in specificity\n(e.g. `Circle × Shape` and `Shape × Circle`): neither is more\nspecific, so the method to run is undecidable. Add a method for\nthe exact combination (e.g. `Circle × Circle`)."),
-    ("E204", "Uncovered generic-function dispatch.\n\nNo method applies to some type combination at a call site —\na variant combination, or a builtin/collection type like\n`(Vector str)`. Add a method for the missing type or a default\nmethod specializing the whole ADT."),
-    ("E205", "Unreachable or duplicate generic-function method.\n\nA method can never be selected because a more specific method\ncovers every input it applies to, or two methods share the same\nspecializers. Remove one."),
-    ("E206", "Unbound variable.\n\nA symbol in value position has no binding in scope: a typo, or\nuse before the binding. Every name must be introduced by a\n`let`, a parameter, a loop binder, or a match binder before use."),
-    ("E207", "Unknown function.\n\nThe called name is not a `defn`, `extern`, builtin, generic,\nconstructor, or a closure binding. Check the spelling, or add\nthe `defn`."),
-    ("E208", "Unknown type name.\n\nAn annotation named a type that is not a builtin, a declared\n`deftype`, or a type parameter. Type parameters are introduced\nby uppercase spelling (e.g. `T`) in a `defn` annotation; a\nlowercase unknown name is treated as a typo."),
-    ("E303", "Move of a borrowed value.\n\n`&` / `&!` parameters do not own their value — the caller does.\nPassing one to an owned parameter (or `conj`-ing, capturing, or\ndropping it) would let the callee free a buffer the caller still\nreads. Clone it first, or take the parameter by value."),
-    ("E304", "Borrowed return requires a borrowed value.\n\nA `&T` function may only return a value derived from its `&`\nparameters, never an owned or freshly-cloned value."),
+    (
+        "E000",
+        "Uncategorized error.\n\nThe message did not match a known diagnostic class.\nPlease report this — it should have a code.",
+    ),
+    (
+        "E001",
+        "Unbalanced delimiter.\n\nA closing `)` / `]` / `}` did not match the innermost\nopening delimiter. Check nesting and delimiter kind.",
+    ),
+    (
+        "E002",
+        "Unterminated string.\n\nA string literal was opened with `\"` but the file (or line)\nended before the closing quote. Escape inner quotes as `\\\"`.",
+    ),
+    (
+        "E003",
+        "Map literal missing a value.\n\n`{k1 v1 k2 v2}` requires an even number of forms: each key\nmust be immediately followed by its value.",
+    ),
+    (
+        "E004",
+        "Unclosed delimiter.\n\nThe file ended while a `(`, `[` or `{` was still open.",
+    ),
+    (
+        "E101",
+        "Macro expansion error.\n\nA macro (`when`, `cond`, `if-let`, `->`, ...) received the\nwrong shape. See the macro's expected form in the message.",
+    ),
+    (
+        "E201",
+        "Arity error.\n\nA form received the wrong number of operands. Builtins fix\ntheir arity (`(+ a b)`, `(count xs)`, ...); check the call.",
+    ),
+    (
+        "E202",
+        "Invalid form or argument type.\n\nThe form is shaped right but an operand has the wrong type\n(e.g. `conj` on a scalar), or the form itself is malformed.",
+    ),
+    (
+        "E301",
+        "Use of moved value.\n\nNon-Copy values (vectors, ADTs, maps) move when passed to an\nowned parameter or bound again. After the move the binding is\ndead. Clone it first (`(clone x)`) or borrow it (`&x`).",
+    ),
+    (
+        "E401",
+        "Non-exhaustive match.\n\nA `match` over an ADT did not cover every variant and had no\n`_` wildcard arm. Add the missing variants or a default arm.",
+    ),
+    (
+        "E203",
+        "Ambiguous generic-function dispatch.\n\nTwo applicable methods are incomparable in specificity\n(e.g. `Circle × Shape` and `Shape × Circle`): neither is more\nspecific, so the method to run is undecidable. Add a method for\nthe exact combination (e.g. `Circle × Circle`).",
+    ),
+    (
+        "E204",
+        "Uncovered generic-function dispatch.\n\nNo method applies to some type combination at a call site —\na variant combination, or a builtin/collection type like\n`(Vector str)`. Add a method for the missing type or a default\nmethod specializing the whole ADT.",
+    ),
+    (
+        "E205",
+        "Unreachable or duplicate generic-function method.\n\nA method can never be selected because a more specific method\ncovers every input it applies to, or two methods share the same\nspecializers. Remove one.",
+    ),
+    (
+        "E206",
+        "Unbound variable.\n\nA symbol in value position has no binding in scope: a typo, or\nuse before the binding. Every name must be introduced by a\n`let`, a parameter, a loop binder, or a match binder before use.",
+    ),
+    (
+        "E207",
+        "Unknown function.\n\nThe called name is not a `defn`, `extern`, builtin, generic,\nconstructor, or a closure binding. Check the spelling, or add\nthe `defn`.",
+    ),
+    (
+        "E208",
+        "Unknown type name.\n\nAn annotation named a type that is not a builtin, a declared\n`deftype`, or a type parameter. Type parameters are introduced\nby uppercase spelling (e.g. `T`) in a `defn` annotation; a\nlowercase unknown name is treated as a typo.",
+    ),
+    (
+        "E303",
+        "Move of a borrowed value.\n\n`&` / `&!` parameters do not own their value — the caller does.\nPassing one to an owned parameter (or `conj`-ing, capturing, or\ndropping it) would let the callee free a buffer the caller still\nreads. Clone it first, or take the parameter by value.",
+    ),
+    (
+        "E304",
+        "Borrowed return requires a borrowed value.\n\nA `&T` function may only return a value derived from its `&`\nparameters, never an owned or freshly-cloned value.",
+    ),
 ];
 
 /// Long-form documentation for a diagnostic code.

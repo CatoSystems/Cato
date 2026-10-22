@@ -217,7 +217,7 @@ pub(crate) fn lower_get(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
             return Err(format!(
                 "get source must be a vector or map, got {:?}",
                 other
-            ))
+            ));
         }
     };
     let idx = lower(&items[2], env, ctx)?;
@@ -288,7 +288,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                     return Err(format!(
                         "destructured binding source must be a vector, got {:?}",
                         other
-                    ))
+                    ));
                 }
             };
             let tmp = format!("$d{}", ctx.inst.borrow().cache.len() + resolved.len());
@@ -308,7 +308,7 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
                         return Err(format!(
                             "destructuring supports i64/f64 vectors, got {:?}",
                             other
-                        ))
+                        ));
                     }
                 };
                 let getv = HExpr::Get {
@@ -329,32 +329,32 @@ pub(crate) fn lower_let(items: &[Expr], env: &Env, ctx: &Ctx) -> Result<HExpr, S
         };
         // Optional type ascription: [x :- ty value] — pins the binding's
         // type and lets nullary ctors of generic ADTs (`(None)`) infer.
-        if let Some(Expr::LitSym(sep)) = binds.get(i + 1) {
-            if sep == ":-" {
-                let Some(ann) = binds.get(i + 2) else {
-                    return Err(format!("let binding {} expects a type after :-", name));
-                };
-                let Some(value_form) = binds.get(i + 3) else {
-                    return Err(format!(
-                        "let binding {} expects a value after the type",
-                        name
-                    ));
-                };
-                let t = resolve_ann_ty(ann, ctx)?;
-                let value = lower_expect(value_form, &child, ctx, Some(t))?;
-                let vt = ty_of(&value, &child, ctx);
-                let empty_vec = matches!((&t, &value), (Ty::Vec(_), HExpr::VecLit(crate::hir::VLit::I64(vs))) if vs.is_empty());
-                if vt != t && !(t == Ty::F64 && vt == Ty::I64) && !empty_vec {
-                    return Err(format!(
-                        "let binding {} ascribed {:?} but the value is {:?}",
-                        name, t, vt
-                    ));
-                }
-                child.insert(name.clone(), t);
-                resolved.push((name.clone(), value, t));
-                i += 4;
-                continue;
+        if let Some(Expr::LitSym(sep)) = binds.get(i + 1)
+            && sep == ":-"
+        {
+            let Some(ann) = binds.get(i + 2) else {
+                return Err(format!("let binding {} expects a type after :-", name));
+            };
+            let Some(value_form) = binds.get(i + 3) else {
+                return Err(format!(
+                    "let binding {} expects a value after the type",
+                    name
+                ));
+            };
+            let t = resolve_ann_ty(ann, ctx)?;
+            let value = lower_expect(value_form, &child, ctx, Some(t))?;
+            let vt = ty_of(&value, &child, ctx);
+            let empty_vec = matches!((&t, &value), (Ty::Vec(_), HExpr::VecLit(crate::hir::VLit::I64(vs))) if vs.is_empty());
+            if vt != t && !(t == Ty::F64 && vt == Ty::I64) && !empty_vec {
+                return Err(format!(
+                    "let binding {} ascribed {:?} but the value is {:?}",
+                    name, t, vt
+                ));
             }
+            child.insert(name.clone(), t);
+            resolved.push((name.clone(), value, t));
+            i += 4;
+            continue;
         }
         let value = lower(&binds[i + 1], &child, ctx)?;
         let t = ty_of(&value, &child, ctx);

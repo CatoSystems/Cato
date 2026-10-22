@@ -488,12 +488,11 @@ fn word_at(text: &str, off: usize) -> Option<String> {
 fn find_defn(text: &str, name: &str) -> Option<(usize, String)> {
     for (ln, line) in text.lines().enumerate() {
         let t = line.trim_start();
-        if let Some(rest) = t.strip_prefix("(defn ") {
-            if let Some(sym) = rest.split_whitespace().next() {
-                if sym == name {
-                    return Some((ln, t.to_string()));
-                }
-            }
+        if let Some(rest) = t.strip_prefix("(defn ")
+            && let Some(sym) = rest.split_whitespace().next()
+            && sym == name
+        {
+            return Some((ln, t.to_string()));
         }
     }
     None

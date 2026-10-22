@@ -16,7 +16,7 @@ pub fn link(_flavor: Flavor, _argv: &[&CStr]) -> Result<(), String> {
 }
 
 #[cfg(feature = "link")]
-extern "C" {
+unsafe extern "C" {
     fn cato_lld_link(
         flavor: i32,
         argv: *const *const c_char,

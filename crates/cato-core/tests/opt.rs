@@ -9,7 +9,7 @@
 //! LLVM integration tests, which run with optimization on by default.
 
 use cato_core::hir::{BinOp, HExpr};
-use cato_core::{compile_named_with, Program};
+use cato_core::{Program, compile_named_with};
 
 fn compile_opt(src: &str, optimize: bool) -> Program {
     compile_named_with("opt_test.cato", src, optimize).expect("compile")

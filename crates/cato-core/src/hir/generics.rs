@@ -236,15 +236,15 @@ pub(crate) fn collect_generics(
             // dispatch domains come from the methods.
             let mut ret = None;
             let mut next = 3;
-            if let Some(Expr::LitSym(sep)) = items.get(3) {
-                if sep == ":-" {
-                    match items.get(4) {
-                        Some(Expr::LitSym(t)) => {
-                            ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
-                            next = 5;
-                        }
-                        _ => return Err(bad("defgeneric :- expects a return type")),
+            if let Some(Expr::LitSym(sep)) = items.get(3)
+                && sep == ":-"
+            {
+                match items.get(4) {
+                    Some(Expr::LitSym(t)) => {
+                        ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
+                        next = 5;
                     }
+                    _ => return Err(bad("defgeneric :- expects a return type")),
                 }
             }
             if items.len() > next {
@@ -287,15 +287,15 @@ pub(crate) fn collect_generics(
             };
             let mut si = 3;
             let mut ret = None;
-            if let Some(Expr::LitSym(sep)) = items.get(3) {
-                if sep == ":-" {
-                    match items.get(4) {
-                        Some(Expr::LitSym(t)) => {
-                            ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
-                            si = 5;
-                        }
-                        _ => return Err(bad("defmethod :- expects a return type")),
+            if let Some(Expr::LitSym(sep)) = items.get(3)
+                && sep == ":-"
+            {
+                match items.get(4) {
+                    Some(Expr::LitSym(t)) => {
+                        ret = Some(parse_ty_sym(t, tcx.adt_by_name, &mut Vec::new())?);
+                        si = 5;
                     }
+                    _ => return Err(bad("defmethod :- expects a return type")),
                 }
             }
             let body = if items.len() - si == 1 {
@@ -376,7 +376,7 @@ pub(crate) fn collect_generics(
                                             return Err(bad(&format!(
                                                 "unknown specializer type {} (builtin scalars, str, bool, map, set, concrete vectors, ADTs and their variants only)",
                                                 tyname
-                                            )))
+                                            )));
                                         }
                                     }
                                 }
@@ -405,13 +405,13 @@ pub(crate) fn collect_generics(
                     sp.len()
                 )));
             }
-            if let (Some(gr), Some(mr)) = (g.ret, ret) {
-                if gr != mr {
-                    return Err(bad(&format!(
-                        "defmethod {} returns {:?} but the generic declares {:?}",
-                        name, mr, gr
-                    )));
-                }
+            if let (Some(gr), Some(mr)) = (g.ret, ret)
+                && gr != mr
+            {
+                return Err(bad(&format!(
+                    "defmethod {} returns {:?} but the generic declares {:?}",
+                    name, mr, gr
+                )));
             }
             g.methods.push(MethodDef {
                 span: *span,
@@ -616,14 +616,14 @@ pub(crate) fn generic_call(
                     return Err(format!(
                         "generic {} cannot dispatch on a (Vector T) — methods take concrete vector types",
                         name
-                    ))
+                    ));
                 }
                 t if is_dispatchable_ty(*t) => {}
                 other => {
                     return Err(format!(
                         "generic {} cannot dispatch on {:?} (builtin scalars, str, bool, map, set, vectors and ADTs only)",
                         name, other
-                    ))
+                    ));
                 }
             }
         }
@@ -709,7 +709,11 @@ pub(crate) fn generic_call(
             return Err(format!(
                 "ambiguous call to {} at ({}): {} are both applicable and neither is more specific — add a more specific method",
                 name,
-                arg_tys.iter().map(|t| ty_display(*t)).collect::<Vec<_>>().join(", "),
+                arg_tys
+                    .iter()
+                    .map(|t| ty_display(*t))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 comps.join(" and ")
             ));
         }
@@ -835,19 +839,19 @@ pub(crate) fn generic_call(
                 return Err(format!(
                     "methods of {} disagree on return type: {:?} vs {:?}",
                     name, prev, r
-                ))
+                ));
             }
             _ => {}
         }
     }
     let ret = ret.expect("chosen methods have return types");
-    if let Some(gr) = declared_ret {
-        if gr != ret {
-            return Err(format!(
-                "methods of {} return {:?} but the generic declares {:?}",
-                name, ret, gr
-            ));
-        }
+    if let Some(gr) = declared_ret
+        && gr != ret
+    {
+        return Err(format!(
+            "methods of {} return {:?} but the generic declares {:?}",
+            name, ret, gr
+        ));
     }
 
     // Synthesize (or reuse) the dispatch defn for this signature.
@@ -1048,13 +1052,13 @@ fn resolve_method_instance(
             ty: ret,
         };
     }
-    if let Some(d) = declared {
-        if d != ret {
-            return Err(format!(
-                "method {} of {} returns {:?} but declares {:?}",
-                hidden, name, ret, d
-            ));
-        }
+    if let Some(d) = declared
+        && d != ret
+    {
+        return Err(format!(
+            "method {} of {} returns {:?} but declares {:?}",
+            hidden, name, ret, d
+        ));
     }
     ctx.gens.borrow_mut().extra.push(Defn {
         name: hidden.clone(),

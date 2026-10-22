@@ -1,7 +1,7 @@
 //! Lossless lexer contract: every byte of input becomes some token's
 //! text (concat identity), trivia is retained, and errors carry offsets.
 
-use cato_fmt::lexer::{lex, TokKind};
+use cato_fmt::lexer::{TokKind, lex};
 
 fn fixtures() -> Vec<std::path::PathBuf> {
     let mut v = Vec::new();

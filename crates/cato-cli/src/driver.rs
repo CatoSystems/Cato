@@ -190,10 +190,10 @@ fn parsed_opts(opts: &LinkOpts, triple: Option<&str>) -> Vec<String> {
     if !keys.iter().any(|k| k == "rtlib") {
         out.push(format!("-rtlib={}", opts.rtlib));
     }
-    if let Some(t) = triple {
-        if !keys.iter().any(|k| k == "target") {
-            out.push(format!("--target={t}"));
-        }
+    if let Some(t) = triple
+        && !keys.iter().any(|k| k == "target")
+    {
+        out.push(format!("--target={t}"));
     }
     out
 }
@@ -492,11 +492,19 @@ mod tests {
     #[test]
     fn resolve_runtime_missing_cat_runtime_errors() {
         let old = std::env::var("CATO_RUNTIME").ok();
-        std::env::set_var("CATO_RUNTIME", "/definitely/missing/runtime.c");
+        // SAFETY: `CATO_RUNTIME` is process-global, and this is the only
+        // test in the binary that reads or writes it, so the mutation
+        // cannot race another thread.
+        unsafe {
+            std::env::set_var("CATO_RUNTIME", "/definitely/missing/runtime.c");
+        }
         let r = resolve_runtime();
-        match old {
-            Some(v) => std::env::set_var("CATO_RUNTIME", v),
-            None => std::env::remove_var("CATO_RUNTIME"),
+        // SAFETY: restore the value read before the mutation above.
+        unsafe {
+            match old {
+                Some(v) => std::env::set_var("CATO_RUNTIME", v),
+                None => std::env::remove_var("CATO_RUNTIME"),
+            }
         }
         let err = r.expect_err("missing CATO_RUNTIME must error");
         assert!(err.contains("does not exist"), "err: {err}");

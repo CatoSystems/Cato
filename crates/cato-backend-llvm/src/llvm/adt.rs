@@ -248,27 +248,27 @@ fn emit_exit_free_parts(
     if !mdl.adt_owns(ai) {
         return;
     }
-    if let Some(vi) = variant {
-        if !skip.is_empty() {
-            let def = mdl.adts[ai as usize].clone();
-            let fields = def.variants[vi as usize].1.clone();
-            let offsets = mdl.adt_field_offsets(ai)[vi as usize].clone();
-            for (k, (binder, fty)) in binders.iter().zip(fields.iter()).enumerate() {
-                if !skip.contains(binder) {
-                    continue;
-                }
-                let n = cato_core::field_slot_count(fty, &mdl.boxed, &mdl.adts);
-                for s in 0..n {
-                    let t_f = c.temp();
-                    c.line(&format!(
-                        "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
-                        t_f,
-                        name,
-                        scrut_ptr,
-                        offsets[k] + s
-                    ));
-                    c.line(&format!("  store i64 0, ptr {}, align 8", t_f));
-                }
+    if let Some(vi) = variant
+        && !skip.is_empty()
+    {
+        let def = mdl.adts[ai as usize].clone();
+        let fields = def.variants[vi as usize].1.clone();
+        let offsets = mdl.adt_field_offsets(ai)[vi as usize].clone();
+        for (k, (binder, fty)) in binders.iter().zip(fields.iter()).enumerate() {
+            if !skip.contains(binder) {
+                continue;
+            }
+            let n = cato_core::field_slot_count(fty, &mdl.boxed, &mdl.adts);
+            for s in 0..n {
+                let t_f = c.temp();
+                c.line(&format!(
+                    "  {} = getelementptr inbounds {}, ptr {}, i32 0, i32 1, i32 {}",
+                    t_f,
+                    name,
+                    scrut_ptr,
+                    offsets[k] + s
+                ));
+                c.line(&format!("  store i64 0, ptr {}, align 8", t_f));
             }
         }
     }

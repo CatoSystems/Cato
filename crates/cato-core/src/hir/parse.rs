@@ -42,32 +42,29 @@ pub(crate) fn parse_extern(
     let mut ret = Ty::I64;
     let mut ret_owned = false;
     let mut body_start = 3;
-    if items.len() > body_start + 1 {
-        if let Expr::LitSym(sep) = &items[body_start] {
-            if sep == ":-" {
-                // `:- (own T)`: the C side hands the result over (a
-                // `malloc`ed string or buffer the caller frees). A plain
-                // `:- T` result is borrowed and never freed by Cato.
-                let ann = &items[body_start + 1];
-                let inner = match ann {
-                    Expr::List(xs)
-                        if xs.len() == 2 && matches!(&xs[0], Expr::LitSym(h) if h == "own") =>
-                    {
-                        ret_owned = true;
-                        &xs[1]
-                    }
-                    other => other,
-                };
-                ret = parse_ty(inner, tcx, &mut ty_params, fnsigs)?;
-                if ret_owned && !matches!(ret, Ty::Str | Ty::Vec(_)) {
-                    return Err(format!(
-                        "extern {}: an (own T) result must be a str or a vector",
-                        name
-                    ));
-                }
-                body_start += 2;
+    if items.len() > body_start + 1
+        && let Expr::LitSym(sep) = &items[body_start]
+        && sep == ":-"
+    {
+        // `:- (own T)`: the C side hands the result over (a
+        // `malloc`ed string or buffer the caller frees). A plain
+        // `:- T` result is borrowed and never freed by Cato.
+        let ann = &items[body_start + 1];
+        let inner = match ann {
+            Expr::List(xs) if xs.len() == 2 && matches!(&xs[0], Expr::LitSym(h) if h == "own") => {
+                ret_owned = true;
+                &xs[1]
             }
+            other => other,
+        };
+        ret = parse_ty(inner, tcx, &mut ty_params, fnsigs)?;
+        if ret_owned && !matches!(ret, Ty::Str | Ty::Vec(_)) {
+            return Err(format!(
+                "extern {}: an (own T) result must be a str or a vector",
+                name
+            ));
         }
+        body_start += 2;
     }
     if items.len() > body_start {
         return Err("extern declarations take no body".into());
@@ -208,11 +205,7 @@ fn parse_field_ty(
                         "generic ADT {} needs type arguments in a field type — apply it to this deftype's parameters: ({} {})",
                         other,
                         other,
-                        params
-                            .iter()
-                            .map(|_| "...")
-                            .collect::<Vec<_>>()
-                            .join(" ")
+                        params.iter().map(|_| "...").collect::<Vec<_>>().join(" ")
                     )),
                     None => Err(format!(
                         "ADT field type must be i64, i32, f64, bool, str, a type parameter of this deftype, or a declared ADT name, got '{}'",
@@ -328,32 +321,31 @@ pub(crate) fn parse_raw(
     let mut body_start = 3;
     let mut ret = Ty::I64;
     let mut ret_borrowed = false;
-    if items.len() > body_start + 1 {
-        if let Expr::LitSym(sep) = &items[body_start] {
-            if sep == ":-" {
-                match &items[body_start + 1] {
-                    Expr::LitSym(ty_sym) => {
-                        let (b, rest) = split_borrow(ty_sym)?;
-                        if b == Borrow::Shared {
-                            if rest.is_empty() {
-                                return Err(
+    if items.len() > body_start + 1
+        && let Expr::LitSym(sep) = &items[body_start]
+        && sep == ":-"
+    {
+        match &items[body_start + 1] {
+            Expr::LitSym(ty_sym) => {
+                let (b, rest) = split_borrow(ty_sym)?;
+                if b == Borrow::Shared {
+                    if rest.is_empty() {
+                        return Err(
                                     "borrowed return must name a boxed ADT (write `:- &Name`, not `&(...)`) — borrowed return"
                                         .into(),
                                 );
-                            }
-                            ret_borrowed = true;
-                            ret = parse_ty_sym(rest, tcx.adt_by_name, &mut ty_params)?;
-                        } else {
-                            ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
-                        }
                     }
-                    _ => {
-                        ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
-                    }
+                    ret_borrowed = true;
+                    ret = parse_ty_sym(rest, tcx.adt_by_name, &mut ty_params)?;
+                } else {
+                    ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
                 }
-                body_start += 2;
+            }
+            _ => {
+                ret = parse_ty(&items[body_start + 1], tcx, &mut ty_params, fnsigs)?;
             }
         }
+        body_start += 2;
     }
 
     let body = if items.len() > body_start {
@@ -400,43 +392,42 @@ pub(crate) fn parse_params(
         let Expr::LitSym(name) = &params[i] else {
             return Err("param must be a symbol".into());
         };
-        if i + 2 < params.len() {
-            if let Expr::LitSym(sep) = &params[i + 1] {
-                if sep == ":-" {
-                    // The borrow sigil may be written on the param name
-                    // (`&x :- (Vector f64)`) or the annotation symbol
-                    // (`x :- &vec`). List annotations take the sigil from
-                    // the name position.
-                    let (name_borrow, bare) = split_borrow(name)?;
-                    // `x :- &(Vector u8)`: the reader splits the sigil off
-                    // a list annotation into its own `&` symbol.
-                    if matches!(&params[i + 2], Expr::LitSym(amp) if amp == "&") {
-                        let Some(list) = params.get(i + 3) else {
-                            return Err(format!("parameter '{}': `&` needs a type", name));
-                        };
-                        out.push((bare.to_string(), parse_ty(list, tcx, ty_params, fnsigs)?));
-                        borrows.push(Borrow::Shared);
-                        i += 4;
-                        continue;
-                    }
-                    let (ty_borrow, ty) = match &params[i + 2] {
-                        Expr::LitSym(ty_sym) => {
-                            let (b, rest) = split_borrow(ty_sym)?;
-                            (b, parse_ty_sym(rest, tcx.adt_by_name, ty_params)?)
-                        }
-                        other => (Borrow::Owned, parse_ty(other, tcx, ty_params, fnsigs)?),
-                    };
-                    let borrow = if name_borrow != Borrow::Owned {
-                        name_borrow
-                    } else {
-                        ty_borrow
-                    };
-                    out.push((bare.to_string(), ty));
-                    borrows.push(borrow);
-                    i += 3;
-                    continue;
-                }
+        if i + 2 < params.len()
+            && let Expr::LitSym(sep) = &params[i + 1]
+            && sep == ":-"
+        {
+            // The borrow sigil may be written on the param name
+            // (`&x :- (Vector f64)`) or the annotation symbol
+            // (`x :- &vec`). List annotations take the sigil from
+            // the name position.
+            let (name_borrow, bare) = split_borrow(name)?;
+            // `x :- &(Vector u8)`: the reader splits the sigil off
+            // a list annotation into its own `&` symbol.
+            if matches!(&params[i + 2], Expr::LitSym(amp) if amp == "&") {
+                let Some(list) = params.get(i + 3) else {
+                    return Err(format!("parameter '{}': `&` needs a type", name));
+                };
+                out.push((bare.to_string(), parse_ty(list, tcx, ty_params, fnsigs)?));
+                borrows.push(Borrow::Shared);
+                i += 4;
+                continue;
             }
+            let (ty_borrow, ty) = match &params[i + 2] {
+                Expr::LitSym(ty_sym) => {
+                    let (b, rest) = split_borrow(ty_sym)?;
+                    (b, parse_ty_sym(rest, tcx.adt_by_name, ty_params)?)
+                }
+                other => (Borrow::Owned, parse_ty(other, tcx, ty_params, fnsigs)?),
+            };
+            let borrow = if name_borrow != Borrow::Owned {
+                name_borrow
+            } else {
+                ty_borrow
+            };
+            out.push((bare.to_string(), ty));
+            borrows.push(borrow);
+            i += 3;
+            continue;
         }
         return Err(format!(
             "function parameter '{}' must have a type annotation (param :- ty)",

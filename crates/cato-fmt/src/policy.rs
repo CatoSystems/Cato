@@ -364,14 +364,13 @@ fn list_to_doc(n: &Node) -> Doc {
         return open_close_text(n);
     }
     let items = collect_items(&n.kids);
-    if let Some(head_node) = items[0].node.as_ref() {
-        if head_node.kind == NodeKind::Atom
-            && items[0].own_comments.is_empty()
-            && items[0].trailing_comment.is_none()
-            && HEADS.contains(&head_node.open.text.as_str())
-        {
-            return head_form_doc(&items, &head_node.open.text.clone());
-        }
+    if let Some(head_node) = items[0].node.as_ref()
+        && head_node.kind == NodeKind::Atom
+        && items[0].own_comments.is_empty()
+        && items[0].trailing_comment.is_none()
+        && HEADS.contains(&head_node.open.text.as_str())
+    {
+        return head_form_doc(&items, &head_node.open.text.clone());
     }
     delimited_to_doc(n)
 }

@@ -6,6 +6,16 @@ that section as the GitHub Release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- The workspace builds with Rust edition 2024.
+
+### Fixed
+
+- CI, against the current stable toolchain: the newer clippy lints, the
+  formatter golden comparison on a checkout that rewrites line endings,
+  and an `ETXTBSY` race when the CLI passthrough tests share a fake `cc`.
+
 ## [0.1.0] - 2026-10-21
 
 ### Added

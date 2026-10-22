@@ -137,13 +137,14 @@ mod tests {
             ] {
                 assert!(names.contains(&req), "{t} missing {req}: {names:?}");
             }
-            assert!(!a
-                .files
-                .iter()
-                .find(|(n, _)| *n == "runtime.o")
-                .unwrap()
-                .1
-                .is_empty());
+            assert!(
+                !a.files
+                    .iter()
+                    .find(|(n, _)| *n == "runtime.o")
+                    .unwrap()
+                    .1
+                    .is_empty()
+            );
         }
     }
 

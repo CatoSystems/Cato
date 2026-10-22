@@ -826,10 +826,13 @@ fn closed_width_rules() {
 #[test]
 fn closures_capture_and_move() {
     // Scalar captures are fine; the closure type is inferred.
-    assert!(build(
-        &read_all("(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))").unwrap()
-    )
-    .is_ok());
+    assert!(
+        build(
+            &read_all("(defn main [] :- i64 (let [n 10 f (fn [x :- i64] (+ x n))] (f 5)))")
+                .unwrap()
+        )
+        .is_ok()
+    );
     // S2: non-Copy captures are legal and move the source binding —
     // using the vector after the capture is rejected.
     assert!(build(
@@ -843,16 +846,20 @@ fn closures_capture_and_move() {
         "(defn main [] :- i64 (let [v (vec-i64 1) f (fn [x :- i64] (+ x (get v 0 0)))] (do (f 5) (count v))))"
     ).unwrap()).is_err());
     // Capturing moves a non-Copy binding: use after capture is rejected.
-    assert!(build(
-        &read_all("(defn main [] :- i64 (let [s \"hi\" f (fn [x :- i64] (+ x 1))] (do (f 1) 0)))")
+    assert!(
+        build(
+            &read_all(
+                "(defn main [] :- i64 (let [s \"hi\" f (fn [x :- i64] (+ x 1))] (do (f 1) 0)))"
+            )
             .unwrap()
-    )
-    .is_ok());
+        )
+        .is_ok()
+    );
     // Higher-order params type-check the call.
-    assert!(build(
-        &read_all("(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64 (f (f x)))").unwrap()
-    )
-    .is_ok());
+    assert!(
+        build(&read_all("(defn twice [f :- (Fn [i64] i64) x :- i64] :- i64 (f (f x)))").unwrap())
+            .is_ok()
+    );
     // Calling a non-function local is still a plain user call (unchanged).
     assert!(
         build(&read_all("(defn main [] :- i64 (let [x (fn [y :- i64] y)] (x 1)))").unwrap())
@@ -863,10 +870,10 @@ fn closures_capture_and_move() {
 #[test]
 fn phase19_patterns() {
     // Vector destructuring with _ and short-pattern defaults.
-    assert!(build(
-        &read_all("(defn main [] :- i64 (let [[a _ c] (vec-i64 1 2 3)] (+ a c)))").unwrap()
-    )
-    .is_ok());
+    assert!(
+        build(&read_all("(defn main [] :- i64 (let [[a _ c] (vec-i64 1 2 3)] (+ a c)))").unwrap())
+            .is_ok()
+    );
     // Destructure requires a vector source.
     assert!(build(&read_all("(defn main [] :- i64 (let [[a] 3] a))").unwrap()).is_err());
     // _ wildcard binders in match arms.

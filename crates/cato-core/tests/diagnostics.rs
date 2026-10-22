@@ -231,11 +231,15 @@ fn classify_maps_pipeline_messages_to_codes() {
         "E303"
     );
     assert_eq!(
-        f("cannot move the borrowed result of get-l into an owned parameter of take: it belongs to the caller"),
+        f(
+            "cannot move the borrowed result of get-l into an owned parameter of take: it belongs to the caller"
+        ),
         "E303"
     );
     assert_eq!(
-        f("Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value."),
+        f(
+            "Borrowed return requires a borrowed value. A `&T` function may only return a value derived from its `&` parameters, never an owned or freshly-cloned value."
+        ),
         "E304"
     );
     assert_eq!(

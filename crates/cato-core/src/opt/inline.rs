@@ -13,8 +13,8 @@
 use super::walk::{
     all_binders, all_var_names, count_uses, is_drop_safe, is_dup_safe, node_count, rewrite,
 };
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 

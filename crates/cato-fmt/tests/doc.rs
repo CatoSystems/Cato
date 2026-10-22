@@ -1,7 +1,7 @@
 //! Wadler Doc engine contract: group fitting/breaking, nesting, hard
 //! newlines, and exact width regressions.
 
-use cato_fmt::doc::{concat, group, nest, print, text, Doc};
+use cato_fmt::doc::{Doc, concat, group, nest, print, text};
 
 #[test]
 fn group_fits_flat() {

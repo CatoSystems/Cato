@@ -217,10 +217,10 @@ pub(crate) fn emit_loop_node(
     for (name, ty, init) in binds {
         // A variable seeded from another growable binding shares its buffer:
         // two live headers over one buffer must never both append in place.
-        if let HExpr::Var(src) = init {
-            if slots.iter().any(|(n, _, _)| n == src) || c.grow.contains_key(src) {
-                c.loop_alias.insert(name.clone());
-            }
+        if let HExpr::Var(src) = init
+            && (slots.iter().any(|(n, _, _)| n == src) || c.grow.contains_key(src))
+        {
+            c.loop_alias.insert(name.clone());
         }
         let llt = loop_slot_ty(mdl, *ty);
         let slot = c.temp();
@@ -465,10 +465,10 @@ fn emit_loop_tail(
             // would interleave two appends at one index — keep copying then.
             let mut conj_counts: HashMap<&str, usize> = HashMap::new();
             for a in args.iter() {
-                if let HExpr::Conj { v, .. } = a {
-                    if let HExpr::Var(n) = &**v {
-                        *conj_counts.entry(n.as_str()).or_insert(0) += 1;
-                    }
+                if let HExpr::Conj { v, .. } = a
+                    && let HExpr::Var(n) = &**v
+                {
+                    *conj_counts.entry(n.as_str()).or_insert(0) += 1;
                 }
             }
             let mut vals: Vec<(String, String, Ty)> = Vec::with_capacity(args.len());

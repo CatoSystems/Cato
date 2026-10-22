@@ -1,7 +1,7 @@
 //! Trivia-preserving CST contract: lossless flattening, in-position
 //! trivia siblings, and reader-parity errors.
 
-use cato_fmt::cst::{flatten, parse, Elem, NodeKind, TriviaKind};
+use cato_fmt::cst::{Elem, NodeKind, TriviaKind, flatten, parse};
 use std::path::PathBuf;
 
 fn fixtures() -> Vec<PathBuf> {

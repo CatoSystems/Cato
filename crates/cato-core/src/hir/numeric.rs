@@ -140,11 +140,7 @@ pub fn eval_int_binop(op: BinOp, x: i64, y: i64, ty: Ty) -> Option<i64> {
         BinOp::Rem => x.wrapping_rem(y),
         BinOp::Mod => {
             let r = x.wrapping_rem(y);
-            if r != 0 && ((r ^ y) < 0) {
-                r + y
-            } else {
-                r
-            }
+            if r != 0 && ((r ^ y) < 0) { r + y } else { r }
         }
         BinOp::BitAnd => x & y,
         BinOp::BitOr => x | y,

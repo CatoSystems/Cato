@@ -148,7 +148,7 @@ fn wasm_ir_passes_through_llvm_wasm_codegen() {
         "llvm-as failed: {}",
         String::from_utf8_lossy(&asm.stderr)
     );
-    let gen = Command::new(&llc)
+    let codegen = Command::new(&llc)
         .args(["-march=wasm32", "-filetype=obj"])
         .arg(&bc)
         .arg("-o")
@@ -156,9 +156,9 @@ fn wasm_ir_passes_through_llvm_wasm_codegen() {
         .output()
         .expect("llc");
     assert!(
-        gen.status.success(),
+        codegen.status.success(),
         "llc wasm codegen failed: {}",
-        String::from_utf8_lossy(&gen.stderr)
+        String::from_utf8_lossy(&codegen.stderr)
     );
 
     let bytes = std::fs::read(&obj).expect("read wasm object");

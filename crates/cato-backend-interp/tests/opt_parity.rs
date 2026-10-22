@@ -6,7 +6,7 @@
 //! copy-propagation, inlining, devirtualization and clone elision must
 //! never change observable behavior.
 
-use cato_core::{compile_named_with, Backend};
+use cato_core::{Backend, compile_named_with};
 use cato_interp::InterpBackend;
 
 fn run_with(src: &str, optimize: bool) -> String {

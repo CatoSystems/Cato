@@ -185,7 +185,7 @@ pub(super) fn hermetic_link_argv(
             ],
         )),
         "x86_64-windows" => {
-            let assets = assets_for(target_name).map_err(|e| e)?;
+            let assets = assets_for(target_name)?;
             let mut args = vec![
                 "ld.lld".to_string(),
                 "-m".to_string(),
@@ -200,8 +200,8 @@ pub(super) fn hermetic_link_argv(
                 "-L".to_string(),
                 staged_str.clone(),
             ];
-            for (name, _) in assets.files {
-                match name.as_ref() {
+            for &(name, _) in assets.files {
+                match name {
                     "crt2.o" | "prog.o" | "runtime.o" => {}
                     _ => args.push(format!("{}/{}", staged_str, name)),
                 }
@@ -255,7 +255,7 @@ pub(super) fn hermetic_link_argv(
 #[cfg(feature = "static-llvm")]
 pub fn build_hermetic(program: &Program, cli: &Cli, out: &Path) -> Result<PathBuf, String> {
     reject_unsupported(cli)?;
-    let target_name = resolve_target_asset_name(&cli.target)?;
+    let target_name = resolve_target_asset_name(cli.target)?;
     let ir = crate::native::emit_llvm_ir(program, cli).map_err(|e| e.to_string())?;
     if let Some(ref ll_path) = cli.emit_ll {
         fs::write(ll_path, &ir).map_err(|e| format!("cato: cannot write LLVM IR: {}", e))?;

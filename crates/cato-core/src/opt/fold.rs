@@ -7,8 +7,8 @@
 //! folding it would erase a panic).
 
 use super::walk::{is_drop_safe, rewrite};
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::cell::Cell;
 
 pub fn run(program: &mut Program) -> bool {
@@ -316,10 +316,10 @@ fn fold_one(e: HExpr) -> HExpr {
                     if let Some(v) = as_i64(hits[0]) {
                         return HExpr::ConstI64(v);
                     }
-                } else if hits.is_empty() {
-                    if let Some(d) = default {
-                        return *d;
-                    }
+                } else if hits.is_empty()
+                    && let Some(d) = default
+                {
+                    return *d;
                 }
             }
             HExpr::MapGet {
@@ -342,10 +342,10 @@ fn fold_one(e: HExpr) -> HExpr {
             folded.unwrap_or(HExpr::Subs { s, start, end })
         }
         HExpr::Call(name, args) => {
-            if name == "even?" {
-                if let [HExpr::ConstI64(v)] = &args[..] {
-                    return const_bool_node(v % 2 == 0);
-                }
+            if name == "even?"
+                && let [HExpr::ConstI64(v)] = &args[..]
+            {
+                return const_bool_node(v % 2 == 0);
             }
             HExpr::Call(name, args)
         }
@@ -360,20 +360,12 @@ fn fold_minmax(a: Box<HExpr>, b: Box<HExpr>, ty: Ty, is_min: bool) -> HExpr {
                 return HExpr::Min(a, b, ty).pick_max(!is_min);
             }
             let pick_a = if is_min { x < y } else { x > y };
-            if pick_a {
-                *a
-            } else {
-                *b
-            }
+            if pick_a { *a } else { *b }
         }
         _ => match (as_i64(&a), as_i64(&b)) {
             (Some(x), Some(y)) if ty.is_int() => {
                 let pick_a = if is_min { x < y } else { x > y };
-                if pick_a {
-                    *a
-                } else {
-                    *b
-                }
+                if pick_a { *a } else { *b }
             }
             _ => HExpr::Min(a, b, ty).pick_max(!is_min),
         },

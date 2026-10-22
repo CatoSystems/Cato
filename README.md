@@ -12,7 +12,7 @@ native binary via your system C compiler. A stream-fusion pass turns
 
 ## Build
 
-Requires Rust (edition 2021) and `clang`.
+Requires Rust (edition 2024) and `clang`.
 
 ```sh
 cargo build --release

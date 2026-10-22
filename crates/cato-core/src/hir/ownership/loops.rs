@@ -478,10 +478,11 @@ impl<'a> BCheck<'a> {
                         && self.rets.get(f).map(|t| is_non_copy(*t)).unwrap_or(false) =>
                 {
                     for ca in cargs {
-                        if let HExpr::Var(v) = ca {
-                            if non_copy(v, tys) && !movers.contains(v) {
-                                movers.push(v.clone());
-                            }
+                        if let HExpr::Var(v) = ca
+                            && non_copy(v, tys)
+                            && !movers.contains(v)
+                        {
+                            movers.push(v.clone());
                         }
                     }
                 }

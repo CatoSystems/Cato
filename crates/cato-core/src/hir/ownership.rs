@@ -875,11 +875,12 @@ impl<'a> BCheck<'a> {
         if let Some(r) = self.remaining.get_mut(v) {
             *r -= 1;
         }
-        if let Some(ty) = tys.get(v) {
-            if is_non_copy(*ty) && st.get(v) == Some(&VState::Moved) {
-                let site = self.site_for(v);
-                self.err(format!("use of moved value {}", v), Some(site));
-            }
+        if let Some(ty) = tys.get(v)
+            && is_non_copy(*ty)
+            && st.get(v) == Some(&VState::Moved)
+        {
+            let site = self.site_for(v);
+            self.err(format!("use of moved value {}", v), Some(site));
         }
     }
 
@@ -1027,7 +1028,7 @@ impl<'a> BCheck<'a> {
                 };
                 let mut saved_owned: Vec<(String, bool)> = Vec::new();
                 let mut scope: Vec<(String, bool)> = Vec::new();
-                for ((n, _, _), r) in binds.iter().zip(seed_roots.into_iter()) {
+                for ((n, _, _), r) in binds.iter().zip(seed_roots) {
                     let o = owning.contains(n);
                     owns.insert(n.clone(), o);
                     // An owning variable roots only itself; a non-owning
@@ -1120,10 +1121,10 @@ impl<'a> BCheck<'a> {
                 // would observe the append — or the growth free).
                 let mut conj_counts: HashMap<String, i64> = HashMap::new();
                 for a in args.iter() {
-                    if let HExpr::Conj { v, .. } = a {
-                        if let HExpr::Var(n) = &**v {
-                            *conj_counts.entry(n.clone()).or_insert(0) += 1;
-                        }
+                    if let HExpr::Conj { v, .. } = a
+                        && let HExpr::Var(n) = &**v
+                    {
+                        *conj_counts.entry(n.clone()).or_insert(0) += 1;
                     }
                 }
                 for ai in 0..args.len() {
@@ -1140,11 +1141,7 @@ impl<'a> BCheck<'a> {
                                         m.get(n).copied().unwrap_or(0) > 0
                                     }
                                 });
-                                if sibling_reads {
-                                    None
-                                } else {
-                                    Some(n.clone())
-                                }
+                                if sibling_reads { None } else { Some(n.clone()) }
                             }
                             _ => None,
                         },
@@ -1172,11 +1169,11 @@ impl<'a> BCheck<'a> {
                 // variable. (A binding from outside the loop is only read:
                 // the variable then aliases it and owns nothing.)
                 for a in args.iter() {
-                    if let HExpr::Var(v) = a {
-                        if tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false) && seen.contains(v)
-                        {
-                            self.hand_over(v, st, owns);
-                        }
+                    if let HExpr::Var(v) = a
+                        && tys.get(v).map(|t| is_non_copy(*t)).unwrap_or(false)
+                        && seen.contains(v)
+                    {
+                        self.hand_over(v, st, owns);
                     }
                 }
                 // Drop what the iteration still owns, unless an argument may
@@ -1607,26 +1604,25 @@ impl<'a> BCheck<'a> {
                     // aliasing-binder use after the move is a UAF
                     // (call-user's `mdl` reads after `call-marshal`).
                     let mut watched = false;
-                    if scrut_boxed {
-                        if let HExpr::Var(sv) = &**scrut {
-                            if let Some(fields) = arm_field_tys.as_ref() {
-                                let mut binders = HashSet::new();
-                                for (k, b) in arm.binders.iter().enumerate() {
-                                    let fty = fields.get(k).copied();
-                                    let aliases = binder_field_aliases(fty, &self.boxed_full)
-                                        || matches!(fty, Some(Ty::Adt(_)));
-                                    if aliases {
-                                        binders.insert(b.clone());
-                                    }
-                                }
-                                if !binders.is_empty() {
-                                    self.watches.push(Watch {
-                                        scrutinee: sv.clone(),
-                                        binders,
-                                    });
-                                    watched = true;
-                                }
+                    if scrut_boxed
+                        && let HExpr::Var(sv) = &**scrut
+                        && let Some(fields) = arm_field_tys.as_ref()
+                    {
+                        let mut binders = HashSet::new();
+                        for (k, b) in arm.binders.iter().enumerate() {
+                            let fty = fields.get(k).copied();
+                            let aliases = binder_field_aliases(fty, &self.boxed_full)
+                                || matches!(fty, Some(Ty::Adt(_)));
+                            if aliases {
+                                binders.insert(b.clone());
                             }
+                        }
+                        if !binders.is_empty() {
+                            self.watches.push(Watch {
+                                scrutinee: sv.clone(),
+                                binders,
+                            });
+                            watched = true;
                         }
                     }
                     // arm binder types: recover field types are not carried;
@@ -1748,12 +1744,11 @@ impl<'a> BCheck<'a> {
                         // own scope free (let drop or param free) is
                         // suppressed — the arm-exit free below takes over
                         // for the fields that stayed.
-                        if any_alias_escape {
-                            if let HExpr::Var(sv) = &**scrut {
-                                if !scrut_borrowed_param {
-                                    self.move_var(sv, st, owns);
-                                }
-                            }
+                        if any_alias_escape
+                            && let HExpr::Var(sv) = &**scrut
+                            && !scrut_borrowed_param
+                        {
+                            self.move_var(sv, st, owns);
                         }
                     }
                     any_arm_escape |= any_alias_escape;
@@ -2649,13 +2644,12 @@ impl<'a> BCheck<'a> {
     ) -> Result<Vec<String>, &'static str> {
         // The arm hands the box itself on (moves or returns it): its new
         // holder frees it.
-        if let Some(sv) = sv {
-            if arm_st.get(sv) == Some(&VState::Moved)
+        if let Some(sv) = sv
+            && (arm_st.get(sv) == Some(&VState::Moved)
                 || arm_escaped.contains(sv)
-                || arm_div.contains(sv)
-            {
-                return Err("scrutinee-moved");
-            }
+                || arm_div.contains(sv))
+        {
+            return Err("scrutinee-moved");
         }
         // A recurring arm exits at its `recur`: the backend runs this
         // free there, after the arguments are computed and before the jump.
@@ -2755,10 +2749,10 @@ impl<'a> BCheck<'a> {
                 // constructors copy them, so the box keeps its buffer
                 // unless the binder itself is the arm's value or may come
                 // back out of a call.
-                Some(Ty::Str) | Some(Ty::Vec(_)) | Some(Ty::Map) | Some(Ty::Set) => {
-                    if escapes || through_call.contains(b) {
-                        skip.push(b.clone());
-                    }
+                Some(Ty::Str) | Some(Ty::Vec(_)) | Some(Ty::Map) | Some(Ty::Set)
+                    if escapes || through_call.contains(b) =>
+                {
+                    skip.push(b.clone());
                 }
                 _ => {}
             }

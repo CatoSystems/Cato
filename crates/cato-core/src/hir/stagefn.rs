@@ -101,7 +101,7 @@ pub(crate) fn resolve_function_ref(
                         return Err(format!(
                             "cannot use {} over {:?} elements in map/filter",
                             name, other
-                        ))
+                        ));
                     }
                 }),
                 _ => actual,

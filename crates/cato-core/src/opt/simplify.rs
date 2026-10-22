@@ -6,8 +6,8 @@
 //! removed bindings are rebuilt by the driver's `recompute_frees`.
 
 use super::walk::{count_uses, is_drop_safe, rewrite, substitute};
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::cell::Cell;
 
 pub fn run(program: &mut Program) -> bool {

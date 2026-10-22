@@ -14,7 +14,7 @@ pub mod reader;
 
 pub use ast::Expr;
 pub use hir::{
-    adt_total_slots, compute_adt_facts, compute_boxed, field_slot_count, AdtDef, AdtFacts, Defn,
+    AdtDef, AdtFacts, Defn, adt_total_slots, compute_adt_facts, compute_boxed, field_slot_count,
 };
 
 /// A closure body emitted out-of-line by code backends: the calling
@@ -248,17 +248,16 @@ fn rewrite_heads(forms: &mut [(Expr, crate::ast::Span)], from: &str, to: &str) {
 fn rewrite_heads_expr(e: &mut Expr, from: &str, to: &str) {
     match e {
         Expr::List(items) => {
-            if let Some(Expr::LitSym(h)) = items.first_mut() {
-                if h == from {
-                    *h = to.to_string();
-                }
+            if let Some(Expr::LitSym(h)) = items.first_mut()
+                && h == from
+            {
+                *h = to.to_string();
             }
-            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn") {
-                if let Some(Expr::LitSym(n)) = items.get_mut(1) {
-                    if n == from {
-                        *n = to.to_string();
-                    }
-                }
+            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn")
+                && let Some(Expr::LitSym(n)) = items.get_mut(1)
+                && n == from
+            {
+                *n = to.to_string();
             }
             for it in items.iter_mut() {
                 rewrite_heads_expr(it, from, to);
@@ -285,12 +284,11 @@ fn rewrite_heads_expr(e: &mut Expr, from: &str, to: &str) {
 fn defn_names(forms: &[(Expr, crate::ast::Span)]) -> Vec<String> {
     let mut out = Vec::new();
     for (f, _) in forms {
-        if let Expr::List(items) = f {
-            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn") {
-                if let Some(Expr::LitSym(n)) = items.get(1) {
-                    out.push(n.clone());
-                }
-            }
+        if let Expr::List(items) = f
+            && matches!(items.first(), Some(Expr::LitSym(h)) if h == "defn")
+            && let Some(Expr::LitSym(n)) = items.get(1)
+        {
+            out.push(n.clone());
         }
     }
     out
@@ -427,19 +425,19 @@ fn expand_file(
 
     let mut kept: Vec<(Expr, crate::ast::Span)> = Vec::new();
     for (f, s) in all_forms.into_iter().zip(all_spans) {
-        if let Expr::List(items) = &f {
-            if matches!(items.first(), Some(Expr::LitSym(h)) if h == "ns") {
-                match items.get(1) {
-                    Some(Expr::LitSym(name)) => {
-                        if ctx.ns.contains(name) {
-                            return Err(diagnostics::locate(s, &format!("duplicate ns {}", name)));
-                        }
-                        ctx.ns.push(name.clone());
+        if let Expr::List(items) = &f
+            && matches!(items.first(), Some(Expr::LitSym(h)) if h == "ns")
+        {
+            match items.get(1) {
+                Some(Expr::LitSym(name)) => {
+                    if ctx.ns.contains(name) {
+                        return Err(diagnostics::locate(s, &format!("duplicate ns {}", name)));
                     }
-                    _ => return Err(diagnostics::locate(s, "ns expects a name")),
+                    ctx.ns.push(name.clone());
                 }
-                continue;
+                _ => return Err(diagnostics::locate(s, "ns expects a name")),
             }
+            continue;
         }
         kept.push((f, s));
     }

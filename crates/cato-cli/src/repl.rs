@@ -211,12 +211,11 @@ fn process_form(text: &str, expr: &Expr, session: &mut Session, colors: bool) {
         session.parts.push(text.to_string());
         match crate::ui::guard(|| session.compile()) {
             Ok(_) => {
-                if NAMED_HEADS.contains(&head.as_str()) {
-                    if let Expr::List(items) = expr {
-                        if let Some(Expr::LitSym(n)) = items.get(1) {
-                            repl_defined(colors, &session.ns, n);
-                        }
-                    }
+                if NAMED_HEADS.contains(&head.as_str())
+                    && let Expr::List(items) = expr
+                    && let Some(Expr::LitSym(n)) = items.get(1)
+                {
+                    repl_defined(colors, &session.ns, n);
                 }
             }
             Err(e) => {

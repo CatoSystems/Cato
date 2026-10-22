@@ -41,9 +41,9 @@ pub(crate) use loops_spec::*;
 pub(crate) use rewrite::*;
 pub(crate) use state::*;
 
-use cato_core::hir::*;
 use cato_core::Lambda;
-use cato_core::{hir::AdtDef, hir::Defn, Backend};
+use cato_core::hir::*;
+use cato_core::{Backend, hir::AdtDef, hir::Defn};
 use std::collections::HashMap;
 use std::collections::HashSet;
 

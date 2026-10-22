@@ -62,7 +62,10 @@ fn same_module_under_two_aliases() {
                 "main.cato",
                 "(ns m) (require [\"lib.cato\" :as x]) (require [\"lib.cato\" :as y])\n(defn main [] :- i64 (do (print (x/sq 3)) (print (y/sq 4)) 0))\n",
             ),
-            ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
+            (
+                "lib.cato",
+                "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n",
+            ),
         ],
     );
     assert_eq!(run(&entry), "9\n16\n");
@@ -88,7 +91,10 @@ fn same_file_reached_by_two_spellings_dedups() {
                 "b.cato",
                 "(ns b) (require [\"./lib.cato\" :as lib])\n(defn g [x :- i64] :- i64 (lib/sq x))\n",
             ),
-            ("lib.cato", "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n"),
+            (
+                "lib.cato",
+                "(ns lib)\n(defn sq [a :- i64] :- i64 (* a a))\n",
+            ),
         ],
     );
     assert_eq!(run(&entry), "9\n16\n");

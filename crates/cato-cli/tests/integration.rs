@@ -1100,10 +1100,11 @@ fn asan_ir_carries_sanitize_address() {
     assert!(status.success());
     let ir = std::fs::read_to_string(&out_ll).unwrap();
     assert!(ir.contains("sanitize_address"));
-    assert!(ir
-        .lines()
-        .filter(|l| l.starts_with("define "))
-        .all(|l| l.contains("#9001")));
+    assert!(
+        ir.lines()
+            .filter(|l| l.starts_with("define "))
+            .all(|l| l.contains("#9001"))
+    );
 }
 
 #[test]

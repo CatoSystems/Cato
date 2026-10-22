@@ -109,13 +109,13 @@ pub(crate) fn narrow_vec_lit(items: &[Expr], n: Narrow) -> Result<HExpr, String>
                     v,
                     n.name(),
                     n.name()
-                ))
+                ));
             }
             _ => {
                 return Err(format!(
                     "a (Vector {}) literal takes integer literals",
                     n.name()
-                ))
+                ));
             }
         }
     }

@@ -1,6 +1,6 @@
 //! In-process LLVM IR -> object codegen (`static-llvm`).
 
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{CStr, CString, c_char};
 use std::ptr;
 use std::slice;
 

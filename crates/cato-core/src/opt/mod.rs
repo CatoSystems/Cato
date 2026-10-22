@@ -17,8 +17,8 @@ pub mod inline;
 pub mod simplify;
 pub mod walk;
 
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::collections::{HashMap, HashSet};
 
 /// Maximum fixed-point rounds; converges well before this on real code.

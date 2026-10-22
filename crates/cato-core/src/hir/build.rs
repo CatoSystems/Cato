@@ -187,7 +187,7 @@ pub fn build_program_located_with(
     // Template placeholders (instances whose arguments still mention a
     // defn's type parameters, e.g. `(Option T)` in a generic signature)
     // never appear in emitted code; their declarations are inert.
-    let extra_adts: Vec<AdtDef> = ctx.adt_insts.borrow_mut().extra.drain(..).collect();
+    let extra_adts: Vec<AdtDef> = std::mem::take(&mut ctx.adt_insts.borrow_mut().extra);
     let fn_sigs = ctx.fn_sigs.borrow().clone();
 
     adts.extend(extra_adts);

@@ -376,11 +376,7 @@ impl<'p> Interpreter<'p> {
                 let a = int_of(&args[0]);
                 let n = int_of(&args[1]);
                 let v = if !(0..64).contains(&n) {
-                    if a < 0 {
-                        -1
-                    } else {
-                        0
-                    }
+                    if a < 0 { -1 } else { 0 }
                 } else {
                     a >> n
                 };
@@ -595,11 +591,7 @@ impl<'p> Interpreter<'p> {
             HExpr::Min(a, b, t) => {
                 let (x, y) = (self.eval(a, env)?, self.eval(b, env)?);
                 if *t == Ty::F64 {
-                    if f64_of(&x) < f64_of(&y) {
-                        x
-                    } else {
-                        y
-                    }
+                    if f64_of(&x) < f64_of(&y) { x } else { y }
                 } else if int_of(&x) < int_of(&y) {
                     x
                 } else {
@@ -609,11 +601,7 @@ impl<'p> Interpreter<'p> {
             HExpr::Max(a, b, t) => {
                 let (x, y) = (self.eval(a, env)?, self.eval(b, env)?);
                 if *t == Ty::F64 {
-                    if f64_of(&x) > f64_of(&y) {
-                        x
-                    } else {
-                        y
-                    }
+                    if f64_of(&x) > f64_of(&y) { x } else { y }
                 } else if int_of(&x) > int_of(&y) {
                     x
                 } else {
@@ -1210,10 +1198,10 @@ impl<'p> Interpreter<'p> {
             let mut skip = false;
             for f in filters {
                 child.insert(f.el.clone(), cur.clone());
-                if let Some(e2) = &f.el2 {
-                    if let Some(v2) = &el2 {
-                        child.insert(e2.clone(), v2.clone());
-                    }
+                if let Some(e2) = &f.el2
+                    && let Some(v2) = &el2
+                {
+                    child.insert(e2.clone(), v2.clone());
                 }
                 if !bool_of(&self.eval(&f.body, &mut child)?) {
                     skip = true;
@@ -1225,10 +1213,10 @@ impl<'p> Interpreter<'p> {
             }
             for m in maps {
                 child.insert(m.el.clone(), cur.clone());
-                if let Some(e2) = &m.el2 {
-                    if let Some(v2) = &el2 {
-                        child.insert(e2.clone(), v2.clone());
-                    }
+                if let Some(e2) = &m.el2
+                    && let Some(v2) = &el2
+                {
+                    child.insert(e2.clone(), v2.clone());
                 }
                 cur = self.eval(&m.body, &mut child)?;
             }

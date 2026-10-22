@@ -2,8 +2,8 @@
 //! descent over the token stream. Whitespace and comments become
 //! `Trivia` elements *in position* — never dropped, never reordered.
 
-use crate::lexer::{lex, TokKind, Token};
 use crate::FmtError;
+use crate::lexer::{TokKind, Token, lex};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriviaKind {

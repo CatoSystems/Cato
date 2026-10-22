@@ -93,7 +93,8 @@ pub(crate) fn emit_str_val(
         HExpr::StrCat(args) => emit_strcat(args, c, mdl, sigs),
         HExpr::ToStr(inner, t) => {
             // Number/bool → runtime decimal text (malloc'd, owned).
-            let v = match t {
+
+            match t {
                 Ty::F64 => {
                     let f = emit_float(inner, c, mdl, sigs);
                     mdl.declare("declare ptr @cato_f64_to_str(double)".to_string());
@@ -127,8 +128,7 @@ pub(crate) fn emit_str_val(
                     c.line(&format!("  {} = call ptr @cato_num_to_str(i64 {})", r, i));
                     r
                 }
-            };
-            v
+            }
         }
         HExpr::Slurp(p) => {
             let pv = emit_str_val(p, c, mdl, sigs);
@@ -618,11 +618,11 @@ fn bind_one(
             Ty::Map | Ty::Set => {
                 // Alias: share the source header slot (set ops read only
                 // ptr/len; map ops see the same representation tag).
-                if let HExpr::Var(src) = value {
-                    if let Some((slot, _)) = c.growm.get(src).cloned() {
-                        c.growm.insert(name.to_string(), (slot, ty));
-                        return;
-                    }
+                if let HExpr::Var(src) = value
+                    && let Some((slot, _)) = c.growm.get(src).cloned()
+                {
+                    c.growm.insert(name.to_string(), (slot, ty));
+                    return;
                 }
                 // Any other value form: evaluate to (ptr, len[, cap]) and
                 // materialize a local header slot.

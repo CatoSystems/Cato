@@ -14,6 +14,13 @@ fn corpus_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
+/// Read a fixture with CRLF collapsed to LF: a checkout that rewrites line
+/// endings (Windows `core.autocrlf`) must still compare against the
+/// formatter's LF output rather than fail on the bytes git chose.
+fn read_fixture(path: &std::path::Path) -> String {
+    fs::read_to_string(path).unwrap().replace("\r\n", "\n")
+}
+
 /// All `NAME.in.cato` / `NAME.out.cato` pairs, sorted by name.
 fn pairs() -> Vec<(String, PathBuf, PathBuf)> {
     let dir = golden_dir();
@@ -42,8 +49,8 @@ fn golden_files_format_exactly() {
         pairs.len()
     );
     for (name, input, expected) in pairs {
-        let src = fs::read_to_string(&input).unwrap();
-        let want = fs::read_to_string(&expected).unwrap();
+        let src = read_fixture(&input);
+        let want = read_fixture(&expected);
         let got = format_source(&src, 100).unwrap_or_else(|e| panic!("{name}: format failed: {e}"));
         assert_eq!(got, want, "golden mismatch: {name}");
     }
@@ -52,7 +59,7 @@ fn golden_files_format_exactly() {
 #[test]
 fn idempotent_on_golden_outputs() {
     for (name, _, expected) in pairs() {
-        let want = fs::read_to_string(&expected).unwrap();
+        let want = read_fixture(&expected);
         let once = format_source(&want, 100)
             .unwrap_or_else(|e| panic!("{name}: reformat of output failed: {e}"));
         assert_eq!(once, want, "not idempotent on first reformat: {name}");

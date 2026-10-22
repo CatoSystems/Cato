@@ -208,15 +208,14 @@ fn link(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
     };
     // Native cross targets probe the toolchain before any link argv runs
     // (spec §2: a valid name with an incapable cc is a tool failure).
-    if cli.target.flavor == Flavor::Native {
-        if let Some(triple) = cli.target.triple {
-            if !crate::driver::cc_supports_triple(&cc, triple) {
-                let names = crate::driver::target_names().join(", ");
-                return Err(format!(
-                    "{cc} does not support target {triple} (known: {names})"
-                ));
-            }
-        }
+    if cli.target.flavor == Flavor::Native
+        && let Some(triple) = cli.target.triple
+        && !crate::driver::cc_supports_triple(&cc, triple)
+    {
+        let names = crate::driver::target_names().join(", ");
+        return Err(format!(
+            "{cc} does not support target {triple} (known: {names})"
+        ));
     }
     let rt = resolve_runtime_path(cli)?;
     let opts = crate::driver::LinkOpts {

@@ -8,8 +8,8 @@
 //! trees are left to the generated dispatcher.
 
 use super::walk::rewrite;
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::cell::Cell;
 use std::collections::HashMap;
 

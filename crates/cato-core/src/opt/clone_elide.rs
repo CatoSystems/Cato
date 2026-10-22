@@ -14,8 +14,8 @@
 //! afterwards.
 
 use super::walk::{rewrite, visit_nodes};
-use crate::hir::*;
 use crate::Program;
+use crate::hir::*;
 use std::collections::{HashMap, HashSet};
 
 pub fn run(program: &mut Program) -> bool {
@@ -36,10 +36,10 @@ fn elide_in_body(body: &mut HExpr) -> bool {
     // Clone sites by source name.
     let mut site_counts: HashMap<String, usize> = HashMap::new();
     visit_nodes(body, &mut |n| {
-        if let HExpr::Clone(inner) = n {
-            if let HExpr::Var(v) = &**inner {
-                *site_counts.entry(v.clone()).or_insert(0) += 1;
-            }
+        if let HExpr::Clone(inner) = n
+            && let HExpr::Var(v) = &**inner
+        {
+            *site_counts.entry(v.clone()).or_insert(0) += 1;
         }
     });
 

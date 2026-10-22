@@ -8,6 +8,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Once;
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -19,19 +20,24 @@ fn root() -> PathBuf {
 }
 
 /// Install a fake cc at `target/fake cc/cc` that dumps its argv, one per
-/// line, to $CATO_ARGCAP.
+/// line, to $CATO_ARGCAP. Written exactly once: the tests run in parallel,
+/// and a concurrent rewrite would leave the script open for writing while
+/// another test execs it, which Linux rejects with `ETXTBSY`.
 fn fake_cc() -> PathBuf {
+    static INSTALL: Once = Once::new();
     let dir = root().join("target/fake cc");
     std::fs::create_dir_all(&dir).expect("mkdir fake cc dir");
     let cc = dir.join("cc");
-    std::fs::write(
-        &cc,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CATO_ARGCAP\"\nexit 0\n",
-    )
-    .expect("write fake cc");
-    let mut perm = std::fs::metadata(&cc).unwrap().permissions();
-    perm.set_mode(0o755);
-    std::fs::set_permissions(&cc, perm).expect("chmod fake cc");
+    INSTALL.call_once(|| {
+        std::fs::write(
+            &cc,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CATO_ARGCAP\"\nexit 0\n",
+        )
+        .expect("write fake cc");
+        let mut perm = std::fs::metadata(&cc).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(&cc, perm).expect("chmod fake cc");
+    });
     cc
 }
 

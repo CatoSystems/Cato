@@ -44,7 +44,7 @@ pub(crate) fn resolve_ann_ty(e: &Expr, ctx: &Ctx) -> Result<Ty, String> {
                         return Err(format!(
                             "(Vector {:?}) element must be i64, f64 or str",
                             other
-                        ))
+                        ));
                     }
                 };
                 return Ok(Ty::Vec(el));
@@ -135,7 +135,7 @@ fn lower_expect_node(
                         return Err(format!(
                             "set literal elements must be i64 literals, got {:?}",
                             other
-                        ))
+                        ));
                     }
                 }
             }
@@ -478,7 +478,7 @@ fn lower_expect_node(
                     let elem = match ty_of(&v, env, ctx) {
                         Ty::Vec(e) => e,
                         other => {
-                            return Err(format!("conj source must be a vector, got {:?}", other))
+                            return Err(format!("conj source must be a vector, got {:?}", other));
                         }
                     };
                     // The element type is the value's expected type: a
@@ -535,7 +535,7 @@ fn lower_expect_node(
                     let elem = match ty_of(&v, env, ctx) {
                         Ty::Vec(e) => e,
                         other => {
-                            return Err(format!("subvec source must be a vector, got {:?}", other))
+                            return Err(format!("subvec source must be a vector, got {:?}", other));
                         }
                     };
                     let start = lower(&items[2], env, ctx)?;
@@ -591,7 +591,7 @@ fn lower_expect_node(
                     let elem = match ty_of(&src, env, ctx) {
                         Ty::Vec(e) => e,
                         other => {
-                            return Err(format!("for source must be a vector, got {:?}", other))
+                            return Err(format!("for source must be a vector, got {:?}", other));
                         }
                     };
                     let mut child = env.clone();
@@ -610,7 +610,7 @@ fn lower_expect_node(
                             return Err(format!(
                                 "for body must produce i64 or f64 elements, got {:?}",
                                 other
-                            ))
+                            ));
                         }
                     };
                     Ok(HExpr::For {
@@ -867,12 +867,12 @@ fn lower_expect_node(
                         // in a match arm), use its fields: nested nullary
                         // ctors then infer concretely.
                         let mut inst_expected: Option<u32> = None;
-                        if nparams > 0 {
-                            if let Some(Ty::Adt(e)) = expected {
-                                let tpl = ctx.adt_insts.borrow().rev.get(&e).map(|(t, _)| *t);
-                                if tpl == Some(adt) {
-                                    inst_expected = Some(e);
-                                }
+                        if nparams > 0
+                            && let Some(Ty::Adt(e)) = expected
+                        {
+                            let tpl = ctx.adt_insts.borrow().rev.get(&e).map(|(t, _)| *t);
+                            if tpl == Some(adt) {
+                                inst_expected = Some(e);
                             }
                         }
                         let (adt, fields) = match inst_expected {
@@ -946,9 +946,7 @@ fn lower_expect_node(
                                 let Some(Ty::Adt(e)) = expected else {
                                     return Err(format!(
                                         "cannot infer the type argument(s) of {} — ascribe the binding, e.g. [x :- ({} ty) ({} ...)]",
-                                        head,
-                                        ctx.adts[adt as usize].name,
-                                        head
+                                        head, ctx.adts[adt as usize].name, head
                                     ));
                                 };
                                 // The expected instance must belong to the
@@ -999,13 +997,12 @@ fn lower_expect_node(
                         return generic_call(head, args, arg_tys, ctx);
                     }
                     // Generic callees are instantiated per call-site type.
-                    if let Some(raw) = ctx.raw_by_name.get(head.as_str()) {
-                        if !raw.ty_params.is_empty() {
-                            let arg_tys: Vec<Ty> =
-                                args.iter().map(|a| ty_of(a, env, ctx)).collect();
-                            let (mangled, _) = instantiate(head, &arg_tys, ctx)?;
-                            return Ok(HExpr::Call(mangled, args));
-                        }
+                    if let Some(raw) = ctx.raw_by_name.get(head.as_str())
+                        && !raw.ty_params.is_empty()
+                    {
+                        let arg_tys: Vec<Ty> = args.iter().map(|a| ty_of(a, env, ctx)).collect();
+                        let (mangled, _) = instantiate(head, &arg_tys, ctx)?;
+                        return Ok(HExpr::Call(mangled, args));
                     }
                     // Everything else must be a known callee. `even?` is the
                     // one builtin lowered through the generic call path.
@@ -1078,10 +1075,10 @@ pub(crate) fn ty_of(e: &HExpr, env: &Env, ctx: &Ctx) -> Ty {
             if let Some(r) = ctx.gens.borrow().call_rets.get(name.as_str()) {
                 return *r;
             }
-            if let Some(raw) = ctx.raw_by_name.get(name.as_str()) {
-                if raw.ty_params.is_empty() {
-                    return raw.ret;
-                }
+            if let Some(raw) = ctx.raw_by_name.get(name.as_str())
+                && raw.ty_params.is_empty()
+            {
+                return raw.ret;
             }
             // Monomorphized instantiation: the ret was recorded at lowering.
             ctx.inst
@@ -1328,11 +1325,12 @@ fn collect_source_captures(
 ) {
     match src {
         HSource::Var(v) => {
-            if !params.iter().any(|p| p == v) && !seen.iter().any(|s| s == v) {
-                if let Some(&t) = env.get(v) {
-                    seen.push(v.to_string());
-                    caps.push((v.to_string(), t));
-                }
+            if !params.iter().any(|p| p == v)
+                && !seen.iter().any(|s| s == v)
+                && let Some(&t) = env.get(v)
+            {
+                seen.push(v.to_string());
+                caps.push((v.to_string(), t));
             }
         }
         HSource::Lit(_) => {}
