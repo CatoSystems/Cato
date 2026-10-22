@@ -315,7 +315,8 @@ struct ModCtx {
 /// `Path::join`ed path carries the platform separator, and on Windows a
 /// `..` glued to its predecessor by a backslash (`reader\..`) must still
 /// resolve — otherwise the same module dedups to two spellings and its
-/// `ns` is declared twice.
+/// `ns` is declared twice. The result is re-joined with the platform
+/// separator, so it stays a native path (and renders as one in spans).
 fn normalize_path(p: &str) -> String {
     use std::path::{Component, Path};
 
@@ -339,11 +340,16 @@ fn normalize_path(p: &str) -> String {
             Component::Normal(c) => out.push(c.to_string_lossy().into_owned()),
         }
     }
-    let joined = out.join("/");
+    let sep = std::path::MAIN_SEPARATOR.to_string();
+    let joined = out.join(&sep);
     if prefix.is_empty() {
-        if rooted { format!("/{joined}") } else { joined }
+        if rooted {
+            format!("{sep}{joined}")
+        } else {
+            joined
+        }
     } else {
-        format!("{prefix}/{joined}")
+        format!("{prefix}{sep}{joined}")
     }
 }
 
@@ -518,7 +524,7 @@ mod normalize_path_tests {
     #[test]
     fn dedups_a_module_reached_by_two_spellings() {
         let canonical = normalize_path("D:\\a\\Cato\\selfhost/cato\\lib/span.cato");
-        assert_eq!(canonical, "D:/a/Cato/selfhost/cato/lib/span.cato");
+        assert_eq!(canonical, "D:\\a\\Cato\\selfhost\\cato\\lib\\span.cato");
         assert_eq!(
             normalize_path("D:\\a\\Cato\\selfhost/cato\\reader\\..\\lib/span.cato"),
             canonical
