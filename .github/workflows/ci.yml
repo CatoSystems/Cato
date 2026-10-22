@@ -1,5 +1,16 @@
 name: ci
 on: [push, pull_request]
+
+# A newer push to the same branch makes the older run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The LLVM release cato links against. llvm-sys 231 requires exactly
+  # 23.1.x, and the toolchain cache is keyed on it.
+  LLVM_VERSION: llvmorg-23.1.4
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -10,6 +21,8 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # The interpreter, the formatter and the language core: no LLVM, no
+  # toolchain, fast feedback.
   test:
     strategy:
       fail-fast: false
@@ -18,17 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install LLVM (Windows)
-        if: runner.os == 'Windows'
-        run: choco install llvm -y
       - name: Set up MSVC / Windows SDK (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
       - run: cargo build --workspace
       - run: cargo test --workspace
 
-  # In-process LLVM codegen + in-process lld: zero external processes.
-  hermetic-inprocess:
+  # The hermetic build: LLVM's code generation and lld's linkers inside the
+  # compiler process. One job per operating system, because the toolchain
+  # takes far longer to build than the rest of the job.
+  hermetic:
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest, windows-latest] }
@@ -36,123 +48,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Set up MSVC (Windows, shim C++ toolchain)
+      - name: Set up MSVC / Windows SDK (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - name: Cache LLVM prefix
-        id: llvm-cache
+      - name: Allow long paths (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' `
+            -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force
+      - name: Cache the toolchain
+        id: toolchain-cache
         uses: actions/cache@v4
         with:
           path: vendor/llvm-prefix
-          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Check out LLVM source (cache miss only)
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+          key: llvm-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/toolchain-config.cmake') }}
+      - name: Check out the LLVM source (cache miss only)
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
         uses: actions/checkout@v4
         with:
           repository: llvm/llvm-project
-          ref: llvmorg-23.1.4
+          ref: ${{ env.LLVM_VERSION }}
           path: llvm-project
-      - name: Build LLVM+lld prefix
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
+      # The script is idempotent: it verifies the prefix and returns when the
+      # toolchain is already there, and builds it otherwise.
+      - name: Build the toolchain
         shell: bash
         env:
           LLVM_SRC: ${{ github.workspace }}/llvm-project
         run: tools/build_toolchain.sh
-      - name: Verify cached LLVM prefix
-        if: steps.llvm-cache.outputs.cache-hit == 'true'
+      # The committed assets are validated, not rebuilt: a rebuild needs zig,
+      # which the runners do not have, and would test bytes that do not ship.
+      - name: Validate the assets
         shell: bash
-        run: vendor/llvm-prefix/bin/llvm-config --version
-      - name: Generate / validate assets
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            tools/gen_assets.sh
-          else
-            tools/gen_assets.sh --validate
-            tools/gen_assets.sh --refresh-lld
-          fi
+        run: tools/gen_assets.sh
       - name: Test (in-process lld)
         run: cargo test -p cato-cli --features in-process-lld
-
-  # static-llvm only: codegen in-process, link via the bundled lld subprocess.
-  # Windows excluded initially (extraction is unit-tested on every host).
-  hermetic-bundled:
-    strategy:
-      fail-fast: false
-      matrix: { os: [ubuntu-latest, macos-latest] }
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Cache LLVM prefix
-        id: llvm-cache
-        uses: actions/cache@v4
-        with:
-          path: vendor/llvm-prefix
-          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Check out LLVM source (cache miss only)
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: llvm/llvm-project
-          ref: llvmorg-23.1.4
-          path: llvm-project
-      - name: Build LLVM+lld prefix
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          LLVM_SRC: ${{ github.workspace }}/llvm-project
-        run: tools/build_toolchain.sh
-      - name: Verify cached LLVM prefix
-        if: steps.llvm-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: vendor/llvm-prefix/bin/llvm-config --version
-      - name: Generate / validate assets
-        shell: bash
-        run: |
-          if [ "$RUNNER_OS" = "macOS" ]; then
-            tools/gen_assets.sh
-          else
-            tools/gen_assets.sh --validate
-            tools/gen_assets.sh --refresh-lld
-          fi
       - name: Test (bundled lld)
         run: cargo test -p cato-cli --features static-llvm
-
-  # Cross-compile smoke: every non-host target's magic bytes validated from
-  # one host (the hermetic_cross_* integration tests).
-  hermetic-cross-smoke:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Cache LLVM prefix
-        id: llvm-cache
-        uses: actions/cache@v4
-        with:
-          path: vendor/llvm-prefix
-          key: llvm-${{ hashFiles('tools/build_toolchain.sh') }}-${{ runner.os }}-${{ runner.arch }}
-      - name: Check out LLVM source (cache miss only)
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
-        with:
-          repository: llvm/llvm-project
-          ref: llvmorg-23.1.4
-          path: llvm-project
-      - name: Build LLVM+lld prefix
-        if: steps.llvm-cache.outputs.cache-hit != 'true'
-        shell: bash
-        env:
-          LLVM_SRC: ${{ github.workspace }}/llvm-project
-        run: tools/build_toolchain.sh
-      - name: Verify cached LLVM prefix
-        if: steps.llvm-cache.outputs.cache-hit == 'true'
-        shell: bash
-        run: vendor/llvm-prefix/bin/llvm-config --version
-      - name: Generate / validate assets
-        shell: bash
-        run: |
-          tools/gen_assets.sh --validate
-          tools/gen_assets.sh --refresh-lld
-      - name: Test (cross smoke)
-        run: cargo test -p cato-cli --features in-process-lld hermetic_cross

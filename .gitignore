@@ -15,3 +15,7 @@ docs/superpowers/
 .opencode/
 .claude/
 /bench/results/
+
+# byproducts of the host round-trip fixture (written into the working
+# directory by the example program)
+cato_host_tmp.txt
