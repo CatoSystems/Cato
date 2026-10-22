@@ -84,28 +84,24 @@ pub fn emit_module_fast(
     }
 
     for d in fns {
-        if d.name != "main" && matches!(d.body, HExpr::Reduce(_)) {
-            // Top-level loop defn: the function IS the helper. (main is
-            // always emitted as a plain function so its i32 ABI is kept.)
-            let reduce = match &d.body {
-                HExpr::Reduce(r) => (**r).clone(),
-                _ => unreachable!(),
-            };
-            loops.push(make_loop_spec(&mangle(&d.name), reduce, &d.params));
-        } else {
-            let body = rewrite_body(
-                &d.body,
-                &mangle(&d.name),
-                &Scope::new(d.params.clone(), adts),
-                &mut idmap,
-                &mut loops,
-                &mut sigs,
-            )
-            .unwrap_or_else(|e| panic!("codegen: {}", e));
-            let mut nd = d.clone();
-            nd.body = body;
-            plain.push(nd);
-        }
+        // Every function keeps the ABI its signature advertises: a loop body
+        // is hoisted into a helper and called with the helper's own
+        // (data, len, captures) parameter order. Emitting the function *as*
+        // the helper would hand callers a signature they never pass — they
+        // use the declared parameter order — which corrupts the call on
+        // targets that assign argument registers by position (Windows x64).
+        let body = rewrite_body(
+            &d.body,
+            &mangle(&d.name),
+            &Scope::new(d.params.clone(), adts),
+            &mut idmap,
+            &mut loops,
+            &mut sigs,
+        )
+        .unwrap_or_else(|e| panic!("codegen: {}", e));
+        let mut nd = d.clone();
+        nd.body = body;
+        plain.push(nd);
     }
 
     let mut output: Vec<String> = Vec::new();
@@ -128,7 +124,7 @@ pub fn emit_module_fast(
     mdl.ensure_decl("declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1, i1)");
     // Deep-clone helpers for boxed (recursive) ADTs: clone must produce an
     // owning copy, so a boxed value's children are cloned recursively.
-    for (i, adt) in adts.iter().enumerate() {
+    for (i, _) in adts.iter().enumerate() {
         if boxed[i] {
             output.push(String::new());
             output.push(emit_adt_clone_fn(adts, &boxed, i as u32));
@@ -137,7 +133,7 @@ pub fn emit_module_fast(
     // Drop glue for every owning ADT (frees transitively; boxed ADTs also
     // free their box). Free-list reuse at the call sites keeps this cheap.
     let owns = mdl.owns.clone();
-    for (i, adt) in adts.iter().enumerate() {
+    for (i, _) in adts.iter().enumerate() {
         if owns[i] {
             output.push(String::new());
             output.push(emit_adt_drop_fn(adts, &owns, &boxed, i as u32));

@@ -68,7 +68,7 @@ fn unknown_flag_suggests_closest_match() {
     let src = demo_source();
     let out = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .arg("--emit-irr")
         .output()
         .expect("run cato");
@@ -84,7 +84,7 @@ fn unknown_flag_suggests_closest_match() {
 #[test]
 fn unknown_command_suggests_closest_match() {
     let src = demo_source();
-    let out = cato().arg("comple").arg(&src).output().expect("run cato");
+    let out = cato().arg("comple").arg(src).output().expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("did you mean 'compile'"), "got: {}", stderr);
@@ -94,7 +94,7 @@ fn unknown_command_suggests_closest_match() {
 #[test]
 fn bare_file_requires_subcommand() {
     let src = demo_source();
-    let out = cato().arg(&src).output().expect("run cato");
+    let out = cato().arg(src).output().expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     assert!(out.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -110,7 +110,7 @@ fn bare_file_requires_subcommand() {
 #[test]
 fn build_command_is_retired() {
     let src = demo_source();
-    let out = cato().arg("build").arg(&src).output().expect("run cato");
+    let out = cato().arg("build").arg(src).output().expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("renamed to 'compile'"), "got: {}", stderr);
@@ -120,7 +120,7 @@ fn build_command_is_retired() {
 #[test]
 fn run_command_is_retired() {
     let src = demo_source();
-    let out = cato().arg("run").arg(&src).output().expect("run cato");
+    let out = cato().arg("run").arg(src).output().expect("run cato");
     assert_eq!(out.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("cato repl"), "got: {}", stderr);
@@ -167,7 +167,7 @@ fn emit_ir_and_emit_ll_together_rejected() {
     let src = demo_source();
     let out = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .args(["--emit-ir", "--emit-ll", "/tmp/should_not_exist_x.ll"])
         .output()
         .expect("run cato");
@@ -182,8 +182,8 @@ fn two_positional_files_are_rejected() {
     let src = demo_source();
     let out = cato()
         .arg("compile")
-        .arg(&src)
-        .arg(&src)
+        .arg(src)
+        .arg(src)
         .output()
         .expect("run cato");
     assert_eq!(out.status.code(), Some(2));
@@ -207,7 +207,7 @@ fn check_mode_summarizes_on_stderr() {
         .join("target/ux_bin_demo");
     let out = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .arg("-o")
         .arg(&bin)
         .output()
@@ -253,7 +253,7 @@ fn short_flag_typo_suggests_opt_level() {
     let src = demo_source();
     let out = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .arg("-O")
         .output()
         .expect("run cato");
@@ -300,7 +300,7 @@ fn toolchain_failures_name_the_compiler() {
     let bin = std::env::temp_dir().join(format!("cato_ux_cc_{}", std::process::id()));
     let missing = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .arg("-o")
         .arg(&bin)
         .args(["--cc", "/definitely/not/a/cc"])
@@ -313,7 +313,7 @@ fn toolchain_failures_name_the_compiler() {
 
     let failing = cato()
         .arg("compile")
-        .arg(&src)
+        .arg(src)
         .arg("-o")
         .arg(&bin)
         .args(["--cc", "false"])

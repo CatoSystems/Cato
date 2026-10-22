@@ -10,20 +10,19 @@ pub fn build_program(prog: &[Expr]) -> Result<(Vec<AdtDef>, Vec<Defn>), String> 
     .map(|(a, d, _, _)| (a, d))
 }
 
+/// The lowered program: the ADT table, the defns, the out-of-line closure
+/// bodies, and the closure signature table (`Ty::Fn(i)` indexes it).
+pub type ProgramParts = (
+    Vec<AdtDef>,
+    Vec<Defn>,
+    Vec<crate::Lambda>,
+    Vec<(Vec<Ty>, Ty)>,
+);
+
 /// Build with per-top-level-form spans: parse, lowering and ownership errors
 /// are attributed to the enclosing `defn` / `deftype`. Also returns the
-/// out-of-line closure bodies and the closure signature table (Phase 14).
-pub fn build_program_located(
-    prog: &[(Expr, crate::ast::Span)],
-) -> Result<
-    (
-        Vec<AdtDef>,
-        Vec<Defn>,
-        Vec<crate::Lambda>,
-        Vec<(Vec<Ty>, Ty)>,
-    ),
-    String,
-> {
+/// out-of-line closure bodies and the closure signature table.
+pub fn build_program_located(prog: &[(Expr, crate::ast::Span)]) -> Result<ProgramParts, String> {
     build_program_located_with(prog, true)
 }
 
@@ -33,15 +32,7 @@ pub fn build_program_located(
 pub fn build_program_located_with(
     prog: &[(Expr, crate::ast::Span)],
     infer_lending: bool,
-) -> Result<
-    (
-        Vec<AdtDef>,
-        Vec<Defn>,
-        Vec<crate::Lambda>,
-        Vec<(Vec<Ty>, Ty)>,
-    ),
-    String,
-> {
+) -> Result<ProgramParts, String> {
     use crate::diagnostics::locate;
     // Pass 0a: collect deftype headers so field types can reference any
     // declared template regardless of declaration order.
@@ -199,7 +190,6 @@ pub fn build_program_located_with(
     let extra_adts: Vec<AdtDef> = ctx.adt_insts.borrow_mut().extra.drain(..).collect();
     let fn_sigs = ctx.fn_sigs.borrow().clone();
 
-    let mut adts = adts;
     adts.extend(extra_adts);
     // Ownership facts over the combined table: monomorphized instances
     // (`(AList str)`, …) index past the templates and may own heap memory;
@@ -216,7 +206,7 @@ pub fn build_program_located_with(
         .map(|d| d.name.clone())
         .collect();
     let alias_ret = compute_alias_ret(&out);
-    if infer_lending && !std::env::var_os("CATO_NO_INFER").is_some() {
+    if infer_lending && std::env::var_os("CATO_NO_INFER").is_none() {
         super::infer::infer_param_modes(
             &mut out,
             &rets,

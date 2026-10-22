@@ -390,6 +390,11 @@ pub(crate) fn emit_match_node(
     res
 }
 
+/// Emits an expression in loop-tail position: the merged value, or `None`
+/// when the tail always `recur`s and contributes no phi input.
+type LoopTail =
+    dyn Fn(&HExpr, Ty, &mut FnCtx, &mut Mdl, &HashMap<String, (Ty, Vec<Ty>)>) -> Option<String>;
+
 /// A `match` on a loop's tail path: arm bodies go through the recur-aware
 /// `emit_loop_tail`, so an arm whose body branches back to the loop head
 /// contributes no phi input. Returns `None` when every arm recurs — the
@@ -399,13 +404,7 @@ pub(crate) fn emit_match_in_loop(
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
-    loop_tail: &dyn Fn(
-        &HExpr,
-        Ty,
-        &mut FnCtx,
-        &mut Mdl,
-        &HashMap<String, (Ty, Vec<Ty>)>,
-    ) -> Option<String>,
+    loop_tail: &LoopTail,
 ) -> Option<String> {
     let HExpr::Match { scrut, arms, ty } = e else {
         panic!("codegen: emit_match_in_loop on non-match")
@@ -540,6 +539,7 @@ pub(crate) fn emit_match_in_loop(
 /// Store one constructor argument into its slot offset. Strings and boxed
 /// ADT children go through ptrtoint (the payload is [N x i64]); vectors
 /// spread across three slots; inline ADT children are copied whole.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_field_store(
     arg: &HExpr,
     fty: &Ty,
@@ -651,6 +651,7 @@ pub(crate) fn emit_field_store(
 /// children come back as plain owning pointers; inline children bind a
 /// pointer into the parent struct (values are immutable, so aliasing the
 /// embedded region is safe); vectors rebuild a header slot.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_field_load(
     binder: &str,
     fty: &Ty,
@@ -1108,6 +1109,7 @@ pub(crate) fn emit_adt_drop_fn(adts: &[AdtDef], owns: &[bool], boxed: &[bool], i
 
 /// Field free inside `@drop__`: `nofree_box` marks the inline-variant where
 /// the storage itself is not freed.
+#[allow(clippy::too_many_arguments)]
 fn free_field(
     out: &mut String,
     f: &Ty,

@@ -38,10 +38,7 @@ pub(crate) fn has_ctl(e: &HExpr) -> bool {
         HExpr::MapLit(pairs) => pairs.iter().any(|(k, v)| has_ctl(k) || has_ctl(v)),
         HExpr::MapAssoc { m, k, v } => has_ctl(m) || has_ctl(k) || has_ctl(v),
         HExpr::MapGet {
-            src,
-            key,
-            default,
-            res,
+            src, key, default, ..
         } => has_ctl(src) || has_ctl(key) || default.as_deref().map(has_ctl).unwrap_or(false),
         HExpr::SetLit(vs) => vs.iter().any(has_ctl),
         HExpr::SetConj { s, x } | HExpr::SetDisj { s, x } | HExpr::SetContains { s, x } => {
@@ -248,10 +245,7 @@ pub(crate) fn collect_vars<F: FnMut(String)>(h: &HExpr, f: &mut F) {
             collect_vars(v, f);
         }
         HExpr::MapGet {
-            src,
-            key,
-            default,
-            res,
+            src, key, default, ..
         } => {
             collect_vars(src, f);
             collect_vars(key, f);

@@ -84,17 +84,6 @@ pub(crate) fn emit_float(
                 call_user(name, args, c, mdl, sigs)
             }
         }
-        HExpr::Let(binds, body, frees, rebind) => {
-            emit_let_scoped(binds, frees, rebind, c, mdl, sigs, |c, mdl| {
-                emit_float(body, c, mdl, sigs)
-            })
-        }
-        HExpr::Seq(vs) => {
-            for v in &vs[..vs.len() - 1] {
-                emit_stmt(v, c, mdl, sigs);
-            }
-            emit_float(vs.last().unwrap(), c, mdl, sigs)
-        }
         HExpr::ConstI64(v) => {
             let t = c.temp();
             c.line(&format!("  {} = sitofp i64 {} to double", t, v));

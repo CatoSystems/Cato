@@ -10,6 +10,9 @@
 
 use super::*;
 
+/// One tail `recur`: the argument expressions and the bindings visible at it.
+type RecurSite = (Vec<HExpr>, Vec<(String, Origin)>);
+
 /// One open `loop` under checking. `scope` lists, innermost last, every
 /// name the loop's body has bound on the path being checked — the loop
 /// variables first, then `let` bindings (droppable) and match binders
@@ -266,7 +269,7 @@ impl<'a> BCheck<'a> {
             tys2.insert(n.clone(), *t);
             scope.push((n.clone(), Origin::LoopVar));
         }
-        let mut sites: Vec<(Vec<HExpr>, Vec<(String, Origin)>)> = Vec::new();
+        let mut sites: Vec<RecurSite> = Vec::new();
         self.collect_recur_sites(body, &mut scope, &mut tys2, &mut sites);
         loop {
             let mut changed = false;
@@ -293,7 +296,7 @@ impl<'a> BCheck<'a> {
         e: &HExpr,
         scope: &mut Vec<(String, Origin)>,
         tys: &mut HashMap<String, Ty>,
-        sites: &mut Vec<(Vec<HExpr>, Vec<(String, Origin)>)>,
+        sites: &mut Vec<RecurSite>,
     ) {
         match e {
             HExpr::Recur(args, _) => sites.push((args.clone(), scope.clone())),

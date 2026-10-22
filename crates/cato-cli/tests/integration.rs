@@ -290,7 +290,7 @@ fn compiles_count_even_below_to_expected_output() {
 (defn main []
   (print-i64 (count-even-below (vec-i64 1 2 3 4 5 6) 6)))
 "#;
-    assert_eq!(compile_and_run("count_even_below", &src), "2\n");
+    assert_eq!(compile_and_run("count_even_below", src), "2\n");
 }
 
 #[test]

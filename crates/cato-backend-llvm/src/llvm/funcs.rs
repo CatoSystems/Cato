@@ -841,6 +841,7 @@ fn read_grow_slot_full(slot: &str, c: &mut FnCtx) -> (String, String, String) {
 }
 
 /// Join one (ptr, len) pair arriving from two predecessor blocks.
+#[allow(clippy::too_many_arguments)]
 fn phi_vec_pair(
     tp: &str,
     tl: &str,

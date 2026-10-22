@@ -6,6 +6,9 @@ mod loops;
 mod roots;
 use loops::*;
 
+/// A branch's live state: the variable states and the owning bits.
+type LiveState<'a> = (&'a HashMap<String, VState>, &'a HashMap<String, bool>);
+
 /// Debug toggles (bisection aids for planner changes): CATO_NO_HOIST,
 /// CATO_NO_ARMFREE, CATO_NO_BRANCHFREE, CATO_NO_ESCTRANSFER, CATO_NO_LOOPOWN,
 /// CATO_NO_LOOPDROP (recur and loop-exit drops) disable one rule each.
@@ -194,8 +197,6 @@ pub(crate) struct BCheck<'a> {
     /// free also runs at those `recur`s, so its skip set must see them.
     div_moved: HashSet<String>,
     pub(crate) errs: Vec<String>,
-    /// The definition under check (diagnostics only).
-    dname: String,
     /// Aliasing binders of the innermost enclosing match arms whose box is
     /// freed at arm exit (name -> is the box freeable). A move of such a
     /// binder on one branch leaves its field for the glue to skip; the
@@ -402,7 +403,6 @@ fn plan_drops_inner(
         loop_owned: HashSet::new(),
         div_moved: HashSet::new(),
         errs: Vec::new(),
-        dname: name.to_string(),
         freeable_alias: HashMap::new(),
         tmp_counter: 0,
         occ: HashMap::new(),
@@ -1890,7 +1890,7 @@ impl<'a> BCheck<'a> {
                     let mut bodies: Vec<&mut HExpr> = vec![&mut **t, &mut **e2];
                     self.branch_frees(&pre_st, &pre_owns, tys, &mut bodies, &sts, &[], None);
                 }
-                let live: Vec<(&HashMap<String, VState>, &HashMap<String, bool>)> = [
+                let live: Vec<LiveState> = [
                     (!t_div).then_some((&t_st, &t_owns)),
                     (!e_div).then_some((&e_st, &e_owns)),
                 ]
@@ -2566,6 +2566,7 @@ impl<'a> BCheck<'a> {
     /// enclosing arm frees at exit (its slot is skipped there). A branch
     /// whose value is the binding, or that recurs, is left alone; so is a
     /// name the branch rebinds (`shadow`: that branch's own binders).
+    #[allow(clippy::too_many_arguments)]
     fn branch_frees(
         &mut self,
         pre_st: &HashMap<String, VState>,

@@ -104,7 +104,7 @@ fn store_capture(
     };
     match ty {
         Ty::Vec(_) | Ty::Map | Ty::Set => {
-            let (p, l, cap) = emit_collection_header(name, ty, c, mdl, sigs);
+            let (p, l, cap) = emit_collection_header(name, c, mdl, sigs);
             let g0 = gep(c, 0);
             c.line(&format!("  store ptr {}, ptr {}, align 8", p, g0));
             let g1 = gep(c, 1);
@@ -168,7 +168,6 @@ fn store_capture(
 /// Read a collection binding's live (ptr, len, cap) header.
 fn emit_collection_header(
     name: &str,
-    ty: Ty,
     c: &mut FnCtx,
     mdl: &mut Mdl,
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
@@ -468,10 +467,6 @@ pub(crate) fn emit_lambda(
     // Bool returns widen back from i8 loads; ret_ll already i1 and val is i1.
     text.push_str(&format!("{} {}\n}}\n", ret_ll, val));
     text
-}
-
-fn c_temp_label(prefix: &str, n: usize) -> String {
-    format!("%{}{}", prefix, n)
 }
 
 /// The drop-glue helper for a closure: `@drop__lambda_N(ptr env)`. Frees the

@@ -410,7 +410,7 @@ fn count_walk(
             count_walk(a, targets, shadowed, counts);
             count_walk(b, targets, shadowed, counts);
         }
-        HExpr::StrNth { s, idx, res } => {
+        HExpr::StrNth { s, idx, .. } => {
             count_walk(s, targets, shadowed, counts);
             count_walk(idx, targets, shadowed, counts);
         }
@@ -457,10 +457,7 @@ fn count_walk(
             count_walk(v, targets, shadowed, counts);
         }
         HExpr::MapGet {
-            src,
-            key,
-            default,
-            res,
+            src, key, default, ..
         } => {
             count_walk(src, targets, shadowed, counts);
             count_walk(key, targets, shadowed, counts);
@@ -1008,10 +1005,7 @@ pub fn visit_nodes(e: &HExpr, f: &mut dyn FnMut(&HExpr)) {
             visit_nodes(v, f);
         }
         HExpr::MapGet {
-            src,
-            key,
-            default,
-            res,
+            src, key, default, ..
         } => {
             visit_nodes(src, f);
             visit_nodes(key, f);

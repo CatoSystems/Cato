@@ -157,6 +157,29 @@ fn capture_is_typed_from_param() {
 }
 
 #[test]
+fn reduce_body_keeps_the_declared_abi() {
+    // A defn whose body is a reduce is emitted as a wrapper around a hoisted
+    // helper. The helper's (data, len, captures) order is not the declared
+    // ABI — callers pass the declared order — so the wrapper must not be
+    // emitted as the helper itself, or the call corrupts wherever argument
+    // registers are assigned by position (Windows x64).
+    let ir = emit(
+        "(defn total [x0 :- f64 xs :- (Vector f64)] :- f64 (reduce + x0 xs))
+         (defn main [] (print-f64 (total 0.5 [1.25 2.0])))",
+    );
+    // Definition and each call agree on (double, ptr, i64); the helper keeps
+    // the loop ABI and is called that way.
+    assert!(
+        ir.contains("define double @total(double %x0, ptr"),
+        "{}",
+        ir
+    );
+    assert!(ir.contains("call double @total(double"), "{}", ir);
+    assert!(ir.contains("define double @total_reduce_0(ptr"), "{}", ir);
+    assert!(!ir.contains("@total(ptr"), "{}", ir);
+}
+
+#[test]
 fn f64_comparison_uses_fcmp() {
     let ir = emit("(defn f [a :- f64 b :- f64] :- bool (< a b))");
     assert!(ir.contains("fcmp olt double"));

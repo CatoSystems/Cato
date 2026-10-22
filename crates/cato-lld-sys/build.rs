@@ -128,7 +128,7 @@ fn llvm_config_output(llvm_config: &Path, args: &[&str]) -> String {
 fn llvm_component_libs(llvm_config: &Path) -> Vec<String> {
     let out = llvm_config_output(llvm_config, &["--libnames", "--link-static"]);
     out.split_whitespace()
-        .map(|name| component_lib_name(name))
+        .map(component_lib_name)
         .filter(|name| !name.is_empty())
         .collect()
 }
@@ -150,9 +150,7 @@ fn component_lib_name(file_name: &str) -> String {
 /// llvm-config reports them as `-lfoo` on Unix and as `foo.lib` on MSVC.
 fn system_libs(llvm_config: &Path) -> Vec<String> {
     let out = llvm_config_output(llvm_config, &["--system-libs", "--link-static"]);
-    out.split_whitespace()
-        .filter_map(|token| system_lib_name(token))
-        .collect()
+    out.split_whitespace().filter_map(system_lib_name).collect()
 }
 
 /// Turn a system library reference into a bare name rustc can link.

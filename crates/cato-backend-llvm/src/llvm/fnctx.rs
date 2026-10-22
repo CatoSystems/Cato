@@ -1,10 +1,17 @@
 use super::*;
 
+/// A vector binding's live `(data, len, elem)` registers.
+type VecSlots = (String, String, Elem);
+
+/// An innermost `loop`: its variable slots `(name, alloca, ty)` and the head
+/// block label that `recur` branches back to.
+type LoopFrame = (Vec<(String, String, Ty)>, String);
+
 /// Saved binding-map entries for the names one emission scope rebinds.
 #[derive(Default)]
 pub(crate) struct BindScope {
     scalar: Vec<(String, Option<(String, Ty)>)>,
-    vecs: Vec<(String, Option<(String, String, Elem)>)>,
+    vecs: Vec<(String, Option<VecSlots>)>,
     grow: Vec<(String, Option<(String, Elem)>)>,
     growm: Vec<(String, Option<(String, Ty)>)>,
 }
@@ -27,9 +34,8 @@ pub(crate) struct FnCtx {
     pub(crate) grow: HashMap<String, (String, Elem)>,
     /// Growable map bindings: name -> header slot (entries are 16 bytes).
     pub(crate) growm: HashMap<String, (String, Ty)>,
-    /// Innermost `loop` (S2): variable slots `(name, alloca, ty)` and the
-    /// head block label that `recur` branches back to.
-    pub(crate) loop_frame: Option<(Vec<(String, String, Ty)>, String)>,
+    /// The innermost `loop`, if any.
+    pub(crate) loop_frame: Option<LoopFrame>,
     /// Loop variable whose `recur` argument is being emitted and is exactly
     /// `(conj name x)`: the append replaces the value the slot hands to the
     /// next iteration, so it may ride the growable slot in place.

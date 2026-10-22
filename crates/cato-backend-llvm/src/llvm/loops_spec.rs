@@ -191,19 +191,10 @@ pub(crate) fn reduce_init(r: &HReduce) -> Option<&HExpr> {
     }
 }
 
-/// An f64 accumulator: an f64 init literal or a promoted int init
-/// (an `ICast` to f64 inserted by HIR when elements are f64).
+/// Whether the reduce's accumulator — and so its return type — is f64.
 pub(crate) fn acc_ret_is_f64(r: &HReduce) -> bool {
     match r {
         HReduce::Pipeline { acc_ty, .. } | HReduce::Closure { acc_ty, .. } => *acc_ty == Ty::F64,
-    }
-}
-
-pub(crate) fn init_is_f64(init: &HExpr) -> bool {
-    match init {
-        HExpr::ConstF64(_) => true,
-        HExpr::ICast(_, _, Ty::F64) => true,
-        _ => false,
     }
 }
 

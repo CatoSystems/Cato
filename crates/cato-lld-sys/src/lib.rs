@@ -1,4 +1,7 @@
-use std::ffi::{c_char, CStr};
+use std::ffi::CStr;
+
+#[cfg(feature = "link")]
+use std::ffi::c_char;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flavor {

@@ -144,7 +144,7 @@ pub fn parse(src: &str) -> Result<Vec<Top>, FmtError> {
                 let f = stack.pop().ok_or_else(|| {
                     FmtError::new(format!("unbalanced delimiter '{}'", tok.text), tok_offset)
                 })?;
-                if tok.text.chars().next() != Some(f.expected) {
+                if !tok.text.starts_with(f.expected) {
                     return Err(FmtError::new(
                         format!("unbalanced delimiter '{}'", tok.text),
                         tok_offset,

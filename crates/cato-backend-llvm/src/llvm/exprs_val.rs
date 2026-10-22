@@ -1,31 +1,6 @@
 use super::*;
 
-pub(crate) fn materialize_vec_lit(value: &HExpr, name: &str, c: &mut FnCtx, mdl: &mut Mdl) {
-    let HExpr::VecLit(lit) = value else {
-        panic!("codegen: can only materialize vector literal bindings")
-    };
-    let (label, len, elem) = mdl.mint_vec(lit);
-    let t_v = c.temp();
-    // The slot hoists to the entry prelude: a literal evaluated inside a
-    // loop body would otherwise alloca once per iteration and walk the
-    // stack (the same discipline as emit_conj's growable slots).
-    c.prelude
-        .push(format!("  {} = alloca %VecI64, align 8", t_v));
-    c.line(&format!(
-        "  store %VecI64 {{ ptr {}, i64 {}, i64 {} }}, ptr {}, align 8",
-        label, len, len, t_v
-    ));
-    let t_lv = c.temp();
-    c.line(&format!("  {} = load %VecI64, ptr {}, align 8", t_lv, t_v));
-    let t_d = c.temp();
-    let t_l = c.temp();
-    c.line(&format!("  {} = extractvalue %VecI64 {}, 0", t_d, t_lv));
-    c.line(&format!("  {} = extractvalue %VecI64 {}, 1", t_l, t_lv));
-    c.vecs.insert(name.to_string(), (t_d, t_l, elem));
-}
-
 /// Load a growable binding's current (ptr, len) — reads the live header.
-
 pub(crate) fn grow_val(c: &mut FnCtx, name: &str) -> (String, String, Elem) {
     let (slot, elem) = c
         .grow
@@ -53,7 +28,6 @@ pub(crate) fn grow_val(c: &mut FnCtx, name: &str) -> (String, String, Elem) {
 /// bindings load their live header; lets free-stand by emitting their
 /// bindings first. Anything beyond the Var/VecLit fast paths flows through
 /// the general `emit_vec_pair` (if/match/conj/clone/call/...).
-
 pub(crate) fn vec_arg(
     expr: &HExpr,
     c: &mut FnCtx,
@@ -73,7 +47,7 @@ pub(crate) fn vec_arg(
         HExpr::VecLit(lit) => {
             let (label, len, elem) = mdl.mint_vec(lit);
             let t_v = c.temp();
-            // Hoisted to the entry prelude: loop-safe, like materialize_vec_lit.
+            // Hoisted to the entry prelude: loop-safe, one alloca per literal.
             c.prelude
                 .push(format!("  {} = alloca %VecI64, align 8", t_v));
             c.line(&format!(
@@ -263,7 +237,7 @@ pub(crate) fn emit_get(
         idx,
         default,
         ty,
-        res,
+        ..
     } = e
     else {
         panic!("codegen: emit_get on non-get")

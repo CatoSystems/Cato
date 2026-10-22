@@ -53,7 +53,7 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 #[test]
 fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
-    let (root, entry, cato) = setup();
+    let (root, entry, _cato) = setup();
     let rt = root.join("runtime/runtime.c");
     let fixtures = walk(&root.join("selfhost/cato/hir/fixtures"));
     let mut ran = 0;

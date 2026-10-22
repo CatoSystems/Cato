@@ -355,7 +355,7 @@ fn fold_one(e: HExpr) -> HExpr {
 
 fn fold_minmax(a: Box<HExpr>, b: Box<HExpr>, ty: Ty, is_min: bool) -> HExpr {
     match (as_f64(&a), as_f64(&b), ty) {
-        (Some(x), Some(y), t) if t == Ty::F64 => {
+        (Some(x), Some(y), Ty::F64) => {
             if x.is_nan() || y.is_nan() {
                 return HExpr::Min(a, b, ty).pick_max(!is_min);
             }

@@ -237,6 +237,9 @@ fn link(ll_path: &Path, cli: &Cli, out: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Emit IR for `program`, honouring the CLI's target selection. Used by the
+/// hermetic build, which links the IR itself instead of invoking `cc`.
+#[cfg(feature = "static-llvm")]
 pub fn emit_llvm_ir(program: &Program, cli: &Cli) -> Result<String, String> {
     let backend = LlvmBackend {
         fast: cli.fast,

@@ -384,12 +384,15 @@ pub(crate) fn parse_raw(
     })
 }
 
+/// A parsed parameter list: each `(name, ty)` and the parameter's borrow kind.
+type ParsedParams = (Vec<(String, Ty)>, Vec<Borrow>);
+
 pub(crate) fn parse_params(
     params: &[Expr],
     tcx: &TypeCx,
     ty_params: &mut Vec<String>,
     fnsigs: &mut Vec<(Vec<Ty>, Ty)>,
-) -> Result<(Vec<(String, Ty)>, Vec<Borrow>), String> {
+) -> Result<ParsedParams, String> {
     let mut out = Vec::new();
     let mut borrows = Vec::new();
     let mut i = 0;
@@ -478,7 +481,7 @@ pub(crate) fn parse_ty(
             }
             if h != "Vector" && tcx.adt_by_name.contains_key(h.as_str()) {
                 // Applied ADT type: `(Name arg ...)` instantiates a generic
-                // ADT eagerly (S1a). Arguments are type symbols — scalars or
+                // ADT eagerly. Arguments are type symbols — scalars or
                 // this defn's own type parameters.
                 let args: Vec<Ty> = items[1..]
                     .iter()
@@ -561,14 +564,12 @@ pub(crate) fn parse_ty_sym(
     if let Some(t) = builtin_ty_name(s) {
         return Ok(t);
     }
-    match s {
-        other => match adt_by_name.get(other) {
-            Some(&i) => Ok(Ty::Adt(i)),
-            None if is_ty_param_name(other) => Ok(Ty::Param(register_ty_param(other, ty_params))),
-            // Lowercase unknowns are typos, not type variables: reject them
-            // instead of silently genericizing the defn.
-            None => Err(format!("unknown type name {}", other)),
-        },
+    match adt_by_name.get(s) {
+        Some(&i) => Ok(Ty::Adt(i)),
+        None if is_ty_param_name(s) => Ok(Ty::Param(register_ty_param(s, ty_params))),
+        // Lowercase unknowns are typos, not type variables: reject them
+        // instead of silently genericizing the defn.
+        None => Err(format!("unknown type name {}", s)),
     }
 }
 

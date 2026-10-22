@@ -42,8 +42,12 @@ pub fn read_all_spanned(input: &str) -> Result<(Vec<Expr>, Vec<Span>), ReadErr> 
     read_core(input, false).map(|(forms, spans, _)| (forms, spans))
 }
 
+/// The reader's output for one input: the top-level forms, their spans, and
+/// (with `trees`) each form's span tree.
+type ReadOutput = (Vec<Expr>, Vec<Span>, Vec<SpanNode>);
+
 /// The reader. With `trees`, also builds each top-level form's span tree.
-fn read_core(input: &str, trees: bool) -> Result<(Vec<Expr>, Vec<Span>, Vec<SpanNode>), ReadErr> {
+fn read_core(input: &str, trees: bool) -> Result<ReadOutput, ReadErr> {
     let bytes = input.as_bytes();
     let mut i = 0usize;
     let mut top = Vec::new();
@@ -232,7 +236,7 @@ impl Trees {
 fn push_node(
     e: Expr,
     span: Span,
-    stack: &mut Vec<Vec<Expr>>,
+    stack: &mut [Vec<Expr>],
     top: &mut Vec<Expr>,
     spans: &mut Vec<Span>,
     trees: &mut Trees,

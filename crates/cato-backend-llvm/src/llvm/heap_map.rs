@@ -7,10 +7,7 @@ pub(crate) fn emit_map_get(
     sigs: &HashMap<String, (Ty, Vec<Ty>)>,
 ) -> String {
     let HExpr::MapGet {
-        src,
-        key,
-        default,
-        res,
+        src, key, default, ..
     } = e
     else {
         panic!("codegen: emit_map_get on non-mapget")

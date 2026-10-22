@@ -9,11 +9,7 @@ pub(crate) fn emit_cast(r: String, src: Ty, target: Ty, c: &mut FnCtx) -> String
         return r;
     }
     let t = c.temp();
-    let sll = if src.is_float() {
-        Mdl::ll_scalar(src)
-    } else {
-        Mdl::ll_scalar(src)
-    };
+    let sll = Mdl::ll_scalar(src);
     let dll = Mdl::ll_scalar(target);
     if src.is_int() && target.is_int() {
         let (sb, db) = (src.int_bits(), target.int_bits());

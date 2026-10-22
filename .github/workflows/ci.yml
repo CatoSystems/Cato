@@ -1,10 +1,19 @@
 name: ci
-on: [push, pull_request]
+on:
+  # Pull requests are covered by the pull_request event; a push to a topic
+  # branch would run the same commit twice.
+  push:
+    branches: [main]
+  pull_request:
 
 # A newer push to the same branch makes the older run pointless.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
+
+# The checks only read the repository.
+permissions:
+  contents: read
 
 env:
   # The LLVM release cato links against. llvm-sys 231 requires exactly
@@ -12,41 +21,59 @@ env:
   LLVM_VERSION: llvmorg-23.1.4
 
 jobs:
-  fmt:
+  # Rust formatting: no build, no toolchain, seconds of feedback.
+  format:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
+  # Lints, held at zero warnings.
+  clippy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
   # The interpreter, the formatter and the language core: no LLVM, no
   # toolchain, fast feedback.
-  test:
+  tests:
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest, windows-latest] }
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Set up MSVC / Windows SDK (Windows)
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
-      - run: cargo build --workspace
       - run: cargo test --workspace
 
   # The hermetic build: LLVM's code generation and lld's linkers inside the
   # compiler process. One job per operating system, because the toolchain
-  # takes far longer to build than the rest of the job.
+  # takes far longer to build than the rest of the job. The prefix is cached
+  # per (LLVM release, OS, arch, toolchain config), so only a config or LLVM
+  # change rebuilds it.
   hermetic:
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest, windows-latest] }
     runs-on: ${{ matrix.os }}
+    # A cold toolchain build is long, so the bound is generous; it exists to
+    # fail a stuck cmake/compiler rather than let the job sit for six hours.
+    timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - name: Set up MSVC / Windows SDK (Windows)
         if: runner.os == 'Windows'
@@ -59,13 +86,13 @@ jobs:
             -Name 'LongPathsEnabled' -Value 1 -PropertyType DWORD -Force
       - name: Cache the toolchain
         id: toolchain-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: vendor/llvm-prefix
           key: llvm-${{ env.LLVM_VERSION }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tools/toolchain-config.cmake') }}
       - name: Check out the LLVM source (cache miss only)
         if: steps.toolchain-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: llvm/llvm-project
           ref: ${{ env.LLVM_VERSION }}

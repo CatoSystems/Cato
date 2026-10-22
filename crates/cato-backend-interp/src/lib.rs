@@ -84,10 +84,10 @@ thread_local! {
 pub struct Interpreter<'p> {
     defns: HashMap<String, &'p cato_core::Defn>,
     out: String,
-    /// Stash for the innermost loop's `recur` arguments (S2). Validation
+    /// Stash for the innermost loop's `recur` arguments. Validation
     /// guarantees the nearest loop is the target, so one slot suffices.
     recur_sink: Option<Vec<Value>>,
-    /// The interpreted program's arguments (`(args)`), S3.
+    /// The interpreted program's arguments (`(args)`).
     program_args: Vec<String>,
     /// Shared append-only symbol tables (`cato-stab-*` externs). A handle is
     /// an index here; entries are never removed, mirroring the runtime.
@@ -369,13 +369,13 @@ impl<'p> Interpreter<'p> {
             "cato-shl" => {
                 let a = int_of(&args[0]);
                 let n = int_of(&args[1]);
-                let v = if n < 0 || n >= 64 { 0 } else { a << n };
+                let v = if !(0..64).contains(&n) { 0 } else { a << n };
                 return Ok(Value::Int(v));
             }
             "cato-shr" => {
                 let a = int_of(&args[0]);
                 let n = int_of(&args[1]);
-                let v = if n < 0 || n >= 64 {
+                let v = if !(0..64).contains(&n) {
                     if a < 0 {
                         -1
                     } else {
@@ -389,7 +389,11 @@ impl<'p> Interpreter<'p> {
             "cato-ushr" => {
                 let a = int_of(&args[0]) as u64;
                 let n = int_of(&args[1]);
-                let v = if n < 0 || n >= 64 { 0 } else { (a >> n) as i64 };
+                let v = if !(0..64).contains(&n) {
+                    0
+                } else {
+                    (a >> n) as i64
+                };
                 return Ok(Value::Int(v));
             }
             "cato-popcount" => {
@@ -452,7 +456,7 @@ impl<'p> Interpreter<'p> {
     }
 
     fn eval(&mut self, e: &cato_core::hir::HExpr, env: &mut HashMap<String, Value>) -> R<Value> {
-        use cato_core::hir::{BinOp, HExpr, Ty, VLit};
+        use cato_core::hir::{HExpr, Ty, VLit};
         Ok(match e {
             HExpr::ConstI64(v) => Value::Int(*v),
             HExpr::ConstB(v) => Value::Bool(*v),
@@ -1172,7 +1176,7 @@ impl<'p> Interpreter<'p> {
         r: &cato_core::hir::HReduce,
         env: &mut HashMap<String, Value>,
     ) -> R<Value> {
-        use cato_core::hir::{BinOp, HReduce};
+        use cato_core::hir::HReduce;
         let (init, src, maps, filters, closure): (
             _,
             _,

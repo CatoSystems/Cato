@@ -591,11 +591,15 @@ pub(crate) struct InstState {
     pub(crate) extra: Vec<Defn>,
 }
 
+/// A closure body as stored during lowering: the mangled name, the captures,
+/// the parameters, the return type, and the body.
+pub(crate) type LambdaDef = (String, Vec<(String, Ty)>, Vec<(String, Ty)>, Ty, HExpr);
+
 pub(crate) struct Ctx<'a> {
     pub(crate) raw_by_name: &'a HashMap<&'a str, &'a RawDefn>,
     pub(crate) adts: &'a [AdtDef],
     pub(crate) inst: RefCell<InstState>,
-    /// Monomorphized ADT instances (S1a).
+    /// Monomorphized ADT instances.
     pub(crate) adt_insts: RefCell<AdtInsts>,
     /// Generic-function (multimethod) state: method table, hidden defns.
     pub(crate) gens: RefCell<GenState>,
@@ -603,7 +607,7 @@ pub(crate) struct Ctx<'a> {
     /// `Ty::Fn(i)` indexes it. Also drained into `Program::fn_sigs`.
     pub(crate) fn_sigs: RefCell<Vec<(Vec<Ty>, Ty)>>,
     /// Out-of-line closure bodies for the code backends.
-    pub(crate) lambdas: RefCell<Vec<(String, Vec<(String, Ty)>, Vec<(String, Ty)>, Ty, HExpr)>>,
+    pub(crate) lambdas: RefCell<Vec<LambdaDef>>,
 }
 
 pub fn build(prog: &[Expr]) -> Result<Vec<Defn>, String> {
@@ -655,8 +659,6 @@ impl Borrow {
         self == Borrow::Owned
     }
 }
-
-/// Does this expression fork into basic blocks? (codegen-consistent)
 
 impl<'a> Ctx<'a> {
     /// Resolve a constructor name to (adt index, variant index, field types).

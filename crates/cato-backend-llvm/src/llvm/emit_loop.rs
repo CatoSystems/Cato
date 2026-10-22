@@ -603,7 +603,7 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
     for hd in &handles {
         c.prelude.push(format!("  {} = alloca ptr, align 8", hd));
     }
-    for i in 0..t {
+    for (i, hn) in handles.iter().enumerate() {
         let base = c.temp();
         c.line(&format!(
             "  {} = getelementptr inbounds i8, ptr {}, i64 {}",
@@ -688,17 +688,16 @@ pub(crate) fn emit_parallel_runners(spec: &LoopSpec, mdl: &mut Mdl) -> String {
             };
             c.line(&format!("  store {} {}, ptr {}, align 8", ll, reg, cf));
         }
-        let hn = &handles[i];
         let treg = c.temp();
         c.line(&format!(
             "  {} = call i64 @cato_thread_spawn(ptr {}, ptr @{}_tramp, ptr {})",
             treg, hn, h, base
         ));
     }
-    for i in 0..t {
+    for slot in &handles {
         // The shim wrote the opaque handle into the slot; join reads it back.
         let hv = c.temp();
-        c.line(&format!("  {} = load ptr, ptr {}, align 8", hv, handles[i]));
+        c.line(&format!("  {} = load ptr, ptr {}, align 8", hv, slot));
         let treg = c.temp();
         c.line(&format!(
             "  {} = call i64 @cato_thread_join(ptr {})",

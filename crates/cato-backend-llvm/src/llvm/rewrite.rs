@@ -209,10 +209,7 @@ pub(crate) fn rewrite_body(
             let spec = make_loop_spec(&helper, (**r).clone(), &params.vars);
             // Base sources become data/len pairs; captures follow.
             let base_args = source_base_args(reduce_src(r));
-            let mut arg_tys: Vec<Ty> = Vec::new();
-            for _ in &base_args {
-                arg_tys.push(VEC_I64);
-            }
+            let mut arg_tys: Vec<Ty> = vec![VEC_I64; base_args.len()];
             for (_, t) in &spec.caps {
                 arg_tys.push(*t);
             }

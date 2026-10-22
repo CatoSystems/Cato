@@ -55,7 +55,6 @@ fn walk(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 #[test]
 fn kernel_cli_builds_and_runs_the_fixtures() {
     let root = root();
-    let cato = root.join("target/debug/cato");
     let entry = root.join("selfhost/cato/cli.cato");
     let out_dir = root.join("target/kernel_bootstrap");
     let _ = std::fs::create_dir_all(&out_dir);
