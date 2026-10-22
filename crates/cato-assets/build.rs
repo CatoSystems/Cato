@@ -74,7 +74,7 @@ fn main() {
             let path = assets.join(target).join(file);
             if !path.is_file() {
                 panic!(
-                    "cato-assets: missing embedded asset {} — run tools/gen_assets.sh",
+                    "cato-assets: missing embedded asset {} — restore the committed assets (git checkout -- crates/cato-assets/assets) or rebuild them with tools/gen_assets.sh --regen-committed",
                     path.display()
                 );
             }

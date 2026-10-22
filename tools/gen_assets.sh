@@ -2,22 +2,31 @@
 # Generate and validate cato's embedded per-target link assets.
 #
 # Usage:
-#   tools/gen_assets.sh                # generate all targets runnable on this
-#                                      # host, then validate
-#   tools/gen_assets.sh --validate     # validate existing asset dirs only
-#                                      # (required-file checks always; full lld
-#                                      # validation link per target when its
-#                                      # compiler — zig / xcrun — is available)
-#   tools/gen_assets.sh --refresh-lld  # copy vendor/llvm-prefix/bin/lld into
-#                                      # assets/lld/<host>/ (no zig needed)
+#   tools/gen_assets.sh                 # generate the assets this host owns,
+#                                       # then validate every target
+#   tools/gen_assets.sh --validate      # validate existing asset dirs only
+#                                       # (required-file checks always; full lld
+#                                       # validation link per target when its
+#                                       # compiler — zig / xcrun — is available)
+#   tools/gen_assets.sh --refresh-lld   # copy vendor/llvm-prefix/bin/lld into
+#                                       # assets/lld/<host>/ (no zig needed)
+#   tools/gen_assets.sh --regen-committed  # also rebuild the committed
+#                                       # linux/windows assets (needs zig);
+#                                       # run this when runtime/runtime.c changed
 #
-# Requirements (full generation): zig 0.17+ on PATH (linux/windows targets),
-# xcrun + macOS SDK (macos targets, macOS hosts only),
-# vendor/llvm-prefix built by tools/build_toolchain.sh (validation links + lld copy).
+# Requirements:
+#   - default mode: xcrun + macOS SDK (macos assets, macOS hosts only) and
+#     vendor/llvm-prefix built by tools/build_toolchain.sh (validation links +
+#     lld copy). No zig: the committed assets are never rebuilt here.
+#   - --regen-committed: zig 0.17+ on PATH as well.
 #
 # Generated, gitignored: assets/x86_64-macos/, assets/aarch64-macos/,
 # assets/lld/<host>/. Committed: assets/x86_64-linux/, assets/aarch64-linux/,
 # assets/x86_64-windows/.
+#
+# The committed assets are what the released compiler embeds, so CI validates
+# them instead of rebuilding them: a rebuild needs zig (absent on the CI
+# runners) and would test bytes that are not the ones that ship.
 #
 # ---------------------------------------------------------------------------
 # lld argv deviations discovered against plan shapes (Task 6 hermetic_link_argv
@@ -43,15 +52,22 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ASSETS="$ROOT/crates/cato-assets/assets"
-LLD="$ROOT/vendor/llvm-prefix/bin/ld.lld"
-LLD64="$ROOT/vendor/llvm-prefix/bin/ld64.lld"
-LLD_BIN="$ROOT/vendor/llvm-prefix/bin/lld"
+
+# The toolchain's tools carry the .exe suffix on Windows.
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*|Windows_NT) EXE=".exe" ;;
+  *) EXE="" ;;
+esac
+LLD="$ROOT/vendor/llvm-prefix/bin/ld.lld$EXE"
+LLD64="$ROOT/vendor/llvm-prefix/bin/ld64.lld$EXE"
+LLD_BIN="$ROOT/vendor/llvm-prefix/bin/lld$EXE"
 
 MODE=generate
 case "${1:-}" in
   "") ;;
   --validate) MODE=validate ;;
   --refresh-lld) MODE=refresh-lld ;;
+  --regen-committed) MODE=regen-committed ;;
   *) echo "gen_assets: unknown option $1 (see header usage)" >&2; exit 2 ;;
 esac
 
@@ -83,14 +99,25 @@ host_target_name() {
   esac
 }
 
+# The committed assets (linux, windows) must exist everywhere. The macOS ones
+# are gitignored and only a macOS host can produce them, so they are required
+# on macOS and skipped elsewhere.
+asset_dir_required() { # $1=target-name
+  case "$1" in
+    x86_64-macos|aarch64-macos) [[ "$(uname -s)" == Darwin ]] ;;
+    *) return 0 ;;
+  esac
+}
+
 copy_bundled_lld() {
   local host src dst
   host="$(host_target_name)"
   src="$LLD_BIN"
-  [[ "$host" == *windows ]] && src="$LLD_BIN.exe"
   [[ -f "$src" ]] || die "bundled lld missing: $src (run tools/build_toolchain.sh)"
   dst="$ASSETS/lld/$host/lld"
-  [[ "$host" == *windows ]] && dst="$dst.exe"
+  if [[ "$host" == *windows ]]; then
+    dst="$dst.exe"
+  fi
   mkdir -p "$(dirname "$dst")"
   cp "$src" "$dst"
   echo "gen_assets: bundled lld -> $dst"
@@ -203,7 +230,13 @@ magic_ok() { # $1=file $2=family
 validate_dir() { # $1=target-name
   local name="$1" dir="$ASSETS/$1"
   local staged
-  [[ -d "$dir" ]] || { echo "gen_assets: skip $name (dir absent)"; return 0; }
+  if [[ ! -d "$dir" ]]; then
+    if asset_dir_required "$name"; then
+      die "missing asset dir $dir (run tools/gen_assets.sh --regen-committed)"
+    fi
+    echo "gen_assets: skip $name (dir absent)"
+    return 0
+  fi
 
   # required-file checks (always)
   case "$name" in
@@ -281,10 +314,19 @@ if [[ "$MODE" == refresh-lld ]]; then
   exit 0
 fi
 
-if [[ "$MODE" == generate ]]; then
-  gen_linux_target x86_64-linux x86_64-linux-musl
-  gen_linux_target aarch64-linux aarch64-linux-musl
-  gen_windows_target
+if [[ "$MODE" == generate || "$MODE" == regen-committed ]]; then
+  # The linux and windows assets are committed: the released compiler embeds
+  # exactly these bytes, so CI validates them rather than rebuilding them.
+  # Rebuilding needs zig (absent on the CI runners) and would test bytes that
+  # do not ship. A developer who changed runtime/runtime.c regenerates them
+  # with --regen-committed and commits the result.
+  if [[ "$MODE" == regen-committed ]]; then
+    gen_linux_target x86_64-linux x86_64-linux-musl
+    gen_linux_target aarch64-linux aarch64-linux-musl
+    gen_windows_target
+  fi
+  # The macOS assets are gitignored (Apple SDK licence): only a macOS host
+  # can build them, and only for the two macOS targets.
   gen_macos_target x86_64-macos x86_64-apple-darwin x86_64
   gen_macos_target aarch64-macos aarch64-apple-darwin arm64
   [[ -f "$LLD" ]] || die "vendor/llvm-prefix missing — run tools/build_toolchain.sh"

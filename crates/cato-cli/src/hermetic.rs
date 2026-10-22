@@ -117,6 +117,22 @@ pub(super) enum LldFlavor {
     Darwin,
 }
 
+/// The `-flavor` value that selects the driver lld would pick from argv[0].
+///
+/// The bundled lld is spawned as a subprocess, and a subprocess cannot
+/// control its own argv[0] on every platform (Windows has no equivalent of
+/// exec's argv[0] override), so the driver is selected explicitly instead.
+#[cfg(cato_bundled_lld)]
+fn lld_flavor_option(flavor: LldFlavor) -> &'static str {
+    match flavor {
+        // The "gnu" flavour is the ELF driver. The MinGW driver is reached
+        // from it through the `-m i386pep` emulation argument that the
+        // Windows link line already carries.
+        LldFlavor::Elf | LldFlavor::Mingw => "gnu",
+        LldFlavor::Darwin => "darwin",
+    }
+}
+
 pub(super) fn hermetic_link_argv(
     target_name: &str,
     staged: &Path,
@@ -273,15 +289,10 @@ pub fn build_hermetic(program: &Program, cli: &Cli, out: &Path) -> Result<PathBu
     }
     #[cfg(cato_bundled_lld)]
     {
-        let _ = flavor;
         let lld = bundled::ensure_lld()?;
         use std::process::Command;
         let mut cmd = Command::new(&lld);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.arg0(&argv[0]);
-        }
+        cmd.arg("-flavor").arg(lld_flavor_option(flavor));
         cmd.args(&argv[1..]);
         let result = cmd.output().map_err(|e| format!("cannot run lld: {}", e))?;
         if !result.status.success() {
@@ -416,6 +427,23 @@ mod tests {
         let (flavor, argv) = hermetic_link_argv("aarch64-macos", &t, &out).unwrap();
         assert!(matches!(flavor, LldFlavor::Darwin));
         assert!(argv.contains(&"arm64".to_string()));
+    }
+
+    #[cfg(cato_bundled_lld)]
+    #[test]
+    fn bundled_flavor_option_matches_the_driver() {
+        assert_eq!(lld_flavor_option(LldFlavor::Elf), "gnu");
+        assert_eq!(lld_flavor_option(LldFlavor::Mingw), "gnu");
+        assert_eq!(lld_flavor_option(LldFlavor::Darwin), "darwin");
+    }
+
+    #[test]
+    fn mingw_argv_carries_the_emulation_lld_uses_to_pick_the_driver() {
+        let t = std::env::temp_dir().join("cato-test6");
+        let out = t.join("out.exe");
+        let (_, argv) = hermetic_link_argv("x86_64-windows", &t, &out).unwrap();
+        let pos = argv.iter().position(|a| a == "-m").expect("-m present");
+        assert_eq!(argv[pos + 1], "i386pep");
     }
 
     #[test]

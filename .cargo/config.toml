@@ -1,3 +1,2 @@
 [env]
 LLVM_SYS_231_PREFIX = { value = "vendor/llvm-prefix", relative = true, force = false }
-LLVM_STATIC_STDCXX = { value = "1", force = false }
