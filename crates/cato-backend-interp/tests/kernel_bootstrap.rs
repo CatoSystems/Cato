@@ -94,6 +94,12 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
         let ir = std::fs::read_to_string(&ll).unwrap_or_default();
         let has_main = ir.contains("define i32 @main");
         if !has_main {
+            assert!(
+                ll.exists(),
+                "kernel wrote no IR for {name} (exit {:?})\n--- stdout ---\n{}\n--- stderr ---\n{build_out}",
+                build.status.code(),
+                String::from_utf8_lossy(&build.stdout),
+            );
             let cc = Command::new("clang")
                 .arg("-c")
                 .arg(&ll)
