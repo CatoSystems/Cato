@@ -16,19 +16,24 @@ fn main() {
         }
     };
     let program_args: Vec<String> = args.collect();
-    let src = std::fs::read_to_string(&file).unwrap_or_else(|e| {
-        eprintln!("cato: error: cannot read {}: {}", file, e);
-        std::process::exit(1);
-    });
-    let program = cato_core::compile_named_with(&file, &src, true).unwrap_or_else(|e| {
-        eprintln!("cato: error: {}", e);
-        std::process::exit(1);
-    });
-    // The interpreter recurses once per Cato call frame; deep programs need
-    // more than the 8MB main stack (same fix as the old `cato run`).
+    // Loading and compiling recurse as deeply as evaluation does (nested
+    // forms, one frame per Cato call), and Windows' main-thread stack is far
+    // smaller than the 8MB Unix default: a program like the kernel overflows
+    // it before the interpreter even starts. Run the whole job on one
+    // big-stack thread; `(exit n)` still ends the process from there.
     let result = std::thread::Builder::new()
         .stack_size(512 * 1024 * 1024)
-        .spawn(move || guard(|| InterpBackend { program_args }.emit(&program)))
+        .spawn(move || {
+            let src = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                eprintln!("cato: error: cannot read {}: {}", file, e);
+                std::process::exit(1);
+            });
+            let program = cato_core::compile_named_with(&file, &src, true).unwrap_or_else(|e| {
+                eprintln!("cato: error: {}", e);
+                std::process::exit(1);
+            });
+            guard(|| InterpBackend { program_args }.emit(&program))
+        })
         .expect("spawn interp thread")
         .join()
         .unwrap_or_else(|_| {
