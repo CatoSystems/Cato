@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Once;
 
 fn cato() -> Command {
     Command::new(env!("CARGO_BIN_EXE_cato"))
@@ -22,13 +23,19 @@ fn demo_source() -> PathBuf {
     manifest_root().join("target/optin_demo.cato")
 }
 
+/// Every test compiles the same demo. Write it once: these tests run in
+/// parallel, and a second `write` would truncate the file while another
+/// `cato compile` reads it, which the reader rejects as malformed.
 fn write_demo() -> PathBuf {
+    static WRITE: Once = Once::new();
     let path = demo_source();
-    std::fs::write(
-        &path,
-        "(defn sq [x :- i64] (* x x))\n(defn main [] (print (sq 7)))\n",
-    )
-    .expect("write demo");
+    WRITE.call_once(|| {
+        std::fs::write(
+            &path,
+            "(defn sq [x :- i64] (* x x))\n(defn main [] (print (sq 7)))\n",
+        )
+        .expect("write demo");
+    });
     path
 }
 
@@ -44,7 +51,11 @@ fn compile_check_mode_is_silent() {
         .arg(&bin)
         .output()
         .expect("run cato");
-    assert!(out.status.success(), "compile failed");
+    assert!(
+        out.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     assert!(
         out.stdout.is_empty(),
         "compile must print nothing to stdout, got {:?}",

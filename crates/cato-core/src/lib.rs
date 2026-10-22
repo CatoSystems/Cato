@@ -510,10 +510,16 @@ mod normalize_path_tests {
 
     #[test]
     fn resolves_dot_and_dotdot() {
-        assert_eq!(normalize_path("a/./b/../c.cato"), "a/c.cato");
-        assert_eq!(normalize_path("../lib/ast.cato"), "../lib/ast.cato");
-        assert_eq!(normalize_path("/a/b/../c.cato"), "/a/c.cato");
-        assert_eq!(normalize_path("/../a.cato"), "/a.cato");
+        // The result is joined with the platform separator, so build the
+        // expectations the same way.
+        let s = std::path::MAIN_SEPARATOR;
+        assert_eq!(normalize_path("a/./b/../c.cato"), format!("a{s}c.cato"));
+        assert_eq!(
+            normalize_path("../lib/ast.cato"),
+            format!("..{s}lib{s}ast.cato")
+        );
+        assert_eq!(normalize_path("/a/b/../c.cato"), format!("{s}a{s}c.cato"));
+        assert_eq!(normalize_path("/../a.cato"), format!("{s}a.cato"));
     }
 
     // The shape the loader produces on Windows: `Path::join` adds `\` on top
