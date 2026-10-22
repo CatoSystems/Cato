@@ -140,7 +140,8 @@ fn kernel_cli_builds_and_runs_the_fixtures() {
             .expect("interp run");
         assert!(interp.status.success(), "interp failed on {}", name);
         let interp_out = String::from_utf8_lossy(&interp.stdout).to_string();
-        let native_out = String::from_utf8_lossy(&bin.stdout).to_string();
+        // The binary is native: Windows' CRT writes `\n` as `\r\n`.
+        let native_out = String::from_utf8_lossy(&bin.stdout).replace("\r\n", "\n");
         if name != "host" {
             // host's argv-derived stdout legitimately differs (S3 interp
             // excludes argv[0]); success is the contract there.

@@ -136,7 +136,8 @@ fn kernel_emitted_ir_runs_and_matches_the_seed_interpreter() {
             .expect("interp run");
         assert!(interp.status.success(), "interp failed on {}", name);
         let interp_out = String::from_utf8_lossy(&interp.stdout).to_string();
-        let native_out = String::from_utf8_lossy(&bin.stdout).to_string();
+        // The binary is native: Windows' CRT writes `\n` as `\r\n`.
+        let native_out = String::from_utf8_lossy(&bin.stdout).replace("\r\n", "\n");
         if name == "host" {
             // argv[0] differences only (S3 interp excludes it); success is
             // the contract here.

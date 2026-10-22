@@ -74,7 +74,8 @@ fn interpreter_agrees_with_llvm_on_all_examples() {
         assert!(status.success(), "{}: emit failed", name);
         link_ir(&ll, &rt, &exe);
         let out = Command::new(&exe).output().expect("llvm run");
-        let llvm = String::from_utf8_lossy(&out.stdout).to_string();
+        // The compiled binary is native: Windows' CRT writes `\n` as `\r\n`.
+        let llvm = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
 
         assert_eq!(interp, llvm, "{}: backend parity mismatch", name);
     }
@@ -120,7 +121,10 @@ fn generic_instantiations_over_str_and_widths_emit_valid_ir() {
     assert!(status.success(), "emit failed");
     link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
     let out = Command::new(&exe).output().expect("llvm run");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "5\nab\n7\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
+        "5\nab\n7\n"
+    );
 }
 
 #[test]
@@ -175,7 +179,10 @@ fn string_builder_patterns_agree_between_backends() {
     assert!(status.success(), "emit failed");
     link_ir(&ll, &root.join("runtime/runtime.c"), &exe);
     let out = Command::new(&exe).output().expect("llvm run");
-    assert_eq!(String::from_utf8_lossy(&out.stdout), "1\n4\nawww\n1\na\n");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
+        "1\n4\nawww\n1\na\n"
+    );
 }
 
 #[test]
@@ -366,7 +373,7 @@ fn modules_agree_between_backends() {
     assert!(status.success());
     link_ir(&ll, &rt, &exe);
     let out = Command::new(&exe).output().expect("llvm run");
-    let llvm = String::from_utf8_lossy(&out.stdout).to_string();
+    let llvm = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
     assert_eq!(interp, llvm, "modules parity");
     assert_eq!(interp, "49\n25\n16\n");
 }

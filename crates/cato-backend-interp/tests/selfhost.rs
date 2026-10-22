@@ -47,7 +47,7 @@ fn seed_builds_the_kernel_stdlib_and_both_backends_agree() {
     link_ir(&ll, &rt, &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
         interp,
         "selfhost stdlib: backend parity mismatch"
     );

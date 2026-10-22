@@ -93,7 +93,9 @@ impl Paths {
             file.display(),
             String::from_utf8_lossy(&out.stderr)
         );
-        String::from_utf8_lossy(&out.stdout).to_string()
+        // The kernel driver is native: Windows' CRT writes `\n` as `\r\n`,
+        // while the oracle below is built with `\n`.
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n")
     }
 }
 

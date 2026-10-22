@@ -37,7 +37,7 @@ fn seed_builds_the_cato_stdlib_and_both_backends_agree() {
     link_ir(&ll, &rt, &exe);
     let out = Command::new(&exe).output().expect("llvm run");
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n"),
         interp,
         "stdlib: backend parity mismatch"
     );
