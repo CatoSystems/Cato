@@ -20,16 +20,17 @@ fn setup() -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
     // interpreter would run, compiled once by the seed.
     let src = root.join("selfhost/cato/emit/emit_ref.cato");
     let entry = root.join("target/selfhost_emit_ref");
-    let status = Command::new(&cato)
+    let out = Command::new(&cato)
         .arg("compile")
         .arg(&src)
         .arg("-o")
         .arg(&entry)
-        .status()
+        .output()
         .expect("cato compile");
     assert!(
-        status.success(),
-        "seed failed to compile the kernel emit driver"
+        out.status.success(),
+        "seed failed to compile the kernel emit driver: {}",
+        String::from_utf8_lossy(&out.stderr)
     );
 
     (root, entry, cato)

@@ -19,7 +19,6 @@ use cli::Cli;
 use std::time::Instant;
 
 fn main() {
-    let started = Instant::now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(|s| s.as_str()) == Some("repl") {
         no_args_subcommand(
@@ -45,7 +44,23 @@ fn main() {
         fmt::run(&args[1..]);
         return;
     }
-    let cli = cli::parse_args(&args);
+    // The front end — and the drop of the program it builds — recurses once
+    // per nested form. Windows' main-thread stack is far smaller than Unix's
+    // 8MB default, so a large program overflows it; do the work on a
+    // big-stack thread instead. Errors still end the process from there.
+    std::thread::Builder::new()
+        .stack_size(512 * 1024 * 1024)
+        .spawn(move || compile(&args))
+        .expect("spawn compiler thread")
+        .join()
+        .unwrap_or_else(|_| std::process::exit(1));
+}
+
+/// `cato compile <file> [-o out] [flags]` and `--emit-ir`: the front end and
+/// the LLVM backend, run on the big-stack thread.
+fn compile(args: &[String]) {
+    let started = Instant::now();
+    let cli = cli::parse_args(args);
     let src = std::fs::read_to_string(&cli.file).unwrap_or_else(|e| {
         eprintln!("{} cannot read {}: {}", ui::error_lead(), cli.file, e);
         std::process::exit(1);
