@@ -12,6 +12,9 @@ that section as the GitHub Release notes.
 
 ### Fixed
 
+- Module loading on Windows: a `require` that reached a file through `..`
+  across `\` separators normalized to a second spelling of the same path,
+  so the module loaded twice and its `ns` was reported as a duplicate.
 - CI, against the current stable toolchain: the newer clippy lints, the
   formatter golden comparison on a checkout that rewrites line endings,
   and an `ETXTBSY` race when the CLI passthrough tests share a fake `cc`.

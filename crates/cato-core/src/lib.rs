@@ -307,30 +307,43 @@ struct ModCtx {
 /// Lexically normalize a path: drop `.` and empty components and resolve
 /// `..` against the preceding component, without touching the filesystem
 /// (no symlink resolution). A leading `..` on a relative path is kept; on
-/// an absolute path it is dropped at the root. This is what lets a module
+/// a rooted path it is dropped at the root. This is what lets a module
 /// reached from different directories (`../lib/ast.cato` from `hir/` and
 /// `reader/`, `lib/ast.cato` from the root) dedup to one resolved string.
+///
+/// Parsing goes through `Path::components`, not a split on `/`: a
+/// `Path::join`ed path carries the platform separator, and on Windows a
+/// `..` glued to its predecessor by a backslash (`reader\..`) must still
+/// resolve — otherwise the same module dedups to two spellings and its
+/// `ns` is declared twice.
 fn normalize_path(p: &str) -> String {
-    let absolute = p.starts_with('/');
-    let mut out: Vec<&str> = Vec::new();
-    for comp in p.split('/') {
+    use std::path::{Component, Path};
+
+    let path = Path::new(p);
+    let mut prefix = String::new();
+    let mut rooted = false;
+    let mut out: Vec<String> = Vec::new();
+    for comp in path.components() {
         match comp {
-            "" | "." => {}
-            ".." => match out.last() {
-                Some(&last) if last != ".." => {
+            // A Windows drive (`D:`) or UNC prefix; never produced on Unix.
+            Component::Prefix(pre) => prefix = pre.as_os_str().to_string_lossy().into_owned(),
+            Component::RootDir => rooted = true,
+            Component::CurDir => {}
+            Component::ParentDir => match out.last() {
+                Some(last) if last != ".." => {
                     out.pop();
                 }
-                _ if !absolute => out.push(".."),
+                _ if !rooted => out.push("..".to_string()),
                 _ => {}
             },
-            c => out.push(c),
+            Component::Normal(c) => out.push(c.to_string_lossy().into_owned()),
         }
     }
     let joined = out.join("/");
-    if absolute {
-        format!("/{}", joined)
+    if prefix.is_empty() {
+        if rooted { format!("/{joined}") } else { joined }
     } else {
-        joined
+        format!("{prefix}/{joined}")
     }
 }
 
@@ -483,4 +496,32 @@ fn expand_file(
     rewrite_alias_refs(&mut own, &this_aliases);
     merged.extend(own);
     Ok(merged)
+}
+
+#[cfg(test)]
+mod normalize_path_tests {
+    use super::normalize_path;
+
+    #[test]
+    fn resolves_dot_and_dotdot() {
+        assert_eq!(normalize_path("a/./b/../c.cato"), "a/c.cato");
+        assert_eq!(normalize_path("../lib/ast.cato"), "../lib/ast.cato");
+        assert_eq!(normalize_path("/a/b/../c.cato"), "/a/c.cato");
+        assert_eq!(normalize_path("/../a.cato"), "/a.cato");
+    }
+
+    // The shape the loader produces on Windows: `Path::join` adds `\` on top
+    // of the source path's `/`, so a `..` can be glued to its predecessor by
+    // a backslash. Both spellings of one module must collapse to one string,
+    // or the module is loaded twice and its `ns` is a duplicate.
+    #[cfg(windows)]
+    #[test]
+    fn dedups_a_module_reached_by_two_spellings() {
+        let canonical = normalize_path("D:\\a\\Cato\\selfhost/cato\\lib/span.cato");
+        assert_eq!(canonical, "D:/a/Cato/selfhost/cato/lib/span.cato");
+        assert_eq!(
+            normalize_path("D:\\a\\Cato\\selfhost/cato\\reader\\..\\lib/span.cato"),
+            canonical
+        );
+    }
 }
