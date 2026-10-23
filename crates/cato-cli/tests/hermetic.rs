@@ -245,11 +245,13 @@ fn bundled_link_produces_running_host_binary() {
         String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
         "2.5\n20\n"
     );
-    let cache = env::var_os("HOME")
+    // Mirror the driver's cache location: `HOME`, else `USERPROFILE`
+    // (Windows, where `HOME` may be unset).
+    let base = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".cache")
-        .join("cato");
+        .unwrap_or_else(std::env::temp_dir);
+    let cache = base.join(".cache").join("cato");
     assert!(
         cache.exists(),
         "bundled lld cache dir should exist: {}",
