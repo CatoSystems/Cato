@@ -79,7 +79,11 @@ fn hermetic_host_compile_runs_without_cc() {
         .expect("compile");
     assert!(status.success());
     let run = Command::new(&out).output().expect("run");
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "2.5\n20\n");
+    // The binary is native: Windows' CRT writes `\n` as `\r\n`.
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "2.5\n20\n"
+    );
     #[cfg(target_os = "linux")]
     {
         let bytes = fs::read(&out).unwrap();
@@ -236,7 +240,11 @@ fn bundled_link_produces_running_host_binary() {
         .expect("compile");
     assert!(c.success());
     let run = std::process::Command::new(&out).output().expect("run");
-    assert_eq!(String::from_utf8_lossy(&run.stdout), "2.5\n20\n");
+    // The binary is native: Windows' CRT writes `\n` as `\r\n`.
+    assert_eq!(
+        String::from_utf8_lossy(&run.stdout).replace("\r\n", "\n"),
+        "2.5\n20\n"
+    );
     let cache = env::var_os("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
