@@ -10,18 +10,18 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "cato-assets"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cato-backend-llvm"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cato-core",
 ]
 
 [[package]]
 name = "cato-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cato-assets",
  "cato-backend-llvm",
@@ -34,25 +34,25 @@ dependencies = [
 
 [[package]]
 name = "cato-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cato-backend-llvm",
 ]
 
 [[package]]
 name = "cato-fmt"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cato-interp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cato-core",
 ]
 
 [[package]]
 name = "cato-lld-sys"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cc",
 ]
