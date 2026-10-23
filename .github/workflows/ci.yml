@@ -109,6 +109,10 @@ jobs:
       - name: Validate the assets
         shell: bash
         run: tools/gen_assets.sh
+      # `cato-cli`'s integration tests compare native output against the
+      # interpreter driver bin, which `-p cato-cli` does not build.
+      - name: Build the interpreter driver
+        run: cargo build -p cato-interp --bin cato-interp-run
       - name: Test (in-process lld)
         run: cargo test -p cato-cli --features in-process-lld
       - name: Test (bundled lld)
